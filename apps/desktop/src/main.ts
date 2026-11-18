@@ -29,6 +29,8 @@ import { applyLayout } from "./lib/layout.svelte";
 import { installMathCopy, installMathSelection } from "./lib/mathCopy";
 import { installFieldUndo } from "./lib/fieldUndo";
 import { installSelectScope } from "./lib/selectScope";
+import { installDiagrams } from "./lib/diagrams";
+import { copyText } from "./lib/clipRing.svelte";
 
 // Item 352: copying a rendered formula gives its TeX.
 installMathCopy();
@@ -37,6 +39,9 @@ installMathSelection();
 
 // Item 421: ⌘Z in a plain field undoes that field, never another box.
 installFieldUndo();
+
+// Item 821: a ```mermaid or ```svg block draws as its diagram, wherever markdown is shown.
+installDiagrams({ copy: (t) => void copyText(t) });
 
 // Item 646: ⌘A outside a text box selects the pane he is in, never the whole app.
 installSelectScope();

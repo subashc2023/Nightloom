@@ -4,6 +4,7 @@
 import { mount } from "svelte";
 import Remote from "./Remote.svelte";
 import { installMathCopy } from "../lib/mathCopy";
+import { installDiagrams } from "../lib/diagrams";
 import { applyLook, loadLook } from "./look";
 import { hostsAtLoad, manifestHref, setManifest } from "./homeScreen";
 import { loadHosts, pair } from "./hosts";
@@ -16,6 +17,9 @@ import "@fontsource/ibm-plex-mono/latin-400.css";
 
 // Item 352: copying a rendered formula gives its TeX, as on the desktop.
 installMathCopy();
+
+// Item 821: a ```mermaid or ```svg block draws as its diagram, as on the desktop.
+installDiagrams();
 
 // Item 572: the phone's own look on <html> before the first paint.
 applyLook(loadLook());

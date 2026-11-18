@@ -66,6 +66,8 @@ A command for the user to run themselves goes in its own ```bash block, one comm
 
 A page inside a reply: a fenced block opened with ```html page is drawn in the reply as a live, sandboxed page with no network at all. Use one when a figure or something to click beats prose — a chart, a diagram, a sortable table, a small simulation; use a saved picture file for a photo or a plot a script made, and plain text when a sentence does. Four libraries ship in the app and load by name, nothing else loads: <script src=\"kit:vega-lite\"></script> (then nightloom.chart(element, spec)), kit:mermaid (diagram in <pre class=\"mermaid\">), kit:katex ($…$ in the page is typeset), kit:three (THREE, with OrbitControls). The app's colours are CSS variables (--ink, --dim, --line, --accent, --series-1 to --series-8) on a transparent ground: set no background or text colour. Inline script and style only. A plain ```html block stays code.
 
+Diagram blocks: a fenced ```mermaid block is drawn as its diagram in any reply or note (with a Source toggle), and a fenced ```svg block holding one <svg> element is drawn as a picture (scripts, handlers and outside links in it are stripped); for a static diagram prefer either to an ```html page.
+
 Ending a turn on a question: if your reply asks the user to choose, confirm or decide anything — including a closing line such as \"Which do you want?\" — do not end on a plain-text question. End the reply with this block instead, with nothing after it:\n<ask>\nThe question, in full sentences.\n- Your default answer\n- The other answer\n</ask>\nOne question, one or two answers, your default first. Nightloom draws the block as a card whose buttons send the answer; a plain-text question gets no card.
 
 Whenever you write a prompt for the next chat (a hand-off), put it between a line holding only <handoff> and a line holding only </handoff> — plain prose, no code fence, no [brackets] or placeholders; Nightloom shows it as a card with a button that starts the next chat with it.";
@@ -1005,6 +1007,9 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     // Item 770: a page inside a reply, and the kit it may load by name.
     text.push(' ');
     text.push_str(PAGE_NOTE);
+    // Item 821: a ```mermaid or ```svg block draws as its diagram.
+    text.push(' ');
+    text.push_str(DIAGRAM_NOTE);
     // Item 583: the tag rule rode only in Nightloom's own wrap-up message,
     // so a hand-off he asked for in words came back as a fenced block.
     text.push(' ');
@@ -1047,6 +1052,12 @@ pub const RUN_BLOCK_NOTE: &str = "A command for the user to run themselves goes 
 /// 770 report: his call whether that is worth its tokens): the kit is
 /// useless to a model that has not been told its names.
 pub const PAGE_NOTE: &str = "A page inside a reply: a fenced block opened with ```html page is drawn in the reply as a live, sandboxed page with no network at all. Use one when a figure or something to click beats prose — a chart, a diagram, a sortable table, a small simulation; use a saved picture file for a photo or a plot a script made, and plain text when a sentence does. Four libraries ship in the app and load by name, nothing else loads: <script src=\"kit:vega-lite\"></script> (then nightloom.chart(element, spec)), kit:mermaid (diagram in <pre class=\"mermaid\">), kit:katex ($…$ in the page is typeset), kit:three (THREE, with OrbitControls). The app's colours are CSS variables (--ink, --dim, --line, --accent, --series-1 to --series-8) on a transparent ground: set no background or text colour. Inline script and style only. A plain ```html block stays code.";
+
+/// Diagram blocks (nightshift item 821, 2026-11-18): the two fences every
+/// markdown surface draws (`apps/desktop/src/lib/diagramBlock.ts`) — Mermaid
+/// from 770's kit, SVG as a sanitised picture. One sentence beside
+/// [`PAGE_NOTE`], in the same places.
+pub const DIAGRAM_NOTE: &str = "Diagram blocks: a fenced ```mermaid block is drawn as its diagram in any reply or note (with a Source toggle), and a fenced ```svg block holding one <svg> element is drawn as a picture (scripts, handlers and outside links in it are stripped); for a static diagram prefer either to an ```html page.";
 
 /// How a turn-end question is written (nightshift item 753, 2026-11-16): one
 /// tagged block, last in the reply, which the desktop and the phone draw as
@@ -1101,7 +1112,7 @@ fn incognito_engine_note_segment() -> Segment {
          tool mcp__nightloom__fetch_page (ToolSearch it by that full name). For the whole \
          text of a page use fetch_page (WebFetch summarises and truncates); if fetch_page \
          reports a JavaScript shell or returns only a title, use WebFetch on that URL instead \
-         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE} {PAGE_NOTE} {HANDOFF_NOTE} {ASK_NOTE}\n</engine-note>"
+         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE} {PAGE_NOTE} {DIAGRAM_NOTE} {HANDOFF_NOTE} {ASK_NOTE}\n</engine-note>"
     );
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
@@ -3269,6 +3280,27 @@ As of now — the front.
         }
         // Its size shows on the new-chat dial.
         assert!(PAGE_NOTE.split_whitespace().count() <= 150);
+    }
+
+    /// Item 821: every chat is told the two diagram fences, beside the page note.
+    #[test]
+    fn every_chat_is_told_the_two_diagram_fences() {
+        assert!(DIAGRAM_NOTE.contains("```mermaid"));
+        assert!(DIAGRAM_NOTE.contains("```svg"));
+        assert!(
+            DEFAULT_IDENTITY.contains(DIAGRAM_NOTE),
+            "{DEFAULT_IDENTITY}"
+        );
+        for seg in [
+            engine_note_segment(None),
+            engine_note_segment(Some(&KnowledgeContext {
+                dir: PathBuf::from("/kb"),
+            })),
+            incognito_engine_note_segment(),
+        ] {
+            assert!(seg.text.contains(DIAGRAM_NOTE), "{}", seg.text);
+        }
+        assert!(DIAGRAM_NOTE.split_whitespace().count() <= 70);
     }
 
     /// Item 583: the <handoff> rule stands in every chat's prompt — the

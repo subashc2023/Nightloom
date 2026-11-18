@@ -46,6 +46,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { findMath, type MathSpan } from "./math";
 import { toggleInline, toggleTaskAt, type Command } from "./noteFormat";
 import { renderMarkdown, renderMathHtml } from "./markdown";
+import { diagramFence } from "./diagramBlock";
 import { toggleComment } from "./codeBlockKeys";
 
 /** The same one-line `[[target|alias]]` shape `links.ts` parses. */
@@ -168,6 +169,36 @@ export class TableWidget extends WidgetType {
       const rowIndex = row ? Array.from(el.querySelectorAll("tr")).indexOf(row) : -1;
       const rel = rowIndex >= 0 && cell ? (this.cells[rowIndex]?.[cell.cellIndex] ?? 0) : 0;
       view.dispatch({ selection: EditorSelection.cursor(Math.min(view.state.doc.length, start + rel)) });
+      view.focus();
+    });
+    return el;
+  }
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
+/**
+ * Item 821: a ```mermaid or ```svg block off the cursor, drawn as its diagram (the same placeholder a note's
+ * preview and a reply use; `diagrams.ts` draws it, with its Diagram / Source toggle). A click on the drawing
+ * puts the cursor at the block's start, where its source shows for editing, as a drawn table does.
+ */
+export class DiagramWidget extends WidgetType {
+  constructor(readonly source: string) {
+    super();
+  }
+  eq(other: DiagramWidget): boolean {
+    return other.source === this.source;
+  }
+  toDOM(view: EditorView): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "cm-ndiagram markdown";
+    el.innerHTML = renderMarkdown(this.source);
+    el.dataset.tip = "Click to edit the diagram's source";
+    el.addEventListener("mousedown", (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      view.dispatch({ selection: EditorSelection.cursor(Math.min(view.state.doc.length, view.posAtDOM(el))) });
       view.focus();
     });
     return el;
@@ -496,9 +527,19 @@ export function noteDecorations(state: EditorState): DecorationSet {
             );
             return false;
           }
+          const marks = node.node.getChildren("CodeMark");
+          // Item 821: a closed ```mermaid / ```svg block is drawn, off the cursor only.
+          if (diagramFence(lang) && body && marks.length > 1 && !onLines(state, from, to) && last.number > first.number) {
+            out.push(
+              Decoration.replace({
+                widget: new DiagramWidget(doc.sliceString(first.from, last.to)),
+                block: true,
+              }).range(first.from, last.to),
+            );
+            return false;
+          }
           eachLine(from, to, "cm-ncodeblock");
           lineClass(from, "cm-nfence");
-          const marks = node.node.getChildren("CodeMark");
           if (marks.length > 1) lineClass(marks[marks.length - 1].from, "cm-nfence");
           return false;
         }

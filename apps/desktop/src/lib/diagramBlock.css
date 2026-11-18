@@ -1,0 +1,94 @@
+/* Item 821: a diagram block (diagramBlock.ts, diagrams.ts). The Mac (both looks) and the phone load this file; it
+   names only tokens all three define (--line/--border, --term/--well, --sheet/--bg, --dim, --ink). */
+.md-diagram {
+  display: block;
+  margin: 0.8em 0;
+}
+.md-diagram-mount {
+  position: relative;
+  border: 1px solid var(--line, var(--border));
+  border-radius: 8px;
+  background: var(--term, var(--well));
+  overflow: hidden;
+}
+/* While the drawing shows, the block's own code (and the code box the phone wraps it in) is hidden; in Source view,
+   and when drawing failed, it shows under the head, joined to it. */
+.md-diagram-mount.is-drawn:not(.is-source) ~ * {
+  display: none !important;
+}
+.md-diagram-mount:not(.is-drawn:not(.is-source)) {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: none;
+}
+.md-diagram-mount:not(.is-drawn:not(.is-source)) ~ pre,
+.md-diagram-mount:not(.is-drawn:not(.is-source)) ~ .code-box,
+.markdown .md-diagram-mount:not(.is-drawn:not(.is-source)) ~ pre {
+  margin-top: 0 !important;
+  border-top-left-radius: 0 !important;
+  border-top-right-radius: 0 !important;
+}
+.md-diagram-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--dim);
+  background: var(--sheet, var(--bg));
+  border-bottom: 1px solid var(--line, var(--border));
+}
+.md-diagram-mount.is-source .md-diagram-head,
+.md-diagram-mount.is-error .md-diagram-head {
+  border-bottom: none;
+}
+.md-diagram-label {
+  font-family: var(--mono, ui-monospace, monospace);
+  letter-spacing: 0.02em;
+  flex: none;
+}
+.md-diagram-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.md-diagram-mount.is-error .md-diagram-status {
+  color: var(--failed, #f07f7f);
+}
+.md-diagram-btn {
+  flex: none;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.md-diagram-btn:hover {
+  color: var(--ink);
+  border-color: var(--line, var(--border));
+}
+.md-diagram-btn[hidden] {
+  display: none;
+}
+.md-diagram-body {
+  padding: 12px;
+  text-align: center;
+  overflow-x: auto;
+}
+.md-diagram-mount.is-source .md-diagram-body,
+.md-diagram-mount.is-error .md-diagram-body,
+.md-diagram-mount.is-drawing .md-diagram-body {
+  display: none;
+}
+.md-diagram-img {
+  display: inline-block;
+  max-width: 100%;
+  height: auto;
+  vertical-align: top;
+  user-select: none;
+  -webkit-user-select: none;
+}
