@@ -509,6 +509,42 @@ export function bitwardenStore(
   return invoke("bitwarden_store", { chat, name, itemId, field, alwaysFor });
 }
 
+/** Item 826: Touch ID unlock set up or not, the session, the pre-arm (`bitwarden_unlock::TouchStatus`). */
+export interface BitwardenTouchStatus {
+  stored: boolean;
+  session: boolean;
+  armed: { names: string[]; until: string } | null;
+}
+
+export function bitwardenTouchStatus(): Promise<BitwardenTouchStatus> {
+  return invoke("bitwarden_touch_status");
+}
+
+/** Set up once: the master password he typed goes to `bw unlock` (its env), and to the Keychain only if bw accepts it. */
+export function bitwardenTouchSetup(password: string): Promise<import("./secret").BwReady> {
+  return invoke("bitwarden_touch_setup", { password });
+}
+
+/** Unlock with Touch ID (fallback: the login password). */
+export function bitwardenTouchUnlock(): Promise<import("./secret").BwReady> {
+  return invoke("bitwarden_touch_unlock");
+}
+
+/** Forget the stored master password. */
+export function bitwardenTouchForget(): Promise<void> {
+  return invoke("bitwarden_touch_forget");
+}
+
+/** Pre-arm: one Touch ID fetches these Always rules' values until `until` (RFC 3339); the vault locks at once. */
+export function bitwardenArm(ruleIds: string[], until: string): Promise<{ names: string[]; until: string }> {
+  return invoke("bitwarden_arm", { ruleIds, until });
+}
+
+/** End a pre-arm now. */
+export function bitwardenDisarm(): Promise<void> {
+  return invoke("bitwarden_disarm");
+}
+
 /** One "always" rule (`bitwarden::Rule`). */
 export interface BitwardenRule {
   id: string;

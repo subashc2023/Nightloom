@@ -48,6 +48,7 @@ use tokio_util::sync::CancellationToken;
 /// The Claude Code agents the window holds, one per chat (backlog 159, A2).
 mod agents;
 mod away;
+mod bitwarden_touch;
 mod chat_name;
 /// The chats the backend holds, one lock per chat (backlog 159, A1).
 mod chats;
@@ -1542,6 +1543,8 @@ fn main() {
             // the app.
             app.manage(power::Holder::default());
             power::watch_wake(app.handle().clone());
+            // Item 826: the Touch ID session goes at sleep and screen lock.
+            bitwarden_touch::watch_lock();
             // The schedule clock (backlog 535): Send later's and the limit
             // resume's times are kept here, not by the page's timers.
             app.manage(wake::Wakes::default());
@@ -1700,6 +1703,12 @@ fn main() {
             commands::turns::bitwarden_rules,
             commands::turns::bitwarden_remove_rule,
             commands::turns::bitwarden_clear_dropped,
+            commands::turns::bitwarden_touch_status,
+            commands::turns::bitwarden_touch_setup,
+            commands::turns::bitwarden_touch_unlock,
+            commands::turns::bitwarden_touch_forget,
+            commands::turns::bitwarden_arm,
+            commands::turns::bitwarden_disarm,
             commands::system::playwright_for_chat,
             commands::projects::pick_folder,
             commands::projects::pick_export,

@@ -35,6 +35,17 @@
 //! `sudo`, `xargs`, an interpreter alone — [`wrapper_refusal`]) cannot be
 //! kept, and one saved before is dropped on load with a note.
 //!
+//! **Touch ID (item 826, blocker 2102's answer).** One press on *Unlock
+//! with Touch ID* and the system's Touch ID sheet (fallback: the login
+//! password) release the master password from its Keychain item
+//! ([`crate::bitwarden_unlock`]); Nightloom runs `bw unlock --raw` itself
+//! with the password in that child's environment ([`PASSWORD_ENV`]) and
+//! holds the key it prints until quit, sleep or screen lock
+//! ([`Vault::on_screen_lock`]) — no idle lapse. The paste above stays as the
+//! fallback. **Pre-arm:** one Touch ID fetches only the values a run's
+//! Always rules need, holds them until the run's end time, and the vault
+//! locks again at once ([`Vault::arm_from_session`]).
+//!
 //! Never `bw serve` (it opens the whole vault to every local process, 2034
 //! report §3), never `bw get` output in a tool result or an error.
 
@@ -131,16 +142,76 @@ pub struct Dropped {
     pub when: String,
 }
 
-/// A session key he pasted. `Debug` never shows it.
+/// How a held session ends (item 826).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoldKind {
+    /// A key he pasted (766): forgotten after [`IDLE`] without use.
+    Pasted,
+    /// A key Nightloom's own `bw unlock` printed after Touch ID (826): kept
+    /// until quit, sleep or screen lock ([`Vault::on_screen_lock`]).
+    UntilLock,
+}
+
+/// A session key he pasted, or one `bw unlock` printed. `Debug` never
+/// shows it.
 struct Held {
     key: String,
     used: Instant,
+    kind: HoldKind,
+}
+
+impl Held {
+    fn live(&self, idle: Duration) -> bool {
+        self.kind == HoldKind::UntilLock || self.used.elapsed() < idle
+    }
 }
 
 impl std::fmt::Debug for Held {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Held(hidden, used {:?} ago)", self.used.elapsed())
+        write!(
+            f,
+            "Held(hidden, {:?}, used {:?} ago)",
+            self.kind,
+            self.used.elapsed()
+        )
     }
+}
+
+/// The environment variable `bw unlock --passwordenv` reads the master
+/// password from (item 826): set on that one child only, never argv.
+pub const PASSWORD_ENV: &str = "NIGHTLOOM_BW_MASTER";
+
+/// The longest a pre-arm may last (item 826): a day.
+pub const ARM_MAX: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// One value fetched by a pre-arm (item 826). `Debug` never shows it.
+struct ArmedValue {
+    name: String,
+    item_id: String,
+    field: String,
+    value: String,
+}
+
+/// A pre-arm (item 826): the values one Touch ID fetched for a run, held in
+/// memory until `until` or *End now*; the vault itself locked at once.
+struct Armed {
+    until: std::time::SystemTime,
+    values: Vec<ArmedValue>,
+}
+
+impl std::fmt::Debug for Armed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Armed(hidden, {} values)", self.values.len())
+    }
+}
+
+/// What the window is told of a pre-arm: names and the end, never a value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArmView {
+    /// The secrets' names (GITHUB_TOKEN), as the rules name them.
+    pub names: Vec<String>,
+    /// When it ends (RFC 3339).
+    pub until: String,
 }
 
 /// The `bw` Nightloom drives and the session it holds. One per process
@@ -153,6 +224,12 @@ pub struct Vault {
     env: Vec<(String, String)>,
     held: Mutex<Option<Held>>,
     idle: Duration,
+    /// A pre-arm's values (item 826).
+    armed: Mutex<Option<Armed>>,
+    /// How many times the Mac slept or locked (item 826 review): a
+    /// `bw unlock` that was running across one must not open the vault
+    /// behind the lock.
+    locks: std::sync::atomic::AtomicU64,
 }
 
 impl Vault {
@@ -162,6 +239,8 @@ impl Vault {
             env: Vec::new(),
             held: Mutex::new(None),
             idle: IDLE,
+            armed: Mutex::new(None),
+            locks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -173,6 +252,8 @@ impl Vault {
             env,
             held: Mutex::new(None),
             idle: IDLE,
+            armed: Mutex::new(None),
+            locks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -200,7 +281,7 @@ impl Vault {
     fn key(&self) -> Option<String> {
         let mut held = self.held.lock().ok()?;
         match held.as_mut() {
-            Some(h) if h.used.elapsed() < self.idle => {
+            Some(h) if h.live(self.idle) => {
                 h.used = Instant::now();
                 Some(h.key.clone())
             }
@@ -216,7 +297,7 @@ impl Vault {
     pub fn holds_session(&self) -> bool {
         self.held
             .lock()
-            .map(|h| h.as_ref().is_some_and(|h| h.used.elapsed() < self.idle))
+            .map(|h| h.as_ref().is_some_and(|h| h.live(self.idle)))
             .unwrap_or(false)
     }
 
@@ -228,10 +309,31 @@ impl Vault {
         }
     }
 
+    /// The Mac slept or its screen locked (item 826): the open session is
+    /// forgotten at once, whichever way it was opened. A pre-arm's values
+    /// are kept (his ask: they survive a screen lock).
+    pub fn on_screen_lock(&self) {
+        // Counted first, so an unlock in flight sees it (see
+        // `unlock_with_password`), then forgotten.
+        self.locks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.forget_session();
+    }
+
     /// Run `bw <args> --nointeraction` with the held session (or `key`) in
     /// its environment. `Err` is a plain sentence that never carries what
     /// `bw` printed on stdout.
     fn run(&self, args: &[&str], key: Option<&str>) -> Result<(i32, String, String), String> {
+        self.run_env(args, key, &[])
+    }
+
+    /// [`Vault::run`] with `extra` set in that one child's environment
+    /// (item 826: the master password, as [`PASSWORD_ENV`]).
+    fn run_env(
+        &self,
+        args: &[&str],
+        key: Option<&str>,
+        extra: &[(&str, &str)],
+    ) -> Result<(i32, String, String), String> {
         let program = self
             .program()
             .ok_or_else(|| "Bitwarden's bw is not installed.".to_string())?;
@@ -267,6 +369,9 @@ impl Vault {
             cmd.env("BW_SESSION", k);
         }
         for (k, v) in &self.env {
+            cmd.env(k, v);
+        }
+        for (k, v) in extra {
             cmd.env(k, v);
         }
         let mut child = cmd
@@ -359,12 +464,145 @@ impl Vault {
                     *h = Some(Held {
                         key: key.to_string(),
                         used: Instant::now(),
+                        kind: HoldKind::Pasted,
                     });
                 }
                 Ok(Ready::Unlocked)
             }
             Some("unauthenticated") => Ok(Ready::Unauthenticated),
             _ => Err("That key does not open the vault: run `bw unlock --raw` again and paste what it prints.".into()),
+        }
+    }
+
+    /// Item 826: open the vault with the master password (from the
+    /// Keychain after Touch ID, or typed once at setup). `bw unlock --raw`
+    /// reads it from [`PASSWORD_ENV`] in its own environment — never argv,
+    /// a file or a log — and the key it prints is held until quit, sleep or
+    /// screen lock. Returns the state it leaves; a refused password is an
+    /// `Err` ([`WRONG_PASSWORD`]).
+    pub fn unlock_with_password(&self, password: &str) -> Result<Ready, String> {
+        if password.is_empty() {
+            return Err("No master password was given.".into());
+        }
+        if self.program().is_none() {
+            return Ok(Ready::Missing);
+        }
+        let locks = self.locks.load(std::sync::atomic::Ordering::SeqCst);
+        let (code, out, err) = self.run_env(
+            &["unlock", "--raw", "--passwordenv", PASSWORD_ENV],
+            None,
+            &[(PASSWORD_ENV, password)],
+        )?;
+        let key = out.trim();
+        if code == 0
+            && !key.is_empty()
+            && key.len() <= 512
+            && !key.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            let Ok(mut h) = self.held.lock() else {
+                return Err("Bitwarden did not unlock.".into());
+            };
+            // The Mac slept or locked while `bw` ran: the key is dropped,
+            // not kept behind the lock (checked under the session's lock,
+            // so a lock arriving now still clears what is set here).
+            if self.locks.load(std::sync::atomic::Ordering::SeqCst) != locks {
+                return Err(LOCKED_MEANWHILE.into());
+            }
+            *h = Some(Held {
+                key: key.to_string(),
+                used: Instant::now(),
+                kind: HoldKind::UntilLock,
+            });
+            return Ok(Ready::Unlocked);
+        }
+        let e = err.to_ascii_lowercase();
+        if e.contains("not logged in") || e.contains("unauthenticated") {
+            Ok(Ready::Unauthenticated)
+        } else if e.contains("invalid master password") || e.contains("password") {
+            Err(WRONG_PASSWORD.into())
+        } else {
+            Err("Bitwarden did not unlock.".into())
+        }
+    }
+
+    /// Item 826, the pre-arm: with the session open, fetch each rule's one
+    /// value into memory until `until`, then forget the session at once (the
+    /// vault locks again for Nightloom). A failed fetch arms nothing and
+    /// still locks.
+    pub fn arm_from_session(
+        &self,
+        rules: &[Rule],
+        until: std::time::SystemTime,
+    ) -> Result<ArmView, String> {
+        let result = (|| {
+            if rules.is_empty() {
+                return Err("Nothing was picked to pre-arm.".to_string());
+            }
+            let left = until
+                .duration_since(std::time::SystemTime::now())
+                .map_err(|_| "That end time has already passed.".to_string())?;
+            if left > ARM_MAX {
+                return Err("A pre-arm lasts at most a day.".into());
+            }
+            let mut values = Vec::new();
+            for r in rules {
+                let (_, value) = self.value(&r.item_id, &r.field)?;
+                values.push(ArmedValue {
+                    name: r.name.clone(),
+                    item_id: r.item_id.clone(),
+                    field: r.field.clone(),
+                    value,
+                });
+            }
+            let view = ArmView {
+                names: values.iter().map(|v| v.name.clone()).collect(),
+                until: chrono::DateTime::<chrono::Utc>::from(until).to_rfc3339(),
+            };
+            if let Ok(mut a) = self.armed.lock() {
+                *a = Some(Armed { until, values });
+            }
+            Ok(view)
+        })();
+        self.forget_session();
+        result
+    }
+
+    /// The pre-arm now, if it has not ended (an ended one is dropped here).
+    pub fn armed_view(&self) -> Option<ArmView> {
+        let mut a = self.armed.lock().ok()?;
+        match a.as_ref() {
+            Some(x) if std::time::SystemTime::now() < x.until => {
+                let mut names: Vec<String> = x.values.iter().map(|v| v.name.clone()).collect();
+                names.dedup();
+                Some(ArmView {
+                    names,
+                    until: chrono::DateTime::<chrono::Utc>::from(x.until).to_rfc3339(),
+                })
+            }
+            Some(_) => {
+                *a = None;
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// The armed value for this rule (same name, item and field), if the
+    /// pre-arm has not ended.
+    fn armed_value(&self, rule: &Rule) -> Option<String> {
+        self.armed_view()?;
+        let a = self.armed.lock().ok()?;
+        a.as_ref()?
+            .values
+            .iter()
+            .find(|v| v.name == rule.name && v.item_id == rule.item_id && v.field == rule.field)
+            .map(|v| v.value.clone())
+    }
+
+    /// *End now* on a pre-arm (or its run ended).
+    pub fn disarm(&self) {
+        if let Ok(mut a) = self.armed.lock() {
+            *a = None;
         }
     }
 
@@ -436,8 +674,21 @@ impl Default for Vault {
     }
 }
 
+/// What a refused master password says (item 826). The stored one is not
+/// removed: he replaces or forgets it in Settings.
+pub const WRONG_PASSWORD: &str = "Bitwarden refused the master password Nightloom keeps (changed?). Set it again in Settings → Subscription → Bitwarden.";
+
+/// What an unlock says when the Mac slept or locked while `bw` was still
+/// running (item 826 review): nothing is kept.
+pub const LOCKED_MEANWHILE: &str =
+    "The Mac slept or locked while Bitwarden was unlocking: it stays locked. Press Unlock again.";
+
+/// What set-up says when `bw` refuses the password he just typed (item 826
+/// review): nothing is kept yet, so [`WRONG_PASSWORD`]'s words do not fit.
+pub const WRONG_TYPED: &str = "Bitwarden refused that master password: nothing was kept.";
+
 fn locked_words() -> String {
-    "Bitwarden is locked: run `bw unlock --raw` in Terminal and paste the key on the card.".into()
+    "Bitwarden is locked: press Unlock with Touch ID on the card (or paste the key `bw unlock --raw` prints).".into()
 }
 
 /// The first executable `bw` in `path_var`'s folders, then in `extra`.
@@ -974,16 +1225,39 @@ pub fn answer_by_rule_noting(
     name: &str,
     command: Option<&str>,
 ) -> (Option<Rule>, Vec<Dropped>) {
+    let (held, dropped, _) = answer_by_rule_full(vault, store, home, chat, name, command);
+    (held, dropped)
+}
+
+/// [`answer_by_rule_noting`], and item 826's third answer: the rule that
+/// matched but could not answer because the vault is locked and nothing is
+/// pre-armed for it — the turn says so, and the card waits for Unlock.
+/// A pre-armed value answers first, with no vault open.
+pub fn answer_by_rule_full(
+    vault: &Vault,
+    store: &crate::secret::Store,
+    home: Option<&Path>,
+    chat: &str,
+    name: &str,
+    command: Option<&str>,
+) -> (Option<Rule>, Vec<Dropped>, Option<Rule>) {
     let Some(home) = home else {
-        return (None, Vec::new());
+        return (None, Vec::new(), None);
     };
     let (rule, dropped) = matching_noting(home, name, command);
-    let held = rule.filter(|_| vault.holds_session()).and_then(|rule| {
-        let (_, value) = vault.value(&rule.item_id, &rule.field).ok()?;
+    let Some(rule) = rule else {
+        return (None, dropped, None);
+    };
+    let value = match vault.armed_value(&rule) {
+        Some(v) => Some(v),
+        None if vault.holds_session() => vault.value(&rule.item_id, &rule.field).ok().map(|x| x.1),
+        None => return (None, dropped, Some(rule)),
+    };
+    let held = value.and_then(|value| {
         store.hold(chat, name, &value).ok()?;
         Some(rule)
     });
-    (held, dropped)
+    (held, dropped, None)
 }
 
 #[cfg(test)]

@@ -55,5 +55,7 @@ mac-notification-sys = "0.6"
 # already builds with it: objc2-exception-helper is in Cargo.lock).
 objc2 = { version = "0.6", features = ["exception"] }
 # Item 448: the off-screen window's page capture hands WebKit a completion
-# block. Already in the lockfile (objc2-web-kit and wry use it).
+# block. Already in the lockfile (objc2-web-kit and wry use it). Item 826
+# uses it too: the Touch ID sheet's reply and the sleep / screen-lock
+# observers (`bitwarden_touch.rs`).
 block2 = "0.6"

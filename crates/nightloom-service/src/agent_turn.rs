@@ -601,8 +601,8 @@ async fn turn_body(
                     let home = ask.rules_home();
                     let (chat, name) = (chat_id.to_string(), name.clone());
                     let command = crate::bitwarden::requested_command(&call.input);
-                    let (rule, dropped) = tokio::task::spawn_blocking(move || {
-                        crate::bitwarden::answer_by_rule_noting(
+                    let (rule, dropped, locked) = tokio::task::spawn_blocking(move || {
+                        crate::bitwarden::answer_by_rule_full(
                             &vault,
                             &store,
                             home.as_deref(),
@@ -617,6 +617,15 @@ async fn turn_body(
                     // this read, and he is told here as well as in Settings.
                     for d in &dropped {
                         env.notice(crate::bitwarden::dropped_notice(d));
+                    }
+                    // Item 826: a rule that would answer, but the vault is
+                    // locked and nothing is pre-armed — the turn waits on
+                    // the card, and says why (never a silent wait).
+                    if let Some(r) = &locked {
+                        env.notice(format!(
+                            "{} has an Always rule ({}), but Bitwarden is locked: the card waits for Unlock with Touch ID.",
+                            r.name, r.item_name
+                        ));
                     }
                     rule
                 }

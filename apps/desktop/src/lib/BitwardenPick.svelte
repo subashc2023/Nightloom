@@ -11,6 +11,9 @@
   import {
     BW_ALWAYS_TIP,
     BW_KEY_WHERE,
+    BW_MASTER_WHERE,
+    BW_TOUCH_TIP,
+    bwTouchLine,
     BW_NO_COMMAND_TIP,
     BW_ONCE_TIP,
     bwNotReady,
@@ -43,6 +46,11 @@
 
   let ready = $state<BwReady | null>(null);
   let key = $state("");
+  // Item 826: Touch ID unlock (Mac only). `stored` is read from a marker,
+  // never the Keychain; the master password typed at set-up is this
+  // component's state until handed to the app, then emptied.
+  let stored = $state<boolean | null>(null);
+  let master = $state("");
   let query = $state("");
   let items = $state<BwItem[] | null>(null);
   let picked = $state<string | null>(null);
@@ -72,6 +80,9 @@
     } catch {
       ready = "missing";
     }
+    if (ready === "locked" && api.touch && where === "mac") {
+      stored = await api.touch.stored().catch(() => false);
+    }
     if (ready === "unlocked" && items === null) {
       query = query || defaultQuery(name);
       if (query) await search();
@@ -82,10 +93,50 @@
   onMount(() => {
     void check();
   });
-  // Nothing pasted outlives the card.
+  // Nothing pasted or typed outlives the card.
   $effect(() => () => {
     key = "";
+    master = "";
   });
+
+  async function opened(r: BwReady) {
+    ready = r;
+    if (ready === "unlocked") {
+      query = query || defaultQuery(name);
+      if (query) await search();
+    }
+  }
+
+  // Item 826: one press, Touch ID, open.
+  async function touchUnlock() {
+    if (!api.touch || busy) return;
+    busy = true;
+    error = null;
+    try {
+      await opened(await api.touch.unlock());
+    } catch (e) {
+      error = why(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  // Item 826, once: bw must accept it before the Keychain keeps it.
+  async function touchSetup() {
+    if (!api.touch || !master || busy) return;
+    busy = true;
+    error = null;
+    const pw = master;
+    master = "";
+    try {
+      await opened(await api.touch.setup(pw));
+      stored = ready === "unlocked";
+    } catch (e) {
+      error = why(e);
+    } finally {
+      busy = false;
+    }
+  }
 
   async function unlock() {
     if (!api.useSession || !key.trim() || busy) return;
@@ -152,6 +203,63 @@
     <div class="bw-line">Checking Bitwarden…</div>
   {:else if notReady}
     {@const m = /^(.*In Terminal: )(.+?)( — .*)?$/.exec(notReady)}
+    {#if ready === "locked" && where === "mac" && api.touch && stored !== null}
+      <!-- Item 826: Touch ID first; the paste stays, folded, as the fallback. -->
+      <div class="bw-line" data-bw-state={ready}>{bwTouchLine(stored)}</div>
+      {#if stored}
+        <div class="bw-row">
+          <button class="{btn('primary')} bw-touch" type="button" disabled={busy || disabled} use:tip={BW_TOUCH_TIP} onclick={() => void touchUnlock()}>Unlock with Touch ID</button>
+        </div>
+      {:else}
+        <div class="bw-row">
+          <input
+            type="password"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="Bitwarden master password"
+            aria-label="Bitwarden master password"
+            bind:value={master}
+            disabled={busy || disabled}
+            onkeydown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                e.stopPropagation();
+                void touchSetup();
+              }
+            }}
+          />
+          <button class={btn("ghost")} type="button" disabled={busy || disabled || !master} onclick={() => void touchSetup()}>Save and unlock</button>
+        </div>
+        <div class="bw-line small">{BW_MASTER_WHERE}</div>
+      {/if}
+      {#if api.useSession}
+        <details class="bw-paste">
+          <summary class="bw-line small">or paste a session key</summary>
+          <div class="bw-row">
+            <input
+              type="password"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder="Paste the session key"
+              aria-label="Bitwarden session key"
+              bind:value={key}
+              disabled={busy || disabled}
+              onkeydown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  void unlock();
+                }
+              }}
+            />
+            <button class={btn("ghost")} type="button" disabled={busy || disabled || !key.trim()} onclick={() => void unlock()}>Unlock</button>
+          </div>
+          <div class="bw-line small">{BW_KEY_WHERE}</div>
+        </details>
+      {/if}
+    {:else}
     <div class="bw-line" data-bw-state={ready}>{#if m}{m[1]}<code>{m[2]}</code>{m[3] ?? ""}{:else}{notReady}{/if}</div>
     {#if ready === "locked" && where === "mac" && api.useSession}
       <div class="bw-row">
@@ -177,6 +285,7 @@
       <div class="bw-line small">{BW_KEY_WHERE}</div>
     {:else}
       <div class="bw-line small">The field above still works.</div>
+    {/if}
     {/if}
   {:else}
     <div class="bw-row">
@@ -240,6 +349,9 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+  }
+  .bw-paste summary {
+    cursor: pointer;
   }
   .bw-head {
     display: flex;
