@@ -336,3 +336,43 @@ fn a_pre_arm_ends_at_its_time_and_refuses_a_bad_one() {
     assert!(arm(&vault, &no, &keys, &home, &ids, later).is_err());
     assert!(vault.armed_view().is_none());
 }
+
+/// Review 2026-11-18: a `bw unlock` still running when the Mac sleeps or
+/// locks must not leave the vault open behind the lock.
+#[test]
+fn a_lock_during_bw_unlock_keeps_nothing() {
+    let d = temp("race");
+    let body = format!("#!/bin/sh\nsleep 1\nprintf '%s' \"{KEY}\"\n");
+    let path = d.join("bw");
+    std::fs::write(&path, body).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let vault = std::sync::Arc::new(Vault::on_path(
+        format!("{}:/bin:/usr/bin", d.display()),
+        vec![],
+    ));
+    let v = vault.clone();
+    let t = std::thread::spawn(move || v.unlock_with_password(MASTER));
+    std::thread::sleep(Duration::from_millis(300));
+    vault.on_screen_lock();
+    assert_eq!(
+        t.join().unwrap().unwrap_err(),
+        crate::bitwarden::LOCKED_MEANWHILE
+    );
+    assert!(!vault.holds_session());
+    // With no lock in between, the same stand-in opens it.
+    assert_eq!(vault.unlock_with_password(MASTER).unwrap(), Ready::Unlocked);
+}
+
+/// Review 2026-11-18: at set-up nothing is kept yet, so a refused password
+/// is not called "the master password Nightloom keeps".
+#[test]
+fn set_up_names_a_refused_typed_password_plainly() {
+    let d = temp("typed");
+    let vault = fake_bw(&d);
+    let keys = FakeKeychain::default();
+    let e = set_up(&vault, &keys, &d, "nope").unwrap_err();
+    assert_eq!(e, crate::bitwarden::WRONG_TYPED);
+    assert!(keys.pw.lock().unwrap().is_none());
+    assert!(!stored(&d));
+}

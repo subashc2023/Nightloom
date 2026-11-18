@@ -226,6 +226,10 @@ pub struct Vault {
     idle: Duration,
     /// A pre-arm's values (item 826).
     armed: Mutex<Option<Armed>>,
+    /// How many times the Mac slept or locked (item 826 review): a
+    /// `bw unlock` that was running across one must not open the vault
+    /// behind the lock.
+    locks: std::sync::atomic::AtomicU64,
 }
 
 impl Vault {
@@ -236,6 +240,7 @@ impl Vault {
             held: Mutex::new(None),
             idle: IDLE,
             armed: Mutex::new(None),
+            locks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -248,6 +253,7 @@ impl Vault {
             held: Mutex::new(None),
             idle: IDLE,
             armed: Mutex::new(None),
+            locks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -307,6 +313,9 @@ impl Vault {
     /// forgotten at once, whichever way it was opened. A pre-arm's values
     /// are kept (his ask: they survive a screen lock).
     pub fn on_screen_lock(&self) {
+        // Counted first, so an unlock in flight sees it (see
+        // `unlock_with_password`), then forgotten.
+        self.locks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.forget_session();
     }
 
@@ -478,6 +487,7 @@ impl Vault {
         if self.program().is_none() {
             return Ok(Ready::Missing);
         }
+        let locks = self.locks.load(std::sync::atomic::Ordering::SeqCst);
         let (code, out, err) = self.run_env(
             &["unlock", "--raw", "--passwordenv", PASSWORD_ENV],
             None,
@@ -489,13 +499,20 @@ impl Vault {
             && key.len() <= 512
             && !key.chars().any(|c| c.is_whitespace() || c.is_control())
         {
-            if let Ok(mut h) = self.held.lock() {
-                *h = Some(Held {
-                    key: key.to_string(),
-                    used: Instant::now(),
-                    kind: HoldKind::UntilLock,
-                });
+            let Ok(mut h) = self.held.lock() else {
+                return Err("Bitwarden did not unlock.".into());
+            };
+            // The Mac slept or locked while `bw` ran: the key is dropped,
+            // not kept behind the lock (checked under the session's lock,
+            // so a lock arriving now still clears what is set here).
+            if self.locks.load(std::sync::atomic::Ordering::SeqCst) != locks {
+                return Err(LOCKED_MEANWHILE.into());
             }
+            *h = Some(Held {
+                key: key.to_string(),
+                used: Instant::now(),
+                kind: HoldKind::UntilLock,
+            });
             return Ok(Ready::Unlocked);
         }
         let e = err.to_ascii_lowercase();
@@ -660,6 +677,15 @@ impl Default for Vault {
 /// What a refused master password says (item 826). The stored one is not
 /// removed: he replaces or forgets it in Settings.
 pub const WRONG_PASSWORD: &str = "Bitwarden refused the master password Nightloom keeps (changed?). Set it again in Settings → Subscription → Bitwarden.";
+
+/// What an unlock says when the Mac slept or locked while `bw` was still
+/// running (item 826 review): nothing is kept.
+pub const LOCKED_MEANWHILE: &str =
+    "The Mac slept or locked while Bitwarden was unlocking: it stays locked. Press Unlock again.";
+
+/// What set-up says when `bw` refuses the password he just typed (item 826
+/// review): nothing is kept yet, so [`WRONG_PASSWORD`]'s words do not fit.
+pub const WRONG_TYPED: &str = "Bitwarden refused that master password: nothing was kept.";
 
 fn locked_words() -> String {
     "Bitwarden is locked: press Unlock with Touch ID on the card (or paste the key `bw unlock --raw` prints).".into()

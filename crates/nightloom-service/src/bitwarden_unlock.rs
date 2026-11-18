@@ -135,7 +135,13 @@ pub fn set_up(
     home: &Path,
     password: &str,
 ) -> Result<Ready, String> {
-    let ready = vault.unlock_with_password(password)?;
+    let ready = vault.unlock_with_password(password).map_err(|e| {
+        if e == crate::bitwarden::WRONG_PASSWORD {
+            crate::bitwarden::WRONG_TYPED.to_string()
+        } else {
+            e
+        }
+    })?;
     if ready != Ready::Unlocked {
         return Ok(ready);
     }

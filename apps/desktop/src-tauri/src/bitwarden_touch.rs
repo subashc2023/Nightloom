@@ -106,6 +106,12 @@ impl Presence for TouchId {
                     }
                 });
                 let why = ns_string(reason);
+                // LAContext raises an Objective-C exception on a nil or
+                // empty reason, which would end the app.
+                if why.is_null() || reason.trim().is_empty() {
+                    let _: () = msg_send![ctx, release];
+                    return Err(PresenceError::Unavailable("no reason to show".into()));
+                }
                 let _: () = msg_send![
                     ctx,
                     evaluatePolicy: DEVICE_OWNER,
@@ -187,3 +193,74 @@ pub fn watch_lock() {
 
 #[cfg(not(target_os = "macos"))]
 pub fn watch_lock() {}
+
+/// Review 2026-11-18: every Objective-C call above, checked against the
+/// method signatures the runtime itself holds — no sheet, no Touch ID, no
+/// Keychain. A release build does not check these at the call (objc2 only
+/// does in debug), so a wrong type there would be a crash on the first
+/// press; here it is a failed test.
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use block2::Block;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    use objc2::sel;
+    use std::ffi::c_char;
+
+    type Obj = *mut AnyObject;
+
+    fn class(name: &std::ffi::CStr) -> &'static AnyClass {
+        AnyClass::get(name).unwrap_or_else(|| panic!("{name:?} is not loaded"))
+    }
+
+    #[test]
+    fn the_touch_id_calls_match_the_runtime_signatures() {
+        // The framework is linked (the empty `extern` block) and loaded.
+        let la = class(c"LAContext");
+        la.verify_sel::<(isize, *mut Obj), Bool>(sel!(canEvaluatePolicy:error:))
+            .unwrap();
+        la.verify_sel::<(isize, Obj, &Block<dyn Fn(Bool, Obj)>), ()>(sel!(
+            evaluatePolicy:localizedReason:reply:
+        ))
+        .unwrap();
+        la.verify_sel::<(), ()>(sel!(invalidate)).unwrap();
+        la.verify_sel::<(), ()>(sel!(release)).unwrap();
+        la.metaclass().verify_sel::<(), Obj>(sel!(new)).unwrap();
+        class(c"NSError")
+            .verify_sel::<(), isize>(sel!(code))
+            .unwrap();
+        class(c"NSString")
+            .metaclass()
+            .verify_sel::<(*const c_char,), Obj>(sel!(stringWithUTF8String:))
+            .unwrap();
+    }
+
+    #[test]
+    fn the_lock_observer_calls_match_the_runtime_signatures() {
+        let ws = class(c"NSWorkspace");
+        ws.metaclass()
+            .verify_sel::<(), Obj>(sel!(sharedWorkspace))
+            .unwrap();
+        ws.verify_sel::<(), Obj>(sel!(notificationCenter)).unwrap();
+        let dist = class(c"NSDistributedNotificationCenter");
+        dist.metaclass()
+            .verify_sel::<(), Obj>(sel!(defaultCenter))
+            .unwrap();
+        for center in [class(c"NSNotificationCenter"), dist] {
+            center
+                .verify_sel::<(Obj, Obj, Obj, &Block<dyn Fn(Obj)>), Obj>(sel!(
+                    addObserverForName:object:queue:usingBlock:
+                ))
+                .unwrap();
+        }
+        class(c"NSObject")
+            .verify_sel::<(), Obj>(sel!(retain))
+            .unwrap();
+    }
+
+    /// LAPolicyDeviceOwnerAuthentication is 2 (LAPublicDefines.h); 1 would
+    /// be biometry only, with no login-password fallback.
+    #[test]
+    fn the_policy_is_device_owner() {
+        assert_eq!(super::DEVICE_OWNER, 2);
+    }
+}
