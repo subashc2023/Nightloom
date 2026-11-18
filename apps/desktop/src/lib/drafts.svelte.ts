@@ -324,6 +324,7 @@ export function serializeDrafts(map: Record<string, Draft>): string {
         ...(a.pages ? { pages: a.pages } : {}),
         ...(a.whole ? { whole: true } : {}),
         ...(a.stash ? { stash: a.stash } : {}),
+        ...(a.pick ? { pick: a.pick } : {}),
       });
     }
     return kept;

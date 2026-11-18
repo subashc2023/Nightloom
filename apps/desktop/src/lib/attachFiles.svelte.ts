@@ -39,6 +39,7 @@ import {
 import type { Attachment } from "./types";
 import { scheduledFileIds } from "./scheduled.svelte";
 import { FEEDBACK_DRAFT_KEY, feedbackFileIdsIn } from "./feedbackText";
+import { pickDocuments } from "./pick";
 
 // Anthropic rejects a base64 image over ~10 MB and a PDF over ~32 MB, and
 // nothing checks either before the wire, so the refusal has to happen here.
@@ -369,7 +370,8 @@ export function splitChips(chips: Attachment[], engine: Engine = engineNow()) {
     images: chips.filter((a) => a.kind === "image").map(({ media_type, data }) => ({ media_type, data })),
     documents: chips
       .filter((a) => a.kind === "document" && !a.pending && !byPath(a))
-      .map(({ media_type, name, data }) => ({ media_type, name, data })),
+      .map(({ media_type, name, data }) => ({ media_type, name, data }))
+      .concat(pickDocuments(chips)),
     files: [
       ...chips.filter((a) => a.kind === "file").map(({ name, data }) => ({ name, data })),
       ...chips.filter(byPath).map(({ name, data, pages }) => ({ name: pdfFileName(name), data, pages })),

@@ -178,6 +178,7 @@ import { rewindTo, setAsideRewound, keepRewound } from "./state/rewind.svelte";
 import { addToast, TOAST_MS, ACTION_TOAST_MS, dismissToast, runToastAction } from "./state/toasts.svelte";
 import { turnMissToast } from "./cacheCost";
 import { inViewLane } from "./viewLane";
+import { pickDocuments } from "./pick";
 import { withNote } from "./asideNotes";
 import { restoreAsideNotes, takeAsideNote } from "./asideNotes.svelte";
 export { TOAST_MS, ACTION_TOAST_MS, addToast, dismissToast, runToastAction };
@@ -1948,7 +1949,8 @@ export async function runInChat(
   const images = q.attachments.filter((a) => a.kind === "image").map(({ media_type, data }) => ({ media_type, data }));
   const documents = q.attachments
     .filter((a) => a.kind === "document")
-    .map(({ media_type, name, data }) => ({ media_type, name, data }));
+    .map(({ media_type, name, data }) => ({ media_type, name, data }))
+    .concat(pickDocuments(q.attachments));
   const files = q.attachments.filter((a) => a.kind === "file").map(({ name, data }) => ({ name, data }));
   const project = was?.project ?? null;
   // Item 775: what asides of this chat changed since its last turn, at the
@@ -2109,7 +2111,8 @@ export function sendInChat(
     const images = attachments.filter((a) => a.kind === "image").map(({ media_type, data }) => ({ media_type, data }));
     const documents = attachments
       .filter((a) => a.kind === "document")
-      .map(({ media_type, name, data }) => ({ media_type, name, data }));
+      .map(({ media_type, name, data }) => ({ media_type, name, data }))
+      .concat(pickDocuments(attachments));
     const files = attachments.filter((a) => a.kind === "file").map(({ name, data }) => ({ name, data }));
     turnTyped = false;
     turnSpoken = false;

@@ -18,6 +18,7 @@ import { addToast } from "./toasts.svelte";
 import { lastPrompt, missToastFor } from "../cacheCost";
 import { cleanChanges, type AsideChange } from "../asideNotes";
 import { addAsideNote } from "../asideNotes.svelte";
+import { pickDocuments } from "../pick";
 import { scheduleAsideSave } from "../asides.svelte";
 
 /** One exchange of the open chat's aside (backlog 081; streamed since
@@ -522,7 +523,8 @@ export function asideWire(thread: Pick<Aside, "model" | "effort"> | null, chips:
   const byPath = (c: Attachment) => pdfRoute(c, "claude-code") === "path";
   const documents = live
     .filter((c) => c.kind === "document" && !byPath(c))
-    .map(({ media_type, name, data }) => ({ media_type, name, data }));
+    .map(({ media_type, name, data }) => ({ media_type, name, data }))
+    .concat(pickDocuments(live));
   const files = [
     ...live.filter((c) => c.kind === "file").map(({ name, data }) => ({ name, data })),
     ...live.filter(byPath).map(({ name, data, pages }) => ({ name: pdfFileName(name), data, pages })),
