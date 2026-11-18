@@ -15,6 +15,8 @@
   import RanCard from "./RanCard.svelte";
   import AsideNoteChip from "./AsideNoteChip.svelte";
   import { parseRan } from "./shellRun";
+  import HandoffBubbleCard from "./HandoffBubbleCard.svelte";
+  import { parseHandoffMessage } from "./handoffBubble";
 
   /**
    * His message's bubble (nightshift backlog 283, 2026-10-02): the chat's
@@ -50,6 +52,7 @@
     onopendoc = null,
     keep = null,
     sending = [],
+    plain = false,
   }: {
     images?: readonly Img[];
     documents?: readonly Doc[];
@@ -70,12 +73,16 @@
      *  while the backend saves them — the optimistic message has no note
      *  yet, and without these a file-only send drew an empty pill. */
     sending?: readonly string[];
+    /** Item 706: a wrap-up he edited — his plain message, not the hand-off card. */
+    plain?: boolean;
   } = $props();
   /** Item 515: the note the CLI reads (`[Attached a file — saved for you
    *  …]`) is drawn as cards, never as his words; the text stays as sent. */
   const split = $derived(splitAttachNote(text));
   const said = $derived(split.said);
   const ran = $derived(parseRan(said));
+  /** Item 706: the wrap-up Nightloom sent, drawn as its hand-off card until he edits it. */
+  const handoff = $derived(plain || ran ? null : parseHandoffMessage(said));
 
   let localOpen = $state<Record<number, boolean>>({});
   /** A text attachment unfolded (284), kept under `keep` when there is one. */
@@ -220,6 +227,9 @@
   {:else if ran}
     <!-- Item 503: the output of a block he ran, folded; not a wall of his. -->
     <RanCard {ran} {keep} />
+  {:else if handoff}
+    <!-- Item 706: a wrap-up, folded on his side; an edit makes it his words again. -->
+    <HandoffBubbleCard {handoff} {keep} classic />
   {:else if said}
     <!-- `> ` lines are quotes he placed with Reply (backlog 215), drawn as
          quotes where they sit in his words. -->
