@@ -83,6 +83,8 @@
   import PromptLibrary from "./lib/PromptLibrary.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import Composer from "./lib/Composer.svelte";
+  import StartCards from "./lib/StartCards.svelte";
+  import { isHome } from "./lib/home";
   import JobChatCard from "./remote/JobChatCard.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import type { Job } from "./remote/jobs";
@@ -919,6 +921,8 @@
                     />
                   </div>
                 {/if}
+                <!-- Item 763 H5: Home's Start cards sit over its box. -->
+                {#if isHome(app.project)}<div class="start-cards-dock"><StartCards /></div>{/if}
                 <Composer />
               {/if}
             {:else if t.content.kind === "chat" && t.content.session !== null}
@@ -1123,6 +1127,15 @@
 
 <style>
   /* Item 780: the job's approval card, the composer card's width. */
+  .start-cards-dock {
+    max-width: 760px;
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0 auto;
+    padding: 0 16px;
+    max-height: 50vh;
+    overflow-y: auto;
+  }
   .job-card-dock {
     max-width: 760px;
     width: 100%;

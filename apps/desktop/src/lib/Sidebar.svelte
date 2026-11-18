@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { home, refreshRoutes } from "./home.svelte";
+  import { BY_HOME_TIP } from "./homeRoutes";
   import { hudIn, hudOut } from "./hudMenu";
   import { canLeaveProject, canDeleteChat } from "./state.svelte";
   import { saveMemoryFromChat } from "./state.svelte";
@@ -921,6 +923,13 @@
     await refreshNightshift();
     addToast(`Nightshift disabled on ${row.name}; the files stay`);
   }
+  // Item 763 H5: which chats Home started (read with the list, then each minute).
+  $effect(() => {
+    void app.project?.id;
+    void refreshRoutes();
+    const t = setInterval(() => void refreshRoutes(), 60_000);
+    return () => clearInterval(t);
+  });
 </script>
 
 <svelte:window onkeydown={windowKeys} />
@@ -987,7 +996,7 @@
           use:tip={rowTip(s)}
         >
           <span class="snippet" class:barred={!!ctx?.look}
-            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: knows nothing about you, writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{#if fork}<span class="mark fork" role="img" aria-label={fork.tip} use:tip={fork.tip}>{FORK_GLYPH}</span> {/if}{#if waitsFor}<span class="mark sched" role="img" aria-label="scheduled message" data-sched-mark use:tip={`A message is scheduled here: it sends at ${scheduleWhen(dueAt(waitsFor))}`}>◷</span> {/if}{rowName(s, waitsFor?.text ?? null, readDraft(s.id).text)}</span
+            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: knows nothing about you, writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{#if home.startedByHome.includes(s.id)}<span class="mark by-home" role="img" aria-label={BY_HOME_TIP} data-by-home use:tip={BY_HOME_TIP}>⌂</span> {/if}{#if fork}<span class="mark fork" role="img" aria-label={fork.tip} use:tip={fork.tip}>{FORK_GLYPH}</span> {/if}{#if waitsFor}<span class="mark sched" role="img" aria-label="scheduled message" data-sched-mark use:tip={`A message is scheduled here: it sends at ${scheduleWhen(dueAt(waitsFor))}`}>◷</span> {/if}{rowName(s, waitsFor?.text ?? null, readDraft(s.id).text)}</span
           >
           {#if ctx?.look}
             <span class="cg" class:hot={ctx.look.past} aria-hidden="true"

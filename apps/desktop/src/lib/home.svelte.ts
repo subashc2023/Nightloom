@@ -9,6 +9,7 @@ import * as api from "./api";
 import { app, addToast, canLeaveProject, openRun, useProject } from "./state.svelte";
 import { doneSince, isHome, type FeedRow, type HomeInfo, type HomeReach } from "./home";
 import type { HomeSource, SourceId } from "./homeSources";
+import { pruneRouteDrafts, readRouteDrafts, withRouteDraft, type HomeRoute, type RoutePick } from "./homeRoutes";
 
 export const BRIEF_DRAFT_KEY = "nightloom.home.briefDraft";
 
@@ -34,6 +35,16 @@ export const home = $state({
   briefDraft: readDraft(),
   saving: false,
   marking: false,
+  /** Item 763 H5: the Start cards waiting for his tap, oldest first. */
+  cards: [] as HomeRoute[],
+  /** The chats Home started (the sidebar's mark). */
+  startedByHome: [] as string[],
+  /** His half-edited prompts, by route id (kept across restarts). */
+  routeDrafts: readRouteDrafts(),
+  /** The card whose tap is being sent. */
+  routeBusy: null as string | null,
+  /** Why a card's last tap did not start it, by route id. */
+  routeProblems: {} as Record<string, string>,
   /** Item 804: what Home can reach, from the last check; null before it is read. */
   reach: null as HomeReach | null,
   /** A check is running (it asks Claude Code; no model request). */
@@ -70,6 +81,63 @@ export async function refreshHome(): Promise<void> {
     home.problem = bad ? String(bad.reason) : null;
   } finally {
     home.loading = false;
+  }
+}
+
+// ---- Item 763 H5: Start cards ----
+
+let routesReading = false;
+/** Re-read the Start cards. A backend without routing leaves them empty, quietly. */
+export async function refreshRoutes(): Promise<void> {
+  if (routesReading) return;
+  routesReading = true;
+  try {
+    const r = await api.homeRoutes();
+    home.cards = r.cards ?? [];
+    home.startedByHome = r.started ?? [];
+    home.routeDrafts = pruneRouteDrafts(home.routeDrafts, home.cards);
+  } catch {
+    // An older backend.
+  } finally {
+    routesReading = false;
+  }
+}
+
+/** Keep his edit of a card's prompt (null: back to Home's words). */
+export function setRouteDraft(id: string, text: string | null): void {
+  home.routeDrafts = withRouteDraft(home.routeDrafts, id, text);
+}
+
+/** His tap: the chat starts with the prompt as he left it. The draft goes only once it started. */
+export async function startRoute(id: string, pick: RoutePick | null): Promise<void> {
+  if (home.routeBusy) return;
+  home.routeBusy = id;
+  try {
+    const after = await api.homeRouteStart(id, home.routeDrafts[id] ?? null, pick);
+    setRouteDraft(id, null);
+    const { [id]: _gone, ...rest } = home.routeProblems;
+    home.routeProblems = rest;
+    addToast(after.state === "started" ? `Started in ${after.project_name}` : `Queued for ${after.project_name}${after.note ? ` — ${after.note}` : ""}`);
+  } catch (e) {
+    home.routeProblems = { ...home.routeProblems, [id]: String(e) };
+  } finally {
+    home.routeBusy = null;
+    await refreshRoutes();
+  }
+}
+
+/** His Dismiss (the card asked once more first): nothing starts. */
+export async function dismissRoute(id: string): Promise<void> {
+  if (home.routeBusy) return;
+  home.routeBusy = id;
+  try {
+    await api.homeRouteDismiss(id);
+    setRouteDraft(id, null);
+  } catch (e) {
+    home.routeProblems = { ...home.routeProblems, [id]: String(e) };
+  } finally {
+    home.routeBusy = null;
+    await refreshRoutes();
   }
 }
 

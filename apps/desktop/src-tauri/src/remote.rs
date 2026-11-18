@@ -2058,6 +2058,42 @@ pub async fn press_job(
     jobs.press_run(host.as_ref(), id, chrono::Utc::now()).await
 }
 
+/// Item 763 H5: Home's Start cards and the chats it started, after a
+/// look of the routes' clock with this Mac's host — so a queued read-only
+/// start goes while the window is asking, phone listener on or off.
+pub async fn home_routes(
+    app: &AppHandle,
+) -> Result<nightloom_service::remote::RoutesReply, String> {
+    let config = nightloom_service::project::config_dir().ok_or("no Nightloom home")?;
+    if let Some(remote) = app.try_state::<Remote>() {
+        let host = remote.host.clone();
+        nightloom_service::home::route::tick(host.as_ref(), chrono::Utc::now()).await;
+    }
+    Ok(nightloom_service::remote::routes_reply(&config))
+}
+
+/// Item 763 H5: his tap on a Start card on the Mac — the phone's
+/// `POST /api/home/routes/{id}/start`, with this Mac's host.
+pub async fn home_route_start(
+    app: &AppHandle,
+    id: &str,
+    prompt: Option<&str>,
+    pick: Option<nightloom_service::home::route::Pick>,
+) -> Result<nightloom_service::home::route::Route, String> {
+    let remote = app
+        .try_state::<Remote>()
+        .ok_or("this Mac cannot start chats yet")?;
+    let host = remote.host.clone();
+    nightloom_service::home::route::confirm_and_run(
+        host.as_ref(),
+        id,
+        prompt,
+        pick,
+        chrono::Utc::now(),
+    )
+    .await
+}
+
 /// Nobody to answer a card on the Mac (item 783's finish): no input at
 /// the Mac for [`AT_THE_MAC`] and no phone page connected to the relay.
 /// An idle time it cannot read counts as someone there: the card waits.

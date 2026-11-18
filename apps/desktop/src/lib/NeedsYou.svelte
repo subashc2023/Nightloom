@@ -19,6 +19,7 @@
   import { NEED_EMPTY, groupNeeds, type NeedRow } from "./needsYou";
   import { needs, needsNow, refreshBoard, replyTo, setDraft, setFold } from "./needsBoard.svelte";
   import AskLock from "./AskLock.svelte";
+  import StartCards from "./StartCards.svelte";
   import { look } from "./askMotion";
   import { clock, feedTag, type FeedRow } from "./home";
   import { home, homeDone, homeProject, markHomeSeen, refreshHome } from "./home.svelte";
@@ -104,6 +105,8 @@
   </header>
   {#if needs.problem}<div class="problem">Some projects could not be read — {needs.problem}</div>{/if}
   <div class="list" bind:this={listEl} onscroll={(e) => (needs.scroll = e.currentTarget.scrollTop)}>
+    <!-- Item 763 H5: Home's Start cards wait on him first. -->
+    {#if hasHome}<div class="start-cards"><StartCards /></div>{/if}
     {#each groups as g (g.state)}
       {@const folded = needs.folds[g.state] === "1"}
       <section class="group" data-state={g.state}>

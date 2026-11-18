@@ -67,6 +67,7 @@ use api::{
     ContextReply, LayerChange, LimitPause, NOT_AVAILABLE, NewProjectRequest, NoteText, PassStarted,
     ProjectRenameRequest, Rail, RailPatch, Running, SearchScope, StateReply, UsageReply,
 };
+pub use home_routes::{RoutesReply, routes_reply};
 pub use nightshift_routes::NightshiftProject;
 use tokio::sync::{broadcast, oneshot};
 

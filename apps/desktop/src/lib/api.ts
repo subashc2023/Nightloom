@@ -1,3 +1,4 @@
+import type { HomeRoute, RoutePick, RoutesReply } from "./homeRoutes";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AsideResult,
@@ -2443,6 +2444,18 @@ export function homeFeed(limit?: number): Promise<HomeFeed> {
 /** Mark the feed seen now; the new seen time. */
 export function homeMarkSeen(): Promise<string> {
   return invoke("home_mark_seen");
+}
+/** Item 763 H5: Home's Start cards and the chats it started (the read is also a look of the routes' clock). */
+export function homeRoutes(): Promise<RoutesReply> {
+  return invoke("home_routes");
+}
+/** His tap on a Start card: the prompt as he left it; his pick on a cold card. */
+export function homeRouteStart(id: string, prompt: string | null, pick: RoutePick | null): Promise<HomeRoute> {
+  return invoke("home_route_start", { id, prompt, pick });
+}
+/** His Dismiss on a Start card. */
+export function homeRouteDismiss(id: string): Promise<HomeRoute> {
+  return invoke("home_route_dismiss", { id });
 }
 /** Save his standing brief for Home. */
 export function homeSaveBrief(text: string): Promise<null> {

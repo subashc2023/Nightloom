@@ -18,6 +18,8 @@
    * `--well`, `--raised`, `--accent`, `--accent-ink`), so it reads in
    * Jarvis and Classic, light and dark; `fil` adds Jarvis's mono heads.
    */
+  import StartCard from "../lib/StartCard.svelte";
+  import { pruneRouteDrafts, readRouteDrafts, routeText, withRouteDraft, type HomeRoute, type RoutePick } from "../lib/homeRoutes";
   import { onDestroy, onMount, tick, type Component } from "svelte";
   import { renderMarkdown } from "../lib/markdown";
   import {
@@ -111,6 +113,38 @@
   let pushRows = $state<PushFeedWire[]>([]);
   let jobs = $state<Job[]>([]);
   let held = $state<HeldBlockerWire[]>([]);
+  // Item 763 H5: Start cards — his edits kept as drafts, a tap that could not go says why.
+  let cards = $state<HomeRoute[]>([]);
+  let routeDrafts = $state(readRouteDrafts());
+  let routeBusy = $state<string | null>(null);
+  let routeProblems = $state<Record<string, string>>({});
+  async function startCard(id: string, pick: RoutePick | null) {
+    if (routeBusy) return;
+    routeBusy = id;
+    try {
+      const after = await client.homeRouteStart(id, routeDrafts[id] ?? null, pick);
+      routeDrafts = withRouteDraft(routeDrafts, id, null);
+      onnote(after.state === "started" ? `Started in ${after.project_name}` : `Queued for ${after.project_name}${after.note ? ` — ${after.note}` : ""}`);
+    } catch (e) {
+      routeProblems = { ...routeProblems, [id]: e instanceof Unreachable ? "The host is not answering — nothing was started. Your edit is kept." : String(e instanceof Error ? e.message : e) };
+    } finally {
+      routeBusy = null;
+      void load();
+    }
+  }
+  async function dismissCard(id: string) {
+    if (routeBusy) return;
+    routeBusy = id;
+    try {
+      await client.homeRouteDismiss(id);
+      routeDrafts = withRouteDraft(routeDrafts, id, null);
+    } catch (e) {
+      routeProblems = { ...routeProblems, [id]: e instanceof Unreachable ? "The host is not answering — the card is still here." : String(e instanceof Error ? e.message : e) };
+    } finally {
+      routeBusy = null;
+      void load();
+    }
+  }
   let running = $state<Running | null>(null);
   /** Home's chat when the scan job has not named one: its project's newest. */
   let homeChat = $state<string | null>(null);
@@ -123,7 +157,7 @@
   });
   const needs = $derived(needRows(pushRows, jobs, held, { chat: remote.active_chat, label: openLabel, pending: remote.pending.length }));
   const done = $derived(doneRows(feed?.rows ?? [], feed?.seen_at ?? null));
-  const header = $derived(headerWords(needs.length, today));
+  const header = $derived(headerWords(needs.length + cards.length, today));
   const headParts = $derived(header.split(" · "));
   const stop = $derived(stopWords(today));
   const fromAway = $derived(active === "away" && macPaired);
@@ -144,7 +178,7 @@
     const c = client;
     const has = (f: string) => !remote.features || remote.features.includes(f);
     try {
-      const [t, f, s, p, j, h, r] = await Promise.all([
+      const [t, f, s, p, j, h, r, rt] = await Promise.all([
         quiet(c.homeToday(), null),
         quiet(c.homeFeed(), null),
         quiet(c.homeScan(), { scan: null }),
@@ -152,6 +186,7 @@
         has("jobs") ? quiet(c.jobs(), { jobs: [], now: "" }) : Promise.resolve({ jobs: [], now: "" }),
         quiet(c.homeHeld(), { blockers: [] }),
         has("running") ? quiet(c.running(), null) : Promise.resolve(null),
+        quiet(c.homeRoutes(), null),
       ]);
       if (c !== client) return;
       today = t;
@@ -161,6 +196,10 @@
       pushRows = p.rows;
       jobs = j.jobs;
       held = h.blockers;
+      if (rt) {
+        cards = rt.cards;
+        routeDrafts = pruneRouteDrafts(routeDrafts, rt.cards);
+      }
       running = r;
       problem = null;
       if (f && !f.home.chat && f.home.project) {
@@ -460,9 +499,21 @@
 
   <!-- 1. Needs you -->
   <div class="h-sec" data-home-section="needs">
-    {@render head("needs", "Needs you", needs.length)}
+    {@render head("needs", "Needs you", needs.length + cards.length)}
     {#if !folded("needs")}
-      {#if needs.length === 0}
+      {#each cards as route (route.id)}
+        <StartCard
+          {route}
+          phone
+          text={routeText(route, routeDrafts)}
+          busy={routeBusy === route.id}
+          problem={routeProblems[route.id] ?? null}
+          ontext={(t) => (routeDrafts = withRouteDraft(routeDrafts, route.id, t))}
+          onstart={(pick) => void startCard(route.id, pick)}
+          ondismiss={() => void dismissCard(route.id)}
+        />
+      {/each}
+      {#if needs.length + cards.length === 0}
         <p class="h-empty">{loading ? "Reading…" : "Nothing needs you."}</p>
       {/if}
       {#each needs as row (row.key)}

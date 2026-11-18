@@ -34,7 +34,11 @@ export type FeedKind =
   | "job_done"
   | "job_failed"
   | "scan"
-  | "hand_off";
+  | "hand_off"
+  | "route_waiting"
+  | "route_started"
+  | "route_done"
+  | "route_failed";
 
 export interface FeedRow {
   /** RFC 3339. */
@@ -398,6 +402,10 @@ export const FEED_TAG: Record<FeedKind, string> = {
   job_failed: "job failed",
   scan: "morning scan",
   hand_off: "handed off",
+  route_waiting: "start card",
+  route_started: "Home started",
+  route_done: "Home's chat finished",
+  route_failed: "Home's chat failed",
 };
 
 export function feedTag(kind: string): string {
