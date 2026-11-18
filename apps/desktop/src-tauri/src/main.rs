@@ -1618,6 +1618,7 @@ fn main() {
             commands::sessions::search_sessions,
             commands::sessions::search_everywhere,
             commands::sessions::rename_session,
+            commands::sessions::set_chapter_edit,
             commands::sessions::new_session,
             commands::sessions::open_session,
             commands::sessions::peek_session,

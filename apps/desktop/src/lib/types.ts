@@ -1450,6 +1450,11 @@ export type SessionEvent =
   | { event: "hand_off"; brief: string; context: number; reason: "soft" | "hard"; at: string }
   // The chat's automatic hand-off thresholds: metadata, never drawn.
   | { event: "auto_hand_off"; soft: number; hard: number; at: string }
+  // Item 842: his rename or removal of one chapter (item 799), by the
+  // chapter's key (`<kind>:<log index of the mark>` or `start`). The whole
+  // edit — no title is the code's name — and the latest line per key wins,
+  // over the whole log (a rewind does not undo a name). Never drawn.
+  | { event: "chapter_edit"; key: string; title?: string | null; removed?: boolean; at: string }
   // A log entry the backend could not read: an event from a newer build, or a
   // line the disk damaged. It holds its index so that `rewind` and `elide`,
   // which address events by position, still point where they were aimed. There

@@ -67,7 +67,7 @@
       </span>
       <span class="ch-acts">
         <button class="ch-act" onclick={() => begin(c)} disabled={!chat}>Rename</button>
-        <button class="ch-act" onclick={() => chat && setChapterRemoved(chat, c.key, true)} disabled={!chat}>Remove</button>
+        <button class="ch-act" onclick={() => chat && setChapterRemoved(chat, c, true)} disabled={!chat}>Remove</button>
       </span>
     {/if}
     <span class="ch-line"></span>

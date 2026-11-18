@@ -660,6 +660,13 @@ export function renameSession(id: string, title: string, active: string | null =
   return invoke("rename_session", { id, title, active });
 }
 
+/** Item 842: his edit of one chapter (item 799) into the chat's log — the
+ *  whole edit, `title` null for the code's name. Refused while a turn holds
+ *  the chat; `chapterEdits` sends it again after. */
+export function setChapterEdit(id: string, key: string, title: string | null, removed: boolean): Promise<void> {
+  return invoke("set_chapter_edit", { id, key, title, removed });
+}
+
 /**
  * Retitle and enable the macOS Edit menu's Undo and Redo (nightshift
  * backlog 064): the operation each would reverse, or null for nothing;
