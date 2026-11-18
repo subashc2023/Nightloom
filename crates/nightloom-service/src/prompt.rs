@@ -68,6 +68,8 @@ A page inside a reply: a fenced block opened with ```html page is drawn in the r
 
 Diagram blocks: a fenced ```mermaid block is drawn as its diagram in any reply or note (with a Source toggle), and a fenced ```svg block holding one <svg> element is drawn as a picture (scripts, handlers and outside links in it are stripped); for a static diagram prefer either to an ```html page.
 
+Drawing tools on this Mac: Graphviz dot (dot -Tpng g.dot -o g.png), and ~/.nightloom/draw-env/bin/python with matplotlib, seaborn, pandas, sympy, networkx and manim (~/.nightloom/draw-env/bin/manim -ql scene.py Name writes media/videos/scene/480p15/Name.mp4). Name each saved picture or video by its absolute path in the reply and it is shown under it.
+
 Ending a turn on a question: if your reply asks the user to choose, confirm or decide anything — including a closing line such as \"Which do you want?\" — do not end on a plain-text question. End the reply with this block instead, with nothing after it:\n<ask>\nThe question, in full sentences.\n- Your default answer\n- The other answer\n</ask>\nOne question, one or two answers, your default first. Nightloom draws the block as a card whose buttons send the answer; a plain-text question gets no card.
 
 Whenever you write a prompt for the next chat (a hand-off), put it between a line holding only <handoff> and a line holding only </handoff> — plain prose, no code fence, no [brackets] or placeholders; Nightloom shows it as a card with a button that starts the next chat with it.";
@@ -1010,6 +1012,10 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     // Item 821: a ```mermaid or ```svg block draws as its diagram.
     text.push(' ');
     text.push_str(DIAGRAM_NOTE);
+    // Item 822: the drawing toolchain (Graphviz, the draw-env) and how its
+    // output reaches the reply (820's strip).
+    text.push(' ');
+    text.push_str(DRAW_NOTE);
     // Item 583: the tag rule rode only in Nightloom's own wrap-up message,
     // so a hand-off he asked for in words came back as a fenced block.
     text.push(' ');
@@ -1058,6 +1064,17 @@ pub const PAGE_NOTE: &str = "A page inside a reply: a fenced block opened with `
 /// from 770's kit, SVG as a sanitised picture. One sentence beside
 /// [`PAGE_NOTE`], in the same places.
 pub const DIAGRAM_NOTE: &str = "Diagram blocks: a fenced ```mermaid block is drawn as its diagram in any reply or note (with a Source toggle), and a fenced ```svg block holding one <svg> element is drawn as a picture (scripts, handlers and outside links in it are stripped); for a static diagram prefer either to an ```html page.";
+
+/// The drawing toolchain on his Mac (nightshift item 822, 2026-11-18):
+/// Graphviz from Homebrew and the uv env `~/.nightloom/draw-env` (checked by
+/// nightshift-code `bin/drawcheck`), one usage line each, and the rule that
+/// makes the output show — an absolute path in the reply is what 820's
+/// strip (`apps/desktop/src/lib/replyMedia.ts`) picks up, and Manim's own
+/// relative `media/...` path is not. Said whether or not the tools are
+/// installed: the prompt stays byte-stable for the cache, and a missing
+/// tool fails loudly in the shell. In every chat's engine note and the API
+/// engine's identity, beside [`DIAGRAM_NOTE`].
+pub const DRAW_NOTE: &str = "Drawing tools on this Mac: Graphviz dot (dot -Tpng g.dot -o g.png), and ~/.nightloom/draw-env/bin/python with matplotlib, seaborn, pandas, sympy, networkx and manim (~/.nightloom/draw-env/bin/manim -ql scene.py Name writes media/videos/scene/480p15/Name.mp4). Name each saved picture or video by its absolute path in the reply and it is shown under it.";
 
 /// How a turn-end question is written (nightshift item 753, 2026-11-16): one
 /// tagged block, last in the reply, which the desktop and the phone draw as
@@ -1112,7 +1129,7 @@ fn incognito_engine_note_segment() -> Segment {
          tool mcp__nightloom__fetch_page (ToolSearch it by that full name). For the whole \
          text of a page use fetch_page (WebFetch summarises and truncates); if fetch_page \
          reports a JavaScript shell or returns only a title, use WebFetch on that URL instead \
-         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE} {PAGE_NOTE} {DIAGRAM_NOTE} {HANDOFF_NOTE} {ASK_NOTE}\n</engine-note>"
+         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE} {PAGE_NOTE} {DIAGRAM_NOTE} {DRAW_NOTE} {HANDOFF_NOTE} {ASK_NOTE}\n</engine-note>"
     );
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
@@ -3301,6 +3318,31 @@ As of now — the front.
             assert!(seg.text.contains(DIAGRAM_NOTE), "{}", seg.text);
         }
         assert!(DIAGRAM_NOTE.split_whitespace().count() <= 70);
+    }
+
+    /// Item 822: every chat is told the drawing toolchain and that an
+    /// absolute path to the output is what shows it under the reply.
+    #[test]
+    fn every_chat_is_told_the_drawing_toolchain() {
+        for name in [
+            "dot -Tpng",
+            "~/.nightloom/draw-env/bin/python",
+            "/bin/manim",
+            "absolute path",
+        ] {
+            assert!(DRAW_NOTE.contains(name), "{name}");
+        }
+        assert!(DEFAULT_IDENTITY.contains(DRAW_NOTE), "{DEFAULT_IDENTITY}");
+        for seg in [
+            engine_note_segment(None),
+            engine_note_segment(Some(&KnowledgeContext {
+                dir: PathBuf::from("/kb"),
+            })),
+            incognito_engine_note_segment(),
+        ] {
+            assert!(seg.text.contains(DRAW_NOTE), "{}", seg.text);
+        }
+        assert!(DRAW_NOTE.split_whitespace().count() <= 60);
     }
 
     /// Item 583: the <handoff> rule stands in every chat's prompt — the

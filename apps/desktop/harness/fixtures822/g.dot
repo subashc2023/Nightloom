@@ -1,0 +1,7 @@
+digraph pipeline {
+  rankdir=LR; bgcolor="transparent";
+  node [shape=box, style="rounded,filled", fillcolor="#1f2a36", color="#6aa0d8", fontcolor="#e8eef5", fontname="Helvetica"];
+  edge [color="#8aa4bf"];
+  raw [label="raw data"]; clean [label="clean"]; fit [label="fit model"]; plot [label="plot"]; report [label="report"];
+  raw -> clean -> fit -> plot -> report; clean -> plot;
+}
