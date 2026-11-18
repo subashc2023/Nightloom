@@ -47,11 +47,11 @@ pub use root::{Root, VAULT_ALIAS};
 pub use send_file::SendFile;
 pub use task::{Subagent, TurnHandle};
 pub use todo::TodoWrite;
-pub(crate) use web::SHELL_PHRASE;
 pub use web::{
     Fetch, Fetched, FetchedBody, SearchBackend, WebSearch, env_search_key, search_backend,
     search_backends, web_tools,
 };
+pub(crate) use web::{SHELL_PHRASE, html_to_text};
 
 use chrono::{Local, Utc};
 use nightloom_core::ToolDef;

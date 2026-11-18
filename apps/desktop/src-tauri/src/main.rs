@@ -1358,6 +1358,20 @@ fn main() {
         }
         return;
     }
+    // `nightloom-desktop --evidence-check <request.json> [--root <dir>]
+    // [--out <dir>] [--fetched <dir>]` (nightshift item 798): an evidence
+    // table's quote check for a night, which has no Nightloom chat to call
+    // `evidence_table` from. Prints what the tool says; opens no window.
+    if argv.first().map(String::as_str) == Some(nightloom_service::evidence::CLI_FLAG) {
+        match nightloom_service::evidence::run_cli(&argv[1..]) {
+            Ok(text) => println!("{text}"),
+            Err(e) => {
+                eprintln!("nightloom-desktop --evidence-check: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     // `nightloom-desktop --permission-hook <dir>`: this binary as the CLI's
     // `PreToolUse` hook for a chat in the Ask position (2026-09-16,
     // nightshift backlog 084). Reads the call from stdin, answers from the

@@ -634,7 +634,7 @@ const BLOCK: [&str; 26] = [
 /// text. `base` is the URL the document was *served from* after redirects,
 /// so relative links resolve to something fetchable rather than to something
 /// that has to be reassembled by hand.
-fn html_to_text(html: &str, base: &Url) -> String {
+pub(crate) fn html_to_text(html: &str, base: &Url) -> String {
     let b = html.as_bytes();
     let mut out = String::with_capacity(html.len() / 4);
     let mut i = 0usize;

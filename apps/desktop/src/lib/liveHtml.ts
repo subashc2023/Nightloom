@@ -34,6 +34,9 @@ function extra(n: Node): boolean {
   if (n.tagName === "DIV" && n.classList.contains("md-page-mount")) return true;
   // Item 821: the drawing put first inside a diagram block's placeholder (diagrams.ts).
   if (n.tagName === "DIV" && n.classList.contains("md-diagram-mount")) return true;
+  // Item 798: the table mounted inside an evidence block's placeholder (evidenceTables.ts), and its error line.
+  if (n.tagName === "DIV" && n.classList.contains("md-evidence-mount")) return true;
+  if (n.tagName === "P" && n.classList.contains("ev-error")) return true;
   return n.tagName === "BUTTON" && (n.classList.contains("code-copy") || n.classList.contains("code-run"));
 }
 

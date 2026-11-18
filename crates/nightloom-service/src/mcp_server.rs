@@ -214,6 +214,8 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("notion_list_children", Effect::ReadOnly),
     ("send_file", Effect::Session),
     ("mark_file", Effect::Session),
+    // An evidence table (item 798): its own new files in the notes folder.
+    (crate::evidence::TOOL_NAME, Effect::Session),
     // The message's usage cap (item 538): written to the chat's own ledger.
     (crate::agent::budget::TOOL_NAME, Effect::Session),
     // A hand-off chain's run log and state file (items 789, 791): this
@@ -296,6 +298,13 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
         .any(|t| t.def().name == crate::tools::add_folder::NAME)
     {
         out.push_str(ADD_FOLDER_INSTRUCTION);
+    }
+    // Item 798: present only when the evidence table is served.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::evidence::TOOL_NAME)
+    {
+        out.push_str(crate::evidence::INSTRUCTION);
     }
     // Item 766: present only when the tool is served.
     if tools
@@ -1183,6 +1192,13 @@ pub async fn serve(
                 root.clone(),
                 mark_file::manifest_in(&config),
                 args.project.clone(),
+            )));
+            // `evidence_table` (item 798): its note and CSV go in the
+            // chat's notes folder, and a page is checked against the copy
+            // `fetch_page` kept under the config dir — so a chat that
+            // writes, only.
+            tools.push(Box::new(crate::evidence::EvidenceTable::new(
+                crate::evidence::Places::in_root(root.clone(), Some(config.join(FETCHED_DIR))),
             )));
         }
     }
