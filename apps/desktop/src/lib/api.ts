@@ -520,7 +520,6 @@ export interface BitwardenRule {
   added: string;
 }
 
-/** The "always" rules, and whether a session is held. */
 /** A rule dropped on load because its prefix is a wrapper (item 825). */
 export interface BitwardenDropped {
   name: string;
@@ -530,6 +529,7 @@ export interface BitwardenDropped {
   when: string;
 }
 
+/** The "always" rules, the ones dropped on load, and whether a session is held. */
 export function bitwardenRules(): Promise<{
   rules: BitwardenRule[];
   dropped?: BitwardenDropped[];

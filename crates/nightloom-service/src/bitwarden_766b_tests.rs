@@ -190,6 +190,12 @@ fn a_wrapper_prefix_cannot_be_saved_and_an_old_one_is_dropped() {
         "node -e x",
         "perl -e x",
         "npx --yes x",
+        "npm exec -c 'sh -c x'",
+        "uv run -- sh -c x",
+        "bundle exec -- x",
+        "xcrun --run x",
+        "sandbox-exec -p x sh",
+        "uv tool run -- x",
     ] {
         let e = add_rule(&home, "GITHUB_TOKEN", ITEM, "GitHub", "password", cmd).unwrap_err();
         assert!(e.starts_with("Not for `"), "{cmd}: {e}");
@@ -209,6 +215,8 @@ fn a_wrapper_prefix_cannot_be_saved_and_an_old_one_is_dropped() {
     assert_eq!(kept.prefix, "python3 deploy.py prod");
     assert_eq!(wrapper_refusal("gh release create"), None);
     assert_eq!(wrapper_refusal("./deploy.sh prod"), None);
+    assert_eq!(wrapper_refusal("uv run deploy.py"), None);
+    assert_eq!(wrapper_refusal("npm publish"), None);
 
     // An old rules file with wrapper rules: dropped on load, noted, the
     // others kept, the file rewritten.

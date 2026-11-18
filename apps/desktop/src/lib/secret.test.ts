@@ -95,6 +95,12 @@ describe("From Bitwarden on the secret card (item 766 part 2)", () => {
       "node -e x",
       "perl -e x",
       "npx --yes x",
+      "npm exec -c 'sh -c x'",
+      "uv run -- sh -c x",
+      "bundle exec -- x",
+      "xcrun --run x",
+      "sandbox-exec -p x sh",
+      "uv tool run -- x",
     ]) {
       const why = wrapperRefusal(commandPrefix(cmd));
       expect(why, cmd).toMatch(/^Not for `/);
@@ -102,6 +108,8 @@ describe("From Bitwarden on the secret card (item 766 part 2)", () => {
     }
     expect(wrapperRefusal("gh release create")).toBeNull();
     expect(wrapperRefusal("python3 deploy.py prod")).toBeNull();
+    expect(wrapperRefusal("uv run deploy.py")).toBeNull();
+    expect(wrapperRefusal("npm publish")).toBeNull();
     expect(wrapperRefusal("./deploy.sh prod")).toBeNull();
     expect(wrapperRefusal(null)).toBeNull();
   });

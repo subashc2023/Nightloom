@@ -640,6 +640,70 @@ pub const WRAPPERS: &[&str] = &[
     "expect",
     "launchctl",
     "osascript",
+    // Review (merge round V): more that run the command they are handed.
+    "sandbox-exec",
+    "xcrun",
+    "taskset",
+    "chrt",
+    "pkexec",
+    "runuser",
+    "unshare",
+    "nsenter",
+    "strace",
+    "ltrace",
+    "dtruss",
+    "gdb",
+    "lldb",
+    "valgrind",
+    "entr",
+    "firejail",
+    "bwrap",
+    "proxychains",
+    "proxychains4",
+    "torsocks",
+    "fakeroot",
+    "faketime",
+    "rlwrap",
+    "ssh-agent",
+    "systemd-run",
+    "dbus-run-session",
+];
+
+/// Launchers of two or three words (review, merge round V): alone, like an interpreter
+/// alone, they run any package or command they are handed (`npm exec -c
+/// '…'`, `uv run -- sh`), so "always" cannot be kept for one; with a name
+/// after them (`uv run deploy.py`) the prefix names that.
+pub const LAUNCHERS: &[&str] = &[
+    "npm exec",
+    "npm x",
+    "pnpm exec",
+    "pnpm dlx",
+    "yarn exec",
+    "yarn dlx",
+    "bun x",
+    "bun run",
+    "deno run",
+    "deno eval",
+    "uv run",
+    "uv tool",
+    "uv tool run",
+    "poetry run",
+    "pipenv run",
+    "pdm run",
+    "hatch run",
+    "rye run",
+    "conda run",
+    "mamba run",
+    "micromamba run",
+    "bundle exec",
+    "mise exec",
+    "mise x",
+    "asdf exec",
+    "nix run",
+    "nix shell",
+    "nix develop",
+    "direnv exec",
+    "go run",
 ];
 
 /// Interpreters and package runners: alone, the prefix covers `-c`/`-e`
@@ -689,6 +753,13 @@ pub fn wrapper_refusal(prefix: &str) -> Option<String> {
     } else if interpreter && words.len() == 1 {
         Some(format!(
             "Not for `{first}` alone: it runs any code it is given."
+        ))
+    } else if words.len() > 1
+        && LAUNCHERS.contains(&format!("{name} {}", words[1..].join(" ")).as_str())
+    {
+        Some(format!(
+            "Not for `{}` alone: it runs any code it is given.",
+            words.join(" ")
         ))
     } else {
         None

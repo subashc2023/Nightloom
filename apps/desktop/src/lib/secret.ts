@@ -103,6 +103,18 @@ export const WRAPPERS = [
   "sudo", "doas", "su", "xargs", "eval", "exec", "command", "builtin", "nohup", "time", "nice",
   "ionice", "timeout", "gtimeout", "watch", "script", "parallel", "caffeinate", "stdbuf",
   "setsid", "chroot", "flock", "arch", "unbuffer", "expect", "launchctl", "osascript",
+  // Review (merge round V).
+  "sandbox-exec", "xcrun", "taskset", "chrt", "pkexec", "runuser", "unshare", "nsenter", "strace",
+  "ltrace", "dtruss", "gdb", "lldb", "valgrind", "entr", "firejail", "bwrap", "proxychains",
+  "proxychains4", "torsocks", "fakeroot", "faketime", "rlwrap", "ssh-agent", "systemd-run",
+  "dbus-run-session",
+];
+/** Launchers of two or three words, refused alone (`bitwarden::LAUNCHERS`). */
+export const LAUNCHERS = [
+  "npm exec", "npm x", "pnpm exec", "pnpm dlx", "yarn exec", "yarn dlx", "bun x", "bun run",
+  "deno run", "deno eval", "uv run", "uv tool", "uv tool run", "poetry run", "pipenv run", "pdm run", "hatch run",
+  "rye run", "conda run", "mamba run", "micromamba run", "bundle exec", "mise exec", "mise x",
+  "asdf exec", "nix run", "nix shell", "nix develop", "direnv exec", "go run",
 ];
 export const INTERPRETERS = [
   "python", "python2", "python3", "pypy", "pypy3", "node", "nodejs", "deno", "bun", "perl",
@@ -131,6 +143,8 @@ export function wrapperRefusal(prefix: string | null): string | null {
   if (WRAPPERS.includes(name)) return `Not for \`${first}\`: it runs any command it is given.`;
   const interp = INTERPRETERS.includes(name) || INTERPRETERS.includes(name.replace(/[0-9]+$/, ""));
   if (interp && words.length === 1) return `Not for \`${first}\` alone: it runs any code it is given.`;
+  if (words.length > 1 && LAUNCHERS.includes(`${name} ${words.slice(1).join(" ")}`))
+    return `Not for \`${words.join(" ")}\` alone: it runs any code it is given.`;
   return null;
 }
 
