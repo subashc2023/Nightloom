@@ -874,6 +874,24 @@ export const composerTheme = EditorView.theme({
     scrollMarginBottom: "28px",
   },
   "th .cm-cgrid-cell": { fontWeight: "620" },
+  // Item 814: a cell's maths rendered over its textarea while he is not in it (`cellMathHtml`); the
+  // textarea's own text goes clear under it, and clicking in shows the source again.
+  ".cm-cgrid-hasmath": { position: "relative" },
+  ".cm-cgrid-hasmath .cm-cgrid-cell:not(:focus)": { color: "transparent" },
+  ".cm-cgrid-math": {
+    position: "absolute",
+    inset: "0",
+    padding: "5px 8px",
+    fontSize: "0.9em",
+    lineHeight: "1.4",
+    color: "var(--ink)",
+    pointerEvents: "none",
+    overflow: "hidden",
+    whiteSpace: "pre-wrap",
+    overflowWrap: "break-word",
+  },
+  "th .cm-cgrid-math": { fontWeight: "620" },
+  ".cm-cgrid-hasmath:focus-within .cm-cgrid-math": { display: "none" },
   ".cm-cgrid-cell:focus": {
     background: "color-mix(in srgb, var(--accent) 9%, transparent)",
     boxShadow: "inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 70%, transparent)",

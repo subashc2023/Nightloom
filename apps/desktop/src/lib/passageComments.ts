@@ -17,6 +17,7 @@
  * This file is the pure part: the shape, reading it back from storage,
  * the chip's words and the message that goes.
  */
+import { quoteSummary } from "./asideQuote";
 import { quoteBlock } from "./replyQuote.svelte";
 
 /** Where the passage came from: a reply, his own message, the plan card,
@@ -91,7 +92,9 @@ export function commentLabel(quote: string, max = COMMENT_CHARS): string {
 /** The chip's words for a comment: a diff's path header is skipped, so
  *  the chip shows the lines he picked. Pure. */
 export function chipLabel(c: Pick<PassageComment, "quote" | "source">, max = COMMENT_CHARS): string {
-  return commentLabel(c.source === "diff" ? shownQuote(c).replace(/\n/g, " ") : c.quote, max);
+  if (c.source === "diff") return commentLabel(shownQuote(c).replace(/\n/g, " "), max);
+  // Item 814: a quoted table or formula reads as the held passage's chip does.
+  return quoteSummary(c.quote, max);
 }
 
 /** The passage as the open comment line shows it: a diff without its
