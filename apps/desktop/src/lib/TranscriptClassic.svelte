@@ -1991,8 +1991,11 @@
   // Item 359: the reply still streaming (or its ghost) has a rib too,
   // anchored on `data-nav-live` — LibreChat's rail lists the row the
   // moment it mounts and previews "Generating" until it has words.
+  // Item 830: the logged ticks re-derive when the log changes, not on every delta of the reply (the live tick
+  // reads its words, so one derived re-ran the whole log's model per delta: ~5 ms at 1,000 turns).
+  const loggedTicks = $derived(tickModel(evs, liveFlags(evs), displayTexts(evs)));
   const navTicks = $derived.by(() => {
-    const logged = tickModel(evs, liveFlags(evs), displayTexts(evs));
+    const logged = loggedTicks;
     if (!shown) return logged;
     const said = shown.segments.map((s) => (s.kind === "text" ? s.text : "")).join("");
     return [...logged, liveTick(said)];

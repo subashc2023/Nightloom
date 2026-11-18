@@ -74,10 +74,17 @@ export function settledBlocks(src: string): { blocks: string[]; tail: string } {
 
 /** A streaming reply's HTML (the Mac's transcript, both looks): `renderReply(streamingTail(text))`, by blocks. */
 export function renderStreamingReply(text: string): string {
+  return renderStreamingParts(text).html;
+}
+
+/** The same HTML, with how much of it is finished blocks (`stable` characters): `liveHtml` then parses and
+ *  patches only what follows the part it already drew from finished blocks. */
+export function renderStreamingParts(text: string): { html: string; stable: number } {
   const { blocks, tail } = settledBlocks(streamingTail(text));
   let html = "";
   for (const b of blocks) html += renderReply(b);
-  return html + renderReply(tail);
+  const stable = html.length;
+  return { html: html + renderReply(tail), stable };
 }
 
 /** The phone's renderer has no cache of its own; its finished blocks are kept here, the most recent few hundred. */

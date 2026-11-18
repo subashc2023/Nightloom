@@ -6,7 +6,7 @@
   import type { ApprovalRequest, Usage } from "./types";
   // Item 626: while streaming, the unfinished tail renders as it will once finished (streamingTail); item 830: by blocks.
   import { renderReply } from "./markdown";
-  import { renderStreamingReply } from "./streamBlocks";
+  import { renderStreamingParts } from "./streamBlocks";
   import { liveHtml } from "./liveHtml";
   import { codeCopy, type RunBlocks } from "./codeCopy";
   import { handoffGo, type NextChat } from "./handoffButton";
@@ -1277,7 +1277,7 @@
       {:else}
         <!-- Item 452: patched in place (liveHtml), not replaced whole per
              streamed delta, so a selection in its written part survives. -->
-        <div class="markdown" use:liveHtml={streaming ? renderStreamingReply(g.seg.text) : renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)} use:handoffGo={nextChat}></div>
+        <div class="markdown" use:liveHtml={streaming ? renderStreamingParts(g.seg.text) : renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)} use:handoffGo={nextChat}></div>
         {#if !streaming}
           <!-- Item 820: a picture or a video this text names, right under it
                (once the reply has stopped: a half-typed path is not a file). -->

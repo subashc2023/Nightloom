@@ -88,9 +88,13 @@ function runText(u: Unit): string {
  * changing only what differs. `prev` and `next` are inert trees.
  * Returns how many live nodes were replaced or added (for the harness).
  */
-export function patch(live: Node, prev: Node, next: Node): number {
-  const units = unitsOf(live);
+export function patch(live: Node, prev: Node, next: Node, from = 0): number {
+  // Item 830: `from` skips the first units, drawn from a reply's finished blocks; `prev` and `next` then hold only
+  // what follows them. A mismatch there is the caller's to redraw (-1), since `next` is not the whole.
+  const all = unitsOf(live);
+  const units = from ? all.slice(from) : all;
   if (!lines(units, prev)) {
+    if (from) return -1;
     redraw(live, next);
     return next.childNodes.length;
   }
@@ -98,7 +102,8 @@ export function patch(live: Node, prev: Node, next: Node): number {
   const n = next.childNodes;
   let touched = 0;
   // Where a node added at the end goes: after the last unit (before any extra, e.g. a Copy button).
-  let tail: Node | null = units.length ? units[units.length - 1].nodes[units[units.length - 1].nodes.length - 1] : null;
+  const lastUnit = units.length ? units[units.length - 1] : from ? all[from - 1] : undefined;
+  let tail: Node | null = lastUnit ? lastUnit.nodes[lastUnit.nodes.length - 1] : null;
   const insertAfter = (ref: Node | null, node: Node) => {
     if (ref) live.insertBefore(node, ref.nextSibling);
     else live.insertBefore(node, live.firstChild);
@@ -179,13 +184,60 @@ function parse(html: string): DocumentFragment {
  * `use:liveHtml={html}` in place of `{@html html}` on an element with no
  * other children. The HTML must already be sanitized (as `renderReply`'s is).
  */
-export function liveHtml(node: HTMLElement, html: string) {
-  let last = html;
-  let prev = parse(html);
+/** What `liveHtml` takes: the HTML, or a streaming reply's HTML with how much of it is finished blocks (item 830). */
+export type LiveHtml = string | { html: string; stable: number };
+
+/** Inner text as `shownText` reads it, of the units from `from` on. */
+function shownFrom(live: Node, from: number): string {
+  let s = "";
+  for (const u of unitsOf(live).slice(from)) for (const c of u.nodes) s += c.nodeType === Node.TEXT_NODE ? (c as Text).data : shownText(c);
+  return s;
+}
+
+export function liveHtml(node: HTMLElement, input: LiveHtml) {
+  let last = typeof input === "string" ? input : input.html;
+  let prev = parse(last);
+  // Item 830: of `prev`'s top-level nodes, how many came from finished blocks (`stable` characters of `last`).
+  // A delta then parses and patches only the HTML after them — before, every delta parsed the whole reply's
+  // HTML, compared it and read its text back (13 ms at 12,000 characters of maths, growing with the reply).
+  let stableLen = 0;
+  let stableNodes = 0;
+  const settle = (html: string, stable: number) => {
+    stableLen = stable;
+    stableNodes = stable ? parse(html.slice(0, stable)).childNodes.length : 0;
+  };
+  if (typeof input !== "string") settle(input.html, input.stable);
   redraw(node, prev);
+  /** The cheap path: only the HTML after what the finished blocks drew. False when it cannot be used. */
+  const patchTail = (next: string, stable: number): boolean => {
+    if (!stableNodes || stable < stableLen || !next.startsWith(last.slice(0, stableLen))) return false;
+    if (prev.childNodes.length < stableNodes) return false;
+    const done = parse(next.slice(stableLen, stable));
+    const rest = parse(next.slice(stable));
+    const joinText = done.lastChild?.nodeType === Node.TEXT_NODE && rest.firstChild?.nodeType === Node.TEXT_NODE;
+    if (joinText) return false;
+    const doneCount = done.childNodes.length;
+    const tree = document.createDocumentFragment();
+    tree.append(done, rest);
+    const prevTail = document.createDocumentFragment();
+    while (prev.childNodes.length > stableNodes) prevTail.prepend(prev.lastChild!);
+    const touched = patch(node, prevTail, tree, stableNodes);
+    const ok = touched >= 0 && shownFrom(node, stableNodes) === tree.textContent;
+    if (!ok) {
+      prev.append(prevTail);
+      return false;
+    }
+    prev.append(tree);
+    stableNodes += doneCount;
+    stableLen = stable;
+    last = next;
+    return true;
+  };
   return {
-    update(next: string) {
+    update(input: LiveHtml) {
+      const next = typeof input === "string" ? input : input.html;
       if (next === last) return;
+      if (typeof input !== "string" && patchTail(next, input.stable)) return;
       const tree = parse(next);
       patch(node, prev, tree);
       // Item 480: the patched DOM must read exactly as a full render; if it
@@ -196,6 +248,8 @@ export function liveHtml(node: HTMLElement, html: string) {
       }
       prev = tree;
       last = next;
+      if (typeof input === "string") stableLen = stableNodes = 0;
+      else settle(next, input.stable);
     },
   };
 }
