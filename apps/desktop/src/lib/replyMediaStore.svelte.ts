@@ -38,7 +38,7 @@ export function setMediaLoader(l: Loader): void {
 export function _resetMedia(l?: Loader): void {
   for (const k of Object.keys(cache)) {
     const s = cache[k];
-    if (s.status === "done") URL.revokeObjectURL(s.url);
+    if (s.status === "done" && s.url.startsWith("blob:")) URL.revokeObjectURL(s.url);
     delete cache[k];
   }
   order.length = 0;
@@ -65,7 +65,7 @@ export function mediaState(path: string, chat: string | null): MediaState {
 export function forgetMedia(path: string, chat: string | null): void {
   const key = keyOf(path, chat);
   const s = cache[key];
-  if (s?.status === "done") URL.revokeObjectURL(s.url);
+  if (s?.status === "done" && s.url.startsWith("blob:")) URL.revokeObjectURL(s.url);
   delete cache[key];
 }
 
@@ -83,17 +83,33 @@ async function load(key: string, path: string, chat: string | null): Promise<voi
     // The blob carries the real type: an SVG drawn by `<img>` must be
     // `image/svg+xml`, and as an image it runs no script whatever it holds.
     const typed = got.bytes.type === got.mediaType ? got.bytes : new Blob([got.bytes], { type: got.mediaType });
-    cache[key] = { status: "done", kind: got.kind, url: URL.createObjectURL(typed), size: got.size };
+    // Review (merge round V): an SVG is drawn from a `data:` URL, not a
+    // `blob:` one. A blob URL has the page's own origin, so an SVG opened
+    // from it as a document (a context menu's "open image", a drag to a
+    // window) would run its script with the page's storage and bridge; a
+    // `data:` document is opaque and a top-level one is refused outright.
+    const url = isSvg(got.mediaType) ? await dataUrlOf(typed, got.mediaType) : URL.createObjectURL(typed);
+    cache[key] = { status: "done", kind: got.kind, url, size: got.size };
     order.push(key);
     while (order.length > MAX_KEPT) {
       const old = order.shift()!;
       const s = cache[old];
-      if (s?.status === "done") URL.revokeObjectURL(s.url);
+      if (s?.status === "done" && s.url.startsWith("blob:")) URL.revokeObjectURL(s.url);
       delete cache[old];
     }
   } catch (e) {
     cache[key] = { status: "failed", message: String(e instanceof Error ? e.message : e) };
   }
+}
+
+const isSvg = (type: string) => /^image\/svg\+xml\b/i.test(type);
+
+/** A blob as a `data:` URL of `type` (an SVG's, see `load`). */
+export async function dataUrlOf(blob: Blob, type: string): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return `data:${type};base64,${btoa(bin)}`;
 }
 
 /** Base64 to a typed blob (the Mac's command answers base64). */

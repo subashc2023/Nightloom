@@ -1,7 +1,8 @@
 <script lang="ts">
   // Pictures and video a reply names, under its text (item 820): a plot a
   // chat saved shows here without him opening anything. Every picture —
-  // an SVG included — is drawn by <img> from a blob URL, never as markup
+  // an SVG included — is drawn by <img> (an SVG from a data: URL, the rest
+  // from a blob URL; replyMediaStore says why), never as markup
   // in the page, so an SVG's scripts never run; a video is a player with
   // controls. A click on a picture shows it full size over the window;
   // Esc or a click closes it. The Mac and the phone share this component;

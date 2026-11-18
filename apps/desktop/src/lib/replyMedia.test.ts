@@ -82,7 +82,7 @@ describe("an SVG with a script in it never runs it", () => {
     expect(stripSrc).toMatch(/<img src=\{s\.url\}/);
   });
 
-  it("the bytes become a typed blob URL — the SVG's text is never read into the page", async () => {
+  it("an SVG becomes a data: URL (opaque if opened as a document), never markup in the page", async () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>top.__ran=1</script></svg>';
     const loader = async (): Promise<Loaded> => ({
       kind: "image",
@@ -96,8 +96,19 @@ describe("an SVG with a script in it never runs it", () => {
     const s = mediaState("/tmp/evil.svg", "c");
     expect(s.status).toBe("done");
     if (s.status !== "done") return;
-    expect(s.url.startsWith("blob:")).toBe(true);
+    // Review (merge round V): not a same-origin blob: URL.
+    expect(s.url.startsWith("data:image/svg+xml;base64,")).toBe(true);
+    expect(atob(s.url.slice(s.url.indexOf(",") + 1))).toBe(svg);
     expect((globalThis as { __ran?: number }).__ran).toBeUndefined();
+    _resetMedia();
+  });
+
+  it("a PNG stays a typed blob URL", async () => {
+    _resetMedia(async () => ({ kind: "image", mediaType: "image/png", size: 4, bytes: new Blob([new Uint8Array([0x89, 80, 78, 71])]) }));
+    mediaState("/tmp/plot.png", "c");
+    await new Promise((r) => setTimeout(r, 20));
+    const s = mediaState("/tmp/plot.png", "c");
+    expect(s.status === "done" && s.url.startsWith("blob:")).toBe(true);
     _resetMedia();
   });
 });
