@@ -19,7 +19,18 @@
 
   /** The page's element under the point, past the layer's own marks. */
   function under(x: number, y: number): Element | null {
-    for (const el of document.elementsFromPoint(x, y)) {
+    const stack = document.elementsFromPoint(x, y);
+    // Claude's browser picture wins over anything drawn on top of it (the
+    // tab's own marks): a click there means the page.
+    const at = stack.findIndex((el) => el instanceof HTMLElement && el.dataset.pickBrowser !== undefined);
+    if (at >= 0) {
+      const shot = stack[at];
+      const tab = shot.parentElement;
+      // Only the tab's own marks may lie over it — not a menu or a dialog.
+      const over = stack.slice(0, at).filter((el) => !layer?.contains(el) && !bar?.contains(el));
+      if (over.every((el) => tab?.contains(el))) return shot;
+    }
+    for (const el of stack) {
       if (layer?.contains(el) || bar?.contains(el)) continue;
       if (el === document.documentElement || el === document.body) return null;
       return pickTarget(el);
@@ -177,6 +188,8 @@
     background: var(--raised, var(--panel, #111));
     border: 1px solid var(--accent, #6cf);
     box-shadow: 0 6px 24px rgb(0 0 0 / 35%);
+    max-width: calc(100vw - 24px);
+    box-sizing: border-box;
   }
   .pick-dot {
     width: 8px;
@@ -186,6 +199,7 @@
   }
   .pick-made {
     color: var(--muted, #999);
+    white-space: nowrap;
   }
   .pick-bar kbd {
     font-size: 10px;
