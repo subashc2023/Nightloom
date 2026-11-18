@@ -2823,8 +2823,18 @@
   const asideEffortLabel = $derived(
     aside && aside.effort != null ? aside.effort || "default" : `chat's · ${chatEffortName}`,
   );
+  // Item 833 (his shots, 2026-11-17: both pickers read "chat's …" in a
+  // narrow aside card): the pickers' compact form, the value alone —
+  // `Opus 5.5`, `medium` — drawn from fold level 4 instead of cutting the
+  // long label at 72 / 48 px. The long label leads each tooltip.
+  const asideModelShort = $derived(aside?.model ? displayName(aside.model) : chatModelName);
+  const asideEffortShort = $derived(
+    aside && aside.effort != null
+      ? aside.effort || "default"
+      : app.draft.agentEffort || (effortDefaultText === "?" ? "default" : effortDefaultText),
+  );
   const asideModelTitle = $derived(
-    `This aside's model — the chat's (${chatModelName}) unless picked here. Another model cannot read the chat's prompt cache, so its first answer reads the whole context fresh.`,
+    `This aside's model: ${asideModelLabel} — the chat's (${chatModelName}) unless picked here. Another model cannot read the chat's prompt cache, so its first answer reads the whole context fresh.`,
   );
   function pickAside(field: "model" | "effort", v: string | null): void {
     const a = aside;
@@ -2969,6 +2979,9 @@
       modelLabel,
       effortLabel,
       thinkingLabel,
+      // Item 833: an aside's pickers read these.
+      asideModelLabel,
+      asideEffortLabel,
       agentMode,
       history.length,
       app.busy,
@@ -3936,7 +3949,12 @@
           onclick={() => openMenu("model")}
         >
           <span class="pick-dot" class:unknown={!app.connection}></span>
-          <span class="pick-name">{aside ? asideModelLabel : modelLabel}</span>
+          {#if aside}
+            <!-- Item 833: the long label, else (fold 4 on) the value alone. -->
+            <span class="pick-name has-short"><span class="pick-long">{asideModelLabel}</span><span class="pick-short">{asideModelShort}</span></span>
+          {:else}
+            <span class="pick-name">{modelLabel}</span>
+          {/if}
           <span class="pick-chev" aria-hidden="true"><Icon name="chev" size={11} /></span>
         </button>
         {#if menu === "model"}
@@ -3952,14 +3970,18 @@
           aria-haspopup="menu"
           aria-expanded={menu === "effort"}
           use:tip={aside
-            ? "This aside's effort (--effort) — the chat's unless picked here; kept on this aside"
+            ? `This aside's effort (--effort): ${asideEffortLabel} — the chat's unless picked here; kept on this aside`
             : agentMode
               ? "Effort (--effort) — how hard the model thinks per turn; default sends no flag and leaves it to the model. Kept on this chat."
               : `Thinking — ${thinkingSup.note}`}
           onclick={() => openMenu("effort")}
         >
           <span class="pick-k">{agentMode ? "effort" : "thinking"}</span>
-          <span class="pick-name">{aside ? asideEffortLabel : agentMode ? effortLabel : thinkingLabel}</span>
+          {#if aside}
+            <span class="pick-name has-short"><span class="pick-long">{asideEffortLabel}</span><span class="pick-short">{asideEffortShort}</span></span>
+          {:else}
+            <span class="pick-name">{agentMode ? effortLabel : thinkingLabel}</span>
+          {/if}
           <span class="pick-chev" aria-hidden="true"><Icon name="chev" size={11} /></span>
         </button>
         {#if menu === "effort"}
@@ -4183,7 +4205,9 @@
         <!-- Item 786: `unknown` after a stop that logged no reply; an aside on its own model says so. -->
         {#if face === "unknown"}cache <span class="bottom-cache-when" aria-label="cache unknown until the next send">unknown</span>{:else if cache && !cache.warm}{#if aside && asideOwnModel}own model{:else}cache{/if} <span class="bottom-cache-when" aria-label={cacheLine(cache)}>cold</span>{:else}{@const hit = aside ? asideHit : cached}{#if hit != null}{Math.round(hit * 100)}%<span class="bottom-cache-word"> cached</span>{:else}cache{/if}{#if cache}
           <span class="bottom-cache-when" aria-label={cacheLine(cache)}>· {remainingText(cache.remainingMs)}</span>
-        {/if}{/if}{#if cache && nextEst}<span class="bottom-cache-next">· {nextEst.line}</span>{/if}
+        {/if}{/if}{#if cache && nextEst}<span class="bottom-cache-next"
+            >{#each nextEst.line.split(" · ") as part, i}{#if i > 0}{" "}{/if}<span class="next-part">· {part}</span>{/each}</span
+          >{/if}
       </div>
     {/if}
   {/snippet}
@@ -4608,6 +4632,15 @@
   .bottom-cache {
     font-variant-numeric: tabular-nums;
     color: var(--ink2);
+    /* Item 833 (his shots: "100% cached · 55 min · next ≈ $0.05 · cold ≈
+       $1.78" ran past an aside card's right edge): never wider than its
+       row; past that it wraps, only at a " · " — the share, the timer and
+       each price stay whole. */
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+  .next-part {
+    white-space: nowrap;
   }
   /* Backlog 408: the warning reads in the accent, and is a button. */
   .bottom-cache.losing {
@@ -4621,6 +4654,7 @@
     border-color: var(--accent);
     cursor: pointer;
     white-space: nowrap;
+    flex-wrap: nowrap;
   }
   .losing-what {
     min-width: 0;
@@ -4644,13 +4678,17 @@
   .bottom-cache-next {
     margin-left: 4px;
     color: var(--dim);
-    white-space: nowrap;
+    /* ~~nowrap~~ (item 833): its parts are nowrap (`.next-part`), so it wraps
+       between "next ≈ …" and "cold ≈ …" when the chip has to. */
+    white-space: normal;
   }
   /* Item 777: on the "cache will be lost" bar the price is the point — it
      never shrinks, and the words ahead of it give way first, phone width too. */
   .bottom-cache.losing .bottom-cache-next {
     flex: none;
     color: inherit;
+    /* Item 833: the plain chip's wrap is not this bar's — it cuts its words. */
+    white-space: nowrap;
     /* Post-install 16c8e01: the separator span carries its own spaces
        (a trailing plain space was dropped, so the face read "off  ·next"). */
     margin-left: 0;
@@ -4733,7 +4771,10 @@
   }
   .composer.aside .bottom-row {
     margin-top: 5px;
-    justify-content: space-between;
+    /* ~~space-between~~ (item 833): wrapped, it spread the chips of each
+       later line apart (Format alone at the left in his shots); the line
+       grows and the spacer pushes, so flex-end reads as the chat's row. */
+    justify-content: flex-end;
     /* Item 786: the cache chips joined the row; it wraps, never clips. */
     flex-wrap: wrap;
   }
@@ -5089,6 +5130,21 @@
   }
   .row:is([data-fold="5"], [data-fold="6"]) .pick-name {
     max-width: 48px;
+  }
+  /* Item 833: an aside's pickers have a compact form — the value alone
+     ("Opus 5.5", not "chat's · Opus 5.5") — so from level 4 they swap to
+     it whole rather than cut "chat's · …" to "chat's …". */
+  .pick-short {
+    display: none;
+  }
+  .row:is([data-fold="4"], [data-fold="5"], [data-fold="6"]) .pick-name.has-short {
+    max-width: none;
+  }
+  .row:is([data-fold="4"], [data-fold="5"], [data-fold="6"]) .has-short .pick-long {
+    display: none;
+  }
+  .row:is([data-fold="4"], [data-fold="5"], [data-fold="6"]) .has-short .pick-short {
+    display: inline;
   }
   /* The floor: the pickers keep row one at the left; a zero-height break
      (the row's ::after, a full-width flex item) sends the actions to row

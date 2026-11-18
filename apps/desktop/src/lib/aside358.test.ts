@@ -19,15 +19,17 @@ describe("358: the aside after its answer completes", () => {
     ["card", cardSrc, ".aside-card"],
     ["tab", viewSrc, ".aside-view"],
   ] as const) {
-    it(`${name}: the composer's line is one line, cut, and the format chip never gives way`, () => {
+    // ~~one line, cut~~ (2026-11-18, item 833: cut, it read "nothing …" in
+    // a narrow card, his shots): it wraps; the chat's name inside it stays capped.
+    it(`${name}: the composer's line wraps, its chat's name capped, and the format chip never gives way`, () => {
       const rule = (sel: string) => {
         const i = src.indexOf(`${scope} :global(${sel}) {`);
         expect(i, sel).toBeGreaterThan(-1);
         return src.slice(i, src.indexOf("}", i));
       };
       const line = rule(".composer.aside .aside-line");
-      expect(line).toContain("white-space: nowrap");
-      expect(line).toContain("text-overflow: ellipsis");
+      expect(line).toContain("white-space: normal");
+      expect(line).not.toMatch(/^\s*text-overflow: ellipsis/m);
       expect(line).toContain("min-width: 0");
       // A 0 basis split the row with the spacer and cut the name whole.
       expect(line).toContain("flex: 1 1 auto");
@@ -37,7 +39,8 @@ describe("358: the aside after its answer completes", () => {
     it(`${name}: the cache chip is short and keeps its room; the full count is its tip`, () => {
       expect(src).not.toContain("read from cache</span>");
       expect(src).toMatch(/class="(ns-chip mono )?aside-cache"[^>]*tokens read from cache/);
-      expect(src).toContain("{fmtTokens(last.cacheRead)} cached");
+      // Item 833: the word is a fold step of the card's head; the tab keeps it plain.
+      expect(src).toMatch(/\{fmtTokens\(last\.cacheRead\)\}(<span class="head-word">)? cached/);
     });
   }
 
