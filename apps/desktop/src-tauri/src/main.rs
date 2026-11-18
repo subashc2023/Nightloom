@@ -56,6 +56,8 @@ mod claude_browser;
 mod commands;
 /// A connect under a deadline that names its wait (item 220).
 mod connect_deadline;
+/// The cursor the page asks for kept on screen (nightshift item 828).
+mod cursor_keep;
 /// The composer's exact token count on the provider engine (backlog 155).
 mod draft_count;
 /// An AppKit exception in event dispatch is logged, not fatal (item 486).
@@ -1800,6 +1802,7 @@ fn main() {
             commands::system::set_power_prefs,
             commands::system::set_zoom,
             webview_fit::refit_webview,
+            cursor_keep::keep_cursor,
             remote::remote_status,
             remote::remote_start,
             remote::remote_stop,
