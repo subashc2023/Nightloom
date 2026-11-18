@@ -1362,6 +1362,15 @@ mod tests {
         read_until(&rx, |o| !o.is_empty());
         t.write(info.id, "yes | head -c 5000000\n").unwrap();
         // No acks: the emitter stops at the mark (plus one frame's cap).
+        // Wait for the mark itself, not a fixed time: under load (~20) the
+        // shell had not printed 256 KB within a fixed 600 ms (item 841).
+        // Then 600 ms more to show it holds there — well inside `STALL`,
+        // after which the emitter rightly sends anyway.
+        let flow = t.shells.lock().unwrap()[&info.id].flow.clone();
+        wait_until(
+            || flow.outstanding() >= HIGH_WATER,
+            "the output to reach the mark",
+        );
         thread::sleep(Duration::from_millis(600));
         let got: usize = rx
             .try_iter()
@@ -1370,10 +1379,9 @@ mod tests {
                 _ => 0,
             })
             .sum();
-        eprintln!("MEASURE pause: {got} bytes in 600 ms without acks (mark {HIGH_WATER})");
+        eprintln!("MEASURE pause: {got} bytes without acks (mark {HIGH_WATER})");
         assert!(got >= HIGH_WATER, "{got} never reached the mark");
         assert!(got <= HIGH_WATER + FRAME_BYTES, "{got} ran past the mark");
-        let flow = t.shells.lock().unwrap()[&info.id].flow.clone();
         assert!(flow.outstanding() >= HIGH_WATER);
         // An ack for what was drawn lets the next frames through.
         t.ack(info.id, got);
