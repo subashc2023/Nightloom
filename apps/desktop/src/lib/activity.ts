@@ -231,8 +231,10 @@ export function workingLabel(elapsedMs: number): string {
  * waits only on background agents — `waiting on 2 agents · 2 min 58 s`,
  * the same turn clock as `working`. `agents` null or 0 is `working`.
  */
-export function waitingLabel(agents: number | null, elapsedMs: number): string {
+export function waitingLabel(agents: number | null, elapsedMs: number, lead: string | null = null): string {
   const w = workingLabel(elapsedMs);
+  // Item 829: what the model is doing in the gap, when the stream says.
+  if (!agents && lead) return w.replace(/^working/, lead);
   if (!agents) return w;
   return w.replace(/^working/, `waiting on ${agents} agent${agents === 1 ? "" : "s"}`);
 }

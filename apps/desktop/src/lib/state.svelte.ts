@@ -1,4 +1,4 @@
-import { noteContextLive } from "./liveContext.svelte";
+import { noteContextLive, noteStepMark } from "./liveContext.svelte";
 import { passingEvent } from "./bashOutput.svelte";
 import { isShellCall as isShellForPassing } from "./agentCommands";
 import { tick, untrack } from "svelte";
@@ -2894,6 +2894,9 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
     }
     return;
   }
+  // Item 829: the working line's phase — a call landed whole, a result back.
+  if (ev.type === "tool_call") noteStepMark(host.chat, "call");
+  if (ev.type === "tool_result" || ev.type === "tool_denied") noteStepMark(host.chat, "result");
   if (ev.type === "tool_denied" || ev.type === "tool_result") {
     // The gate answered this one, whoever decided it — a prompt still on
     // screen for it (cancellation denies server-side) can no longer be used.
