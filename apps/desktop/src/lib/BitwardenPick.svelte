@@ -16,6 +16,7 @@
     bwNotReady,
     commandPrefix,
     defaultQuery,
+    wrapperRefusal,
     fieldChip,
     firstField,
     type BwApi,
@@ -50,6 +51,8 @@
   let error = $state<string | null>(null);
 
   const prefix = $derived(commandPrefix(command));
+  // Item 825: a wrapper (bash, env, sudo …) would cover every command.
+  const refused = $derived(wrapperRefusal(prefix));
   const pickedItem = $derived(items?.find((i) => i.id === picked) ?? null);
   const notReady = $derived(ready ? bwNotReady(ready, where) : null);
 
@@ -220,12 +223,13 @@
     {#if pickedItem}
       <div class="bw-acts">
         <button class="{btn('primary')} bw-once" type="button" disabled={busy || disabled || !field} use:tip={BW_ONCE_TIP} onclick={() => void use(false)}>Use once</button>
-        <span use:tip={prefix ? BW_ALWAYS_TIP : BW_NO_COMMAND_TIP}>
-          <button class="{btn('plain')} bw-always" type="button" disabled={busy || disabled || !field || !prefix} onclick={() => void use(true)}>
+        <span use:tip={refused ? null : prefix ? BW_ALWAYS_TIP : BW_NO_COMMAND_TIP}>
+          <button class="{btn('plain')} bw-always" type="button" disabled={busy || disabled || !field || !prefix || !!refused} onclick={() => void use(true)}>
             {#if prefix}Always for <code>{prefix}</code>{:else}Always for this command{/if}
           </button>
         </span>
       </div>
+      {#if refused}<div class="bw-line small bw-refused">{#each refused.split("`") as part, i (i)}{#if i % 2}<code>{part}</code>{:else}{part}{/if}{/each}</div>{/if}
     {/if}
   {/if}
   {#if error}<div class="bw-line err">{error}</div>{/if}

@@ -51,6 +51,13 @@ pub const GATE_MATCHER: &str = "mcp__nightloom__request_secret";
 /// stored: `{"<NAME>": "<path>"}` — paths, never values.
 pub const STORED_FILE: &str = "secrets-stored.json";
 
+/// The note of values held for a Bitwarden "always" rule (item 825):
+/// `{"<NAME>": {"path", "held", "prefix"}}` — paths and words, never values.
+pub const HELD_FILE: &str = "secrets-held.json";
+
+/// The folder, inside a chat's store folder, a held value waits in.
+pub const HELD_DIR: &str = ".held";
+
 /// How long a stored value lives.
 pub const LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -180,6 +187,32 @@ impl Store {
     /// clears values past their day first. Says nothing of the value in any
     /// error.
     pub fn put(&self, chat: &str, name: &str, value: &str) -> Result<PathBuf, String> {
+        let dir = self.root.join(chat_folder(chat));
+        self.put_in(&dir, chat, name, value)
+    }
+
+    /// Where a value answered by a Bitwarden rule waits (item 825): the
+    /// chat's store folder's [`HELD_DIR`], never the file the model is told.
+    pub fn held_path(&self, chat: &str, name: &str) -> PathBuf {
+        self.root.join(chat_folder(chat)).join(HELD_DIR).join(name)
+    }
+
+    /// Keep a value for a Bitwarden rule (item 825): in the held copy only.
+    /// The file the model reads ([`Self::path`]) is removed, so nothing is
+    /// there until the hook releases it for a command that runs the rule.
+    pub fn hold(&self, chat: &str, name: &str, value: &str) -> Result<PathBuf, String> {
+        let dir = self.root.join(chat_folder(chat)).join(HELD_DIR);
+        let held = self.put_in(&dir, chat, name, value)?;
+        let _ = std::fs::remove_file(self.path(chat, name));
+        Ok(held)
+    }
+
+    /// A held value, if it is there and not past its day.
+    pub fn held(&self, chat: &str, name: &str) -> Option<Secret> {
+        read_secret(&self.held_path(chat, name), name)
+    }
+
+    fn put_in(&self, dir: &Path, chat: &str, name: &str, value: &str) -> Result<PathBuf, String> {
         let name = requested_name(&json!({ "name": name }))?;
         if value.is_empty() {
             return Err("nothing was entered".into());
@@ -188,9 +221,10 @@ impl Store {
             return Err(format!("too long (over {} KB)", VALUE_MAX / 1024));
         }
         self.sweep(LIFETIME);
-        let dir = self.root.join(chat_folder(chat));
         private_dir(&self.root).map_err(|e| format!("could not make the secrets folder: {e}"))?;
-        private_dir(&dir).map_err(|e| format!("could not make the secrets folder: {e}"))?;
+        private_dir(&self.root.join(chat_folder(chat)))
+            .map_err(|e| format!("could not make the secrets folder: {e}"))?;
+        private_dir(dir).map_err(|e| format!("could not make the secrets folder: {e}"))?;
         let path = dir.join(&name);
         let tmp = dir.join(format!(".{name}.{}", uuid::Uuid::new_v4()));
         write_private(&tmp, value.as_bytes())
@@ -204,34 +238,30 @@ impl Store {
 
     /// One stored value, if it is there and not past its day.
     pub fn get(&self, chat: &str, name: &str) -> Option<Secret> {
-        let path = self.path(chat, name);
-        if expired(&path, LIFETIME) {
-            let _ = std::fs::remove_file(&path);
-            return None;
-        }
-        let value = std::fs::read_to_string(&path).ok()?;
-        (!value.is_empty()).then(|| Secret {
-            name: name.to_string(),
-            value,
-        })
+        read_secret(&self.path(chat, name), name)
     }
 
-    /// Every value stored for `chat`, for the scrub.
+    /// Every value stored for `chat`, the held ones too (item 825), for the
+    /// scrub.
     pub fn all(&self, chat: &str) -> Vec<Secret> {
         let dir = self.root.join(chat_folder(chat));
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return Vec::new();
-        };
-        let mut out: Vec<Secret> = entries
-            .flatten()
-            .filter_map(|e| {
+        let mut out = Vec::new();
+        for (d, held) in [(dir.clone(), false), (dir.join(HELD_DIR), true)] {
+            let Ok(entries) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            out.extend(entries.flatten().filter_map(|e| {
                 let name = e.file_name().to_string_lossy().into_owned();
                 if name.starts_with('.') {
                     return None;
                 }
-                self.get(chat, &name)
-            })
-            .collect();
+                if held {
+                    self.held(chat, &name)
+                } else {
+                    self.get(chat, &name)
+                }
+            }));
+        }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         out
     }
@@ -247,13 +277,18 @@ impl Store {
             if !dir.is_dir() {
                 continue;
             }
-            if let Ok(files) = std::fs::read_dir(&dir) {
-                for f in files.flatten() {
-                    if expired(&f.path(), age) {
-                        let _ = std::fs::remove_file(f.path());
+            // The held copies first (item 825), then the folder's own.
+            let held = dir.join(HELD_DIR);
+            for d in [&held, &dir] {
+                if let Ok(files) = std::fs::read_dir(d) {
+                    for f in files.flatten() {
+                        if f.path().is_file() && expired(&f.path(), age) {
+                            let _ = std::fs::remove_file(f.path());
+                        }
                     }
                 }
             }
+            let _ = std::fs::remove_dir(&held);
             let _ = std::fs::remove_dir(&dir);
         }
     }
@@ -262,6 +297,19 @@ impl Store {
     pub fn forget_chat(&self, chat: &str) {
         let _ = std::fs::remove_dir_all(self.root.join(chat_folder(chat)));
     }
+}
+
+/// One value's file, if it is there and not past its day (removed if it is).
+fn read_secret(path: &Path, name: &str) -> Option<Secret> {
+    if expired(path, LIFETIME) {
+        let _ = std::fs::remove_file(path);
+        return None;
+    }
+    let value = std::fs::read_to_string(path).ok()?;
+    (!value.is_empty()).then(|| Secret {
+        name: name.to_string(),
+        value,
+    })
 }
 
 fn expired(path: &Path, age: Duration) -> bool {
@@ -312,8 +360,23 @@ fn read_stored(chat_dir: &Path) -> serde_json::Map<String, Value> {
 /// The shell's note, once his value for `name` is kept at `path`.
 pub fn note_stored(chat_dir: &Path, name: &str, path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(chat_dir)?;
+    // A value he gave on the card is the newest: a held one for the same
+    // name is no longer what the tool answers (item 825).
+    forget_held(chat_dir, name)?;
     let mut map = read_stored(chat_dir);
     map.insert(name.to_string(), json!(path.to_string_lossy()));
+    let tmp = chat_dir.join(format!("{STORED_FILE}.tmp"));
+    std::fs::write(&tmp, serde_json::to_vec(&Value::Object(map))?)?;
+    std::fs::rename(tmp, chat_dir.join(STORED_FILE))
+}
+
+/// Drop `name` from the shell's note (a held value replaces it, item 825).
+pub(crate) fn unnote_stored(chat_dir: &Path, name: &str) -> std::io::Result<()> {
+    let mut map = read_stored(chat_dir);
+    if map.remove(name).is_none() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(chat_dir)?;
     let tmp = chat_dir.join(format!("{STORED_FILE}.tmp"));
     std::fs::write(&tmp, serde_json::to_vec(&Value::Object(map))?)?;
     std::fs::rename(tmp, chat_dir.join(STORED_FILE))
@@ -703,6 +766,18 @@ impl RequestSecret {
     }
 }
 
+/// What the model reads when a Bitwarden rule answered (item 825): the
+/// value is held, and appears at `path` only while a command that runs the
+/// rule's words runs.
+pub fn held_reply(name: &str, path: &Path, prefix: &str) -> String {
+    let p = path.display();
+    format!(
+        "Stored: {name} came from Bitwarden — the user allowed it always for `{prefix}`. It appears in {p} only while a command that starts `{prefix}` runs; the file is empty at any other time.\n\
+         Run that command as one plain command that reads it as the command runs — for example `{name}=\"$(cat '{p}')\" {prefix} …` or `{prefix} … --token \"$(cat '{p}')\"`. A wrapper (bash -c, env, sudo, xargs), a pipe, `;`, `&&`, a subshell, a background run, a helper's command or any other tool that names the file is refused.\n\
+         Never print, echo or cat it on its own, never write it into a project file, a message or another tool's input, and never show it to the user. Anything that shows it is replaced by [secret {name}] in this chat's record."
+    )
+}
+
 /// What the model reads once his value is kept at `path`.
 pub fn stored_reply(name: &str, path: &Path) -> String {
     let p = path.display();
@@ -754,6 +829,9 @@ impl Tool for RequestSecret {
 
     async fn call(&self, input: Value, _cancel: &CancellationToken) -> Result<String, String> {
         let name = requested_name(&input)?;
+        if let Some(note) = held_note(&self.chat_dir, &name) {
+            return Ok(held_reply(&name, &note.path, &note.prefix));
+        }
         match stored_path(&self.chat_dir, &name) {
             Some(path) => Ok(stored_reply(&name, &path)),
             None => Err(format!(
@@ -762,6 +840,13 @@ impl Tool for RequestSecret {
         }
     }
 }
+
+#[path = "secret_release.rs"]
+mod release;
+pub use release::{
+    Gate, HeldNote, forget_held, held_note, note_held, rehold, release, release_gate, runs_rule,
+    shell_words,
+};
 
 #[cfg(test)]
 mod tests {

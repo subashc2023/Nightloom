@@ -25,9 +25,15 @@
 //!
 //! **What the model sees.** The card's item list goes to the window alone
 //! (names, a host, field names — never a value); the tool's result is the
-//! file's path, as for a typed value. What is *not* enforced, said plainly:
-//! the `command` is what the model declared; once the file exists, any
-//! command of that chat can read it within its day (as for a typed value).
+//! file's path, as for a typed value. ~~What is *not* enforced, said
+//! plainly: the `command` is what the model declared; once the file
+//! exists, any command of that chat can read it within its day~~ (struck
+//! 2026-11-17, item 825): an answer by a rule only *holds* the value; the
+//! hook releases it into the file just before a command that runs the
+//! rule's words, and refuses every other call that names it
+//! ([`crate::secret::release_gate`]). A wrapper prefix (a shell, `env`,
+//! `sudo`, `xargs`, an interpreter alone — [`wrapper_refusal`]) cannot be
+//! kept, and one saved before is dropped on load with a note.
 //!
 //! Never `bw serve` (it opens the whole vault to every local process, 2034
 //! report §3), never `bw get` output in a tool result or an error.
@@ -106,6 +112,23 @@ pub struct Rule {
 struct RulesFile {
     #[serde(default)]
     rules: Vec<Rule>,
+    /// Rules dropped on load because their prefix is a wrapper (item 825),
+    /// kept until he presses OK in Settings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    dropped: Vec<Dropped>,
+}
+
+/// An "always" rule dropped on load (item 825): its prefix is a wrapper
+/// that runs any command, so it cannot be kept. Never a value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dropped {
+    pub name: String,
+    pub item_name: String,
+    pub prefix: String,
+    /// Why, in one short line ([`wrapper_refusal`]).
+    pub why: String,
+    /// When it was dropped (RFC 3339).
+    pub when: String,
 }
 
 /// A session key he pasted. `Debug` never shows it.
@@ -571,6 +594,178 @@ pub fn prefix_matches(prefix: &str, command: &str) -> bool {
     !want.is_empty() && have.len() >= want.len() && have[..want.len()] == want[..]
 }
 
+// ---- wrappers (item 825) ----------------------------------------------------
+
+/// Programs that run another command they are handed — a shell, `env`,
+/// `sudo`, `xargs`, `eval` and the like. "Always" for one of them would be
+/// "always" for every command, so none can be kept as a prefix, and none
+/// is the program of a command the value is released to.
+pub const WRAPPERS: &[&str] = &[
+    "bash",
+    "sh",
+    "zsh",
+    "dash",
+    "ksh",
+    "mksh",
+    "fish",
+    "csh",
+    "tcsh",
+    "ash",
+    "busybox",
+    "env",
+    "sudo",
+    "doas",
+    "su",
+    "xargs",
+    "eval",
+    "exec",
+    "command",
+    "builtin",
+    "nohup",
+    "time",
+    "nice",
+    "ionice",
+    "timeout",
+    "gtimeout",
+    "watch",
+    "script",
+    "parallel",
+    "caffeinate",
+    "stdbuf",
+    "setsid",
+    "chroot",
+    "flock",
+    "arch",
+    "unbuffer",
+    "expect",
+    "launchctl",
+    "osascript",
+    // Review (merge round V): more that run the command they are handed.
+    "sandbox-exec",
+    "xcrun",
+    "taskset",
+    "chrt",
+    "pkexec",
+    "runuser",
+    "unshare",
+    "nsenter",
+    "strace",
+    "ltrace",
+    "dtruss",
+    "gdb",
+    "lldb",
+    "valgrind",
+    "entr",
+    "firejail",
+    "bwrap",
+    "proxychains",
+    "proxychains4",
+    "torsocks",
+    "fakeroot",
+    "faketime",
+    "rlwrap",
+    "ssh-agent",
+    "systemd-run",
+    "dbus-run-session",
+];
+
+/// Launchers of two or three words (review, merge round V): alone, like an interpreter
+/// alone, they run any package or command they are handed (`npm exec -c
+/// '…'`, `uv run -- sh`), so "always" cannot be kept for one; with a name
+/// after them (`uv run deploy.py`) the prefix names that.
+pub const LAUNCHERS: &[&str] = &[
+    "npm exec",
+    "npm x",
+    "pnpm exec",
+    "pnpm dlx",
+    "yarn exec",
+    "yarn dlx",
+    "bun x",
+    "bun run",
+    "deno run",
+    "deno eval",
+    "uv run",
+    "uv tool",
+    "uv tool run",
+    "poetry run",
+    "pipenv run",
+    "pdm run",
+    "hatch run",
+    "rye run",
+    "conda run",
+    "mamba run",
+    "micromamba run",
+    "bundle exec",
+    "mise exec",
+    "mise x",
+    "asdf exec",
+    "nix run",
+    "nix shell",
+    "nix develop",
+    "direnv exec",
+    "go run",
+];
+
+/// Interpreters and package runners: alone, the prefix covers `-c`/`-e`
+/// and any package (`python3 -c …` keeps only `python3`); with a script
+/// after them (`python3 deploy.py`) the prefix names that script.
+pub const INTERPRETERS: &[&str] = &[
+    "python", "python2", "python3", "pypy", "pypy3", "node", "nodejs", "deno", "bun", "perl",
+    "ruby", "php", "lua", "luajit", "tclsh", "wish", "rscript", "awk", "gawk", "mawk", "nawk",
+    "npx", "pnpx", "bunx", "uvx", "pipx", "jshell", "irb", "swift",
+];
+
+/// A program word's own name: the last part of a path, lower-cased, a
+/// version suffix dropped (`/usr/bin/python3.12` → `python3`).
+fn program_name(word: &str) -> String {
+    let base = word.rsplit('/').next().unwrap_or(word).to_ascii_lowercase();
+    // python3.12 → python3; ruby3.3 → ruby3 → ruby (below).
+    match base.find('.') {
+        Some(i)
+            if base[i + 1..]
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '.') =>
+        {
+            base[..i].to_string()
+        }
+        _ => base,
+    }
+}
+
+/// Whether `word`, as a command's program, is a wrapper ([`WRAPPERS`]).
+pub fn is_wrapper(word: &str) -> bool {
+    let name = program_name(word);
+    WRAPPERS.contains(&name.as_str())
+}
+
+/// Why "always" cannot be kept for `prefix`, in one short line; `None`
+/// when it can. A wrapper as its program, or an interpreter alone.
+pub fn wrapper_refusal(prefix: &str) -> Option<String> {
+    let words: Vec<&str> = prefix.split_whitespace().collect();
+    let first = *words.first()?;
+    let name = program_name(first);
+    let interpreter = INTERPRETERS.contains(&name.as_str())
+        || INTERPRETERS.contains(&name.trim_end_matches(|c: char| c.is_ascii_digit()));
+    if is_wrapper(first) {
+        Some(format!(
+            "Not for `{first}`: it runs any command it is given."
+        ))
+    } else if interpreter && words.len() == 1 {
+        Some(format!(
+            "Not for `{first}` alone: it runs any code it is given."
+        ))
+    } else if words.len() > 1
+        && LAUNCHERS.contains(&format!("{name} {}", words[1..].join(" ")).as_str())
+    {
+        Some(format!(
+            "Not for `{}` alone: it runs any code it is given.",
+            words.join(" ")
+        ))
+    } else {
+        None
+    }
+}
+
 /// The command the model named on `request_secret`, if any.
 pub fn requested_command(input: &Value) -> Option<String> {
     input
@@ -583,11 +778,64 @@ pub fn requested_command(input: &Value) -> Option<String> {
 
 // ---- the rules -------------------------------------------------------------
 
-fn read_rules(home: &Path) -> RulesFile {
+/// The rules file as it is on disk, nothing dropped.
+fn read_rules_raw(home: &Path) -> RulesFile {
     std::fs::read(home.join(RULES_FILE))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()
+}
+
+/// The rules file, with any rule whose prefix is a wrapper dropped (item
+/// 825): written back without it, and noted in `dropped` for Settings.
+fn read_rules(home: &Path) -> RulesFile {
+    read_rules_noting(home).0
+}
+
+/// [`read_rules`] and the rules it dropped just now.
+fn read_rules_noting(home: &Path) -> (RulesFile, Vec<Dropped>) {
+    let mut file = read_rules_raw(home);
+    let mut now = Vec::new();
+    file.rules.retain(|r| match wrapper_refusal(&r.prefix) {
+        Some(why) => {
+            now.push(Dropped {
+                name: r.name.clone(),
+                item_name: r.item_name.clone(),
+                prefix: r.prefix.clone(),
+                why,
+                when: chrono::Utc::now().to_rfc3339(),
+            });
+            false
+        }
+        None => true,
+    });
+    if !now.is_empty() {
+        file.dropped.extend(now.iter().cloned());
+        // Best-effort: if it cannot be written, the rule is still dropped
+        // here and on every read after.
+        let _ = write_rules(home, &file);
+    }
+    (file, now)
+}
+
+/// The rules dropped on load and not yet seen (Settings shows them).
+pub fn dropped(home: &Path) -> Vec<Dropped> {
+    read_rules(home).dropped
+}
+
+/// He pressed OK on the dropped notes.
+pub fn clear_dropped(home: &Path) -> Result<(), String> {
+    let mut file = read_rules(home);
+    file.dropped.clear();
+    write_rules(home, &file)
+}
+
+/// The words a turn says when a read dropped rules (item 825).
+pub fn dropped_notice(d: &Dropped) -> String {
+    format!(
+        "Bitwarden: the Always rule for {} ({}) on `{}` was removed. {}",
+        d.name, d.item_name, d.prefix, d.why
+    )
 }
 
 fn write_rules(home: &Path, file: &RulesFile) -> Result<(), String> {
@@ -620,6 +868,9 @@ pub fn add_rule(
 ) -> Result<Rule, String> {
     let prefix = command_prefix(command)
         .ok_or_else(|| "That command has no plain first word to allow it by.".to_string())?;
+    if let Some(why) = wrapper_refusal(&prefix) {
+        return Err(why);
+    }
     if !valid_id(item_id) {
         return Err("That is not a Bitwarden item id.".into());
     }
@@ -650,12 +901,19 @@ pub fn remove_rule(home: &Path, id: &str) -> Result<Vec<Rule>, String> {
 
 /// The rule that answers a `request_secret` for `name` naming `command`.
 pub fn matching(home: &Path, name: &str, command: Option<&str>) -> Option<Rule> {
-    let command = command?;
-    read_rules(home)
-        .rules
-        .into_iter()
-        .rev()
-        .find(|r| r.name == name && prefix_matches(&r.prefix, command))
+    matching_noting(home, name, command).0
+}
+
+/// [`matching`], and the wrapper rules the read dropped just now (item 825).
+fn matching_noting(home: &Path, name: &str, command: Option<&str>) -> (Option<Rule>, Vec<Dropped>) {
+    let (file, dropped) = read_rules_noting(home);
+    let rule = command.and_then(|command| {
+        file.rules
+            .into_iter()
+            .rev()
+            .find(|r| r.name == name && prefix_matches(&r.prefix, command))
+    });
+    (rule, dropped)
 }
 
 // ---- the card's two roads ---------------------------------------------------
@@ -688,8 +946,13 @@ pub fn store_from_item(
 }
 
 /// The turn's check before a card (agent_turn): a rule for this name and
-/// command, and an open session → the value is stored and the call needs
+/// command, and an open session → the value is **held** and the call needs
 /// no card. Returns the rule used; `None` asks him on the card.
+///
+/// Item 825: the declared `command` only finds the rule. The value goes to
+/// the held copy ([`crate::secret::Store::hold`]), not to the file the
+/// model is told of; the hook copies it there only for a command that
+/// runs the rule's words ([`crate::secret::release_gate`]).
 pub fn answer_by_rule(
     vault: &Vault,
     store: &crate::secret::Store,
@@ -698,13 +961,29 @@ pub fn answer_by_rule(
     name: &str,
     command: Option<&str>,
 ) -> Option<Rule> {
-    let rule = matching(home?, name, command)?;
-    if !vault.holds_session() {
-        return None;
-    }
-    let (_, value) = vault.value(&rule.item_id, &rule.field).ok()?;
-    store.put(chat, name, &value).ok()?;
-    Some(rule)
+    answer_by_rule_noting(vault, store, home, chat, name, command).0
+}
+
+/// [`answer_by_rule`], and the wrapper rules its read dropped (item 825),
+/// for the turn to say so.
+pub fn answer_by_rule_noting(
+    vault: &Vault,
+    store: &crate::secret::Store,
+    home: Option<&Path>,
+    chat: &str,
+    name: &str,
+    command: Option<&str>,
+) -> (Option<Rule>, Vec<Dropped>) {
+    let Some(home) = home else {
+        return (None, Vec::new());
+    };
+    let (rule, dropped) = matching_noting(home, name, command);
+    let held = rule.filter(|_| vault.holds_session()).and_then(|rule| {
+        let (_, value) = vault.value(&rule.item_id, &rule.field).ok()?;
+        store.hold(chat, name, &value).ok()?;
+        Some(rule)
+    });
+    (held, dropped)
 }
 
 #[cfg(test)]

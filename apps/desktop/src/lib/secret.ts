@@ -93,6 +93,61 @@ export function commandPrefix(command: string | null): string | null {
   return words.length ? words.join(" ") : null;
 }
 
+/**
+ * Item 825: programs that run another command — "always" for one would be
+ * "always" for every command. The same lists as `bitwarden::WRAPPERS` and
+ * `bitwarden::INTERPRETERS`.
+ */
+export const WRAPPERS = [
+  "bash", "sh", "zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh", "ash", "busybox", "env",
+  "sudo", "doas", "su", "xargs", "eval", "exec", "command", "builtin", "nohup", "time", "nice",
+  "ionice", "timeout", "gtimeout", "watch", "script", "parallel", "caffeinate", "stdbuf",
+  "setsid", "chroot", "flock", "arch", "unbuffer", "expect", "launchctl", "osascript",
+  // Review (merge round V).
+  "sandbox-exec", "xcrun", "taskset", "chrt", "pkexec", "runuser", "unshare", "nsenter", "strace",
+  "ltrace", "dtruss", "gdb", "lldb", "valgrind", "entr", "firejail", "bwrap", "proxychains",
+  "proxychains4", "torsocks", "fakeroot", "faketime", "rlwrap", "ssh-agent", "systemd-run",
+  "dbus-run-session",
+];
+/** Launchers of two or three words, refused alone (`bitwarden::LAUNCHERS`). */
+export const LAUNCHERS = [
+  "npm exec", "npm x", "pnpm exec", "pnpm dlx", "yarn exec", "yarn dlx", "bun x", "bun run",
+  "deno run", "deno eval", "uv run", "uv tool", "uv tool run", "poetry run", "pipenv run", "pdm run", "hatch run",
+  "rye run", "conda run", "mamba run", "micromamba run", "bundle exec", "mise exec", "mise x",
+  "asdf exec", "nix run", "nix shell", "nix develop", "direnv exec", "go run",
+];
+export const INTERPRETERS = [
+  "python", "python2", "python3", "pypy", "pypy3", "node", "nodejs", "deno", "bun", "perl",
+  "ruby", "php", "lua", "luajit", "tclsh", "wish", "rscript", "awk", "gawk", "mawk", "nawk",
+  "npx", "pnpx", "bunx", "uvx", "pipx", "jshell", "irb", "swift",
+];
+
+/** A program word's own name: `/usr/bin/python3.12` → `python3`. */
+function programName(word: string): string {
+  let base = (word.split("/").pop() ?? word).toLowerCase();
+  const dot = base.indexOf(".");
+  if (dot >= 0 && /^[0-9.]*$/.test(base.slice(dot + 1))) base = base.slice(0, dot);
+  return base;
+}
+
+/**
+ * Why "always" cannot be kept for `prefix`, in one short line, or null —
+ * the same rule as `bitwarden::wrapper_refusal`.
+ */
+export function wrapperRefusal(prefix: string | null): string | null {
+  if (!prefix) return null;
+  const words = prefix.trim().split(/\s+/);
+  const first = words[0];
+  if (!first) return null;
+  const name = programName(first);
+  if (WRAPPERS.includes(name)) return `Not for \`${first}\`: it runs any command it is given.`;
+  const interp = INTERPRETERS.includes(name) || INTERPRETERS.includes(name.replace(/[0-9]+$/, ""));
+  if (interp && words.length === 1) return `Not for \`${first}\` alone: it runs any code it is given.`;
+  if (words.length > 1 && LAUNCHERS.includes(`${name} ${words.slice(1).join(" ")}`))
+    return `Not for \`${words.join(" ")}\` alone: it runs any code it is given.`;
+  return null;
+}
+
 /** The search the card starts with: GITHUB_TOKEN → "github". */
 export function defaultQuery(name: string): string {
   const first = name.split("_").find((w) => w.length > 1) ?? name;
@@ -128,7 +183,7 @@ export function bwNotReady(ready: BwReady, where: "mac" | "phone"): string | nul
 
 /** The two Bitwarden buttons' tips (two short lines at most). */
 export const BW_ONCE_TIP = "Reads it for this card only.\nClaude sees only where it is.";
-export const BW_ALWAYS_TIP = "This item, for this command, without asking.\nRemove it in Settings → Bitwarden.";
+export const BW_ALWAYS_TIP = "This item, for this command, without asking.\nGiven only while that command runs.";
 export const BW_NO_COMMAND_TIP = "Claude named no command,\nso there is nothing to allow it for.";
 
 /** Where the pasted session key goes. */

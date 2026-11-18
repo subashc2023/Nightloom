@@ -1127,6 +1127,8 @@
   }
   // Item 766 part 2: the Bitwarden group's rules and session (read below).
   let bwRules = $state<api.BitwardenRule[] | null>(null);
+  // Item 825: rules dropped on load because their prefix was a wrapper.
+  let bwDropped = $state<api.BitwardenDropped[]>([]);
   let bwSession = $state(false);
   const subSummaries = $derived({
     handoff: handoffSummary({
@@ -1156,6 +1158,7 @@
       .bitwardenRules()
       .then((r) => {
         bwRules = r.rules;
+        bwDropped = r.dropped ?? [];
         bwSession = r.session;
       })
       .catch(() => (bwRules = []));
@@ -1163,6 +1166,14 @@
   async function removeBwRule(id: string): Promise<void> {
     try {
       bwRules = await api.bitwardenRemoveRule(id);
+    } catch (e) {
+      addToast(`Bitwarden: ${String(e)}`);
+    }
+  }
+  async function clearBwDropped(): Promise<void> {
+    try {
+      await api.bitwardenClearDropped();
+      bwDropped = [];
     } catch (e) {
       addToast(`Bitwarden: ${String(e)}`);
     }
@@ -2956,12 +2967,25 @@
                 {/each}
               </ul>
             {/if}
+            {#if bwDropped.length}
+              <ul class="bw-rules bw-dropped" aria-label="Bitwarden rules removed">
+                {#each bwDropped as d, i (i)}
+                  <li>
+                    <span>Removed: <b class="sub-mono">{d.name}</b> from {d.item_name}, for <code>{d.prefix}</code>: {d.why.replace(/^Not for `[^`]*`( alone)?: /, "")}</span>
+                  </li>
+                {/each}
+              </ul>
+              <button class="ns-btn ghost small" onclick={() => void clearBwDropped()}>OK</button>
+            {/if}
           {/snippet}
           {#snippet help()}
             A chat that asks for one of these secrets and names a command that
             starts with these words gets the value from that Bitwarden item
-            without a card, while Bitwarden is unlocked in Nightloom. Any other
-            command, or a locked vault, asks on the card again.
+            without a card, while Bitwarden is unlocked in Nightloom — and the
+            value is there only while a command starting with those words
+            runs. Any other command, or a locked vault, asks on the card again.
+            A shell, env, sudo or an interpreter alone cannot be allowed: they
+            run any command.
           {/snippet}
         </SettingRow>
         <SettingRow fold="subscription/bitwarden-session" shown={subShown("bitwarden-session")}>

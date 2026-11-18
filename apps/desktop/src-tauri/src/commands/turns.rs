@@ -874,10 +874,23 @@ pub(crate) fn bitwarden_rules() -> serde_json::Value {
     let rules = nightloom_service::project::config_dir()
         .map(|h| nightloom_service::bitwarden::rules(&h))
         .unwrap_or_default();
+    // Item 825: rules dropped on load (a wrapper prefix), until he presses OK.
+    let dropped = nightloom_service::project::config_dir()
+        .map(|h| nightloom_service::bitwarden::dropped(&h))
+        .unwrap_or_default();
     serde_json::json!({
         "rules": rules,
+        "dropped": dropped,
         "session": nightloom_service::bitwarden::Vault::global().holds_session(),
     })
+}
+
+/// He pressed OK on the dropped-rule notes (item 825).
+#[tauri::command]
+pub(crate) fn bitwarden_clear_dropped() -> Result<(), String> {
+    let home =
+        nightloom_service::project::config_dir().ok_or_else(|| "no settings folder".to_string())?;
+    nightloom_service::bitwarden::clear_dropped(&home)
 }
 
 /// Remove one "always" rule (Settings).
