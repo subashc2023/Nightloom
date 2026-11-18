@@ -1302,6 +1302,30 @@ while the app is open (`keep_swept`). Not covered, by design: the model reads a 
 its own context, and the CLI's background-output files under its temp
 folder are not rewritten. The check: `secret_766_tests.rs`.
 
+### From Bitwarden (item 766 part 2)
+
+Below the typed field, the card has **or from Bitwarden** (`BitwardenPick.svelte`, used on the Mac and on the
+phone). It lists vault items by name, with the website's host and the names of their fields. It never shows a value:
+they come from `bw list items --search`, and the backend (`bitwarden.rs`) drops the values before anything is
+returned. He picks one item and one field. Then:
+
+- **Use once:** the backend reads that one value (`bw get item <id>`) and writes it into the same 0600 store a typed
+  value goes to. The card then answers with a bare Allow, so every scrub path above is unchanged.
+- **Always for `<prefix>`:** does the same, and also writes a rule (secret name, item id, field, command prefix) to
+  `~/.nightloom/bitwarden-rules.json`. The prefix is the first plain words of the `command` the model passed to
+  `request_secret` (`command_prefix`). Later, a `request_secret` call for that name, whose command starts with the
+  prefix, is answered before any card is drawn, if a session is open (`answer_by_rule`, in `agent_turn`). Any other
+  command, any other name, or a locked vault shows the card. Settings → Subscription → Bitwarden lists the rules and
+  removes them.
+
+The session: he pastes the key that `bw unlock --raw` prints, once, on the Mac's card. It is kept in memory only and
+reaches `bw` as `BW_SESSION`, never as an argument. It is forgotten after 30 minutes without use, on *Forget now*, or
+at quit. Nightloom never runs `bw unlock` or `bw login`, and runs `bw status` only when a card is drawn. When the
+card cannot use Bitwarden, it says why in one line, with what to do: not installed (`brew install bitwarden-cli`),
+signed out (`bw login`), or locked (`bw unlock --raw`, then paste; the phone says to do it on the Mac). Not enforced:
+the `command` is only what the model declared, and once the file exists any command in that chat can read it during
+its day.
+
 ## What `--append-system-prompt` carries
 
 Three parts, in this order, joined by blank lines (`prompt::agent_prompt`

@@ -478,6 +478,58 @@ export function storeSecret(chat: string, name: string, value: string): Promise<
   return invoke("store_secret", { chat, name, value });
 }
 
+/** Item 766 part 2: whether the Mac can read from Bitwarden (`bw status`). */
+export function bitwardenReady(): Promise<import("./secret").BwReady> {
+  return invoke("bitwarden_ready");
+}
+
+/** The key he pasted from `bw unlock --raw`; held in memory by the app. */
+export function bitwardenUseSession(key: string): Promise<import("./secret").BwReady> {
+  return invoke("bitwarden_use_session", { key });
+}
+
+/** Forget the held Bitwarden session now. */
+export function bitwardenForgetSession(): Promise<null> {
+  return invoke("bitwarden_forget_session");
+}
+
+/** Vault items matching `query`: names and field names, never a value. */
+export function bitwardenSearch(query: string): Promise<import("./secret").BwItem[]> {
+  return invoke("bitwarden_search", { query });
+}
+
+/** Read one item's field into the chat's private file; `alwaysFor` keeps the rule. */
+export function bitwardenStore(
+  chat: string,
+  name: string,
+  itemId: string,
+  field: string,
+  alwaysFor: string | null,
+): Promise<null> {
+  return invoke("bitwarden_store", { chat, name, itemId, field, alwaysFor });
+}
+
+/** One "always" rule (`bitwarden::Rule`). */
+export interface BitwardenRule {
+  id: string;
+  name: string;
+  item_id: string;
+  item_name: string;
+  field: string;
+  prefix: string;
+  added: string;
+}
+
+/** The "always" rules, and whether a session is held. */
+export function bitwardenRules(): Promise<{ rules: BitwardenRule[]; session: boolean }> {
+  return invoke("bitwarden_rules");
+}
+
+/** Remove one "always" rule. */
+export function bitwardenRemoveRule(id: string): Promise<BitwardenRule[]> {
+  return invoke("bitwarden_remove_rule", { id });
+}
+
 /**
  * Answer one `tool-approval` prompt. `reason` is handed to the model
  * verbatim on a denial, which is what lets it try something else instead of

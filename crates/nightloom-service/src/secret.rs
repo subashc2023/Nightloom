@@ -728,7 +728,8 @@ impl Tool for RequestSecret {
                  back a file path to read it from inside a command (\"$(cat '<path>')\"), never \
                  the value. Call it instead of asking them to paste a secret. `name` is what to \
                  call it, like GITHUB_TOKEN; `why` is one line for the card: what it is for and \
-                 where they find it. The main chat only, never a subagent."
+                 where they find it; `command` is the command you will run with it. The user may \
+                 fill it from Bitwarden. The main chat only, never a subagent."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -740,6 +741,10 @@ impl Tool for RequestSecret {
                     "why": {
                         "type": "string",
                         "description": "One line for the card: what it is for, and where the user finds it."
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "The command you will run with it, as you will run it (its first words are enough, like `gh release create`). The user can allow a Bitwarden item always for that command; name it every time."
                     }
                 },
                 "required": ["name"]

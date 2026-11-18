@@ -7,14 +7,39 @@
   // when the card goes. Shaped like the Playwright and stuck cards beside it.
   import { tip } from "./tip";
   import { app, resolveApproval } from "./state.svelte";
-  import { storeSecret } from "./api";
+  import { bitwardenReady, bitwardenSearch, bitwardenStore, bitwardenUseSession, storeSecret } from "./api";
+  import BitwardenPick from "./BitwardenPick.svelte";
   import { trackCard } from "./waitingNotice.svelte";
-  import { DECLINE_TIP, SECRET_DECLINED, SECRET_WHERE, USE_TIP, secretView } from "./secret";
+  import { DECLINE_TIP, SECRET_DECLINED, SECRET_WHERE, USE_TIP, secretCommand, secretView, type BwApi } from "./secret";
   import type { ApprovalRequest } from "./types";
 
   let { req }: { req: ApprovalRequest } = $props();
 
   const view = $derived(secretView(req.input));
+  const command = $derived(secretCommand(req.input));
+  const chatOf = () => req.chat ?? app.activeSessionId ?? "";
+  // Item 766 part 2: "From Bitwarden" — the value goes from `bw` to the
+  // same private file on this Mac; this card only ever sees names.
+  const bw: BwApi = {
+    ready: () => bitwardenReady(),
+    useSession: (key) => bitwardenUseSession(key),
+    search: (q) => bitwardenSearch(q),
+    store: async (itemId, field, alwaysFor) => {
+      await bitwardenStore(chatOf(), view.name, itemId, field, alwaysFor);
+    },
+  };
+
+  async function allowStored(): Promise<string | null> {
+    if (done) return null;
+    done = true;
+    value = "";
+    const ok = await resolveApproval(req.id, req.name, "allow");
+    if (!ok) {
+      done = false;
+      return "That request is no longer waiting: its reply has ended.";
+    }
+    return null;
+  }
   let value = $state("");
   let shown = $state(false);
   let done = $state(false);
@@ -120,6 +145,8 @@
     <button class="ns-btn" disabled={done} use:tip={DECLINE_TIP} onclick={decline}>Decline</button>
     <span class="keys">⏎ use · esc decline</span>
   </div>
+
+  <BitwardenPick api={bw} name={view.name} {command} where="mac" disabled={done} onstored={allowStored} />
 </div>
 
 <style>

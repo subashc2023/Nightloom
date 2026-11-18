@@ -131,7 +131,7 @@
   import Hosts from "./Hosts.svelte";
   import { PLAYWRIGHT_BUTTONS, PLAYWRIGHT_DECLINED, playwrightAction } from "../lib/playwright";
   import { stuckView } from "../lib/stuck";
-  import { SECRET_DECLINED } from "../lib/secret";
+  import { SECRET_DECLINED, secretView, type BwApi } from "../lib/secret";
   import SecretAsk from "./SecretAsk.svelte";
   // Item 300 (wave 8B F1): the drawer follows the finger; Recents and Projects.
   import { dragAxis, drawerX, fingerSpeed, settleOpen } from "./client";
@@ -2897,6 +2897,18 @@
     await answer(req, "allow");
     return null;
   }
+  // Item 766 part 2: "From Bitwarden" on the chat's host. The phone cannot
+  // hand over a session: a locked vault is unlocked on the Mac's card.
+  function bitwardenFor(req: ApprovalRequest): BwApi | null {
+    const via = sameHost ? client : chatClient;
+    if (!via) return null;
+    const name = secretView(req.input).name;
+    return {
+      ready: () => via.bitwardenReady(),
+      search: (q) => via.bitwardenSearch(q),
+      store: (itemId, field, alwaysFor) => via.bitwardenStore(req.chat ?? chatId ?? "", name, itemId, field, alwaysFor),
+    };
+  }
   let picks = $state<Record<string, Record<number, string[]>>>({});
   let others = $state<Record<string, Record<number, string>>>({});
   // Item 712: his comment on each option, by call, question, label.
@@ -3408,6 +3420,11 @@
               input={req.input}
               onuse={(name, value) => useSecret(req, name, value)}
               ondecline={() => void answer(req, "deny", undefined, undefined, SECRET_DECLINED)}
+              bw={bitwardenFor(req)}
+              onstored={async () => {
+                await answer(req, "allow");
+                return null;
+              }}
             />
           {:else if kind === "stuck"}
             <!-- 784: a run nobody watched repeated itself and was paused; the Mac's card. -->

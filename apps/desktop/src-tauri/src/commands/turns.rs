@@ -798,6 +798,98 @@ pub(crate) fn store_secret(chat: String, name: String, value: String) -> Result<
         .map(|_| ())
 }
 
+/// Item 766 part 2: whether the card can read from Bitwarden —
+/// `missing`, `unauthenticated`, `locked` or `unlocked`. Runs `bw status`
+/// only (never unlock, never login), when a card asks; nothing at launch.
+#[tauri::command]
+pub(crate) async fn bitwarden_ready() -> nightloom_service::bitwarden::Ready {
+    let vault = nightloom_service::bitwarden::Vault::global();
+    tauri::async_runtime::spawn_blocking(move || vault.ready())
+        .await
+        .unwrap_or(nightloom_service::bitwarden::Ready::Missing)
+}
+
+/// The key he pasted from `bw unlock --raw`: held in memory only, never
+/// logged; the state it leaves.
+#[tauri::command]
+pub(crate) async fn bitwarden_use_session(
+    key: String,
+) -> Result<nightloom_service::bitwarden::Ready, String> {
+    let vault = nightloom_service::bitwarden::Vault::global();
+    tauri::async_runtime::spawn_blocking(move || vault.use_session(&key))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Forget the held Bitwarden session now (Settings).
+#[tauri::command]
+pub(crate) fn bitwarden_forget_session() {
+    nightloom_service::bitwarden::Vault::global().forget_session();
+}
+
+/// Vault items matching `query`: names, a host and field names — never a
+/// value.
+#[tauri::command]
+pub(crate) async fn bitwarden_search(
+    query: String,
+) -> Result<Vec<nightloom_service::bitwarden::ItemView>, String> {
+    let vault = nightloom_service::bitwarden::Vault::global();
+    tauri::async_runtime::spawn_blocking(move || vault.search(&query))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The card's *Use once* / *Always for this command*: Nightloom reads the
+/// one value through `bw` and writes it to the same 0600 file a typed
+/// value goes to; `always_for` (the command the model named) also keeps
+/// the rule. The value never comes back to the window.
+#[tauri::command]
+pub(crate) async fn bitwarden_store(
+    chat: String,
+    name: String,
+    item_id: String,
+    field: String,
+    always_for: Option<String>,
+) -> Result<(), String> {
+    let vault = nightloom_service::bitwarden::Vault::global();
+    tauri::async_runtime::spawn_blocking(move || {
+        nightloom_service::bitwarden::store_from_item(
+            &vault,
+            &nightloom_service::secret::Store::default(),
+            nightloom_service::project::config_dir().as_deref(),
+            &chat,
+            &name,
+            &item_id,
+            &field,
+            always_for.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The "always" rules, for Settings, with whether a session is held.
+#[tauri::command]
+pub(crate) fn bitwarden_rules() -> serde_json::Value {
+    let rules = nightloom_service::project::config_dir()
+        .map(|h| nightloom_service::bitwarden::rules(&h))
+        .unwrap_or_default();
+    serde_json::json!({
+        "rules": rules,
+        "session": nightloom_service::bitwarden::Vault::global().holds_session(),
+    })
+}
+
+/// Remove one "always" rule (Settings).
+#[tauri::command]
+pub(crate) fn bitwarden_remove_rule(
+    id: String,
+) -> Result<Vec<nightloom_service::bitwarden::Rule>, String> {
+    let home =
+        nightloom_service::project::config_dir().ok_or_else(|| "no settings folder".to_string())?;
+    nightloom_service::bitwarden::remove_rule(&home, &id)
+}
+
 /// Answer one `tool-approval` prompt.
 ///
 /// `decision` is "allow", "always" or "deny"; a `reason` on a denial is
