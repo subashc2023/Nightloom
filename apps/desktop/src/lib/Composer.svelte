@@ -4225,11 +4225,12 @@
       >
         <!-- Item 776: cold reads `cache cold · next ≈ $1.65`; warm puts both prices on the face. -->
         <!-- Item 786: `unknown` after a stop that logged no reply; an aside on its own model says so. -->
-        {#if face === "unknown"}cache <span class="bottom-cache-when" aria-label="cache unknown until the next send">unknown</span>{:else if cache && !cache.warm}{#if aside && asideOwnModel}own model{:else}cache{/if} <span class="bottom-cache-when" aria-label={cacheLine(cache)}>cold</span>{:else}{@const hit = aside ? asideHit : cached}{#if hit != null}{Math.round(hit * 100)}%<span class="bottom-cache-word"> cached</span>{:else}cache{/if}{#if cache}
-          <span class="bottom-cache-when" aria-label={cacheLine(cache)}>· {remainingText(cache.remainingMs)}</span>
-        {/if}{/if}{#if cache && nextEst}<span class="bottom-cache-next"
-            >{#each nextEst.line.split(" · ") as part, i}{#if i > 0}{" "}{/if}<span class="next-part">· {part}</span>{/each}</span
-          >{/if}
+        <!-- Item 833 (merge round W): every part carries its separator in front (`.cache-sep`); a wrapped line's "·" is clipped (CSS below). -->
+        <span class="cache-flow"><span class="cache-lines"
+            >{#if face === "unknown"}<span class="cache-part"><span class="cache-sep" aria-hidden="true"></span>cache <span class="bottom-cache-when" aria-label="cache unknown until the next send">unknown</span></span>{:else if cache && !cache.warm}<span class="cache-part"><span class="cache-sep" aria-hidden="true"></span>{#if aside && asideOwnModel}own model{:else}cache{/if} <span class="bottom-cache-when" aria-label={cacheLine(cache)}>cold</span></span>{:else}{@const hit = aside ? asideHit : cached}<span class="cache-part"><span class="cache-sep" aria-hidden="true"></span>{#if hit != null}{Math.round(hit * 100)}%<span class="bottom-cache-word">{" cached"}</span>{:else}cache{/if}</span>{#if cache}<span class="cache-part bottom-cache-when" aria-label={cacheLine(cache)}><span class="cache-sep">·</span>{remainingText(cache.remainingMs)}</span>{/if}{/if}{#if cache && nextEst}<span class="bottom-cache-next"
+                >{#each nextEst.line.split(" · ") as part}<span class="cache-part next-part"><span class="cache-sep">·</span>{part}</span>{/each}</span
+              >{/if}</span
+          ></span>
       </div>
     {/if}
   {/snippet}
@@ -4664,6 +4665,41 @@
   .next-part {
     white-space: nowrap;
   }
+  /* Item 833, merge round W (his call: a wrapped line must not start with
+     "·"). Each part brings its separator in front at one fixed width — the
+     first part a blank one — and the lines are shifted left by that width
+     inside a clip, so every line's first separator falls outside it. The
+     separator keeps its width wherever it is, so the clip never changes
+     where the lines break (hiding it by script would: the part would then
+     fit back on the line above). */
+  .bottom-cache {
+    --cache-sep: calc(6px + 2ch);
+  }
+  .cache-flow {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+  }
+  .cache-lines {
+    display: flex;
+    flex-wrap: wrap;
+    margin-left: calc(-1 * var(--cache-sep));
+  }
+  .cache-part {
+    white-space: nowrap;
+  }
+  .cache-sep {
+    display: inline-block;
+    box-sizing: border-box;
+    width: var(--cache-sep);
+    padding-left: 6px;
+  }
+  /* The prices are parts of the same lines (the losing bar's own
+     `.bottom-cache-next` is not inside `.cache-lines`). */
+  .cache-lines > .bottom-cache-next {
+    display: contents;
+  }
   /* Backlog 408: the warning reads in the accent, and is a button. */
   .bottom-cache.losing {
     display: inline-flex;
@@ -4716,7 +4752,8 @@
     margin-left: 0;
   }
   @media (max-width: 560px) {
-    .bottom-cache-next {
+    .bottom-cache-next,
+    .cache-lines > .bottom-cache-next {
       display: none;
     }
     .bottom-cache.losing .bottom-cache-next {

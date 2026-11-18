@@ -27,6 +27,15 @@ describe("833: the aside box at narrow widths", () => {
     expect(composerSrc).toMatch(/\.bottom-cache\.losing \{[^}]*flex-wrap: nowrap;/);
   });
 
+  it("a wrapped line of the cache chip never starts with '·' (merge round W)", () => {
+    // Each part carries its separator in front at one width; the lines sit
+    // that width left inside a clip, so each line's first separator is unseen.
+    expect(composerSrc).toMatch(/\.cache-flow \{[^}]*overflow: hidden;/);
+    expect(composerSrc).toMatch(/\.cache-lines \{[^}]*flex-wrap: wrap;[^}]*margin-left: calc\(-1 \* var\(--cache-sep\)\);/);
+    expect(composerSrc).toMatch(/\.cache-sep \{[^}]*width: var\(--cache-sep\);/);
+    expect(composerSrc).toContain('<span class="cache-part next-part"><span class="cache-sep">·</span>{part}</span>');
+  });
+
   it("the card's head folds by measurement and wraps at its floor, never past the edge", () => {
     expect(cardSrc).toMatch(/bind:this=\{headEl\}\s*data-fold=\{headFold\}/);
     expect(cardSrc).toContain('<span class="head-word"> cached</span>');
