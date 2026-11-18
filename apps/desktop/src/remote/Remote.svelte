@@ -3942,7 +3942,7 @@
         {:else if sheet === "notes" && client}
           <NotesSheet {client} where={hostName(active ?? "mac")} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} project={notesPid} projectLabel={notesPid === null ? null : notesPid === NO_PROJECT ? "No project" : (projects.find((x) => x.id === notesPid)?.name ?? null)} resume={notesResume} onview={(v) => (notesPlace = v)} />
         {:else if sheet === "feedback" && client}
-          <FeedbackSheet {client} available={hasFeature(remote, "feedback")} host={remote.host} chat={chatId} chatTitle={chatId ? title : null} project={projects.find((x) => x.id === chatProject)?.name ?? null} onnote={note} />
+          <FeedbackSheet {client} available={hasFeature(remote, "feedback")} imagesOk={hasFeature(remote, "feedback_images")} host={remote.host} chat={chatId} chatTitle={chatId ? title : null} project={projects.find((x) => x.id === chatProject)?.name ?? null} onnote={note} />
         {:else if sheet === "nightshift" && client}
           <NightshiftSheet {client} host={remote.host} available={hasFeature(remote, "nightshift")} onnote={note} ontall={(t) => (sheetTall = t)} />
         {:else if sheet === "aside" && chatId}
