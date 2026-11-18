@@ -53,6 +53,8 @@
   import { asideReads } from "./state.svelte";
   import { coldUsdFor } from "./cacheRates.svelte";
   import { cardLog, continuableReply, continuedFromReply, nextChatMessage, type NextChat } from "./handoffButton";
+  import { reviewOf, runReview } from "./chatReview.svelte";
+  import { openPathAsTab } from "./forYou.svelte";
   import { carryFor } from "./handoffCarryFor";
   import { pushUndo } from "./state/edits.svelte";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
@@ -600,6 +602,22 @@
           undo: async () => undo(),
           redo: async () => redo(),
         }),
+
+      // Item 796: "Review this chat" — the digest of the chat's Claude Code
+      // transcript, one aside on its warm cache, a page in its thread.
+      review: cliSession
+        ? {
+            state: reviewOf(from, reply.index),
+            start: () => {
+              const meta = app.sessions.find((s) => s.id === from);
+              void runReview(
+                { chat: from, index: reply.index, agentSession: cliSession, title: meta?.title ?? meta?.first_user ?? "", thread: meta?.thread ?? null },
+                { openChat: () => app.activeSessionId },
+              );
+            },
+            open: (path) => void openPathAsTab(path, from),
+          }
+        : null,
     };
   });
 

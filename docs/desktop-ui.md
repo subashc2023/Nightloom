@@ -2781,3 +2781,36 @@ next turn reconnects with it; the hint says so. On Ask a subagent's browser
 call is refused (nightshift blocker 1415).
 The measurements and the flag spelling are in `service-agent.md`, *Browser:
 Claude in Chrome per chat*.
+
+## Review this chat: the retrospective at hand-off (nightshift item 796, 2026-11-18)
+
+From item 793's survey (§4 #3, Devin's "Session Insights"). The hand-off
+card's row carries *Review this chat* beside *Continue with this prompt*
+(`handoffButton.ts` `syncReview`, both layouts). One press runs three steps
+(`chatReview.svelte.ts`):
+
+1. **Digest, no model** — `retro_digest` → `nightloom_service::retrospective`
+   reads the chat's Claude Code transcript and lists, each with its line:
+   tool errors and denials, calls repeated with the same input, cache misses
+   (a request reading under 80% of the context before it; a gap over the
+   cache's hour marks it expired) with the write's cost at the rates table's
+   prices, tokens by tool (results' characters ÷ 4, said so) and by helper
+   (the `session_figures` split), the instruction and memory files read, and
+   his messages that read like a correction, verbatim (a heuristic, named on
+   the page). Measured on three of his chats of 334k–405k: 0.2–0.9 s.
+2. **Review pass** — the digest under an instruction, sent as an aside
+   (`ask_aside`: a throwaway fork on the chat's warm cache, nothing recorded
+   in the chat) with a `seq` past every card's, so no aside card draws it.
+   It asks for an issue timeline, what was read and then contradicted by
+   him, and at most three proposed rule changes as `- [ ]` lines with diffs,
+   each citing a transcript line. It runs only on the chat open in the
+   window (the aside forks that one) and not under a running turn.
+3. **Save** — `retro_save` writes `retrospectives/<date>-<chat>.md` in the
+   chat's thread folder, or the project's notes when it has none; a second
+   review that day gets `-2`, never over the first. The card then says
+   *Open the review* (the path is kept per card on disk, so a relaunch keeps
+   it) and opens the page as a tab. Nothing is applied: a proposed change
+   waits for his tick.
+
+A chat with no Claude Code session (the API engine) has no transcript and
+shows no button; a pane shows none, as it shows no *Continue*.

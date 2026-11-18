@@ -639,6 +639,25 @@ button {
   margin-left: auto;
   flex: none;
 }
+/* Item 796: "Review this chat" beside Continue (handoffButton.ts
+   `syncReview`), and its line — where the review stands — under both. */
+.markdown .handoff-go .handoff-review {
+  margin-left: auto;
+  flex: none;
+}
+.markdown .handoff-go .handoff-review + .handoff-continue {
+  margin-left: 0;
+}
+.markdown .handoff-go .handoff-review-line {
+  flex: 1 1 100%;
+  min-width: 0;
+  text-align: right;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+.markdown .handoff-go .handoff-review-line.handoff-warn {
+  color: var(--warn, var(--accent-ink));
+}
 
 /* Item 747: above the button, what the hand-off carries besides the prompt
    (handoffButton.ts `carryBlock`): the goal field, his messages the hand-off

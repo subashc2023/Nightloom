@@ -1725,6 +1725,8 @@ fn main() {
             commands::usage::plan_pace,
             commands::usage::plan_scoped_limits,
             commands::usage::session_figures,
+            commands::retro::retro_digest,
+            commands::retro::retro_save,
             commands::cli::cli_version_check,
             commands::cli::claude_auth_status,
             commands::cli::cli_update,
