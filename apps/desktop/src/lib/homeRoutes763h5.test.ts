@@ -62,3 +62,13 @@ describe("item 763 H5: Start cards", () => {
     expect(readRouteDrafts(s)).toEqual({});
   });
 });
+
+// The review (2026-11-18): a route that waits on something other than him says where and why in one line.
+describe("heldLine", () => {
+  it("says where it goes, read-only or not, and why — without the ledger's 'waiting' prefix", async () => {
+    const { heldLine } = await import("./homeRoutes");
+    const r = { id: "r4", at: "", kind: "start", project: "p3", project_name: "Nightshift", chat: null, label: null, prompt: "x", write: false, state: "queued", hold: null, cold: null, note: "waiting — a night run is going in Nightshift — it starts when the night ends" } as const;
+    expect(heldLine(r)).toBe("Waiting to start · a new chat in Nightshift · read-only · a night run is going in Nightshift — it starts when the night ends");
+    expect(heldLine({ ...r, write: true, note: null })).toBe("Waiting to start · a new chat in Nightshift · may write");
+  });
+});

@@ -103,6 +103,10 @@ struct FakeHost {
     /// Why the next prepare is refused.
     refuse: Mutex<Option<String>>,
     log: Mutex<Vec<SessionEvent>>,
+    /// The send never answers: the app quit mid-send (the review's tests).
+    hang: std::sync::atomic::AtomicBool,
+    /// Run once inside the next prepare: something he does mid-look.
+    on_prepare: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 fn host(config: &Path) -> Arc<FakeHost> {
@@ -116,6 +120,8 @@ fn host(config: &Path) -> Arc<FakeHost> {
         running: Mutex::default(),
         refuse: Mutex::default(),
         log: Mutex::default(),
+        hang: std::sync::atomic::AtomicBool::new(false),
+        on_prepare: Mutex::default(),
     })
 }
 
@@ -164,6 +170,9 @@ impl Host for FakeHost {
         if let Some(why) = self.refuse.lock().unwrap().take() {
             return Err(why);
         }
+        if let Some(f) = self.on_prepare.lock().unwrap().take() {
+            f();
+        }
         self.preps
             .lock()
             .unwrap()
@@ -181,6 +190,9 @@ impl Host for FakeHost {
             chat.to_string(),
             text.to_string(),
         ));
+        if self.hang.load(std::sync::atomic::Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
         *self.running.lock().unwrap() = Some(chat.to_string());
         Ok(Handed::Sent)
     }
@@ -793,3 +805,5 @@ fn the_cards_push_says_a_state_and_is_not_a_second_feed_row() {
         "every other approval is a row"
     );
 }
+
+mod review;

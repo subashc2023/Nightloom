@@ -1,5 +1,6 @@
 <script lang="ts">
   import { isImeKey } from "../lib/imeKey";
+  import { BY_HOME_TIP } from "../lib/homeRoutes";
   import { takeBlockKey } from "../lib/codeBlockKeys";
   /**
    * The phone page (nightshift backlog 091, Shape B; redesigned in item 246
@@ -736,6 +737,8 @@
     }
   }
 
+  /** Item 763 H5: the chats Home started, for the list's ⌂ mark. */
+  let byHome = $state(new Set<string>());
   async function refreshChats() {
     if (!client) return;
     try {
@@ -743,6 +746,11 @@
       // even when the host's active project moved since `projects` was read.
       const pid = activePid;
       chatsBy = { ...chatsBy, [pid]: await client.chats(pid || null) };
+      // Item 763 H5: which chats Home started (the list's mark); an older host has none.
+      void client
+        .homeRoutes()
+        .then((r) => (byHome = new Set(r.started)))
+        .catch(() => {});
       for (const p of projects) if (!p.active && expanded[p.id]) void loadProject(p.id);
       // 300 retest: the chat on screen's own project is re-read too, so its
       // title follows a rename or a turn (F1's Recents dropped the expanded
@@ -3775,7 +3783,7 @@
           {#each recents.filter((r) => matches(r.chat)) as r (r.pid + "/" + r.chat.id)}
             {@const here = r.chat.id === chatId && (chatProject ?? activePid) === r.pid}
             <button class="chat-row" class:here onclick={() => openChat(r.chat.id, r.pid || null)}>
-              <span class="chat-label">{r.chat.label}</span>
+              <span class="chat-label">{#if byHome.has(r.chat.id)}<span class="by-home" role="img" aria-label={BY_HOME_TIP} title={BY_HOME_TIP} data-by-home>⌂</span>{" "}{/if}{r.chat.label}</span>
               <span class="chat-meta">
                 <!-- Item 556: ~~only the desktop's open chat~~ — every chat whose turn runs. -->
                 {#if r.pid === activePid && r.chat.id === remote.active_chat}<span class="live-dot" class:run={remote.busy}></span>{:else if runningIds.has(r.chat.id)}<span class="live-dot run"></span>{/if}
@@ -5360,6 +5368,9 @@
   .chat-row.here {
     background: var(--sheet);
     box-shadow: inset 0 0 0 1px var(--line);
+  }
+  .chat-label .by-home {
+    color: var(--accent-ink);
   }
   .chat-label {
     overflow: hidden;

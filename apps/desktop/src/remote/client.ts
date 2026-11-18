@@ -977,7 +977,7 @@ export class Client {
     try {
       return (await this.call("/home/routes")).json();
     } catch (e) {
-      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return { cards: [], started: [] };
+      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return { cards: [], held: [], started: [] };
       throw e;
     }
   }

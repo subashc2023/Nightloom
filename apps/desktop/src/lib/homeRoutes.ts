@@ -26,6 +26,8 @@ export interface HomeRoute {
 
 export interface RoutesReply {
   cards: HomeRoute[];
+  /** Routes that need nothing from him but cannot start yet (a closed project, a night run), with why in `note`. */
+  held?: HomeRoute[];
   /** The chats Home started. */
   started: string[];
 }
@@ -52,6 +54,12 @@ export function routeChoices(r: HomeRoute): { pick: RoutePick | null; label: str
     { pick: "new", label: `New chat in ${r.project_name}${usd(r.cold?.new_usd ?? null)}` },
     { pick: "into", label: `Send into it anyway${usd(r.cold?.into_usd ?? null)}` },
   ];
+}
+
+/** One line for a route that waits on something other than him: where it goes, read-only or not, and why. */
+export function heldLine(r: HomeRoute): string {
+  const why = (r.note ?? "").replace(/^waiting — /, "");
+  return `Waiting to start · ${routeWhere(r)} · ${r.write ? "may write" : "read-only"}${why ? ` · ${why}` : ""}`;
 }
 
 /** The sidebar's mark on a chat Home started. */

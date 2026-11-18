@@ -10,8 +10,9 @@
 //!
 //! Home's Start cards (item 763 H5, [`crate::home::route`]):
 //!
-//! - `GET /home/routes` — `{cards, started}`: the routes waiting for his
-//!   tap, oldest first, and the chats Home started (the lists' mark).
+//! - `GET /home/routes` — `{cards, held, started}`: the routes waiting for
+//!   his tap, oldest first; the ones waiting on something else (a closed
+//!   project, a night run); and the chats Home started (the lists' mark).
 //! - `POST /home/routes/{id}/start` — `{prompt?, pick?}`: his tap. The
 //!   prompt as he left it; `pick` (`new` | `into`) on a cold card. The
 //!   route as it is after the host was asked to start it.
@@ -64,6 +65,10 @@ async fn ask(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Respo
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RoutesReply {
     pub cards: Vec<Route>,
+    /// Routes that need nothing from him but cannot start yet (a project
+    /// that is not open, a night run going in it), each with why.
+    #[serde(default)]
+    pub held: Vec<Route>,
     /// The chats a route of Home's began.
     pub started: Vec<String>,
 }
@@ -72,6 +77,7 @@ pub struct RoutesReply {
 pub fn routes_reply(config: &std::path::Path) -> RoutesReply {
     RoutesReply {
         cards: route::cards(config),
+        held: route::held(config),
         started: route::started_by_home(config),
     }
 }

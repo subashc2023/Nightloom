@@ -19,6 +19,7 @@
    * Jarvis and Classic, light and dark; `fil` adds Jarvis's mono heads.
    */
   import StartCard from "../lib/StartCard.svelte";
+  import RouteHeld from "../lib/RouteHeld.svelte";
   import { pruneRouteDrafts, readRouteDrafts, routeText, withRouteDraft, type HomeRoute, type RoutePick } from "../lib/homeRoutes";
   import { onDestroy, onMount, tick, type Component } from "svelte";
   import { renderMarkdown } from "../lib/markdown";
@@ -115,6 +116,8 @@
   let held = $state<HeldBlockerWire[]>([]);
   // Item 763 H5: Start cards — his edits kept as drafts, a tap that could not go says why.
   let cards = $state<HomeRoute[]>([]);
+  /** Routes waiting on something other than him (a closed project, a night run). */
+  let heldRoutes = $state<HomeRoute[]>([]);
   let routeDrafts = $state(readRouteDrafts());
   let routeBusy = $state<string | null>(null);
   let routeProblems = $state<Record<string, string>>({});
@@ -198,6 +201,7 @@
       held = h.blockers;
       if (rt) {
         cards = rt.cards;
+        heldRoutes = rt.held ?? [];
         routeDrafts = pruneRouteDrafts(routeDrafts, rt.cards);
       }
       running = r;
@@ -513,7 +517,10 @@
           ondismiss={() => void dismissCard(route.id)}
         />
       {/each}
-      {#if needs.length + cards.length === 0}
+      {#each heldRoutes as route (route.id)}
+        <RouteHeld {route} />
+      {/each}
+      {#if needs.length + cards.length + heldRoutes.length === 0}
         <p class="h-empty">{loading ? "Reading…" : "Nothing needs you."}</p>
       {/if}
       {#each needs as row (row.key)}

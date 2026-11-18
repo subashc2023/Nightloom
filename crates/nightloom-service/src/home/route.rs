@@ -30,6 +30,15 @@
 //!   ([`super::FeedRow`], kinds `route_started`, `route_done`,
 //!   `route_failed`) — in code, no model call. Home's turn ended long
 //!   before; it reads the feed, or asks [`STATUS_TOOL`], next time.
+//! - **The gate (the review, 2026-11-18).** The ledger is only a claim:
+//!   his taps are kept apart ([`taps`]), as the exact thing he saw. At
+//!   every start [`clear`] reads what the route is now — its project, its
+//!   chat's kind and cache — and a route that may write, or goes into a
+//!   cold big chat, runs only when his tap was for exactly that. A send
+//!   is handed to the host at most once, a quit in the middle included.
+//! - **Nights.** Nothing is routed into a project while a night run is
+//!   going in it ([`night_now`]), read-only included: it waits, says so,
+//!   and starts when the night ends.
 //! - **"Started by Home".** [`started_by_home`] is every chat a route
 //!   began; the lists mark those rows.
 
@@ -45,6 +54,8 @@ use serde_json::{Value, json};
 use crate::project::{PROJECTS_DIR, Project, Registry, SESSIONS_DIR};
 use crate::remote::{Handed, Host};
 use crate::store::{self, SessionSummary};
+
+pub mod taps;
 
 pub const START_TOOL: &str = "start_chat";
 pub const SEND_TOOL: &str = "send_chat";
@@ -69,6 +80,8 @@ const SUMMARY_MAX: usize = 240;
 pub const PROMPT_MAX: usize = 20_000;
 /// The Start card's push says only this (states, never Home's words).
 pub const CARD_PUSH: &str = "Has a start waiting for your tap";
+/// How a queued route that cannot start yet begins its note.
+const WAITING: &str = "waiting — ";
 /// A night log older than this is a night that ended without saying so.
 const NIGHT_MAX_SECS: u64 = 12 * 3600;
 
@@ -222,13 +235,15 @@ pub fn record(config: &Path, route: &Route) -> Result<(), String> {
     let _held = WRITER.lock().unwrap_or_else(|p| p.into_inner());
     let dir = super::dir_in(config);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let line = serde_json::to_string(route).map_err(|e| e.to_string())?;
+    // One write per line: the MCP server's process appends here too.
+    let mut line = serde_json::to_string(route).map_err(|e| e.to_string())?;
+    line.push('\n');
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(dir.join(FILE))
         .map_err(|e| format!("Home's route ledger could not be written: {e}"))?;
-    writeln!(f, "{line}").map_err(|e| e.to_string())
+    f.write_all(line.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Every route as it is now, oldest first; a damaged line is skipped.
@@ -257,9 +272,35 @@ pub fn find(config: &Path, id: &str) -> Option<Route> {
 
 /// The Start cards: every route waiting for his tap, oldest first.
 pub fn cards(config: &Path) -> Vec<Route> {
+    let registry = Registry::load_in(config);
     read(config)
         .into_iter()
         .filter(|r| r.state == State::Waiting)
+        .map(|mut r| {
+            // Said as it is now, not as it was when Home asked.
+            if night_in(&registry, &r) {
+                let why = format!(
+                    "a night run is going in {} — after your tap it starts when the night ends",
+                    r.project_name
+                );
+                r.note = Some(match r.note.take() {
+                    Some(n) => format!("{n}; {why}"),
+                    None => why,
+                });
+            }
+            r
+        })
+        .collect()
+}
+
+/// Routes he need not answer that cannot start yet — a project that is
+/// not open, a night run going in it — each with why in its `note`.
+pub fn held(config: &Path) -> Vec<Route> {
+    read(config)
+        .into_iter()
+        .filter(|r| {
+            r.state == State::Queued && r.note.as_deref().is_some_and(|n| n.starts_with(WAITING))
+        })
         .collect()
 }
 
@@ -377,6 +418,23 @@ pub fn night_running(workspace: &Path, now: std::time::SystemTime) -> bool {
         && !text.contains("NIGHT DONE")
 }
 
+/// A night is going in `workspace` now: its night log says so, or the
+/// app's own marker does (a live shift's `state/run.lock`).
+pub fn night_now(workspace: &Path) -> bool {
+    night_running(workspace, std::time::SystemTime::now())
+        || crate::nightshift::launch::is_live(workspace)
+}
+
+/// A night is going in `route`'s project.
+fn night_in(registry: &Registry, route: &Route) -> bool {
+    route
+        .project
+        .as_deref()
+        .and_then(|id| registry.find(id))
+        .and_then(|p| p.workspace.as_deref())
+        .is_some_and(night_now)
+}
+
 fn title_of(s: &SessionSummary) -> String {
     s.label(48)
 }
@@ -425,10 +483,6 @@ pub fn plan_start(
             "Home does not start work in itself — name the project the work belongs to".into(),
         );
     }
-    let night = project
-        .workspace
-        .as_deref()
-        .is_some_and(|w| night_running(w, std::time::SystemTime::now()));
     Ok(Route {
         id: new_id(now),
         at: now,
@@ -443,9 +497,7 @@ pub fn plan_start(
         hold: write.then_some(Hold::Write),
         cold: None,
         pick: None,
-        note: (write && night).then(|| {
-            "a night run is going in this project — starting now may collide with it".to_string()
-        }),
+        note: None,
         from: from.map(str::to_string),
         tapped_at: None,
         started_at: None,
@@ -520,6 +572,15 @@ pub fn chain_newest<'a>(
     (all.iter().find(|s| s.id == at), steps)
 }
 
+/// What the chat at `path` is **now**. The list's summary keeps only the
+/// kind a chat was made with; a chat made read-only and later allowed to
+/// write (or a job's chat, made and then held) reads wrong there, so the
+/// log itself is asked. A log that cannot be read counts as one that may
+/// write: it then needs his tap.
+pub fn kind_now(path: &Path) -> ChatKind {
+    Session::load(path).map_or(ChatKind::Build, |s| s.kind())
+}
+
 /// Whether the chat at `path` is big and cold now, and its two costs.
 pub fn cold_of(path: &Path, logs: &Path, now: DateTime<Utc>) -> Option<Cold> {
     let session = Session::load(path).ok()?;
@@ -577,7 +638,7 @@ pub fn plan_send(
     if target.mode != ChatMode::Normal {
         return Err("that chat is incognito — Home does not write into it".into());
     }
-    let write = target.kind != ChatKind::Chat;
+    let write = kind_now(&target.path) != ChatKind::Chat;
     let cold = cold_of(&target.path, dir.parent().unwrap_or(&dir), now);
     let followed = (steps > 0).then(|| {
         format!(
@@ -585,10 +646,6 @@ pub fn plan_send(
             title_of(named)
         )
     });
-    let night = project
-        .as_ref()
-        .and_then(|p| p.workspace.as_deref())
-        .is_some_and(|w| night_running(w, std::time::SystemTime::now()));
     let hold = if cold.is_some() {
         Some(Hold::Cold)
     } else if write {
@@ -596,10 +653,6 @@ pub fn plan_send(
     } else {
         None
     };
-    let mut notes: Vec<String> = followed.into_iter().collect();
-    if hold.is_some() && write && night {
-        notes.push("a night run is going in this project — sending now may collide with it".into());
-    }
     Ok(Route {
         id: new_id(now),
         at: now,
@@ -620,7 +673,7 @@ pub fn plan_send(
         hold,
         cold,
         pick: None,
-        note: (!notes.is_empty()).then(|| notes.join("; ")),
+        note: followed,
         from: from.map(str::to_string),
         tapped_at: None,
         started_at: None,
@@ -661,6 +714,11 @@ pub fn planned_words(route: &Route) -> String {
 
 // ---- his buttons ----------------------------------------------------------
 
+/// One answer per card: his Start, his Dismiss and the clock's own
+/// writes to a waiting card each read the card and write it under this,
+/// so two of them never both see it waiting.
+static DECIDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// His tap on a Start card: the route is queued with the prompt as he
 /// left it, and with his pick when the card was a cold one. The only way
 /// a waiting route starts. `Err` leaves the card as it was.
@@ -671,6 +729,7 @@ pub fn confirm(
     pick: Option<Pick>,
     now: DateTime<Utc>,
 ) -> Result<Route, String> {
+    let _one = DECIDING.lock().unwrap_or_else(|p| p.into_inner());
     let mut route = find(config, id).ok_or_else(|| "that Start card is gone".to_string())?;
     if route.state != State::Waiting {
         return Err("that Start card was already answered".into());
@@ -705,12 +764,23 @@ pub fn confirm(
     }
     route.state = State::Queued;
     route.tapped_at = Some(now);
+    // His tap, kept apart from the ledger, as what he saw — first, so a
+    // line with no tap behind it never reads as tapped.
+    taps::append(
+        config,
+        &taps::Line::Tap {
+            id: route.id.clone(),
+            at: now,
+            approved: taps::Approved::of(&route),
+        },
+    )?;
     record(config, &route)?;
     Ok(route)
 }
 
 /// His Dismiss: the card goes, nothing starts, the ledger keeps the line.
 pub fn dismiss(config: &Path, id: &str, now: DateTime<Utc>) -> Result<Route, String> {
+    let _one = DECIDING.lock().unwrap_or_else(|p| p.into_inner());
     let mut route = find(config, id).ok_or_else(|| "that Start card is gone".to_string())?;
     if route.state != State::Waiting {
         return Err("that Start card was already answered".into());
@@ -748,11 +818,148 @@ pub fn may_run(route: &Route) -> bool {
         && (route.hold != Some(Hold::Cold) || route.pick.is_some())
 }
 
+/// What the gate says of a queued route.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Clear {
+    /// It may be handed to the host; `write` is what its chat is.
+    Go { write: bool },
+    /// It needs his tap on what it is now: back to a card.
+    Ask {
+        hold: Hold,
+        cold: Option<Cold>,
+        write: bool,
+    },
+    /// Its line asks for something no route may do.
+    Refuse(String),
+}
+
+/// The gate every start passes, read from what the route **is** now, not
+/// from what its ledger line says of itself: the project (never Home),
+/// the chat (there, not incognito; a start's chat only the one it made),
+/// whether that chat may write, whether it is big and cold. A route that
+/// may write, or goes into a cold big chat, is cleared only by a tap of
+/// his ([`taps`]) on exactly this — same place, same kind, same pick,
+/// same prompt.
+pub fn clear(config: &Path, route: &Route, book: &taps::Book, now: DateTime<Utc>) -> Clear {
+    let registry = Registry::load_in(config);
+    let project = match route.project.as_deref() {
+        Some(id) => match registry.find(id) {
+            Some(p) => Some(p.clone()),
+            None => return Clear::Refuse("its project is gone from the Mac".into()),
+        },
+        None => None,
+    };
+    if project.as_ref().is_some_and(is_home) {
+        return Clear::Refuse("Home does not route work into itself".into());
+    }
+    let new_chat = route.kind == Kind::Start || route.pick == Some(Pick::New);
+    let (write, hold, cold) = if new_chat {
+        if project.is_none() {
+            return Clear::Refuse("a new chat needs a project".into());
+        }
+        if route.chat.is_some() && route.chat != book.made {
+            return Clear::Refuse("its line names a chat this route did not make".into());
+        }
+        (route.write, route.write.then_some(Hold::Write), None)
+    } else {
+        let Some(chat) = route.chat.as_deref() else {
+            return Clear::Refuse("its line names no chat".into());
+        };
+        let dir = sessions_of(config, project.as_ref());
+        let all = store::list(&dir).unwrap_or_default();
+        let Some(target) = all.iter().find(|s| s.id == chat) else {
+            return Clear::Refuse("its chat is gone".into());
+        };
+        if target.mode != ChatMode::Normal {
+            return Clear::Refuse("its chat is incognito — Home does not write into it".into());
+        }
+        let write = kind_now(&target.path) != ChatKind::Chat;
+        let cold = cold_of(&target.path, dir.parent().unwrap_or(&dir), now);
+        let hold = if cold.is_some() {
+            Some(Hold::Cold)
+        } else if write {
+            Some(Hold::Write)
+        } else {
+            None
+        };
+        (write, hold, cold)
+    };
+    let Some(hold) = hold else {
+        return Clear::Go { write };
+    };
+    let mut asked = taps::Approved::of(route);
+    asked.write = write;
+    let tapped =
+        book.tap.as_ref() == Some(&asked) && (hold != Hold::Cold || route.pick == Some(Pick::Into));
+    if tapped {
+        Clear::Go { write }
+    } else {
+        Clear::Ask { hold, cold, write }
+    }
+}
+
+/// A route that cannot ever start: recorded as failed, with why.
+fn fail(config: &Path, mut route: Route, why: String, now: DateTime<Utc>) {
+    route.state = State::Failed;
+    route.ended_at = Some(now);
+    route.summary = Some(why.clone());
+    let _ = record(config, &route);
+    feed(config, &route, "route_failed", why, now);
+}
+
 /// Start one queued route through the host's own job path: the chat is
 /// made (or held as it is) and the prompt goes into it off screen.
 async fn start(host: &dyn Host, config: &Path, mut route: Route, now: DateTime<Utc>) {
     if !may_run(&route) {
         return;
+    }
+    let book = taps::Book::of(config, &route.id);
+    match book.handed {
+        taps::Handed::No => {}
+        // Its line says "queued" again though the host already took it
+        // (an old line written again, or a quit between the send and the
+        // line): it is running, not to be sent a second time.
+        taps::Handed::Sent => {
+            route.state = State::Started;
+            route.started_at = route.started_at.or(Some(now));
+            let _ = record(config, &route);
+            return;
+        }
+        taps::Handed::CutOff => {
+            let why = "the app quit while this was being handed over — open its chat to see whether it went; it is not sent twice".to_string();
+            return fail(config, route, why, now);
+        }
+    }
+    match clear(config, &route, &book, now) {
+        Clear::Go { write } => route.write = write,
+        Clear::Refuse(why) => return fail(config, route, format!("not started — {why}"), now),
+        Clear::Ask { hold, cold, write } => {
+            let _one = DECIDING.lock().unwrap_or_else(|p| p.into_inner());
+            route.state = State::Waiting;
+            route.hold = Some(hold);
+            route.cold = cold;
+            route.write = write;
+            route.pick = None;
+            route.tapped_at = None;
+            route.pushed = false;
+            route.note = Some(
+                match hold {
+                    Hold::Cold => "its cache went cold before this could start",
+                    Hold::Write => "this is not what was tapped — it needs your tap as it is now",
+                }
+                .to_string(),
+            );
+            let _ = record(config, &route);
+            return;
+        }
+    }
+    // The design's rule: never route work into a repo during a night.
+    if night_in(&Registry::load_in(config), &route) {
+        let why = format!(
+            "a night run is going in {} — it starts when the night ends",
+            route.project_name
+        );
+        return wait(config, route, why, now);
     }
     let new_chat = route.kind == Kind::Start || route.pick == Some(Pick::New);
     let title = crate::jobs::title_from(&route.prompt);
@@ -777,9 +984,22 @@ async fn start(host: &dyn Host, config: &Path, mut route: Route, now: DateTime<U
         if new_chat {
             route.label = Some(title);
         }
-        if record(config, &route).is_err() {
+        let made = taps::Line::Made {
+            id: route.id.clone(),
+            chat: chat.clone(),
+        };
+        if taps::append(config, &made).is_err() || record(config, &route).is_err() {
             return;
         }
+    }
+    // At most once: said before the host is asked, so a quit in the
+    // middle is seen as one, never as "not sent yet".
+    let sending = taps::Line::Sending {
+        id: route.id.clone(),
+        at: now,
+    };
+    if taps::append(config, &sending).is_err() {
+        return;
     }
     // One row per routed turn: the route's own, not also the push's.
     super::job_run_started(&chat);
@@ -788,6 +1008,12 @@ async fn start(host: &dyn Host, config: &Path, mut route: Route, now: DateTime<U
         .await
     {
         Ok(Handed::Sent | Handed::Queued) => {
+            let _ = taps::append(
+                config,
+                &taps::Line::Sent {
+                    id: route.id.clone(),
+                },
+            );
             route.state = State::Started;
             route.started_at = Some(now);
             route.note = None;
@@ -797,6 +1023,12 @@ async fn start(host: &dyn Host, config: &Path, mut route: Route, now: DateTime<U
         }
         Err(why) => {
             super::job_run_ended(&chat);
+            let _ = taps::append(
+                config,
+                &taps::Line::Unsent {
+                    id: route.id.clone(),
+                },
+            );
             wait(config, route, why, now);
         }
     }
@@ -805,6 +1037,10 @@ async fn start(host: &dyn Host, config: &Path, mut route: Route, now: DateTime<U
 /// A route that could not start yet says why and is tried again at the
 /// next look; after a day it fails, and says so.
 fn wait(config: &Path, mut route: Route, why: String, now: DateTime<Utc>) {
+    // The host's reasons are worded for jobs; this is not one.
+    let why = why
+        .replace("the job runs when", "it starts when")
+        .replace("the job's project", "its project");
     let since = route.tapped_at.unwrap_or(route.at);
     if (now - since).num_seconds() > QUEUE_MAX_SECS {
         route.state = State::Failed;
@@ -814,7 +1050,7 @@ fn wait(config: &Path, mut route: Route, why: String, now: DateTime<Utc>) {
         let line = format!("Home could not start this in a day — {why}");
         return feed(config, &route, "route_failed", line, now);
     }
-    let note = format!("waiting — {why}");
+    let note = format!("{WAITING}{why}");
     if route.note.as_deref() != Some(note.as_str()) {
         route.note = Some(note);
         let _ = record(config, &route);
@@ -874,11 +1110,31 @@ async fn finish(host: &dyn Host, config: &Path, mut route: Route, now: DateTime<
 
 /// A new Start card's push, once: "Home — Has a start waiting for your
 /// tap". States only; the prompt never leaves the Mac in a push.
-async fn push_card(host: &dyn Host, config: &Path, mut route: Route) {
-    route.pushed = true;
-    if record(config, &route).is_err() {
-        return;
-    }
+async fn push_card(host: &dyn Host, config: &Path, route: Route, now: DateTime<Utc>) {
+    // Read again under his buttons' lock: the look's copy may be older
+    // than a Dismiss or a tap, and must not write the card back.
+    let route = {
+        let _one = DECIDING.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(mut route) =
+            find(config, &route.id).filter(|r| r.state == State::Waiting && !r.pushed)
+        else {
+            return;
+        };
+        route.pushed = true;
+        if record(config, &route).is_err() {
+            return;
+        }
+        route
+    };
+    let line = format!(
+        "Start card waiting — {} ({})",
+        route.place(),
+        match route.hold {
+            Some(Hold::Cold) => "cold chat, your pick",
+            _ => "may write, your tap",
+        }
+    );
+    feed(config, &route, "route_waiting", line, now);
     let Some(push) = host.push() else {
         return;
     };
@@ -915,18 +1171,7 @@ pub async fn tick(host: &dyn Host, now: DateTime<Utc>) {
         match route.state {
             State::Started => finish(host, &config, route, now).await,
             State::Queued => start(host, &config, route, now).await,
-            State::Waiting if !route.pushed => {
-                let line = format!(
-                    "Start card waiting — {} ({})",
-                    route.place(),
-                    match route.hold {
-                        Some(Hold::Cold) => "cold chat, your pick",
-                        _ => "may write, your tap",
-                    }
-                );
-                feed(&config, &route, "route_waiting", line, now);
-                push_card(host, &config, route).await;
-            }
+            State::Waiting if !route.pushed => push_card(host, &config, route, now).await,
             _ => {}
         }
     }
@@ -1101,7 +1346,7 @@ fn project_chats(config: &Path, said: &str, now: DateTime<Utc>) -> Result<String
             } else {
                 ""
             },
-            if s.kind == ChatKind::Chat {
+            if kind_now(&s.path) == ChatKind::Chat {
                 "read-only"
             } else {
                 "may write — a send waits for his tap"

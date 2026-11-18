@@ -6,6 +6,7 @@
    */
   import { untrack } from "svelte";
   import StartCard from "./StartCard.svelte";
+  import RouteHeld from "./RouteHeld.svelte";
   import { routeText } from "./homeRoutes";
   import { dismissRoute, home, refreshRoutes, setRouteDraft, startRoute } from "./home.svelte";
 
@@ -26,4 +27,7 @@
     onstart={(pick) => void startRoute(route.id, pick)}
     ondismiss={() => void dismissRoute(route.id)}
   />
+{/each}
+{#each home.heldRoutes as route (route.id)}
+  <RouteHeld {route} />
 {/each}

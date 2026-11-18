@@ -37,6 +37,8 @@ export const home = $state({
   marking: false,
   /** Item 763 H5: the Start cards waiting for his tap, oldest first. */
   cards: [] as HomeRoute[],
+  /** Routes waiting on something other than him (a closed project, a night run). */
+  heldRoutes: [] as HomeRoute[],
   /** The chats Home started (the sidebar's mark). */
   startedByHome: [] as string[],
   /** His half-edited prompts, by route id (kept across restarts). */
@@ -94,6 +96,7 @@ export async function refreshRoutes(): Promise<void> {
   try {
     const r = await api.homeRoutes();
     home.cards = r.cards ?? [];
+    home.heldRoutes = r.held ?? [];
     home.startedByHome = r.started ?? [];
     home.routeDrafts = pruneRouteDrafts(home.routeDrafts, home.cards);
   } catch {
