@@ -745,8 +745,9 @@ pub fn review_prompt(digest_md: &str) -> String {
          2. `## Read, then contradicted` — each instruction or memory this chat read (the digest's list, \
          or your own system prompt) that he then corrected you on: the rule's words, his words verbatim, \
          and both lines. Say \"None\" if there is none.\n\
-         3. `## Proposed rule changes` — at most {MAX_DIFFS}, only where a correction shows a rule is \
-         missing or wrong. Each as one line `- [ ] <file>: <one-sentence change> (from Lnnn)` followed by \
+         3. `## Proposed rule changes` — at most {MAX_DIFFS}, and only for an issue that came up more \
+         than once or cost real time or money, where a correction shows a rule is missing or wrong. \
+         \"None\" is the expected answer for most chats; never propose a change to have one. Each as one line `- [ ] <file>: <one-sentence change> (from Lnnn)` followed by \
          a fenced `diff` block against that file's current text (practices.md, a memory file, or the \
          project's CLAUDE.md). Nothing is applied until he ticks it. Say \"None\" if nothing earns one.\n\n\
          Lead with nothing else; no preamble, no closing.\n\n---\n\n{digest_md}"
