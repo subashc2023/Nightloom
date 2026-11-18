@@ -104,6 +104,10 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
   // aside's thread gets its date lines too (it has no hand-offs or scans to draw).
   ChatDividers: shared,
   ScanCard: shared,
+  // Item 799: chapters are read from the events in every kind of transcript; an aside keeps its renames under
+  // its own fold name (its one `inAside` guard), and lists chapters only once it has a mark past its start.
+  ChapterRule: shared,
+  ChapterContents: shared,
 };
 
 /**
@@ -116,7 +120,8 @@ export const KIND_GUARDS = {
   // (TurnAskHost, SessionCutNotice), both classified above.
   isChat: 17,
   inPane: 8,
-  inAside: 7,
+  // 8 since item 799: the chapters' scope (an aside keys its renames by its fold name).
+  inAside: 8,
   "src.chatActions": 10,
 } as const;
 

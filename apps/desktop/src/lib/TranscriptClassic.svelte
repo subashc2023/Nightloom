@@ -3,6 +3,11 @@
   // Item 703: where a turn's end cut running agents.
   import SessionCutNotice from "./SessionCutNotice.svelte";
   import ChatDividers from "./ChatDividers.svelte";
+  import ChapterRule from "./ChapterRule.svelte";
+  import ChapterContents from "./ChapterContents.svelte";
+  import { CONTENTS_CLEAR, chaptersOf, placeChapters } from "./chapters";
+  import { editsFor, withEdits, type ShownChapter } from "./chapterEdits.svelte";
+  import { peekChapterJump, takeChapterJump } from "./chapterJump.svelte";
   import ScanCard from "./ScanCard.svelte";
   import { handOffsOf, isScanMessage, placeDividers } from "./home";
   import { placeCuts } from "./sessionCut";
@@ -490,6 +495,13 @@
       handOffsOf(evs),
     ),
   );
+  // Item 799: chapters — dividers at the phase changes code can see (a
+  // plan approved, a helper wave, a turn's commits; hand-offs have their own
+  // line above) and the contents list at the top right that jumps to them.
+  const chapterList: ShownChapter[] = $derived(
+    chatId ? withEdits(chaptersOf(evs, liveFlags(evs)), editsFor(chatId)) : [],
+  );
+  const chapterPlaces = $derived(placeChapters(items, chapterList.filter((c) => !c.removed)));
 
   // ~~`findCallIn`~~ moved to `subagent.ts` with the placing (backlog 330).
   /** The assistant messages already projected, newest first — a
@@ -2014,6 +2026,38 @@
   let chasing = false;
   let chaseTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /** Item 799: a chapter's place — its divider, the hand-off's line, or (the start) its first message. */
+  function chapterEl(c: ShownChapter): HTMLElement | null {
+    if (!viewport) return null;
+    const sel = c.kind === "hand_off" ? `[data-hand-off="${c.index}"]` : c.kind === "start" ? anchorSelector(c.anchor) : `[data-chapter="${c.key}"]`;
+    return viewport.querySelector<HTMLElement>(sel);
+  }
+  async function jumpToChapter(c: ShownChapter) {
+    if (!viewport) return;
+    // A chapter above the render window: draw down to it first (item 482).
+    if (items.some((it) => it.index >= c.anchor)) await revealTurn(c.anchor);
+    const vp = viewport;
+    if (!vp || !chapterEl(c)) return;
+    pinned = false;
+    animateScroll(vp, () => {
+      const el = chapterEl(c);
+      if (!el) return null;
+      const top = el.getBoundingClientRect().top - vp.getBoundingClientRect().top + vp.scrollTop;
+      // Below the Contents pill, which sits over the column's top right.
+      return Math.max(0, Math.min(top - JUMP_OFFSET - CONTENTS_CLEAR, vp.scrollHeight - vp.clientHeight));
+    });
+    vp.focus({ preventScroll: true });
+  }
+  // A jump asked from another chat's contents (its hand-off chain), taken
+  // once this chat's log is drawn.
+  $effect(() => {
+    const key = peekChapterJump(chatId);
+    if (!key || items.length === 0) return;
+    const c = chapterList.find((x) => x.key === key) ?? chapterList.find((x) => x.kind === "start");
+    takeChapterJump();
+    if (c) setTimeout(() => void jumpToChapter(c), 120);
+  });
+
   function anchorTop(index: number): number | null {
     if (!viewport) return null;
     const el = viewport.querySelector<HTMLElement>(anchorSelector(index));
@@ -2483,6 +2527,7 @@
     {/if}
     {#each items as item, i (i)}
       {#if i >= drawFrom && dividerPlaces.before.has(i)}<ChatDividers dividers={dividerPlaces.before.get(i) ?? []} foldKey={(ix) => turnFold(ix, "hand_off")} classic />{/if}
+      {#if i >= drawFrom && chapterPlaces.before.has(i)}<ChapterRule chapters={chapterPlaces.before.get(i) ?? []} chat={chatId} classic />{/if}
       {#if i >= drawFrom && cutPlaces.before.has(i)}<SessionCutNotice cuts={cutPlaces.before.get(i) ?? []} resumed />{/if}
       <!-- Item 482: only the render window is drawn. -->
       {#if i < drawFrom}{:else if item.superseded}
@@ -2994,6 +3039,7 @@
          leaves the DOM under a reader. -->
     {#if cutPlaces.tail.length > 0}<SessionCutNotice cuts={cutPlaces.tail} resumed={false} />{/if}
     {#if dividerPlaces.tail.length > 0}<ChatDividers dividers={dividerPlaces.tail} foldKey={(ix) => turnFold(ix, "hand_off")} classic />{/if}
+    {#if chapterPlaces.tail.length > 0}<ChapterRule chapters={chapterPlaces.tail} chat={chatId} classic />{/if}
     {#if shown}
       <!-- Item 359: the live reply's anchor for its rib on the rail. One
            flex item, as the reply alone was; nothing styles it. -->
@@ -3134,6 +3180,7 @@
     {/if}
   </div>
 </div>
+<ChapterContents chapters={chapterList} chat={chatId} {viewport} classic onjump={jumpToChapter} />
 {#if showNav}
   <Navigator
     ticks={navTicks}
