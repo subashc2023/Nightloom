@@ -87,7 +87,8 @@
     type ExtraOp,
     type Try,
   } from "./client";
-  import { renderMarkdown, streamingTail } from "../lib/markdown";
+  import { renderMarkdown } from "../lib/markdown";
+  import { renderStreamingMarkdown } from "../lib/streamBlocks";
   import MathText from "../lib/MathText.svelte";
   // Item 820: pictures and video a reply names, under its text.
   import ReplyMedia from "../lib/ReplyMedia.svelte";
@@ -3344,7 +3345,7 @@
                still arriving is held until it closes, a table row until it is whole. -->
           {#each liveSegments(live) as s, k (k)}
             {#if s.kind === "tools"}{@render toolBox(s.tools, `live${k}`, true)}
-            {:else}<div class="md" use:codeBlocks={copy}>{@html renderMarkdown(k === liveSegments(live).length - 1 ? streamingTail(s.text) : s.text, { breaks: true, localImagesAsText: true })}</div>{/if}
+            {:else}<div class="md" use:codeBlocks={copy}>{@html k === liveSegments(live).length - 1 ? renderStreamingMarkdown(s.text, { breaks: true, localImagesAsText: true }) : renderMarkdown(s.text, { breaks: true, localImagesAsText: true })}</div>{/if}
           {/each}
           {@render sentChips(sentOf(live.tools))}
           {#if live.retry}
