@@ -53,7 +53,8 @@ export function openingPane(asked: string | null | undefined, recent: string | n
  * The groups in nav order. The order is his (backlog 127, 2026-09-16) with
  * Usage and Cost as two tabs of one group since 206: ⌘1 Usage & Cost (⌘1
  * again steps Usage → Cost), ⌘2 Subscription, ⌘3 Knowledge, ⌘4 Projects,
- * ⌘5 Providers, ⌘6 Web search, ⌘7 Appearance, ⌘8 Remote.
+ * ⌘5 Providers, ⌘6 Web search, ⌘7 Appearance, ⌘8 Remote, ⌘9 System
+ * (item 848: Quick Entry, Notifications and Sleep, out of Palette's foot).
  */
 export function settingsGroups(providerKinds: string[], searchBackendNames: string[]): NavGroup[] {
   return [
@@ -66,6 +67,8 @@ export function settingsGroups(providerKinds: string[], searchBackendNames: stri
     // Palette, then Animations (backlog 395): ⌘7 again steps between them.
     { title: "Appearance", panes: ["appearance", "animations"] },
     { title: "Remote", panes: ["remote", "away"] },
+    // Item 848: last, so no other group's ⌘-digit moves.
+    { title: "System", panes: ["quick-entry", "notifications", "sleep"] },
   ];
 }
 

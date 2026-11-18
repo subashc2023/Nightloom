@@ -578,7 +578,8 @@
     // its next/previous pane (nightshift backlog 109) — and the app's
     // provider and model digits wait for it to close. `SettingsModal`'s
     // own window handler takes them; this one only stands aside.
-    if (app.showSettings && primary && !e.shiftKey && /^(Digit[1-9]|Bracket(Left|Right))$/.test(e.code)) {
+    // ⌘F too (item 844): it focuses Settings' search box, not the transcript's find bar behind it.
+    if (app.showSettings && primary && !e.shiftKey && /^(Digit[1-9]|Bracket(Left|Right)|KeyF)$/.test(e.code)) {
       return false;
     }
     if (primary && /^Digit[1-9]$/.test(e.code)) {

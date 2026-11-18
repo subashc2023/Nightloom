@@ -203,7 +203,9 @@
     type GroupId as SubGroupId,
   } from "./settings/subscriptionPane";
   import { keepWarm, loadKeepWarmDefault, setKeepWarmDefault } from "./keepWarm.svelte";
-  import { paneFilter, setPaneFilter } from "./settings/paneState.svelte";
+  import { paneFilter, setPaneFilter, setOpen } from "./settings/paneState.svelte";
+  // Item 844: the search box at the top of the nav.
+  import { paneTitle, searchSettings, settingsIndex, type SettingHit } from "./settings/searchIndex";
   import {
     WRAP_UP,
     clearDefaultReadOrder,
@@ -254,6 +256,9 @@
   import HomeJobs from "./HomeJobs.svelte";
   // Item 795: Quick Entry's shortcut recorder.
   import QuickEntrySetting from "./QuickEntrySetting.svelte";
+  // Item 848: the System → Quick Entry row says the shortcut.
+  import { shortcutLabel } from "./quickEntry";
+  import { quickEntry } from "./quickEntry.svelte";
   import { revealFolder } from "./state.svelte";
 
   /**
@@ -965,6 +970,8 @@
   // localStorage when the modal opens, written on each change; `notify.ts`
   // reads the store again at each turn, so nothing here needs to be live.
   let notifyPrefs = $state<NotifyPrefs>(loadNotifyPrefs());
+  /** Item 848: how many of the three banners are on, for the nav row. */
+  const notifyOn = $derived([notifyPrefs.turnEnd, notifyPrefs.needsYou, notifyPrefs.usageRefresh].filter(Boolean).length);
   function setNotify(key: keyof NotifyPrefs, on: boolean) {
     notifyPrefs = { ...notifyPrefs, [key]: on };
     saveNotifyPrefs(notifyPrefs);
@@ -1440,7 +1447,125 @@
     select(all[(at < 0 ? 0 : at + dir + all.length) % all.length]);
   }
 
+  // ---- Item 844: search every setting from the top of the nav. The words
+  // stay in the box across closing and reopening Settings (paneState's
+  // filter rule: not across a relaunch); while there are words the nav
+  // lists the matches instead of the panes, as macOS's System Settings
+  // does, so he can step through them and each stays one click away.
+  const SEARCH_KEY = "settings-search";
+  const searchQuery = $derived(paneFilter(SEARCH_KEY));
+  const searchProviders = $derived((app.providers ?? []).map((p) => ({ kind: p.kind, label: providerLabel(p.kind) })));
+  const searchBackends = $derived((app.searchBackends ?? []).map((b) => ({ name: b.name, label: b.label })));
+  const searchIndexNow = $derived(settingsIndex(searchProviders, searchBackends));
+  const searchHits = $derived(
+    searchSettings(
+      searchIndexNow,
+      searchQuery,
+      (p) => paneTitle(p, searchProviders, searchBackends),
+      (p) => groups.find((g) => g.panes.includes(p))?.title ?? "",
+    ),
+  );
+  const searching = $derived(searchQuery.trim().length > 0);
+  let searchAt = $state(0);
+  let searchPicked = $state<SettingHit | null>(null);
+  let searchEl = $state<HTMLInputElement | null>(null);
+  let hitTimer: ReturnType<typeof setTimeout> | undefined;
+  onDestroy(() => clearTimeout(hitTimer));
+
+  function setSearch(text: string): void {
+    setPaneFilter(SEARCH_KEY, text);
+    searchAt = 0;
+    searchPicked = null;
+  }
+
+  /** The element a hit points at, once its pane is drawn: the control, else its card, else the pane's head. */
+  function hitTarget(hit: SettingHit): HTMLElement | null {
+    const pane = document.querySelector<HTMLElement>(".modal .pane");
+    if (!pane) return null;
+    const e = hit.entry;
+    if (e.fold) {
+      return (
+        pane.querySelector<HTMLElement>(`[data-fold="${e.fold.row}"]`) ??
+        pane.querySelector<HTMLElement>(`[data-fold="${e.fold.group}"]`)
+      );
+    }
+    const card =
+      [...pane.querySelectorAll<HTMLElement>(".card")].find(
+        (c) => c.querySelector(".ch .t")?.textContent?.trim() === e.section,
+      ) ?? pane.querySelector<HTMLElement>(`section[aria-label="${CSS.escape(e.section)}"]`);
+    if (card && e.label) {
+      const want = e.label.toLowerCase();
+      const inner = [...card.querySelectorAll<HTMLElement>("label, [aria-label], [role=radiogroup]")].find(
+        (el) =>
+          el.getAttribute("aria-label")?.toLowerCase() === want ||
+          (el.tagName === "LABEL" && (el.textContent ?? "").toLowerCase().includes(want)),
+      );
+      if (inner) return inner;
+    }
+    return card ?? pane.querySelector<HTMLElement>(".pane-head");
+  }
+
+  /** Open a hit's pane, bring the setting into view and light it for a moment. */
+  async function openHit(hit: SettingHit): Promise<void> {
+    searchPicked = hit;
+    searchAt = Math.max(0, searchHits.indexOf(hit));
+    const e = hit.entry;
+    if (e.fold) {
+      // A Subscription filter that would hide the row is cleared; the group is opened (and stays open, as his fold).
+      setPaneFilter("subscription", "");
+      setOpen(e.fold.group, true);
+    }
+    if (selected !== e.pane) select(e.pane);
+    await tick();
+    // The pane may still be laying out what it shows: one frame more (or
+    // 60 ms, for a window macOS is not drawing, where frames do not come).
+    await new Promise((r) => {
+      requestAnimationFrame(() => r(null));
+      setTimeout(() => r(null), 60);
+    });
+    const el = hitTarget(hit);
+    if (!el) return;
+    // tabPlace restores the pane's last scroll for 1.5 s after it is drawn
+    // and stops at the first wheel; this jump is his, so it stops it.
+    el.closest(".pane")?.dispatchEvent(new WheelEvent("wheel", { bubbles: false }));
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    el.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+    document.querySelectorAll(".search-hit").forEach((x) => x.classList.remove("search-hit"));
+    el.classList.add("search-hit");
+    clearTimeout(hitTimer);
+    hitTimer = setTimeout(() => el.classList.remove("search-hit"), 2600);
+  }
+
+  function onSearchKey(e: KeyboardEvent): void {
+    if (e.key === "Escape") {
+      if (!searchQuery) return; // an empty box: Escape closes Settings as before
+      e.preventDefault();
+      e.stopPropagation();
+      setSearch("");
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (searchHits.length === 0) return;
+      e.preventDefault();
+      const n = searchHits.length;
+      searchAt = (searchAt + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+      void tick().then(() =>
+        navEl?.querySelector<HTMLElement>(".hit.at")?.scrollIntoView({ block: "nearest" }),
+      );
+    } else if (e.key === "Enter") {
+      const h = searchHits[searchAt];
+      if (!h) return;
+      e.preventDefault();
+      void openHit(h);
+    }
+  }
+
   function onkeydown(e: KeyboardEvent) {
+    // Item 844: ⌘F (Ctrl+F elsewhere) puts the cursor in the search box, its words selected.
+    if ((isMac ? e.metaKey : e.ctrlKey) && !e.altKey && !e.shiftKey && e.code === "KeyF") {
+      e.preventDefault();
+      searchEl?.focus();
+      searchEl?.select();
+      return;
+    }
     if (e.key === "Escape") {
       app.showSettings = false;
       return;
@@ -1548,6 +1673,52 @@
 <div class="modal" use:pickSlide>
   <nav class="nav" bind:this={navEl} use:tabPlace={"settings:nav"}>
     <div class="nav-h">Settings</div>
+    <!-- Item 844: search every setting. Words here replace the panes below
+         with the matches; a pick opens its pane, scrolled to it and lit. -->
+    <div class="set-search">
+      <Icon name="search" size={13} />
+      <input
+        bind:this={searchEl}
+        type="text"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+        placeholder="Search settings"
+        aria-label="Search settings"
+        aria-controls="set-hits"
+        value={searchQuery}
+        oninput={(e) => setSearch(e.currentTarget.value)}
+        onkeydown={onSearchKey}
+      />
+      {#if searching}
+        <button class="sub-clear" aria-label="Clear the search" use:tip={"Clear (esc)"} onclick={() => (setSearch(""), searchEl?.focus())}><Icon name="x" size={12} /></button>
+      {:else}
+        <Kbd keys={isMac ? "⌘F" : "Ctrl+F"} dim />
+      {/if}
+    </div>
+    {#if searching}
+      <div class="hits" id="set-hits" role="listbox" aria-label="Matching settings">
+        <div class="nav-title hits-count">{searchHits.length === 0 ? "No setting matches" : `${searchHits.length} match${searchHits.length === 1 ? "" : "es"}`}</div>
+        {#each searchHits as h, i (h.entry.pane + "|" + h.entry.section + "|" + (h.entry.label ?? ""))}
+          <button
+            class="nav-item hit"
+            class:at={i === searchAt}
+            class:active={searchPicked === h}
+            role="option"
+            aria-selected={i === searchAt}
+            onmouseenter={() => (searchAt = i)}
+            onclick={() => void openHit(h)}
+          >
+            <span class="hit-t">{h.title}</span>
+            <span class="hit-w">{h.where}</span>
+            {#if h.snippet}<span class="hit-s">{h.snippet}</span>{/if}
+          </button>
+        {/each}
+        {#if searchHits.length === 0}
+          <p class="hits-none">Try another word — a setting's name, what it does, or its pane.</p>
+        {/if}
+      </div>
+    {:else}
     <!-- Usage & Cost (nightshift backlog 206): one category, two tabs —
          what the plan has left, then what it would have cost. 153 had made
          them one page, which squeezed this row's title to "U." beside both
@@ -1727,6 +1898,42 @@
         {away?.url ? "on" : "off"}
       </span>
     </button>
+    <!-- Item 848: Quick Entry, Notifications and Sleep, each its own row. -->
+    <div class="nav-title">System<Kbd keys={keyOf("System")} dim /></div>
+    <button
+      class="nav-item"
+      class:active={selected === "quick-entry"}
+      onclick={() => select("quick-entry")}
+    >
+      <span class="nav-label">Quick Entry</span>
+      <span class="st">
+        <span class="dot" class:ok={!!quickEntry.shortcut}></span>
+        {quickEntry.shortcut ? shortcutLabel(quickEntry.shortcut) : "off"}
+      </span>
+    </button>
+    <button
+      class="nav-item"
+      class:active={selected === "notifications"}
+      onclick={() => select("notifications")}
+    >
+      <span class="nav-label">Notifications</span>
+      <span class="st">
+        <span class="dot" class:ok={notifyOn > 0}></span>
+        {notifyOn === 0 ? "off" : `${notifyOn} of 3`}
+      </span>
+    </button>
+    <button
+      class="nav-item"
+      class:active={selected === "sleep"}
+      onclick={() => select("sleep")}
+    >
+      <span class="nav-label">Sleep</span>
+      <span class="st">
+        <span class="dot" class:ok={sleepPrefs.keepAwake}></span>
+        {sleepPrefs.keepAwake ? "kept awake" : "off"}
+      </span>
+    </button>
+    {/if}
     <div class="nav-spacer"></div>
     <div class="nav-foot">Esc or click outside to close</div>
   </nav>
@@ -2081,7 +2288,38 @@
           <span>Show pages as a one-line card until I click Show</span>
         </label>
       </section>
-
+    </div>
+  <!-- Item 848 (his words: "gang i dont see a notifications section bro"):
+       Notifications, Quick Entry and Sleep were three cards at the foot of
+       Appearance → Palette, where he did not look. Each is its own pane now,
+       under a System group of the nav (⌘9), the cards unchanged. -->
+  {:else if selected === "quick-entry"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Quick Entry</h2>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
+      <!-- Item 795: Quick Entry — a system-wide shortcut opens a small box
+           (quick_entry.rs, quick/QuickEntry.svelte). Off until he picks one. -->
+      <section class="card">
+        <div class="ch"><span class="t">Quick Entry</span></div>
+        <p class="note small">
+          A shortcut that works from any app: it opens a small box over what you are in, without bringing Nightloom
+          forward. Send goes to the chat you last used, a new chat in a project, or an aside on the last chat; the box
+          remembers which. It takes typing, dictation and ⌘V (the clipboard only, so macOS asks for no permission).
+          Closing it keeps what you typed. It works only while Nightloom is running.
+        </p>
+        <QuickEntrySetting />
+      </section>
+    </div>
+  {:else if selected === "notifications"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Notifications</h2>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
       <!-- The turn-end banner (nightshift backlog 079): two switches, one
            per kind. The rule they cannot change is the focus one — a
            window in front is never notified. -->
@@ -2118,20 +2356,14 @@
           <span>When Usage & Cost → Refresh now finishes — the figures; clicking it opens that page. Never for the automatic refresh</span>
         </label>
       </section>
-
-      <!-- Item 795: Quick Entry — a system-wide shortcut opens a small box
-           (quick_entry.rs, quick/QuickEntry.svelte). Off until he picks one. -->
-      <section class="card">
-        <div class="ch"><span class="t">Quick Entry</span></div>
-        <p class="note small">
-          A shortcut that works from any app: it opens a small box over what you are in, without bringing Nightloom
-          forward. Send goes to the chat you last used, a new chat in a project, or an aside on the last chat; the box
-          remembers which. It takes typing, dictation and ⌘V (the clipboard only, so macOS asks for no permission).
-          Closing it keeps what you typed. It works only while Nightloom is running.
-        </p>
-        <QuickEntrySetting />
-      </section>
-
+    </div>
+  {:else if selected === "sleep"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Sleep</h2>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
       <!-- Sleep-safe turns (nightshift backlog 101): his `caffeinate -dis`
            made automatic while anything runs, and the turn a closed lid
            cut off resumed on wake. Here, under Notifications, per blocker
@@ -2429,7 +2661,7 @@
             disabled={remoteBusy}
             onchange={(e) => void remoteRun(() => api.remoteSetKeepAwake(e.currentTarget.checked))}
           />
-          <span>Keep the Mac awake while remote is on (needs Palette → Sleep's first switch; a closed lid on battery still sleeps it)</span>
+          <span>Keep the Mac awake while remote is on (needs System → Sleep's first switch; a closed lid on battery still sleeps it)</span>
         </label>
         <div class="remote-actions">
           <button class="ns-btn" disabled={selfTesting || !remote?.on} onclick={() => void runSelfTest()}>
@@ -4647,6 +4879,90 @@
     padding: 0 10px 6px;
     color: var(--ink);
   }
+  /* Item 844: the search box at the top of the nav, and its matches. */
+  .set-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 8px 0 10px;
+    height: 32px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r2, 8px);
+    background: var(--term, var(--well));
+    color: var(--dim);
+    flex: none;
+    margin: 0 0 6px;
+  }
+  .set-search:focus-within {
+    border-color: var(--accent);
+  }
+  /* [type] so it outranks the pane's input[type="text"] box, which comes later. */
+  .set-search input[type="text"] {
+    all: unset;
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .set-search input[type="text"]::placeholder {
+    color: var(--dim);
+  }
+  .hits {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .nav-item.hit {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+  }
+  .nav-item.hit.at {
+    background: var(--well);
+  }
+  .hit-t {
+    color: var(--ink);
+    line-height: 1.3;
+  }
+  .hit-w {
+    font-size: 11px;
+    color: var(--dim);
+    line-height: 1.3;
+  }
+  .hit-s {
+    font-size: 11px;
+    color: var(--dim);
+    opacity: 0.85;
+    line-height: 1.35;
+  }
+  .hits-none {
+    margin: 4px 10px;
+    font-size: 12px;
+    color: var(--dim);
+  }
+  /* The setting a search opened: lit, then faded (2.6 s; removed by openHit). */
+  :global(.search-hit) {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: var(--r2, 8px);
+    animation: search-hit 2.6s ease-out;
+  }
+  @keyframes -global-search-hit {
+    0%,
+    55% {
+      outline-color: var(--accent);
+      box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 22%, transparent);
+    }
+    100% {
+      outline-color: transparent;
+      box-shadow: 0 0 0 6px transparent;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :global(.search-hit) {
+      animation: none;
+    }
+  }
   .nav-title {
     display: flex;
     align-items: center;
@@ -6472,7 +6788,8 @@
     border-radius: var(--r1);
     color: var(--ink);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .sub-filter input {
+  :global(:where(:root:not([data-layout="classic"]))) .sub-filter input,
+  :global(:where(:root:not([data-layout="classic"]))) .set-search input {
     background: none;
     border: none;
   }
