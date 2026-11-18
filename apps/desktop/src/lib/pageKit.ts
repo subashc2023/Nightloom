@@ -118,6 +118,52 @@ export const FALLBACK_THEME: KitTheme = {
   series: ["#ffb454", "#86d8f7", "#7cd69a", "#f07f7f", "#c9a0ff", "#e8c063", "#ff7d4f", "#939eae"],
 };
 
+/**
+ * Mermaid's setup in the app's colours: a page's `kit:mermaid` (drawn on load) and item 821's diagram blocks
+ * (`diagrams.ts`, drawn on request, labels as SVG text so the drawing stands alone as a picture). Always
+ * `securityLevel: "strict"`: Mermaid escapes label HTML and turns off click handlers.
+ */
+export function mermaidConfig(t: KitTheme, startOnLoad: boolean, svgLabels = false): Record<string, unknown> {
+  return {
+    startOnLoad,
+    securityLevel: "strict",
+    theme: "base",
+    fontFamily: "system-ui, -apple-system, sans-serif",
+    ...(svgLabels ? { htmlLabels: false, flowchart: { htmlLabels: false }, class: { htmlLabels: false } } : {}),
+    themeVariables: {
+      darkMode: t.dark,
+      background: t.paper,
+      primaryColor: t.raised,
+      primaryTextColor: t.ink,
+      primaryBorderColor: t.dim,
+      secondaryColor: t.paper,
+      tertiaryColor: t.paper,
+      lineColor: t.dim,
+      textColor: t.ink,
+      mainBkg: t.raised,
+      nodeBorder: t.dim,
+      clusterBkg: t.paper,
+      clusterBorder: t.line,
+      titleColor: t.ink,
+      edgeLabelBackground: t.paper,
+      noteBkgColor: t.raised,
+      noteTextColor: t.ink,
+      noteBorderColor: t.line,
+      actorBkg: t.raised,
+      actorBorder: t.dim,
+      actorTextColor: t.ink,
+      signalColor: t.dim,
+      signalTextColor: t.ink,
+      labelBoxBkgColor: t.raised,
+      labelBoxBorderColor: t.dim,
+      labelTextColor: t.ink,
+      loopTextColor: t.ink,
+      activationBkgColor: t.raised,
+      activationBorderColor: t.dim,
+    },
+  };
+}
+
 /** What runs right after a library, inside the page: its setup in the app's colours. */
 function setup(name: KitName, t: KitTheme): string {
   const T = JSON.stringify(t);
@@ -130,11 +176,7 @@ var n=window.nightloom=window.nightloom||{};n.theme=t;n.vegaConfig=config;
 n.chart=function(el,spec,opts){var s=Object.assign({},spec);if(s.width===undefined&&!s.facet&&!s.repeat&&!s.concat&&!s.hconcat&&!s.vconcat)s.width="container";
 return vegaEmbed(el,s,Object.assign({actions:false,renderer:"svg",config:config},opts||{}));};})();`;
   if (name === "mermaid")
-    return `(function(){var t=${T};mermaid.initialize({startOnLoad:true,securityLevel:"strict",theme:"base",fontFamily:"system-ui, -apple-system, sans-serif",
-themeVariables:{darkMode:t.dark,background:t.paper,primaryColor:t.raised,primaryTextColor:t.ink,primaryBorderColor:t.dim,secondaryColor:t.paper,tertiaryColor:t.paper,
-lineColor:t.dim,textColor:t.ink,mainBkg:t.raised,nodeBorder:t.dim,clusterBkg:t.paper,clusterBorder:t.line,titleColor:t.ink,edgeLabelBackground:t.paper,
-noteBkgColor:t.raised,noteTextColor:t.ink,noteBorderColor:t.line,actorBkg:t.raised,actorBorder:t.dim,actorTextColor:t.ink,signalColor:t.dim,signalTextColor:t.ink,
-labelBoxBkgColor:t.raised,labelBoxBorderColor:t.dim,labelTextColor:t.ink,loopTextColor:t.ink,activationBkgColor:t.raised,activationBorderColor:t.dim}});
+    return `(function(){var t=${T};mermaid.initialize(${JSON.stringify(mermaidConfig(t, true))});
 var n=window.nightloom=window.nightloom||{};n.theme=t;})();`;
   if (name === "katex")
     return `(function(){var n=window.nightloom=window.nightloom||{};n.math=function(el){renderMathInElement(el||document.body,{throwOnError:false,

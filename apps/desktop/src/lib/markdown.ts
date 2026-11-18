@@ -13,9 +13,12 @@ import "katex/dist/katex.min.css";
 import "./mathBase.css";
 import { isLocalTarget } from "./replyMedia";
 import { replyPage } from "./replyPage";
+import { diagramBlock } from "./diagramBlock";
 
 marked.use(math);
 marked.use(tilde);
+// Item 821: a ```mermaid or ```svg block is a diagram placeholder in every markdown surface (diagrams.ts draws it).
+marked.use(diagramBlock);
 
 /**
  * KaTeX wraps its glyphs in a copy of the formula as MathML, which is what a
@@ -71,6 +74,8 @@ phoneMarked.use(tilde);
 phoneMarked.use(localImageAsText);
 // Item 770: a ```html page block is a page, drawn where it stands (replyPages.ts mounts it).
 phoneMarked.use(replyPage);
+// Item 821: a ```mermaid or ```svg block is a diagram (diagrams.ts draws it).
+phoneMarked.use(diagramBlock);
 
 /** Render assistant markdown to sanitized HTML. `breaks` keeps a single
  *  newline as a line break (the phone's replies, nightshift 300 A32: a
@@ -113,6 +118,8 @@ replyMarked.use({
 });
 // Item 770: a ```html page block is a page, drawn where it stands (replyPages.ts mounts it).
 replyMarked.use(replyPage);
+// Item 821: a ```mermaid or ```svg block is a diagram (diagrams.ts draws it).
+replyMarked.use(diagramBlock);
 
 export function renderReply(src: string): string {
   // Item 454: a tab switch remounts the whole transcript, and every reply
