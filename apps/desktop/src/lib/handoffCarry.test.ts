@@ -8,6 +8,8 @@ import {
   carriedBlock,
   commonDir,
   composeFirstMessage,
+  capWords,
+  WORDS_CAP_TOKENS,
   costText,
   GOAL_ASK,
   isWrapUpText,
@@ -244,23 +246,35 @@ describe("747: the goal line and the first message", () => {
     expect(costText(carry.cost)).toBe("The wrap-up cost 2 requests, 2.5k tokens written, 602k read (590k from cache), 2m 0s");
     expect(costText(null)).toBe("");
   });
-  it("sends the goal, the prompt, his ticked words and the list; carried ones go unless unticked", () => {
-    const sent = composeFirstMessage(carry, null, {});
+  it("850: sends the goal, the prompt, every message of his word for word (carried ones first) and the list — no ticks", () => {
+    const sent = composeFirstMessage(carry, null);
     expect(sent.startsWith("Goal: ship 747\n\nRead the newest HANDOFF.md section.\n\n" + CARRIED_HEAD)).toBe(true);
-    expect(parseCarried(sent)).toEqual([{ when: "Nov 14, 2026, 9:00 AM", text: "always use bin/snap, never Chrome" }]);
+    const went = parseCarried(sent);
+    expect(went[0]).toEqual({ when: "Nov 14, 2026, 9:00 AM", text: "always use bin/snap, never Chrome" });
+    expect(went.map((m) => m.text)).toEqual(carry.words.map((m) => m.text));
+    expect(went.map((m) => m.text)).toContain("stop suggesting rebases");
+    expect(carry.words.length).toBe(carry.messages);
     expect(sent).toContain("Files edited (1): /p/HANDOFF.md");
     expect(sent).toContain("The wrap-up cost 2 requests");
-
-    const ticked = composeFirstMessage(carry, "ship 747 and 705", { m5: true, [carry.unquoted[0].id]: false });
-    expect(ticked.startsWith("Goal: ship 747 and 705\n\n")).toBe(true);
-    expect(parseCarried(ticked)).toEqual([{ when: whenText(at(5)), text: "stop suggesting rebases" }]);
+    expect(composeFirstMessage(carry, "ship 747 and 705").startsWith("Goal: ship 747 and 705\n\n")).toBe(true);
     // A goal he emptied sends none.
-    expect(composeFirstMessage(carry, " ", {}).startsWith("Read the newest")).toBe(true);
+    expect(composeFirstMessage(carry, " ").startsWith("Read the newest")).toBe(true);
+  });
+  it("850: the auto hand-off's cap — newest kept, oldest dropped and counted", () => {
+    const big = "x".repeat((WORDS_CAP_TOKENS * 4) / 3);
+    const items = [1, 2, 3, 4].map((n) => ({ when: `day ${n}`, text: `${n} ${big}` }));
+    const { kept, dropped } = capWords(items);
+    expect(kept.map((m) => m.when)).toEqual(["day 3", "day 4"]);
+    expect(dropped).toBe(2);
+    const sent = composeFirstMessage({ ...carry, words: items.map((m, i) => ({ ...m, id: `m${i}`, carried: false, quoted: 0 })) }, null);
+    expect(sent).toContain("(2 older messages of his are past the 15000-token cap");
+    expect(sent.indexOf("day 3")).toBeLessThan(sent.indexOf("day 4"));
+    expect(sent).not.toContain("day 1");
   });
   it("with nothing to add, the prompt goes as it was", () => {
     const bare: SessionEvent[] = [{ event: "session_created", id: "c", at: at(0) }, user("hand off please", 1), say([text("<handoff>\nRead a.\n</handoff>")], 2)];
     const c = buildCarry({ events: bare, live: allLive(bare), reply: 2, prompt: "Read a." });
     expect(c.messages).toBe(0);
-    expect(composeFirstMessage(c, null, {})).toBe("Read a.");
+    expect(composeFirstMessage(c, null)).toBe("Read a.");
   });
 });

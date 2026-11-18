@@ -58,7 +58,7 @@ describe("757: a hand-off's line", () => {
     const carry = buildCarry({ events, live: live(events), reply, prompt });
     const rule = carry.unquoted.find((m) => m.text === RULE)!;
     const ticks = { [rule.id]: true };
-    const sent = composeFirstMessage(carry, "re-run tiers 1-3, small sample first", ticks);
+    const sent = composeFirstMessage(carry, "re-run tiers 1-3, small sample first");
     const rec = handoffRecord({ route: "card", from: "old", index: reply, to: "new", sent, carry, goal: "re-run tiers 1-3, small sample first", ticks });
     expect(rec).toMatchObject({
       kind: "handoff",
@@ -75,12 +75,13 @@ describe("757: a hand-off's line", () => {
       carry: true,
       messages: 2,
     });
-    expect(rec.ticked).toEqual([{ id: rule.id, when: rule.when, text: RULE }]);
+    // Item 850: no ticks — every message of his went, within the cap.
+    expect((rec.ticked as { text: string }[]).map((m) => m.text)).toEqual(carry.words.map((m) => m.text));
+    expect((rec.ticked as { text: string }[]).map((m) => m.text)).toContain(RULE);
+    expect(rec.dropped).toBe(0);
     const unq = rec.unquoted as { id: string; ticked: boolean; words: number }[];
-    expect(unq.map((m) => m.ticked).sort()).toEqual([false, true]);
-    // The message he left unticked is listed, but its words are not in the line.
-    expect(JSON.stringify(rec)).not.toContain(ASIDE);
-    expect(unq.find((m) => !m.ticked)!.words).toBe(ASIDE.split(" ").length);
+    expect(unq.every((m) => m.ticked)).toBe(true);
+    expect(unq.find((m) => m.id !== rule.id)?.words ?? ASIDE.split(" ").length).toBe(ASIDE.split(" ").length);
     expect((rec.artifacts as { read: unknown[] }).read).toEqual([{ path: "/p/notes/a.md", count: 1 }]);
     expect((rec.caps as { read: number }).read).toBe(MAX_READ);
     expect(rec.missing).toEqual(carry.missing);

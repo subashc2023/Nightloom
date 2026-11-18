@@ -27,7 +27,7 @@
 import * as api from "./api";
 import {
   artifactsOf,
-  isTicked,
+  capWords,
   quoteWords,
   splitGoal,
   MAX_COMMITS,
@@ -67,7 +67,6 @@ export interface HandoffOpened {
 /** The `handoff` line for a next chat just opened. */
 export function handoffRecord(h: HandoffOpened): Record<string, unknown> {
   const carry = h.carry ?? null;
-  const ticks = h.ticks ?? {};
   const promptGoal = carry ? carry.goal : splitGoal(h.sent).goal;
   const edited = h.goal !== null && h.goal !== undefined;
   const goal = (edited ? h.goal! : promptGoal).replace(/\s+/g, " ").trim();
@@ -85,21 +84,26 @@ export function handoffRecord(h: HandoffOpened): Record<string, unknown> {
     sent_chars: h.sent.length,
   };
   if (!carry) return { ...rec, carry: false };
+  const { kept, dropped } = capWords(carry.words ?? []);
+  const went = new Set(kept.map((m) => m.id));
   return {
     ...rec,
     carry: true,
     messages: carry.messages,
     quoted: carry.quoted,
     // Every listed message by id; text only for the ones that went.
+    // Item 850: every message of his goes within the cap; `ticked` now
+    // says whether it went (no ticks on the card any more).
     unquoted: carry.unquoted.map((m) => ({
       id: m.id,
       when: m.when,
       carried: m.carried,
-      ticked: isTicked(m, ticks),
+      ticked: went.has(m.id),
       words: quoteWords(m.text).length,
       quoted: Math.round(m.quoted * 100) / 100,
     })),
-    ticked: carry.unquoted.filter((m) => isTicked(m, ticks)).map((m) => ({ id: m.id, when: m.when, text: m.text })),
+    ticked: kept.map((m) => ({ id: m.id, when: m.when, text: m.text })),
+    dropped,
     artifacts: carry.artifacts,
     caps: { edited: MAX_EDITED, read: MAX_READ, shell: MAX_SHELL, commits: MAX_COMMITS, subagents: MAX_SUBAGENTS },
     missing: carry.missing,

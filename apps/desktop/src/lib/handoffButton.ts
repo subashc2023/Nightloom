@@ -16,7 +16,7 @@
  */
 
 import { extractStartPrompt } from "./handoff.svelte";
-import { artifactsSummary, artifactsText, composeFirstMessage, costText, emptyArtifacts, isTicked, SECTIONS, type Carry } from "./handoffCarry";
+import { artifactsSummary, artifactsText, capWords, composeFirstMessage, costText, emptyArtifacts, SECTIONS, WORDS_CAP_TOKENS, type Carry } from "./handoffCarry";
 import { keptGet, keptSet } from "./keptFolds.svelte";
 import { viewGet, viewSet } from "./viewState";
 import { hasHiddenChars } from "./shellRun";
@@ -147,7 +147,7 @@ export function miniText(next: Pick<NextChat, "chat" | "index" | "prompt" | "car
  *  without a carry, else goal, prompt, his ticked messages, the list, the cost. */
 export function nextChatMessage(next: Pick<NextChat, "chat" | "index" | "prompt" | "carry">): string {
   if (!next.carry) return next.prompt;
-  return composeFirstMessage(next.carry, carryGoal(next.chat, next.index), carryTicks(next.chat, next.index));
+  return composeFirstMessage(next.carry, carryGoal(next.chat, next.index));
 }
 
 /** Item 757: what the hand-off log records for this card's *Continue* — the
@@ -209,8 +209,6 @@ export function matchingBlock<T>(blocks: readonly { el: T; text: string }[], pro
 
 /** The class of the block above the button that holds item 747's parts. */
 export const CARRY_CLASS = "handoff-carry";
-/** Longer than this, a listed message is clamped with a *more* button. */
-const LONG_MESSAGE = 220;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string): HTMLElementTagNameMap[K] {
   const n = document.createElement(tag);
@@ -229,11 +227,13 @@ function keptDetails(cls: string, key: string): { details: HTMLDetailsElement; s
   return { details, summary };
 }
 
-function hisSummary(carry: Carry, ticks: Record<string, boolean>): string {
-  const n = carry.unquoted.length;
-  const ticked = carry.unquoted.filter((m) => isTicked(m, ticks)).length;
-  const lead = `${n} of your ${carry.messages} ${carry.messages === 1 ? "message" : "messages"} in this chat ${n === 1 ? "is" : "are"} not quoted in the hand-off`;
-  return ticked > 0 ? `${lead} — ${ticked} ticked to carry over word for word` : `${lead} — tick any to carry over word for word`;
+/** Item 850: ~~the tickable list~~ — his words go word for word, by
+ *  themselves, within the auto hand-off's cap; one line says so. */
+export function hisLine(carry: Pick<Carry, "words">): string {
+  const n = carry.words.length;
+  const { dropped } = capWords(carry.words);
+  const lead = `Your ${n} ${n === 1 ? "message" : "messages"} since the last hand-off go${n === 1 ? "es" : ""} to the next chat word for word`;
+  return dropped ? `${lead} — the oldest ${dropped} past the ${WORDS_CAP_TOKENS / 1000}k-token cap stay in this chat's log` : lead;
 }
 
 /** What identifies a carry block's content: anything else, it is rebuilt. */
@@ -245,7 +245,7 @@ function carrySig(next: NextChat): string {
     next.index,
     c.goal,
     c.messages,
-    c.unquoted.map((m) => m.id).join(","),
+    c.words.map((m) => m.id).join(","),
     artifactsSummary(c.artifacts),
     costText(c.cost),
     c.missing === null ? "-" : c.missing.join(","),
@@ -254,7 +254,7 @@ function carrySig(next: NextChat): string {
 
 /**
  * Item 747's parts of the card, above the button: the goal field, his
- * messages the hand-off does not quote (tickable), the list Nightloom built
+ * words that go word for word (item 850: one line, ~~a tickable list~~), the list Nightloom built
  * from the tool calls, whether the fixed sections were written, and what the
  * wrap-up cost. All of what the button sends beyond the prompt is here.
  */
@@ -276,48 +276,7 @@ function carryBlock(next: NextChat, read: () => NextChat | null | undefined): HT
   goal.append(el("span", "handoff-goal-label", "Goal"), input);
   box.append(goal);
 
-  if (carry.unquoted.length > 0) {
-    const { details, summary } = keptDetails("handoff-his", `fold:${chat}|${index}|his`);
-    const sync = () => {
-      summary.textContent = hisSummary(carry, carryTicks(chat, index));
-    };
-    sync();
-    const list = el("div", "handoff-his-list");
-    const ticks = carryTicks(chat, index);
-    for (const m of carry.unquoted) {
-      const row = el("label", "handoff-his-row");
-      const tick = document.createElement("input");
-      tick.type = "checkbox";
-      tick.checked = isTicked(m, ticks);
-      tick.addEventListener("change", () => {
-        if (read()?.used) return;
-        setCarryTick(chat, index, m.id, tick.checked);
-        sync();
-      });
-      const text = el("span", "handoff-his-text", m.text);
-      const when = el("span", "handoff-his-when", m.carried ? `${m.when} · carried from an earlier chat` : m.when);
-      const body = el("span", "handoff-his-body");
-      body.append(when, text);
-      row.append(tick, body);
-      if (m.text.length > LONG_MESSAGE || m.text.includes("\n")) {
-        text.classList.add("clamped");
-        const more = el("button", "handoff-his-more", "more");
-        more.type = "button";
-        more.addEventListener("click", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const open = text.classList.toggle("clamped") === false;
-          more.textContent = open ? "less" : "more";
-        });
-        body.append(more);
-      }
-      list.append(row);
-    }
-    details.append(list);
-    box.append(details);
-  } else if (carry.messages > 0) {
-    box.append(el("div", "handoff-line", `All ${carry.messages} of your messages in this chat are quoted in the hand-off.`));
-  }
+  if (carry.words.length > 0) box.append(el("div", "handoff-line handoff-his-line", hisLine(carry)));
 
   if (!emptyArtifacts(carry.artifacts)) {
     const { details, summary } = keptDetails("handoff-made", `fold:${chat}|${index}|made`);

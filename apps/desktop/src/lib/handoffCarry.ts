@@ -523,6 +523,9 @@ export interface Carry {
   body: string;
   /** His messages the hand-off does not quote, oldest first; carried ones lead. */
   unquoted: HisMessage[];
+  /** Item 850: every message of his since the last hand-off (carried ones
+   *  lead), oldest first — all go to the next chat word for word, capped. */
+  words: HisMessage[];
   /** How many of his messages there were, and how many the hand-off quotes. */
   messages: number;
   quoted: number;
@@ -628,6 +631,7 @@ export function buildCarry(inp: CarryInput): Carry {
     goal,
     body,
     unquoted: [...unquoted.filter((m) => m.carried), ...unquoted.filter((m) => !m.carried)],
+    words: [...his.filter((m) => m.carried), ...his.filter((m) => !m.carried)],
     messages: his.length,
     quoted: his.length - unquoted.length,
     artifacts: artifactsOf(events, live, reply),
@@ -643,22 +647,52 @@ export function isTicked(m: Pick<HisMessage, "id" | "carried">, ticks: Readonly<
 }
 
 /**
- * The next chat's first message: the goal line (his edit, else the
- * prompt's own), the model's prompt, his ticked messages word for word, the
- * artifact list and the cost line. With no goal, nothing ticked and no tool
- * calls it is the prompt unchanged.
+ * Item 850: the cap on his words carried to the next chat, the auto
+ * hand-off's (`crates/nightloom-service/src/hand_off.rs` `WORDS_CAP_TOKENS`,
+ * ~4 characters a token): the newest are kept, the oldest past it dropped
+ * and counted. No model in between.
  */
-export function composeFirstMessage(
-  carry: Carry,
-  goal: string | null,
-  ticks: Readonly<Record<string, boolean>>,
-): string {
+export const WORDS_CAP_TOKENS = 15_000;
+
+/** His words within the cap, newest first as `brief_in` takes them, given
+ *  back oldest first; `dropped` counts the older ones past it. */
+export function capWords<T extends Pick<HisMessage, "when" | "text">>(items: readonly T[]): { kept: T[]; dropped: number } {
+  let budget = WORDS_CAP_TOKENS * 4;
+  const kept: T[] = [];
+  let dropped = 0;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const len = carriedEntry(items[i].when, items[i].text).length + 1;
+    if (len > budget) {
+      dropped++;
+      continue;
+    }
+    budget -= len;
+    kept.push(items[i]);
+  }
+  kept.reverse();
+  return { kept, dropped };
+}
+
+/** The line under the carried block when some were past the cap. */
+export function droppedNote(dropped: number): string {
+  return `(${dropped} older message${dropped === 1 ? "" : "s"} of his ${dropped === 1 ? "is" : "are"} past the ${WORDS_CAP_TOKENS}-token cap — search the earlier chat for ${dropped === 1 ? "it" : "them"}.)`;
+}
+
+/**
+ * The next chat's first message: the goal line (his edit, else the
+ * prompt's own), the model's prompt, ~~his ticked messages~~ every message
+ * of his since the last hand-off word for word within the cap (item 850),
+ * the artifact list and the cost line. With no goal, no words of his and no
+ * tool calls it is the prompt unchanged.
+ */
+export function composeFirstMessage(carry: Carry, goal: string | null): string {
   const g = (goal ?? carry.goal).replace(/\s+/g, " ").trim();
   const parts: string[] = [];
   if (g) parts.push(`Goal: ${g}`);
   if (carry.body) parts.push(carry.body);
-  const carried = carriedBlock(carry.unquoted.filter((m) => isTicked(m, ticks)));
-  if (carried) parts.push(carried);
+  const { kept, dropped } = capWords(carry.words);
+  const carried = carriedBlock(kept);
+  if (carried) parts.push(dropped ? `${carried}\n${droppedNote(dropped)}` : carried);
   const list = artifactsText(carry.artifacts);
   const cost = costText(carry.cost);
   if (list) parts.push(cost ? `${list}\n${cost}.` : list);
