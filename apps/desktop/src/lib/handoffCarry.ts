@@ -295,7 +295,8 @@ export function emptyArtifacts(a: Artifacts): boolean {
   return a.edited.length + a.read.length + a.shell.length + a.commits.length + a.subagents.length + a.items.length === 0;
 }
 
-const COMMIT_LINE = /^\[([^\]\n]*?)\s([0-9a-f]{7,40})\]\s(.+)$/gm;
+/** A git commit line in a shell result, `[branch sha] subject` (also read by `chapters.ts`, item 799). */
+export const COMMIT_LINE = /^\[([^\]\n]*?)\s([0-9a-f]{7,40})\]\s(.+)$/gm;
 const REPORT_PATH = /[~\w./-]*report[\w.-]*\.md\b/gi;
 const ITEM_PATH = /(?:^|\/)(backlog|blockers)\/(\d{1,5})-/g;
 /** A file path as a shell command names it: optional folders, a name, one of
