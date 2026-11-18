@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rewoundMessage, rewoundRuns, swapIn, untouched } from "./rewindDraft.svelte";
+import { dismissRewoundOffer, keepIn, keepsBox, offerRewound, rewoundMessage, rewoundOffer, rewoundRuns, swapIn, takeOffered, untouched } from "./rewindDraft.svelte";
 import type { SessionEvent } from "./types";
 
 const AT = "2026-01-01T00:00:00Z";
@@ -58,5 +58,37 @@ describe("rewoundRuns", () => {
     ];
     const continued = [false, false, false, false, true, false, false];
     expect(rewoundRuns(items, continued)).toEqual([null, null, 2, null, null, null, 1]);
+  });
+});
+
+// Item 724: a rewind with his draft in the box keeps the draft.
+describe("keepIn / takeOffered (item 724)", () => {
+  const chip = (id: number) => ({ id, kind: "image" as const, name: `i${id}`, media_type: "image/png", data: "A" });
+  it("a box with words keeps; one of spaces does not", () => {
+    expect(keepsBox({ text: "half" })).toBe(true);
+    expect(keepsBox({ text: " \n " })).toBe(false);
+  });
+  it("keeps the box's text, adds the message's chips after his, stashes nothing", () => {
+    const s = keepIn({ text: "mine", attachments: [chip(1)] }, { text: "rewound", attachments: [chip(2)] });
+    expect(s.after.text).toBe("mine");
+    expect(s.after.attachments.map((a) => a.id)).toEqual([1, 2]);
+    expect(s.stashed).toBe(false);
+    expect(s.kept).toBe(true);
+    expect(untouched({ text: "mine" }, s)).toBe(true);
+  });
+  it("a pick swaps: the offer in, what was typed out to the drafts", () => {
+    expect(takeOffered("mine", "rewound")).toEqual({ box: "rewound", toDrafts: "mine" });
+    expect(takeOffered("  ", "rewound")).toEqual({ box: "rewound", toDrafts: null });
+    expect(takeOffered("rewound", "rewound")).toEqual({ box: "rewound", toDrafts: null });
+  });
+  it("an offer names its box; a dismiss for another box leaves it", () => {
+    offerRewound("chat-a", "hello");
+    const seq = rewoundOffer.seq;
+    dismissRewoundOffer("chat-b");
+    expect(rewoundOffer.key).toBe("chat-a");
+    offerRewound("chat-a", "hello");
+    expect(rewoundOffer.seq).toBe(seq + 1);
+    dismissRewoundOffer("chat-a");
+    expect(rewoundOffer.key).toBeNull();
   });
 });

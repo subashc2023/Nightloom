@@ -532,3 +532,17 @@ describe("findChip (item 467: a draft image's open card)", () => {
     expect(findChip("k1", 906)).toBeNull();
   });
 });
+
+// Item 724: a rewound message to the top of the drafts, whatever its length.
+describe("bumpDraft (item 724)", () => {
+  it("records a short text, and moves one already there to the top rather than twice", async () => {
+    const { bumpDraft } = await import("./drafts.svelte");
+    bumpDraft("k", "short");
+    expect(historyFor("k").map((s) => s.text)).toEqual(["short"]);
+    recordDraft("k", "x".repeat(HISTORY_MIN_CHARS));
+    bumpDraft("k", "short");
+    expect(historyFor("k").map((s) => s.text)).toEqual(["short", "x".repeat(HISTORY_MIN_CHARS)]);
+    bumpDraft("k", "");
+    expect(historyFor("k")).toHaveLength(2);
+  });
+});

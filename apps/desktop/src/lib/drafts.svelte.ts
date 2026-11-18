@@ -1099,6 +1099,24 @@ export function recordDraft(
 }
 
 /**
+ * A text to the top of the key's ring whatever its length (item 724): a
+ * rewound message, or what a pick of it put out of the box. One already in
+ * the ring moves to the top rather than standing there twice.
+ */
+export function bumpDraft(key: string, text: string, at: string = new Date().toISOString()): void {
+  if (!text) return;
+  const ring = draftHistory[key];
+  const i = ring ? ring.findIndex((s) => s.text === text) : -1;
+  if (ring && i >= 0) {
+    ring.splice(i, 1);
+    ring.unshift({ text, at });
+    scheduleHistory();
+    return;
+  }
+  recordDraft(key, text, at, 1);
+}
+
+/**
  * A snapshot back into the box, in front of anything typed there (the
  * take-back's rule): nothing on either side is lost. The ring keeps it —
  * a restore is not a use.

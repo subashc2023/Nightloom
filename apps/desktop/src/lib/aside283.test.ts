@@ -23,6 +23,7 @@ import {
 } from "./state.svelte";
 import { asideDraftKey, asideFromStored, loadAsides, serializeAsides, storedAsideOf, ASIDES_KEY } from "./asides";
 import { addAttachment, drafts, enqueueMessage, historyFor, readDraft, setDraftText } from "./drafts.svelte";
+import { rewoundOffer } from "./rewindDraft.svelte";
 import { ASIDE_HIDDEN, ASIDE_KEPT, composerShows, type ChatOnlyControl } from "./asideControls";
 import { foldBlocked } from "./asideFold";
 import "./asides.svelte";
@@ -254,7 +255,11 @@ describe("the message tools in an aside (283)", () => {
     const gone = rewindAside(d, 1);
     expect(gone.map((t) => t.question)).toEqual(["two", "three"]);
     expect(d.turns.map((t) => t.question)).toEqual(["one"]);
-    expect(readDraft(asideDraftKey(d)).text).toBe("two\ntyped");
+    // ~~"two\ntyped" (in front of what was typed)~~ — superseded 2026-11-18
+    // by item 724: his draft stays; the question goes to the drafts, offered.
+    expect(readDraft(asideDraftKey(d)).text).toBe("typed");
+    expect(historyFor(asideDraftKey(d))[0].text).toBe("two");
+    expect(rewoundOffer).toMatchObject({ key: asideDraftKey(d), text: "two" });
     expect(restoreAsideTurns(d, 1, gone)).toBe(true);
     expect(d.turns.map((t) => t.question)).toEqual(["one", "two", "three"]);
     // To the first: the thread is a question box again, its chip in the box.
