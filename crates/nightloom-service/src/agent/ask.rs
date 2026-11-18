@@ -1104,6 +1104,12 @@ pub fn decide_under(dir: &Path, home: Option<&Path>, stdin_json: &str, side: boo
     {
         return HookReply::allow(None);
     }
+    // The image tool that is not built yet (item 823): it writes one line
+    // to Nightloom's own log and fails, so a card would only ask him to
+    // approve a call that does nothing. A subagent's call counts too.
+    if input.tool_name == crate::mcp_server::mcp_name(crate::image_tool::TOOL_NAME) {
+        return HookReply::allow(None);
+    }
     if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
         // A subagent's question goes back to the parent (backlog 294,
         // blocker 1031), whatever the switch says.
@@ -1668,6 +1674,30 @@ mod tests {
             updated_input: None,
             plan_then: None,
             grant: None,
+        }
+    }
+
+    /// Item 823: the image tool that is not built yet never asks — for the
+    /// chat or a subagent, in the Ask position as in any other.
+    #[test]
+    fn the_image_stub_passes_without_a_card() {
+        let dir = scratch();
+        for agent in [None, Some("sub-1")] {
+            let mut v = json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": crate::mcp_server::mcp_name(crate::image_tool::TOOL_NAME),
+                "tool_input": {"prompt": "a fox"},
+                "tool_use_id": "t1",
+                "permission_mode": "default",
+            });
+            if let Some(a) = agent {
+                v["agent_id"] = json!(a);
+            }
+            assert_eq!(
+                decide(&dir, &v.to_string()).decision(),
+                "allow",
+                "{agent:?}"
+            );
         }
     }
 

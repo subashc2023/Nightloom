@@ -2449,3 +2449,32 @@ export function feedbackTargets(): Promise<FeedbackTarget[]> {
 export function feedbackFlush(): Promise<FeedbackFiled[]> {
   return invoke("feedback_flush");
 }
+
+// ---- the image tool that is not built yet (nightshift item 823) -------------
+
+/** One `generate_image` call, as its log line has it. */
+export interface ImageCall {
+  at: string;
+  engine: string;
+  chat?: string | null;
+  project?: string | null;
+  /** Absent for a chat that writes nothing (`private`). */
+  prompt?: string | null;
+  size?: string | null;
+  style?: string | null;
+  edit?: string | null;
+  private?: boolean;
+}
+export interface ImageCallSummary {
+  total: number;
+  /** Calls in the last `recent_days` days. */
+  recent: number;
+  recent_days: number;
+  /** Newest first, at most 200. */
+  calls: ImageCall[];
+  path: string;
+}
+/** The image tool's count and its calls, from `~/.nightloom/logs/image-tool-calls.jsonl`. */
+export function imageToolCalls(): Promise<ImageCallSummary> {
+  return invoke("image_tool_calls");
+}

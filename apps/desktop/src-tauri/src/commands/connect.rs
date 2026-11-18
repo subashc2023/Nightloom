@@ -144,6 +144,9 @@ pub(crate) struct ChatSpec {
     /// incognito chat's `incognito::denied_roots` — his config dir, the
     /// vault, `~/.claude`, every project. Empty for every other chat.
     denied: Vec<PathBuf>,
+    /// The focused chat's id at connect time, for the image tool's count
+    /// (item 823); `None` before the chat has a log.
+    chat_id: Option<String>,
 }
 
 impl ChatSpec {
@@ -353,6 +356,20 @@ pub(crate) fn build_chat(
         {
             chat.tools
                 .extend(nightloom_service::tools::notes::note_tools(vault));
+        }
+        // The image tool that is not built yet (item 823, stage 1): every
+        // chat, incognito too — it only counts the call, and a chat that
+        // writes nothing leaves no words in the count. `Session`, so it
+        // passes the approval gate and the read-only filter below.
+        if let Some(config) = project::config_dir() {
+            chat.tools
+                .push(Box::new(nightloom_service::image_tool::GenerateImage::new(
+                    config,
+                    "api",
+                    spec.chat_id.clone(),
+                    spec.project.as_ref().map(|p| p.name.clone()),
+                    spec.mode.writes_nothing(),
+                )));
         }
         if let Some(chats) = &spec.chats {
             chat.tools
@@ -683,6 +700,12 @@ pub(crate) async fn connect(
         declared_kind,
         extra_folders: granted.iter().map(|(p, _)| p.clone()).collect(),
         denied,
+        chat_id: state
+            .chats
+            .lock_focused()
+            .await
+            .as_ref()
+            .map(|s| s.id.clone()),
     };
     let mcp = ensure_mcp(&state, &spec.workspace, spec.tools).await;
     let mcp_tools = state

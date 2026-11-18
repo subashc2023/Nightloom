@@ -53,6 +53,7 @@
   import ReplyLookDemo from "./ReplyLookDemo.svelte"; // Item 716: the looping demo of each look.
   // End item 617.
   import ContextDial from "./ContextDial.svelte";
+  import ImageToolCalls from "./ImageToolCalls.svelte"; // Item 823: the image tool's count.
   import { planDials, surfaceShares, paceLine, weekGone, resetsWhen } from "./settingsUsage";
   /** The Layout choice: the layout, then the accent again (no accent is stamped under Classic). */
   function pickLayout(l: (typeof LAYOUTS)[number]["id"]): void {
@@ -3183,6 +3184,8 @@
           </section>
         {/if}
       {/if}
+      <!-- Item 823: the image tool that is not built yet, counted (both looks). -->
+      <ImageToolCalls />
       {:else}
       <p class="note">
         What Claude Code would have cost, and what each provider key has
