@@ -35,6 +35,7 @@ pub mod grounding;
 pub mod hand_off;
 pub mod history;
 pub mod home;
+pub mod image_tool;
 pub mod import;
 pub mod inbox_sort;
 pub mod incognito;

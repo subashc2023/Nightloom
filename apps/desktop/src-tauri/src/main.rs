@@ -69,6 +69,8 @@ mod filetab;
 mod for_you;
 /// Every hand-off and its next chat's first turns, logged for scoring (nightshift item 757).
 mod handoff_log;
+/// The image tool's count for Settings (nightshift item 823).
+mod image_calls;
 /// The notes Inbox's Sort inbox (nightshift backlog 488).
 mod inbox_sort;
 // Recurring jobs' part on the Mac (item 746).
@@ -1836,6 +1838,7 @@ fn main() {
             terminal::terminal_ack,
             feedback::feedback_send,
             feedback::feedback_flush,
+            image_calls::image_tool_calls,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,
             nightshift::nightshift_enable,

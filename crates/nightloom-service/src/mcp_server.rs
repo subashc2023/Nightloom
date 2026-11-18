@@ -230,6 +230,9 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     (crate::tools::add_folder::NAME, Effect::Mutating),
     // Brings a secret he types into the chat (item 766): the card asks first.
     (crate::secret::TOOL_NAME, Effect::Mutating),
+    // The image tool that is not built yet (item 823): it writes one line
+    // to Nightloom's own log and fails, so no card asks.
+    (crate::image_tool::TOOL_NAME, Effect::Session),
 ];
 
 /// The effect of a call by the name the CLI reports it under: this
@@ -410,6 +413,7 @@ pub fn tools_in_chat(
     // Feedback to the agent (item 805): a chat that writes, only — it
     // files into his backlog, which an incognito or ephemeral chat
     // promised not to touch. Last, so the tools above keep their places.
+    let image_project = source.clone();
     if remember {
         tools.push(Box::new(crate::feedback::SendFeedbackTool::new(
             config.to_path_buf(),
@@ -418,6 +422,17 @@ pub fn tools_in_chat(
             current.map(str::to_string),
         )));
     }
+    // The image tool that is not built yet (item 823, stage 1): every
+    // chat, incognito too — it only counts the call, and a chat that
+    // writes nothing leaves no words in the count. Last, so the tools
+    // above keep their places.
+    tools.push(Box::new(crate::image_tool::GenerateImage::new(
+        config.to_path_buf(),
+        "claude-code",
+        current.map(str::to_string),
+        image_project,
+        !remember,
+    )));
     Ok(tools)
 }
 
@@ -2052,7 +2067,8 @@ mod tests {
                 "notion_search",
                 "notion_read_page",
                 "notion_list_children",
-                "send_feedback"
+                "send_feedback",
+                "generate_image"
             ]
         );
         // The MCP spelling, not the trait's: a host reads `inputSchema`.
@@ -2471,7 +2487,8 @@ mod tests {
                 "notion_search",
                 "notion_read_page",
                 "notion_list_children",
-                "send_feedback"
+                "send_feedback",
+                "generate_image"
             ]
         );
         assert_eq!(
@@ -2484,7 +2501,8 @@ mod tests {
                 "memory_where",
                 "notion_search",
                 "notion_read_page",
-                "notion_list_children"
+                "notion_list_children",
+                "generate_image"
             ]
         );
         let with = instructions_for(&tools_in(&config, Some(&id), true).unwrap());

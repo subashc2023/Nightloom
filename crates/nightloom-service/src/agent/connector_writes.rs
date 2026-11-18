@@ -433,6 +433,7 @@ pub const TABLE: &[(&str, &str, Class)] = {
         ("Nightloom", "mcp__nightloom__mark_file", R),
         ("Nightloom", "mcp__nightloom__set_budget", R),
         ("Nightloom", "mcp__nightloom__send_feedback", R),
+        ("Nightloom", "mcp__nightloom__generate_image", R),
         ("Nightloom", "mcp__nightloom__ask", R),
         // Their own entries, not this one's
         ("Own entries", "mcp__nightloom__preview", R),
