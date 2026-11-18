@@ -11,7 +11,7 @@ import type { TabContent } from "../tabs";
 import type { ChatKind, ChatMode, SessionEvent } from "../types";
 import { showNote, noteDraftKey } from "./notes.svelte";
 import { chatScope, pushUndo, contextUsed } from "./edits.svelte";
-import { app, adoptChatRules, applyDraft, refreshSessions, newSession, addToast, liveFlags } from "../state.svelte";
+import { app, adoptChatRules, applyDraft, refreshSessions, newSession, addToast, liveFlags, activating } from "../state.svelte";
 
 /**
  * What the open chat was started as, projected from the log the way
@@ -149,6 +149,20 @@ export function adoptCreatedChat(pending: string | null): void {
   if (!first || first.event !== "session_created") return;
   app.activeSessionId = first.id;
   if (pending !== null && pending !== first.id) moveDraft(pending, first.id);
+  // Item 840: the New chat's tab takes the new id in this same step. Left
+  // to App's reflection effect, the panes drew one frame with the open
+  // chat in no tab — the tab became a "Not the open chat" card and the
+  // page began to leave — then came back; with a menu open in it (Send
+  // later's), Svelte's reversed exit threw and the window froze split
+  // in two. The effect still runs, and finds nothing left to change.
+  // Only the focused pane's front New chat tab is retargeted, in place:
+  // `app.openNext` is left for the effect, and every other layout is
+  // the effect's to land as before.
+  if (activating > 0 || app.view !== "chat") return;
+  const front = tabs.activeTab(tabs.focusedPane(app.tabs));
+  if (front?.content.kind === "chat" && front.content.session === null) {
+    front.content = { kind: "chat", session: first.id };
+  }
 }
 
 /** The two steps of a kind switch: the log, then the reconnect that reads

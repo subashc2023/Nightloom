@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { emptyWorkspace } from "./tabs";
 import {
   app,
   chatAgentSession,
@@ -542,6 +543,9 @@ describe("newSession — a state, not a file", () => {
       user("one"),
     ];
     app.pendingMode = "normal";
+    // Item 840: a made chat's first step retargets the front New chat tab;
+    // with no App effect here to land it back, each test starts its own strip.
+    app.tabs = emptyWorkspace();
   });
 
   it("leaves no chat open and records the kind, and the button is selected", async () => {
