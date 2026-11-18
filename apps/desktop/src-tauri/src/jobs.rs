@@ -273,3 +273,22 @@ pub fn job_answer(
     };
     jobs.patch(&id, patch, chrono::Utc::now())
 }
+
+/// Item 2105: Home's jobs for the Mac's job rows (Settings → Home, and
+/// the job's own chat), the phone's Jobs list scoped to Home.
+#[tauri::command]
+pub fn job_home_list(app: AppHandle) -> Vec<nightloom_service::jobs::JobView> {
+    crate::remote::jobs_store(&app)
+        .map(|j| j.home_list())
+        .unwrap_or_default()
+}
+
+/// Item 2105: Run now on a Mac job row — the phone's press (item 812):
+/// past Home's spend guard it skips and the row carries the Run anyway card.
+#[tauri::command]
+pub async fn job_run_now(
+    app: AppHandle,
+    id: String,
+) -> Result<nightloom_service::jobs::JobView, String> {
+    crate::remote::press_job(&app, &id).await
+}

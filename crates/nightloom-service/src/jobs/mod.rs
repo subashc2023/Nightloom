@@ -1088,6 +1088,15 @@ impl Jobs {
         jobs.into_iter().map(JobView::from).collect()
     }
 
+    /// Item 2105: Home's jobs — the morning scan and any job in Home's
+    /// project — in [`list`](Self::list)'s order, for the Mac's job rows.
+    pub fn home_list(&self) -> Vec<JobView> {
+        self.list()
+            .into_iter()
+            .filter(|v| self.is_home_job(&v.job))
+            .collect()
+    }
+
     /// A new job, read-only, its first run at the schedule's next time.
     pub fn create(&self, req: NewJob, now: DateTime<Utc>) -> Result<JobView, String> {
         let text = req.text.trim().to_string();

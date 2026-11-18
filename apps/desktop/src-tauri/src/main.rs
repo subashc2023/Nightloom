@@ -1811,6 +1811,8 @@ fn main() {
             mac_sources::home_source_allow,
             mac_sources::home_source_set,
             jobs::job_answer,
+            jobs::job_home_list,
+            jobs::job_run_now,
             remote::remote_self_test,
             away::away_status,
             away::away_set_url,

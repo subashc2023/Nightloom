@@ -2021,6 +2021,20 @@ pub fn jobs_store(app: &AppHandle) -> Option<Arc<nightloom_service::jobs::Jobs>>
     app.try_state::<Remote>()?.host.jobs.clone()
 }
 
+/// Item 2105: his Run now on a Home job row on the Mac — the phone's
+/// `POST /api/jobs/{id}/run` (`Jobs::press_run`, item 812) with this Mac's
+/// host for the usage reading, so past the spend guard it raises the same
+/// Run anyway card.
+pub async fn press_job(
+    app: &AppHandle,
+    id: &str,
+) -> Result<nightloom_service::jobs::JobView, String> {
+    let remote = app.try_state::<Remote>().ok_or("this Mac keeps no jobs")?;
+    let host = remote.host.clone();
+    let jobs = host.jobs.clone().ok_or("this Mac keeps no jobs")?;
+    jobs.press_run(host.as_ref(), id, chrono::Utc::now()).await
+}
+
 /// Nobody to answer a card on the Mac (item 783's finish): no input at
 /// the Mac for [`AT_THE_MAC`] and no phone page connected to the relay.
 /// An idle time it cannot read counts as someone there: the card waits.

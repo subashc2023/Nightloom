@@ -228,6 +228,7 @@
   import { allowSource, checkReach, home, homeProject, refreshHome, refreshReach, refreshSources, saveBrief, setBriefDraft, setReach, setSource } from "./home.svelte";
   import { MESSAGES_STEP, isRead, sourceButton, sourceStatusWords, sourcesSummary } from "./homeSources";
   import { REACH_GROUPS, reachName, reachNote, reachStatusWords, reachSummary } from "./home";
+  import HomeJobs from "./HomeJobs.svelte";
   import { revealFolder } from "./state.svelte";
 
   /**
@@ -3526,6 +3527,12 @@
             <div class="key-status">Folder <code class="path">{home.info.folder}</code></div>
             <div class="kf"><button class="ns-btn ghost" onclick={() => void revealFolder(home.info?.folder ?? "")}>Show folder</button></div>
           {/if}
+        </section>
+        <!-- Item 2105: Home's jobs with Run now, as on the phone's Jobs list. -->
+        <section class="card">
+          <div class="ch"><span class="t">Home's jobs</span></div>
+          <p class="note small">Run now runs one at once. Past Home's spend guard it asks first.</p>
+          <HomeJobs />
         </section>
       {/if}
     </div>

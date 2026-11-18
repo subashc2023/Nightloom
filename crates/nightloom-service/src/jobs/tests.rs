@@ -1304,3 +1304,53 @@ async fn a_scheduled_home_run_is_still_refused_after_run_anyway() {
     );
     let _ = std::fs::remove_dir_all(&cfg);
 }
+
+/// Item 2105: the Mac's job rows are Home's jobs only, and the row's Run
+/// now (the same `press_run` as the phone's) starts one under the guard and
+/// raises the Run anyway card past it; a second press while it waits to
+/// start is the same run.
+#[tokio::test]
+async fn the_macs_home_rows_run_now_starts_under_the_guard_and_asks_past_it() {
+    let (h, cfg) = home_host();
+    let t0 = at(2026, 11, 17, 15, 0);
+    let scan = crate::home::SCAN_JOB_ID;
+    assert!(h.jobs.ensure_home_scan("home-p", t0));
+    let other = h.jobs.create(new_job("every hour"), t0).unwrap().job.id;
+    let rows: Vec<String> = h.jobs.home_list().into_iter().map(|v| v.job.id).collect();
+    assert_eq!(
+        rows,
+        vec![scan.to_string()],
+        "only Home's jobs: {other} is not"
+    );
+
+    // Under the guard (10% / 40%, nothing spent today): it starts, no card.
+    let v = h.jobs.press_run(h.as_ref(), scan, t0).await.unwrap();
+    assert!(v.job.run_now && v.job.confirm.is_none());
+    let v = h.jobs.press_run(h.as_ref(), scan, t0).await.unwrap();
+    assert!(
+        v.job.run_now && v.job.confirm.is_none(),
+        "a second press is the same run"
+    );
+    one_scan_run(&h, t0 + Duration::minutes(1), 40, 10).await;
+    assert_eq!(h.preps.lock().unwrap().len(), 1, "one run");
+
+    // Past it (the 5-hour window at 82%): skipped, the card asks.
+    *h.five.lock().unwrap() = Some(82);
+    let v = h
+        .jobs
+        .press_run(h.as_ref(), scan, t0 + Duration::minutes(10))
+        .await
+        .unwrap();
+    let c = v.job.confirm.clone().expect("the card asks");
+    assert_eq!(c.why, "the 5-hour window is at 82%");
+    assert!(!v.job.run_now);
+    assert_eq!(
+        h.jobs.home_list()[0]
+            .job
+            .confirm
+            .as_ref()
+            .map(|c| c.why.clone()),
+        Some(c.why)
+    );
+    let _ = std::fs::remove_dir_all(&cfg);
+}

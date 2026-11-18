@@ -915,6 +915,7 @@
                       where="its project"
                       load={(chat) => invoke<Job | null>("job_for_chat", { chat })}
                       send={(id, patch) => invoke("job_answer", { id, patch })}
+                      press={(id) => invoke("job_run_now", { id })}
                     />
                   </div>
                 {/if}
