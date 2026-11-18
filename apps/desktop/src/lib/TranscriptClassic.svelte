@@ -177,6 +177,7 @@
   import { keptGet, keptOpen, keptSet, type FoldScope } from "./keptFolds.svelte";
   import WaitingMoon from "./WaitingMoon.svelte";
   import UserBubble from "./UserBubbleClassic.svelte";
+  import MathText from "./MathText.svelte";
   import PendingBubbles from "./PendingBubbles.svelte";
   import KeepWarmNotice from "./KeepWarmNotice.svelte";
   import { touchedUntil } from "./keepWarm";
@@ -2666,7 +2667,7 @@
                     <summary>Carried from agent “{adoptedMsg.agent ?? "subagent"}” — its task and run, which this chat answers from</summary>
                     <pre>{adoptedMsg.carried}</pre>
                   </details>
-                  {#if adoptedMsg.said}<div class="user-text">{adoptedMsg.said}</div>{/if}
+                  {#if adoptedMsg.said}<div class="user-text"><MathText text={adoptedMsg.said} /></div>{/if}
                 {/if}
               {/snippet}
               {#snippet extra()}

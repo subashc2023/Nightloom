@@ -6,6 +6,7 @@
   import { quoteNeedsRender, splitQuotes } from "./replyQuote.svelte";
   import { renderReply } from "./markdown";
   import { splitFences } from "./codeDetect";
+  import MathText from "./MathText.svelte";
   import { languageOf, segments } from "./codeHighlight";
   import KeepButton from "./KeepButton.svelte";
   import { imageName, keepKey, splitAttachNote } from "./keep";
@@ -224,7 +225,9 @@
          quotes where they sit in his words. -->
     <!-- Item 315: a ``` fenced block is drawn as code, coloured, its
          language on a label; the rest of his words stay plain text. -->
-    <div class="user-text">{#each splitFences(said) as part, p (p)}{#if part.kind === "code"}<div class="user-code"><span class="user-code-lang mono">{languageOf(part.info)?.label ?? (part.info || "code")}</span><pre><code>{#each segments(part.code, part.info) as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre></div>{:else}{#each splitQuotes(part.text) as seg, k (k)}{#if seg.kind === "quote" && quoteNeedsRender(seg.text)}<blockquote class="user-quote markdown rendered">{@html renderReply(seg.text)}</blockquote>{:else if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}{seg.text}{/if}{/each}{/if}{/each}</div>
+    <!-- Item 837: the maths in his words is typeset (`MathText`, the box's
+         own reading of `$…$`, `$$…$$`, `\(…\)`, `\[…\]` and bare LaTeX). -->
+    <div class="user-text">{#each splitFences(said) as part, p (p)}{#if part.kind === "code"}<div class="user-code"><span class="user-code-lang mono">{languageOf(part.info)?.label ?? (part.info || "code")}</span><pre><code>{#each segments(part.code, part.info) as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre></div>{:else}{#each splitQuotes(part.text) as seg, k (k)}{#if seg.kind === "quote" && quoteNeedsRender(seg.text)}<blockquote class="user-quote markdown rendered">{@html renderReply(seg.text)}</blockquote>{:else if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}<MathText text={seg.text} />{/if}{/each}{/if}{/each}</div>
   {/if}
   {#if split.aside}
     <!-- Item 775: what his asides changed, told to the main chat with

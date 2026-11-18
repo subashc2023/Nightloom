@@ -178,7 +178,12 @@ export function findBareLatex(text: string, protect: [number, number][]): BareLa
   const hit = (a: number, b: number) => prot.some(([x, y]) => a < y && b > x);
   const out: BareLatexSpan[] = [];
   let offset = 0;
-  for (const line of text.split("\n")) {
+  for (const raw of text.split("\n")) {
+    // Item 837 (his 834: `l(lambda) = Sigma(ln(\lambda^{2} x e^{- \lambda x})`,
+    // two `(` and one `)`): a parenthesis with no partner on its line ends a
+    // word, as a space does — before, it made the whole run unbalanced and
+    // nothing was offered for a line that holds perfectly good LaTeX.
+    const line = maskUnmatchedParens(raw);
     const cs = chunks(line, offset).map((c) => (c.cls !== "W" && hit(c.from, c.to) ? { ...c, cls: "W" as Cls } : c));
     let i = 0;
     while (i < cs.length) {
@@ -220,6 +225,28 @@ export function findBareLatex(text: string, protect: [number, number][]): BareLa
     offset += line.length + 1;
   }
   return out;
+}
+
+/** `line` with each parenthesis that has no partner made a space (same
+ *  length, so offsets hold). Braces are TeX's and are left alone. */
+function maskUnmatchedParens(line: string): string {
+  if (!line.includes("(") && !line.includes(")")) return line;
+  const open: number[] = [];
+  const bad: number[] = [];
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === "\\") i++;
+    else if (c === "(") open.push(i);
+    else if (c === ")") {
+      if (open.length) open.pop();
+      else bad.push(i);
+    }
+  }
+  bad.push(...open);
+  if (!bad.length) return line;
+  const out = line.split("");
+  for (const i of bad) out[i] = " ";
+  return out.join("");
 }
 
 function parensBalanced(s: string): boolean {

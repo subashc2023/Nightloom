@@ -11,6 +11,7 @@
  */
 import { guessLanguage, languageOf, segmentLines, segments, type Seg } from "./codeHighlight";
 import { LONG_PASTE_WORDS, wordCount } from "./pasteAttach";
+import { findMath, typedMathOk } from "./math";
 
 /** Shapes that say "code" about a line. */
 const CODE_LINE: RegExp[] = [
@@ -63,6 +64,22 @@ export function signatureOf(text: string): string | null {
   return SIGNATURES.find(([, re]) => re.test(text))?.[0] ?? null;
 }
 
+const TEX_COMMAND =
+  /\\(frac|dfrac|sqrt|sum|prod|int|cdot|times|bar|hat|overline|left|right|leq|geq|neq|approx|infty|partial|alpha|beta|gamma|delta|epsilon|theta|lambda|mu|pi|rho|sigma|tau|phi|omega|Gamma|Delta|Theta|Lambda|Sigma|Phi|Omega|ln|log|mathbb|mathrm|text|begin)\b/;
+/** Words that are maths said in plain text: Greek names and functions. */
+const MATH_WORD = /\b(theta|lambda|sigma|alpha|beta|gamma|delta|epsilon|omega|mu|pi|rho|tau|phi|ln|log|sqrt|sin|cos|tan|exp)\b/i;
+/** Is `text` maths notes rather than code: a LaTeX command or a delimited
+ *  formula anywhere, or maths words on at least half of its lines with no
+ *  line that ends as code does (`;`, `{`, `}`). */
+function mathNotes(text: string, lines: string[]): boolean {
+  // A LaTeX document is source, and still a code block.
+  if (/\\(documentclass|usepackage|begin\{document\})/.test(text)) return false;
+  if (TEX_COMMAND.test(text)) return true;
+  if (findMath(text).some((m) => typedMathOk(text, m) && /[\\^_=]/.test(m.tex))) return true;
+  if (lines.some((l) => /[;{}]\s*$|\w\.\w+\(|==|\[\w*\]|^\s*(for|if|while|return)\b/.test(l))) return false;
+  return lines.filter((l) => MATH_WORD.test(l)).length * 2 >= lines.length;
+}
+
 export type CodeVerdict = { code: boolean; score: number; lang: string | null; relevance: number };
 
 /** Below this highlight.js relevance its guess is noise (prose scores 0–4). */
@@ -82,6 +99,12 @@ export function detectCode(text: string): CodeVerdict {
     else if (proseLine(l)) prose++;
     if (/^( {2,}|\t)\S/.test(l)) indented++;
   }
+  // Item 837 (his 835: pasted maths notes were fenced as "Shell"): maths
+  // written out in plain text has code's shapes — `0 = nx/theta^2` is an
+  // assignment, `* theta ^2` a comment line, `4ln(theta)` a call — and
+  // highlight.js calls anything with a `$` bash. A paste that carries
+  // LaTeX or a formula, with no language's own marks in it, is his notes.
+  if (mathNotes(text, lines) && !signatureOf(text)) return none;
   // Indentation counts for code only beside other code shapes.
   const score = (code + (code > 0 ? indented * 0.5 : 0) - prose * 1.5) / lines.length;
   if (score < 0.5 || prose / lines.length > 0.34) return { ...none, score };

@@ -87,7 +87,8 @@
     type ExtraOp,
     type Try,
   } from "./client";
-  import { renderMarkdown } from "../lib/markdown";
+  import { renderMarkdown, streamingTail } from "../lib/markdown";
+  import MathText from "../lib/MathText.svelte";
   // Item 820: pictures and video a reply names, under its text.
   import ReplyMedia from "../lib/ReplyMedia.svelte";
   import { mediaCandidates, mediaKindOf } from "../lib/replyMedia";
@@ -3297,7 +3298,7 @@
           {@const ran = parseRan(r.said)}
           <div class="turn user" data-row={i} class:enter={i >= enterFrom && !still} class:removed={r.removed} use:arrive={{ channel: "phone" }}>
             <div class="bubble" use:press={() => openMenu(r)}>
-              {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{#each r.files as f, fi (fi)}<span class="file-card"><span class="file-badge">{fileBadgeOf(f)}</span><span class="file-name">{f}</span></span>{/each}{#if ran}<div class="ran-card"><div class="ran-head">Ran in terminal · {ran.status}</div><div class="ran-cmd">{ran.command}</div>{#if ran.output}<details><summary>Output</summary><pre>{ran.output}</pre></details>{/if}</div>{:else}{r.said}{/if}
+              {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{#each r.files as f, fi (fi)}<span class="file-card"><span class="file-badge">{fileBadgeOf(f)}</span><span class="file-name">{f}</span></span>{/each}{#if ran}<div class="ran-card"><div class="ran-head">Ran in terminal · {ran.status}</div><div class="ran-cmd">{ran.command}</div>{#if ran.output}<details><summary>Output</summary><pre>{ran.output}</pre></details>{/if}</div>{:else}<MathText text={r.said} />{/if}
             </div>
             <div class="stamp">
               {#if r.removed}{"removed from the context · "}{:else if r.edited}{"edited · "}{/if}{shortWhen(r.at)}
@@ -3339,9 +3340,11 @@
             <!-- Item 572: the reply's header, Claude working in blue. -->
             <div class="reply-head"><span class="rh-ring" aria-hidden="true"></span><b>Claude</b>{#if lastModel}<span class="rh-model">{lastModel}</span>{/if}<span class="rh-sep">·</span><span class="rh-st">Replying</span></div>
           {/if}
+          <!-- Item 837: the reply's unfinished tail is drawn as the Mac draws it (`streamingTail`): a formula
+               still arriving is held until it closes, a table row until it is whole. -->
           {#each liveSegments(live) as s, k (k)}
             {#if s.kind === "tools"}{@render toolBox(s.tools, `live${k}`, true)}
-            {:else}<div class="md" use:codeBlocks={copy}>{@html renderMarkdown(s.text, { breaks: true, localImagesAsText: true })}</div>{/if}
+            {:else}<div class="md" use:codeBlocks={copy}>{@html renderMarkdown(k === liveSegments(live).length - 1 ? streamingTail(s.text) : s.text, { breaks: true, localImagesAsText: true })}</div>{/if}
           {/each}
           {@render sentChips(sentOf(live.tools))}
           {#if live.retry}

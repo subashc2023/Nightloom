@@ -1,0 +1,18 @@
+/* Item 837 (his "sigma vs Sigma"): a formula keeps the case it was written in. `text-transform` is inherited, so
+   a heading or table head set in capitals (`.ns-prose h2`, `table.ns-grid th`, a label) drew `\sigma` as Σ, `\delta`
+   as Δ, `\omega` as Ω; letter-spacing spread its glyphs the same way. Every formula, wherever it is drawn. */
+.katex {
+  text-transform: none;
+  letter-spacing: normal;
+  font-variant: normal;
+}
+
+/* Item 838: a selected formula is one even box, not a patch per glyph (`mathCopy.ts` `installMathSelection`). */
+:root.math-sel-on .katex *::selection {
+  background: transparent;
+}
+:root.math-sel-on .katex.math-sel {
+  background: Highlight;
+  border-radius: 2px;
+  box-shadow: 0 0.12em 0 Highlight, 0 -0.12em 0 Highlight;
+}

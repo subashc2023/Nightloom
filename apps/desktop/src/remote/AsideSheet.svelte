@@ -12,6 +12,7 @@
   import { onMount } from "svelte";
   import { takeBlockKey } from "../lib/codeBlockKeys";
   import { renderMarkdown } from "../lib/markdown";
+  import MathText from "../lib/MathText.svelte";
   // Item 820: pictures an aside's answer names, as under a chat's reply.
   import ReplyMedia from "../lib/ReplyMedia.svelte";
   import { mediaCandidates } from "../lib/replyMedia";
@@ -85,7 +86,7 @@
 {:else}
   {#if aside}
     <div class="as-card">
-      <div class="as-q">{aside.question}</div>
+      <div class="as-q"><MathText text={aside.question} /></div>
       {#if aside.answer}
         <div class="as-md">{@html renderMarkdown(aside.answer, { localImagesAsText: true })}</div>
         {#if media && !asking}<ReplyMedia items={mediaCandidates(aside.answer, [])} {chat} />{/if}
@@ -128,7 +129,7 @@
     <div class="as-past">
       {#each past as p, i (i)}
         <details>
-          <summary>{p.question}</summary>
+          <summary><MathText text={p.question} /></summary>
           <small class="as-thread">{p.thread}</small>
           <div class="as-md">{@html renderMarkdown(p.answer, { localImagesAsText: true })}</div>
           {#if media}<ReplyMedia items={mediaCandidates(p.answer, [])} {chat} />{/if}
