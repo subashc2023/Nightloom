@@ -606,7 +606,7 @@
     // palette, not a chord.
     const zoom = zoomChord(e, primary, isMac);
     if (zoom) {
-      void runZoom(zoom);
+      void runZoom(zoom, "key");
       return true;
     }
     // ⌘F opens find in page (nightshift backlog 106), or refocuses the

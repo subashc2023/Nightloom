@@ -234,6 +234,8 @@ struct LiveContext {
     prose_chars: u64,
     dense_chars: u64,
     thinking_chars: u64,
+    /// Of `dense_chars`, the tool-call arguments alone (item 829).
+    args_chars: u64,
     sent: u64,
 }
 
@@ -242,6 +244,9 @@ struct LiveContext {
 enum Streamed {
     Prose,
     Dense,
+    /// A tool call's arguments as they stream: dense, and counted apart
+    /// for the working line's "writing a call" (item 829).
+    Args,
     Thinking,
 }
 
@@ -261,6 +266,7 @@ impl LiveContext {
             estimate_tokens: self.estimate(),
             rough: self.thinking_chars > 0,
             steps: self.steps,
+            writing_chars: self.args_chars,
         }
     }
 
@@ -283,6 +289,10 @@ impl LiveContext {
         match kind {
             Streamed::Prose => self.prose_chars += n,
             Streamed::Dense => self.dense_chars += n,
+            Streamed::Args => {
+                self.dense_chars += n;
+                self.args_chars += n;
+            }
             Streamed::Thinking => self.thinking_chars += n,
         }
         let est = self.estimate();
@@ -665,7 +675,7 @@ impl Translator {
                 }
                 Delta::InputJson { partial_json } => self
                     .live
-                    .grow(Streamed::Dense, partial_json.chars().count())
+                    .grow(Streamed::Args, partial_json.chars().count())
                     .into_iter()
                     .collect(),
                 Delta::Other => Vec::new(),
@@ -1554,6 +1564,7 @@ mod tests {
                     estimate_tokens,
                     rough,
                     steps,
+                    ..
                 } => Some((*exact_tokens, *estimate_tokens, *rough, *steps)),
                 _ => None,
             })
@@ -1622,6 +1633,25 @@ mod tests {
         );
     }
 
+    /// Item 829: the reading says how much of the next call's arguments
+    /// has streamed — the arguments alone, not thinking or a result.
+    #[test]
+    fn the_reading_counts_the_call_being_written() {
+        let args = serde_json::json!({"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"y".repeat(150)}}}).to_string();
+        let result = serde_json::json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"z".repeat(300)}]},"parent_tool_use_id":null}).to_string();
+        let (events, _) = drive(&[MSG_START, &args, &args, &result]);
+        let writing: Vec<u64> = events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::ContextLive { writing_chars, .. } => Some(*writing_chars),
+                _ => None,
+            })
+            .collect();
+        // The round's start, then a reading per 32 tokens grown: 150 and
+        // 300 characters of arguments; the result adds none of its own.
+        assert_eq!(writing, vec![0, 150, 300, 300]);
+    }
+
     /// Backlog 590's measurement: a real recorded stream (`NIGHTLOOM_590_STREAM`
     /// names the file), each live reading printed beside the next exact one,
     /// so the estimate's error at each step can be read off. Run by hand.
@@ -1640,6 +1670,7 @@ mod tests {
                     estimate_tokens,
                     rough,
                     steps,
+                    ..
                 } = e
                 {
                     println!(

@@ -24,6 +24,7 @@
   import RightRail from "./RightRailClassic.svelte";
   import { portal, anchorBelow } from "./portal";
   import { tip } from "./tip";
+  import ZoomChip from "./ZoomChip.svelte";
   import { gaugeChipTip } from "./shortTip";
   import { foldToFit } from "./fold";
   const POP_WIDTH = 340;
@@ -549,6 +550,7 @@
   {/if}
 
   <div class="right" bind:this={rightEl}>
+    <ZoomChip />
     <!-- The kind chip (nightshift backlog 102; blocker 141's final form
          since backlog 112): `Claude Code · subscription`, `Chat ·
          subscription`, `Build · anthropic`, `Chat · anthropic` — the kind

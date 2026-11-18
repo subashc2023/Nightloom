@@ -88,6 +88,10 @@ pub enum TurnEvent {
         rough: bool,
         /// Exact figures seen this turn (1 at the first round's start).
         steps: u32,
+        /// Tool-call arguments streamed since the round's start, in
+        /// characters (item 829): the model writing its next call, which
+        /// the trace shows only once the call is whole.
+        writing_chars: u64,
     },
     /// What the Claude Code session has, from the CLI's `system/init` line
     /// — the first line of every turn on that engine (nightshift backlog

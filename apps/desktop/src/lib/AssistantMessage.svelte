@@ -3,6 +3,9 @@
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
   import type { Segment } from "./state.svelte";
+  import { gapLead, gapPhase, liveFor } from "./liveContext";
+  import { shortTokens } from "./contextDial";
+  import { liveContextOf, stepMarksOf } from "./liveContext.svelte";
   import type { ApprovalRequest, Usage } from "./types";
   // Item 626: while streaming, the unfinished tail renders as it will once finished (streamingTail); item 830: by blocks.
   import { renderReply } from "./markdown";
@@ -455,7 +458,15 @@
   // background agents — the line says so (`waiting on 2 agents · 2 min 58 s`)
   // and a light runs round the trace block's edge until the turn moves.
   const waitAgents = $derived(streaming ? waitingOn(segs, app.subagents) : null);
-  const working = $derived(waitingLabel(waitAgents, now - (since ?? startedAt)));
+  // Item 829: the gap between steps says what the model is doing — reading
+  // the chat before its first word, or writing a call the trace shows only
+  // once it is whole (`gapPhase`).
+  const phase = $derived.by(() => {
+    if (!streaming) return null;
+    const sent = since ?? startedAt;
+    return gapPhase(liveFor(liveContextOf(app.activeSessionId), sent), { sentAt: sent, ...stepMarksOf(app.activeSessionId) });
+  });
+  const working = $derived(waitingLabel(waitAgents, now - (since ?? startedAt), gapLead(phase, shortTokens)));
 
   // ---- The turn trace (item 564, Filament IV stage 5) ----------------------
   // Each step (a thinking block, a call) is a numbered row with a status mark
