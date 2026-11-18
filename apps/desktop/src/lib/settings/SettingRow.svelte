@@ -32,7 +32,7 @@
 </script>
 
 {#if shown}
-  <div class="row" class:stack>
+  <div class="row" class:stack data-fold={fold}>
     <div class="head">
       {#if label}<div class="lab">{@render label()}</div>{/if}
       {#if help}

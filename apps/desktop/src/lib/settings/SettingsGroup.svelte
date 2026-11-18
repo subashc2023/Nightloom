@@ -29,7 +29,7 @@
 </script>
 
 {#if !filtering || matches > 0}
-  <section class="grp" class:open>
+  <section class="grp" class:open data-fold={fold}>
     <button
       class="gh"
       aria-expanded={open}
