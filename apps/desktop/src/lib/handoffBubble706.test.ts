@@ -77,3 +77,23 @@ describe("the bubble, Jarvis and Classic", () => {
     });
   }
 });
+
+describe("the phone (Remote.svelte) draws it the same way", () => {
+  it("its rows give the card what it reads: the words, and whether he edited them", async () => {
+    const { transcriptRows } = await import("../remote/client");
+    const at = "2026-11-18T20:00:00Z";
+    const ev = [
+      { event: "session_created", id: "c", at },
+      { event: "user_message", text: sent, at },
+      { event: "user_message", text: sent, at },
+      { event: "edit", target: 2, text: sent.replace("Wrap up:", "Wrap up, skip shots:"), at },
+    ] as unknown as Parameters<typeof transcriptRows>[0];
+    const users = transcriptRows(ev).filter((r) => r.kind === "user") as { said: string; edited: boolean }[];
+    expect(users.map((u) => !u.edited && parseHandoffMessage(u.said) !== null)).toEqual([true, false]);
+  });
+  it("Remote.svelte uses the shared detection, and not on an edited message", async () => {
+    const src = (await import("../remote/Remote.svelte?raw")).default as string;
+    expect(src).toContain("parseHandoffMessage(r.said)");
+    expect(src).toMatch(/ran \|\| r\.edited \? null : parseHandoffMessage/);
+  });
+});
