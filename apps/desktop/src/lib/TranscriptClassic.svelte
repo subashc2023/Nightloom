@@ -206,6 +206,7 @@
   import { endsTurn, redoOf } from "./retry";
   import { retryReply } from "./retry.svelte";
   import { versionPlace } from "./versions";
+  import { handoffIsPlain } from "./handoffBubble";
   import { arrive, hasLaunch } from "./sendMotion";
   // Items 396 and 397: a rewind and a removal of his message play out
   // over a copy of the thread laid down just before the call.
@@ -2702,6 +2703,7 @@
               sending={item.sending ?? []}
               keep={turnFold(item.index, "bubble")}
               custom={diffShown || !!adoptedMsg.carried}
+              plain={handoffIsPlain(item.original, chatId ? (versionPlace(versionsOf(chatId, item.index), chatId)?.n ?? null) : null)}
               onopenimage={(j, rect, size) => {
                 if (!app.activeSessionId) return;
                 openAttachment(

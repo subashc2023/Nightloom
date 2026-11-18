@@ -197,9 +197,10 @@ describe("747: what the card's button sends", () => {
     const prompt = `Goal: fix the parser\n\n${card}`;
     const carry = buildCarry({ events, live: events.map(() => true), reply: 4, prompt });
     const next = { chat: "c747", index: 4, prompt, carry };
-    // Untouched: the prompt's own goal, nothing ticked — the prompt as the model wrote it.
+    // Untouched: the prompt's own goal; item 850: his words go by themselves.
     expect(carryGoal("c747", 4)).toBeNull();
-    expect(nextChatMessage(next)).toBe(prompt);
+    expect(nextChatMessage(next).startsWith(prompt)).toBe(true);
+    expect(parseCarried(nextChatMessage(next)).map((m) => m.text)).toEqual(["stop suggesting rebases"]);
     setCarryGoal("c747", 4, "fix the parser, then 705");
     setCarryTick("c747", 4, "m1", true);
     expect(carryTicks("c747", 4)).toEqual({ m1: true });
@@ -211,6 +212,26 @@ describe("747: what the card's button sends", () => {
     expect(carryTicks("c747", 9)).toEqual({});
     setCarryGoal("c747", 4, null);
     setCarryTick("c747", 4, "m1", false);
-    expect(nextChatMessage(next)).toBe(prompt);
+    // An old tick changes nothing (850): the words still go.
+    expect(parseCarried(nextChatMessage(next)).map((m) => m.text)).toEqual(["stop suggesting rebases"]);
+  });
+});
+
+describe("850: the card says his words go, with no list to tick", () => {
+  it("one line, the count, and the cap when some are past it", async () => {
+    const { hisLine } = await import("./handoffButton");
+    const { WORDS_CAP_TOKENS } = await import("./handoffCarry");
+    const m = (n: number, len = 10) => ({ id: `m${n}`, when: `day ${n}`, text: "x".repeat(len), carried: false, quoted: 0 });
+    expect(hisLine({ words: [m(1)] })).toBe("Your 1 message since the last hand-off goes to the next chat word for word");
+    expect(hisLine({ words: [m(1), m(2)] })).toBe("Your 2 messages since the last hand-off go to the next chat word for word");
+    const big = (WORDS_CAP_TOKENS * 4) / 3;
+    expect(hisLine({ words: [m(1, big), m(2, big), m(3, big)] })).toBe(
+      "Your 3 messages since the last hand-off go to the next chat word for word — the oldest 1 past the 15k-token cap stay in this chat's log",
+    );
+  });
+  it("draws no checkbox and no 'tick any' wording", async () => {
+    const src = (await import("./handoffButton.ts?raw")).default as string;
+    expect(src).not.toContain("tick any to carry over");
+    expect(src).not.toContain('type = "checkbox"');
   });
 });
