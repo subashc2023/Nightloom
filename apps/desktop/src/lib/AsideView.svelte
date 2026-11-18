@@ -524,9 +524,12 @@
        with the spacer and cut the chat's name whole. */
     flex: 1 1 auto;
     min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    /* ~~white-space: nowrap; overflow: hidden; text-overflow: ellipsis~~
+       (struck 2026-11-18, item 833: in a narrow card it read "nothing …",
+       his shots). It wraps now — its own row once the chips do not fit
+       beside it, a second line under ~330 px; the chat's name inside stays
+       capped (the em below), so 358's fifteen lines cannot come back. */
+    white-space: normal;
   }
   .aside-view :global(.composer.aside .aside-line em) {
     display: inline-block;
@@ -566,6 +569,19 @@
   }
   .aside-head-row > .aside-view-of {
     flex: 0 1 auto;
+  }
+  /* Item 833 (Classic's tab head, measured at 320 px: Close ran 43 px past
+     the tab's edge — nothing but "of ‹chat›" could shrink). It wraps, the
+     buttons to the right of a second line; "of ‹chat›" asks only ~4em
+     before it is cut, so the row wraps only once that is spent. */
+  .aside-head:not(.twin) .aside-head-row {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    justify-content: flex-end;
+  }
+  .aside-head:not(.twin) .aside-head-row > .aside-view-of {
+    flex: 1 1 4em;
+    max-width: max-content;
   }
   .aside-head-row .spacer {
     flex: 1 1 0;

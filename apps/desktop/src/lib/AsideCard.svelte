@@ -37,6 +37,7 @@
   import AsideTranscript from "./AsideTranscript.svelte";
   import { classic } from "./layout.svelte";
   import { fmtTokens } from "./tokens";
+  import { firstFit, onOneLine } from "./fold";
 
   /**
    * The floating aside card (nightshift backlog 141, 2026-09-17; blocker
@@ -166,6 +167,50 @@
     if (!owner) return "this chat";
     const s = app.sessions.find((x) => x.id === owner);
     return chatLabel(s, "this chat");
+  });
+  /*
+   * Item 833 (his shots, 2026-11-17): a narrow card's head ran its copy
+   * and × past the card's right edge — one row, nothing shrinking but
+   * "Aside of", which drew as "A.". The head now folds by measurement
+   * (`fold.ts`, as the composer's row): 1 the cache chip's word ("222k",
+   * the count's tooltip has the rest); 2 Fold into thread to its mark
+   * (its tooltip and label keep the words); 3 "Aside of ‹chat›" out, once
+   * it cannot show ~5em; 4 the floor — the head wraps rather than spill.
+   */
+  const HEAD_FOLD_MAX = 4;
+  /** "Aside of ‹chat›" is kept only while it shows at least this much (px). */
+  const OF_MIN = 64;
+  let headEl = $state<HTMLElement | null>(null);
+  let headFold = $state("0");
+  function refoldHead(): void {
+    const head = headEl;
+    if (!head) return;
+    const items = () => [...head.children].filter((e) => !e.classList.contains("spacer"));
+    headFold = String(
+      firstFit((level) => {
+        head.dataset.fold = String(level);
+        const r = head.getBoundingClientRect();
+        const padRight = parseFloat(getComputedStyle(head).paddingRight) || 0;
+        if (!onOneLine(items().map((e) => e.getBoundingClientRect()), r.right - padRight)) return false;
+        const of = head.querySelector<HTMLElement>(".aside-card-of");
+        return !of || of.offsetWidth === 0 || of.clientWidth >= Math.min(of.scrollWidth, OF_MIN);
+      }, HEAD_FOLD_MAX),
+    );
+  }
+  $effect(() => {
+    const head = headEl;
+    // What the head holds; each read registers the dependency.
+    void [aside.name, chatName, folded, asking, last?.cacheRead, last?.partial.trim() !== "", readOnly, panel, aside.moved, app.project];
+    refoldHead();
+    if (!head || typeof ResizeObserver === "undefined") return;
+    // The head and each thing in it: a chip that grows once its font loads
+    // changes no head size, and a fold read before it was stale (measured:
+    // "Aside of" left at 1 px in a 380 px card).
+    const ro = new ResizeObserver(() => refoldHead());
+    ro.observe(head);
+    for (const c of head.children) ro.observe(c);
+    void document.fonts?.ready.then(() => refoldHead());
+    return () => ro.disconnect();
   });
   // A draft drags too (backlog 148, his ask on 5847cca): the card sits
   // under the passage and can cover what he is reading before a word is
@@ -494,6 +539,8 @@
   <div
     class="aside-card-head"
     class:movable
+    bind:this={headEl}
+    data-fold={headFold}
     draggable={draggable && panel}
     use:tip={draggable
       ? panel
@@ -536,7 +583,7 @@
       <!-- Short (backlog 358): the long "188,342 read from cache" lost the
            head's room and drew as "1…"; the full count is its tip. -->
       <span class="ns-chip mono aside-cache" use:tip={`${last.cacheRead.toLocaleString()} tokens read from cache`}
-        >{fmtTokens(last.cacheRead)} cached</span
+        >{fmtTokens(last.cacheRead)}<span class="head-word"> cached</span></span
       >
     {/if}
     <span class="spacer"></span>
@@ -773,6 +820,24 @@
     border-bottom: 1px solid var(--line);
     cursor: default;
   }
+  /* Item 833: the head's fold levels (`refoldHead`). */
+  .aside-card-head:not([data-fold="0"]) .head-word {
+    display: none;
+  }
+  .aside-card-head:is([data-fold="2"], [data-fold="3"], [data-fold="4"]) :global(.fold-btn-word) {
+    display: none;
+  }
+  .aside-card-head:is([data-fold="3"], [data-fold="4"]) .aside-card-of {
+    display: none;
+  }
+  /* The floor: wrap rather than run past the card's edge (191's one row
+     holds down to the narrowest card the levels above can fit). */
+  .aside-card-head[data-fold="4"] {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    /* What wraps (×, Copy) keeps the right edge, where the hand looks. */
+    justify-content: flex-end;
+  }
   .aside-card-name {
     font-weight: 600;
     max-width: 11em;
@@ -882,9 +947,12 @@
        with the spacer and cut the chat's name whole. */
     flex: 1 1 auto;
     min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    /* ~~white-space: nowrap; overflow: hidden; text-overflow: ellipsis~~
+       (struck 2026-11-18, item 833: in a narrow card it read "nothing …",
+       his shots). It wraps now — its own row once the chips do not fit
+       beside it, a second line under ~330 px; the chat's name inside stays
+       capped (the em below), so 358's fifteen lines cannot come back. */
+    white-space: normal;
   }
   .aside-card :global(.composer.aside .aside-line em) {
     display: inline-block;
