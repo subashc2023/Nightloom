@@ -63,6 +63,9 @@ fn a_string_split_across_two_chunks_is_found() {
     assert!(missing_in(&b[..]).unwrap().is_empty());
 }
 
+// Unix only: it follows a symlink, which a Windows runner cannot make
+// without Developer Mode.
+#[cfg(unix)]
 #[test]
 fn the_bundle_check_reads_a_cli_file_and_its_link() {
     let d = scratch("bundle");

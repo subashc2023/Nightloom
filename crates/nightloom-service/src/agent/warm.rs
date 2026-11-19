@@ -272,8 +272,8 @@ impl WarmSlot {
         Ok((w.child, age))
     }
 
-    /// Whether the waiting process has exited (tests).
-    #[cfg(test)]
+    /// Whether the waiting process has exited (tests; they are Unix only).
+    #[cfg(all(test, unix))]
     fn exited(&self) -> bool {
         self.lock()
             .warm
@@ -287,7 +287,9 @@ impl WarmSlot {
     }
 }
 
-#[cfg(test)]
+// Unix only: every test here runs a `#!/bin/sh` stand-in made executable
+// with a Unix mode, which Windows can neither mark nor run.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

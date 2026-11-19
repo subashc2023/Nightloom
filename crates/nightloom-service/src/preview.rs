@@ -49,7 +49,10 @@ use nightloom_core::ToolDef;
 use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+// The socket client and server write only where Unix sockets exist.
+#[cfg(unix)]
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 /// The tool's name on the server; the CLI calls it `mcp__nightloom__preview`.
@@ -64,6 +67,7 @@ const LINE_CAP: usize = 2000;
 /// How long a start waits for the port to answer before replying.
 pub const READY_WAIT: Duration = Duration::from_secs(20);
 /// How long a stop waits on SIGTERM before SIGKILL.
+#[cfg(unix)]
 const STOP_GRACE: Duration = Duration::from_millis(1500);
 
 /// Where a preview is.
@@ -1167,6 +1171,8 @@ the port answers (up to 20 s) and returns the status and the log's tail; the ser
 
 /// `preview`, as Nightloom's MCP server serves it to a chat.
 pub struct PreviewTool {
+    // Read only by the Unix-socket request; Windows has no preview service.
+    #[cfg_attr(not(unix), allow(dead_code))]
     socket: PathBuf,
     chat: String,
     root: PathBuf,
