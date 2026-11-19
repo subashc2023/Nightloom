@@ -14,6 +14,10 @@ import { app, openSession } from "../src/lib/state.svelte";
 import { railFold } from "../src/lib/railFold.svelte";
 import { setLayout } from "../src/lib/layout.svelte";
 import { stage as kept, keep, readKept, STAGE_KEY } from "../src/lib/homeStage/stageState.svelte";
+import { installErrorWatch } from "../src/lib/errorWatch.svelte";
+import { needs as board } from "../src/lib/needsBoard.svelte";
+// Item 874: as main.ts — the Reload view bar if the runtime stops drawing.
+installErrorWatch();
 
 const q = new URLSearchParams((window as unknown as { __h9q?: string }).__h9q ?? location.search);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -82,6 +86,9 @@ const notes: string[] = [];
     case "claude_browser_status": return null;
     case "home_sources": return macSources;
     case "home_routes": return { cards: [], held: [], started: [] };
+    // Item 874: lists the app reads after a send; a null froze the harness page (Palette reads their length).
+    case "list_proposals":
+      return [];
     case "named_files": case "for_you_files": case "search_backends": case "centre_proposals": case "centre_dream_commits": case "turn_usage": case "list_threads": case "nightshift_projects": case "tidy_memory": case "tidy_threads":
       return [];
     case "home_tasks": return homeTasks;
@@ -165,6 +172,54 @@ async function run() {
     await wait(900);
     restart = ` restart=${saved.length}B told=${told.length} notes=${notes.length}`;
   }
+  // needs=1 (item 874): two Needs-you cards as his 12:19 PM shot had them — a question with a long text in another
+  // project, and a finished turn — for the click test of Answer / Open chat / Mark seen and the card's full text.
+  if (q.get("needs") === "1") {
+    const asc = { id: "asc", name: "AI Safety Collective at Irvine", root: "/Users/you/asc", notes_dir: "/Users/you/asc/.agents/notes", chats: 9, notes: 3, exists: true };
+    if (!projects.some((p) => p.id === "asc")) projects.push(asc as (typeof projects)[number]);
+    app.projects = projects as unknown as typeof app.projects;
+    board.ended = [
+      { chat: "asc-1", name: "Okay so applications round is closed. We received 162 applications and need to cut to 40 by Friday", project: "asc", projectName: asc.name, at: Date.now() - 600_000, failed: false, ask: { question: "Okay so applications round is closed. We received 162 applications. Should the first cut be by the rubric score alone, or should the essay pass come first for anyone within five points of the line?", options: ["Rubric first", "Essay pass first"] } },
+      { chat: "h-scan", name: "Morning scan — write today's Home page.", project: "home", projectName: "Home", at: Date.now() - 900_000, failed: false, ask: null },
+    ];
+    await wait(300);
+  }
+  // clicktest=1 (item 874): the click test — each of Home's Watching controls acts. Read off the title as
+  // `clicks=PASS` or `clicks=FAIL(<which>)`; run with needs=1.
+  let clicks = "";
+  if (q.get("clicktest") === "1") {
+    const fails: string[] = [];
+    const btn = (root: ParentNode, re: RegExp) => [...root.querySelectorAll<HTMLButtonElement>("button")].find((b) => re.test(b.textContent ?? ""));
+    const follow = btn(document, /Follow Home/);
+    const was = follow?.getAttribute("aria-pressed");
+    follow?.click();
+    await wait(200);
+    if (!follow || follow.getAttribute("aria-pressed") === was) fails.push("follow");
+    if (follow?.getAttribute("aria-pressed") === "true") follow.click();
+    document.querySelector<HTMLElement>(".h9-tab")?.click();
+    await wait(300);
+    const card = () => document.querySelectorAll<HTMLElement>(".nd")[0];
+    card()?.querySelector<HTMLElement>(".nd-q")?.click();
+    await wait(200);
+    if (!card()?.classList.contains("isopen") || !/rubric score alone/.test(card()?.textContent ?? "")) fails.push("fulltext");
+    const ans = card() && btn(card(), /^\s*Answer\s*$/);
+    ans?.click();
+    await wait(200);
+    if (!card()?.querySelector(".w-answer input")) fails.push("answer");
+    const n0 = document.querySelectorAll(".nd").length;
+    const seen = document.querySelectorAll<HTMLElement>(".nd")[1];
+    if (seen) btn(seen, /Mark seen/)?.click();
+    await wait(300);
+    if (document.querySelectorAll(".nd").length !== n0 - 1) fails.push("markseen");
+    const split = btn(document, /Split/);
+    if (split && !split.classList.contains("waits") && !split.getAttribute("aria-pressed")) {
+      split.click();
+      await wait(200);
+      if (split.getAttribute("aria-pressed") !== "true") fails.push("split");
+      split.click();
+    }
+    clicks = ` clicks=${fails.length ? `FAIL(${fails.join(",")})` : "PASS"}`;
+  }
   // checkone=1: one source's own Check now pressed (the stub holds it, so the row shows it checking).
   if (q.get("checkone") === "1") {
     document.querySelectorAll<HTMLElement>(".w-src .w-chk .jb")[2]?.click();
@@ -193,7 +248,7 @@ async function run() {
   await wait(1500);
   const g1 = ghost();
   const r = stage?.getBoundingClientRect();
-  document.title = `845 s=${s} stage=${r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} views=${g0}→${g1} welcome=${document.querySelector(".welcome") ? "yes" : "no"} composer=${document.querySelector(".composer") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""}${restart} cq=${(() => { const v = document.querySelector<HTMLElement>(".h9-view"); const wd = document.querySelector<HTMLElement>(".h9-wide"); return `${v ? Math.round(v.getBoundingClientRect().width) : 0}/${wd ? getComputedStyle(wd).display : "-"}/vw${innerWidth}/dpr${devicePixelRatio}`; })()}`;
+  document.title = `845 s=${s} stage=${r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} views=${g0}→${g1} welcome=${document.querySelector(".welcome") ? "yes" : "no"} composer=${document.querySelector(".composer") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""}${restart}${clicks} cq=${(() => { const v = document.querySelector<HTMLElement>(".h9-view"); const wd = document.querySelector<HTMLElement>(".h9-wide"); return `${v ? Math.round(v.getBoundingClientRect().width) : 0}/${wd ? getComputedStyle(wd).display : "-"}/vw${innerWidth}/dpr${devicePixelRatio}`; })()}`;
   if (q.get("cap") === "1") (window as unknown as { __capset: (m: string) => void }).__capset(document.title);
 }
 if (document.readyState === "loading") addEventListener("DOMContentLoaded", () => void run());

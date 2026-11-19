@@ -1686,6 +1686,7 @@ fn main() {
             commands::chat::chat_home,
             commands::chat::arm_wake,
             commands::chat::schedule_log,
+            commands::system::frontend_error_log,
             commands::chat::schedule_probe,
             commands::chat::set_chat_kind,
             commands::chat::set_chat_folders,

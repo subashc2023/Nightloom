@@ -32,6 +32,10 @@ import { installSelectScope } from "./lib/selectScope";
 import { installDiagrams } from "./lib/diagrams";
 import { installEvidence } from "./lib/evidenceTables";
 import { copyText } from "./lib/clipRing.svelte";
+import { installErrorWatch } from "./lib/errorWatch.svelte";
+
+// Item 874: every uncaught error to logs/frontend-errors.log, and a Reload view bar if Svelte stops drawing.
+installErrorWatch();
 
 // Item 352: copying a rendered formula gives its TeX.
 installMathCopy();

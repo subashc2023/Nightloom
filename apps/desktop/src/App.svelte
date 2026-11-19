@@ -4,6 +4,7 @@
   import { pruneDraftCopies, restoreStashed } from "./lib/attachFiles.svelte";
   import { tip } from "./lib/tip";
   import { onMount, untrack } from "svelte";
+  import { probeWatch } from "./lib/errorWatch.svelte";
   import {
     activateTab,
     browseFree,
@@ -675,6 +676,8 @@
     runMenuCommand(id);
     return true;
   }
+  // Item 874: the liveness probe lives in the App's own tree — the part that stops when Svelte gives up on an effect.
+  $effect(() => probeWatch());
 </script>
 
 <!--

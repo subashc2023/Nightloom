@@ -392,3 +392,36 @@ pub(crate) async fn playwright_for_chat(
         on: nightloom_service::agent::own_browser::for_chat(&dir),
     })
 }
+
+/// Item 874: an uncaught error from the window — a thrown event handler, a rejected promise, an effect the UI runtime
+/// gave up on — appended, stamped, to `<config dir>/logs/frontend-errors.log`, so a window that stops drawing is
+/// never undiagnosable again. One entry at most 4000 characters; past 2 MB the file moves to `.1` (one kept). Best
+/// effort: a failed write is dropped.
+#[tauri::command]
+pub(crate) fn frontend_error_log(text: String) {
+    use std::io::Write;
+    let text: String = text.chars().take(4000).collect();
+    let Some(dir) = nightloom_service::project::config_dir().map(|c| c.join("logs")) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("frontend-errors.log");
+    if std::fs::metadata(&path)
+        .map(|m| m.len() > 2_000_000)
+        .unwrap_or(false)
+    {
+        let _ = std::fs::rename(&path, dir.join("frontend-errors.log.1"));
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(
+            f,
+            "{} {}",
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            text.replace('\n', "\n    ")
+        );
+    }
+}
