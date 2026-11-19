@@ -182,6 +182,8 @@ import { turnMissToast } from "./cacheCost";
 import { inViewLane } from "./viewLane";
 import { pickDocuments } from "./pick";
 import { withNote } from "./asideNotes";
+import { loadNoteDrafts, noteDraftsWriter, type DraftBase } from "./noteDraftStore";
+import { saveDelay } from "./drafts.svelte";
 import { restoreAsideNotes, takeAsideNote } from "./asideNotes.svelte";
 export { TOAST_MS, ACTION_TOAST_MS, addToast, dismissToast, runToastAction };
 export { rewindTo, setAsideRewound, keepRewound, restoreRewound, keepRewindFiles, undoRestore };
@@ -355,6 +357,10 @@ function loadNewProjectNow(): SavedNewProject {
   return { open: false, front: false, draft: emptyNewProjectDraft() };
 }
 const newProjectAtLaunch = loadNewProjectNow();
+
+/** Item 871: the note drafts left by the last run (empty without storage). */
+const restoredNoteDrafts =
+  typeof localStorage === "undefined" ? { drafts: {}, bases: {} } : loadNoteDrafts(localStorage);
 
 export const app = $state({
   providers: [] as ProviderInfo[],
@@ -581,18 +587,21 @@ export const app = $state({
    * Unsaved note text, keyed `scope:name`, kept for the life of the app (the
    * never-lose-work rule): leaving a note and coming back finds the edit
    * still there, marked as a draft, with Revert to drop it and Save to keep
-   * it. Not persisted to disk — a draft the user has not saved is not the
-   * file's content — and cleared on save and on revert.
+   * it. Not written to the note's file — a draft the user has not saved is
+   * not the file's content — and cleared on save and on revert. Item 871:
+   * kept across a quit in localStorage (`noteDraftStore.ts`) and read back
+   * here at launch.
    */
-  noteDrafts: {} as Record<string, string>,
+  noteDrafts: restoredNoteDrafts.drafts,
   /**
    * Item 870: the file text each editor draft was typed against, with the
    * draft it belongs to (trusted only while that draft is still the one in
    * `noteDrafts`). Reopening a note whose file changed outside Nightloom
    * since then asks Keep mine / Take theirs / Show both instead of letting
-   * Save write over the outside version. In memory, like the drafts' base.
+   * Save write over the outside version. Hashes since item 871, kept on
+   * disk with the drafts.
    */
-  noteDraftBases: {} as Record<string, { draft: string; base: string }>,
+  noteDraftBases: restoredNoteDrafts.bases as Record<string, DraftBase>,
   /**
    * The dream's pending proposals for the two always-loaded files, per
    * scope, newest first — the badge on each pinned row. Re-listed with the
@@ -957,9 +966,45 @@ let compactedThisTurn = false;
  *  coalesced, so a sync landing many files is at most two re-reads. */
 const followNotesNow = coalesced(() => refreshNotes());
 
+/**
+ * Item 871: every change to the note drafts (any scope) or their baselines
+ * is written to localStorage on the composer drafts' debounce (400 ms, never
+ * past ~1 s of steady typing), and at once when the page goes away — a quit
+ * to install a release keeps his half-typed note edits. Restored drafts say
+ * so once, so a draft whose note was deleted meanwhile is not a surprise;
+ * every one stays in the store until he saves or reverts it.
+ */
+let persistingNoteDrafts = false;
+export function persistNoteDrafts(): (() => void) | null {
+  if (persistingNoteDrafts || typeof localStorage === "undefined") return null;
+  persistingNoteDrafts = true;
+  const writer = noteDraftsWriter(
+    () => ({ drafts: $state.snapshot(app.noteDrafts), bases: $state.snapshot(app.noteDraftBases) }),
+    saveDelay,
+  );
+  $effect.root(() => {
+    let first = true;
+    $effect(() => {
+      // Read every entry, so any change to either map re-runs this.
+      JSON.stringify(app.noteDrafts);
+      JSON.stringify(app.noteDraftBases);
+      if (first) {
+        first = false;
+        return;
+      }
+      writer.changed();
+    });
+  });
+  if (typeof window !== "undefined") window.addEventListener("pagehide", writer.flush);
+  const n = Object.keys(app.noteDrafts).length;
+  if (n > 0) addToast(`${n === 1 ? "An unsaved note draft" : `${n} unsaved note drafts`} from last time ${n === 1 ? "is" : "are"} kept — marked as unsaved on the notes`);
+  return writer.flush;
+}
+
 export async function init(): Promise<void> {
   if (initialized) return;
   initialized = true;
+  persistNoteDrafts();
   await listen<TurnEvent & { chat?: string }>("turn-event", (e) => applyTurnEvent(e.payload));
   // The aside's answer as it streams (nightshift backlog 128): a delta
   // for the live exchange is appended; one for a cancelled or replaced
