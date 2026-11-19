@@ -330,6 +330,7 @@ fn focused_label<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
 /// The Edit menu's ids that mean something inside a page: `main.rs`'s
 /// Undo and Redo, and Find, which exists for this.
 use crate::{REDO_MENU_ID as MENU_REDO, UNDO_MENU_ID as MENU_UNDO};
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const MENU_FIND: &str = "find_in_page";
 
 /// A menu item chosen while a web tab's page holds the keyboard: Undo and
@@ -340,6 +341,7 @@ pub const MENU_FIND: &str = "find_in_page";
 /// item; everything else, and every item while no page has the keyboard,
 /// goes on to the frontend as before. Called from the menu handler, on
 /// the main thread.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn menu_route<R: Runtime>(app: &AppHandle<R>, id: &str) -> bool {
     if id != MENU_UNDO && id != MENU_REDO && id != MENU_FIND {
         return false;
