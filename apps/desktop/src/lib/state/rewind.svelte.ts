@@ -72,7 +72,8 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
   // Item 765: the files the rewound turns changed, from their snapshots.
   // Where there are none (not a git folder, or turns from before them),
   // the item-259 card stands and says why.
-  if (here !== null) void offerRestore(here, written);
+  const gen = ++restoreGen;
+  if (here !== null) void offerRestore(here, written, gen);
   let swap = back ? fillBox(key, back) : null;
   // The inverse lifts the marker this call landed — and, after a redo,
   // the marker *that* call lands, which is why the index is a variable.
@@ -81,6 +82,8 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
     label: "rewind",
     undo: async () => {
       if (!(await adoptOpen(() => api.unrewind(marker)))) return;
+      // A restore plan still on its way is for turns that are back now.
+      restoreGen++;
       refill();
       // Item 724: the message is back in the thread; its offer goes.
       dismissRewoundOffer(key);
@@ -133,8 +136,12 @@ export async function setAsideRewound(paths: string[]): Promise<void> {
   }
 }
 
+/** Item 765: each rewind, and each undo of one, bumps this; a plan that
+ *  comes back after another bump is for a rewind no longer standing. */
+let restoreGen = 0;
+
 /** Item 765: read the rewound turns' snapshots and offer the restore. */
-async function offerRestore(to: number, written: import("../rewoundFiles").RewoundWrite[]): Promise<void> {
+async function offerRestore(to: number, written: import("../rewoundFiles").RewoundWrite[], gen: number): Promise<void> {
   const chat = app.activeSessionId;
   const workspace = app.connection?.workspace ?? null;
   if (!chat || !workspace) return;
@@ -144,7 +151,7 @@ async function offerRestore(to: number, written: import("../rewoundFiles").Rewou
   } catch {
     return;
   }
-  if (app.activeSessionId !== chat) return;
+  if (app.activeSessionId !== chat || gen !== restoreGen) return;
   if (plan.root && plan.start && plan.end && plan.now && plan.files.length > 0) {
     // This card replaces item 259's: a restore covers what setting aside did.
     app.rewoundWrites = null;

@@ -10,10 +10,14 @@ import type { SessionEvent } from "./types";
 
 const calls: { cmd: string; args: Record<string, unknown> }[] = [];
 let plan: Plan;
+let gate: Promise<void> | null = null;
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args: Record<string, unknown>) => {
     calls.push({ cmd, args });
-    if (cmd === "rewind_files") return plan;
+    if (cmd === "rewind_files") {
+      if (gate) await gate;
+      return plan;
+    }
     if (cmd === "restore_rewound_files") {
       const paths = args.paths as string[];
       const added = args.added as string[];
@@ -43,7 +47,7 @@ vi.mock("./api", async (importOriginal) => ({
   transcript: vi.fn(async () => base),
   setUndoMenu: vi.fn(async () => {}),
 }));
-const { app, rewindTo, restoreRewound, undoRestore, keepRewindFiles } = await import("./state.svelte");
+const { app, rewindTo, restoreRewound, undoRestore, keepRewindFiles, runToastAction } = await import("./state.svelte");
 
 const full: Plan = {
   git: true,
@@ -74,6 +78,7 @@ beforeEach(() => {
   app.rewindRestore = null;
   app.rewoundWrites = null;
   app.toasts = [];
+  gate = null;
 });
 
 describe("the restore card's rules (item 765)", () => {
@@ -119,6 +124,18 @@ describe("Rewind offers restore files too / keep files (item 765)", () => {
     expect(calls[2].args).toMatchObject({ from: "N", guard: "AFTER", paths: ["src/a.ts", "old.txt", "notes/new.md"], added: [] });
     expect(app.rewindRestore!.done).toContain("Restore undone: 3 files");
     expect(app.rewindRestore!.undo).toBeNull();
+  });
+  it("a plan that comes back after the rewind was undone offers nothing", async () => {
+    let open!: () => void;
+    gate = new Promise<void>((r) => (open = r));
+    await rewindTo(2);
+    const undo = app.toasts.find((t) => t.action?.label === "Undo");
+    expect(undo).toBeDefined();
+    runToastAction(undo!.id);
+    await settle();
+    open();
+    await settle();
+    expect(app.rewindRestore).toBeNull();
   });
   it("Keep files closes the card and touches nothing", async () => {
     await rewindTo(2);
