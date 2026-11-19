@@ -157,21 +157,23 @@ export const FOLD_AFTER_MS = 60_000;
 /**
  * Done tasks fold by themselves (item 872): a done task's tab leaves the row once he has had it in focus while done
  * and has been away from it for `FOLD_AFTER_MS` — never one he has not seen done (its result would go unread), never
- * the one in focus. Folded ids are kept in the bag; `unfold` brings them back. Gone tasks are forgotten. Pure.
- * Returns true when the folded list changed.
+ * the one in focus, never one that still holds him (`holds`: a question he has not answered, text he typed — 872
+ * review; one folded before is brought back). Folded ids are kept in the bag; `unfold` brings them back. Gone tasks
+ * are forgotten. Pure. Returns true when the folded list changed.
  */
-export function foldDone(fk: FocusBag, row: readonly Tab[], done: (id: string) => boolean, focus: string, now: number): boolean {
+export function foldDone(fk: FocusBag, row: readonly Tab[], done: (id: string) => boolean, focus: string, now: number, holds: (t: Tab) => boolean = () => false): boolean {
   const seen = { ...(fk.doneSeen ?? {}) };
   const folded = new Set(fk.folded ?? []);
   const ids = new Set(row.map((t) => t.id));
   const before = JSON.stringify([fk.doneSeen ?? {}, fk.folded ?? []]);
   for (const id of Object.keys(seen)) if (!ids.has(id) || !done(id)) delete seen[id];
-  for (const id of [...folded]) if (!ids.has(id) || !done(id)) folded.delete(id);
+  const held = new Set(row.filter((t) => holds(t)).map((t) => t.id));
+  for (const id of [...folded]) if (!ids.has(id) || !done(id) || held.has(id)) folded.delete(id);
   if (done(focus)) {
     seen[focus] = now;
     folded.delete(focus);
   }
-  for (const [id, at] of Object.entries(seen)) if (id !== focus && now - at >= FOLD_AFTER_MS) folded.add(id);
+  for (const [id, at] of Object.entries(seen)) if (id !== focus && !held.has(id) && now - at >= FOLD_AFTER_MS) folded.add(id);
   fk.doneSeen = seen;
   fk.folded = [...folded];
   return JSON.stringify([fk.doneSeen, fk.folded]) !== before;
@@ -185,4 +187,14 @@ export function unfold(fk: FocusBag, now = Date.now()) {
   for (const id of fk.folded ?? []) delete seen[id];
   fk.doneSeen = seen;
   fk.folded = [];
+}
+
+/**
+ * A tab that must stay in the row (872 review): it needs him (a question unanswered), or its view holds text he typed
+ * (`drafts` in the view's bag, `stage.ui[tab id]` — Triage's "Or say it your way"). Pure.
+ */
+export function holdsHim(t: Tab, ui: Record<string, unknown> | undefined): boolean {
+  if (t.needs > 0) return true;
+  const drafts = ui?.drafts;
+  return !!drafts && typeof drafts === "object" && Object.values(drafts as Record<string, unknown>).some((v) => typeof v === "string" && v.trim() !== "");
 }

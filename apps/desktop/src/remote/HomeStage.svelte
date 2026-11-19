@@ -27,7 +27,7 @@
   import { bag, def, keep, stage, type ViewId } from "../lib/homeStage/stageState.svelte";
   import Btn from "../lib/homeStage/Btn.svelte";
   import Steps from "../lib/homeStage/Steps.svelte";
-  import { rulesPass, foldDone, unfold, type FocusKept } from "../lib/homeStage/focus";
+  import { rulesPass, foldDone, unfold, holdsHim, type FocusKept } from "../lib/homeStage/focus";
   import type { Ev } from "../lib/homeStage/steps";
   import { tabsFor, focusOf, type Tab } from "../lib/homeStage/tabs";
   import { setStageHost, type HomeTask } from "../lib/homeStage/host";
@@ -118,7 +118,7 @@
     const r = rulesPass(fk, stage.focus, note, views, { now, lastTouch, busy: typing() }, asked, tasks.loaded);
     if (r.focus !== stage.focus) stage.focus = r.focus;
     note = r.note;
-    if (tasks.loaded) foldDone(fk, views, isDone, focusOf(views, stage.focus).id, now);
+    if (tasks.loaded) foldDone(fk, views, isDone, focusOf(views, stage.focus).id, now, (t) => holdsHim(t, stage.ui[t.id]));
   }
   $effect(() => {
     void all;

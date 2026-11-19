@@ -1,6 +1,6 @@
 // Item 872: the rules as one pass shared by the Mac's and the phone's stage, and done tasks folding by themselves.
 import { describe, expect, it } from "vitest";
-import { rulesPass, foldDone, unfold, FOLD_AFTER_MS, type FocusBag } from "./focus";
+import { rulesPass, foldDone, unfold, holdsHim, FOLD_AFTER_MS, type FocusBag } from "./focus";
 import type { Tab } from "./tabs";
 
 const tab = (id: string, needs = 0, live = true): Tab => ({ id, view: id === "watch" ? "watch" : "todo", name: id, needs, live }) as Tab;
@@ -55,5 +55,23 @@ describe("done tasks fold by themselves", () => {
     foldDone(fk, [tab("watch")], done, "watch", FOLD_AFTER_MS * 9);
     expect(fk.folded).toEqual([]);
     expect(fk.doneSeen).toEqual({});
+  });
+  it("never folds one that still holds him — a question unanswered, text he typed — and brings one back that comes to", () => {
+    const asks = [tab("watch"), tab("task:a", 1, false)];
+    const fk = bagOf();
+    const holds = (t: Tab) => holdsHim(t, undefined);
+    foldDone(fk, asks, done, "task:a", 0, holds);
+    foldDone(fk, asks, done, "watch", FOLD_AFTER_MS * 2, holds);
+    expect(fk.folded).toEqual([]);
+    // His half-typed answer in the view's bag keeps it too.
+    const typed: Record<string, Record<string, unknown>> = { "task:a": { drafts: { c1: "tell them Friday" } } };
+    const quiet = [tab("watch"), tab("task:a", 0, false)];
+    foldDone(fk, quiet, done, "watch", FOLD_AFTER_MS * 3, (t) => holdsHim(t, typed[t.id]));
+    expect(fk.folded).toEqual([]);
+    // Folded while it held nothing, then a question comes: back in the row.
+    foldDone(fk, quiet, done, "watch", FOLD_AFTER_MS * 4, (t) => holdsHim(t, { drafts: { c1: "  " } }));
+    expect(fk.folded).toEqual(["task:a"]);
+    foldDone(fk, asks, done, "watch", FOLD_AFTER_MS * 5, holds);
+    expect(fk.folded).toEqual([]);
   });
 });

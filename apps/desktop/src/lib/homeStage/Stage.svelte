@@ -27,7 +27,7 @@
   import { tasks, refreshTasks, closeTask, type HomeTask } from "./tasks.svelte";
   import { briefOf } from "./brief";
   import { bag, def, keep, stage, type ViewId } from "./stageState.svelte";
-  import { rulesPass, foldDone, unfold, secondOf, type FocusKept } from "./focus";
+  import { rulesPass, foldDone, unfold, holdsHim, secondOf, type FocusKept } from "./focus";
   import { lastExchange, type Ev } from "./steps";
   import { tabsFor, focusOf, type Tab } from "./tabs";
   import { setStageHost, stageHost } from "./host";
@@ -73,7 +73,7 @@
     const r = rulesPass(fk, stage.focus, note, all, { now, lastTouch, busy: busyHere() }, asked, tasks.loaded);
     if (r.focus !== stage.focus) stage.focus = r.focus; // a switch the stage makes is instant (see viewIn)
     note = r.note;
-    if (tasks.loaded) foldDone(fk, all, isDone, focusOf(all, stage.focus).id, now);
+    if (tasks.loaded) foldDone(fk, all, isDone, focusOf(all, stage.focus).id, now, (t) => holdsHim(t, stage.ui[t.id]));
   }
   $effect(() => {
     void row;
