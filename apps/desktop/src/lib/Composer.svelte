@@ -603,7 +603,12 @@
   // project finds it) rather than following the draft to the chat its
   // first message creates: the move lives in `state.svelte.ts`.
   $effect(() => {
-    floorPx = loadHeight(key);
+    const k = key;
+    floorPx = loadHeight(k);
+    // Item 849: leaving the chat (a switch, a hand-off, the box closing)
+    // ends the drag's hold, as a send does — back, the empty box is one
+    // line, and typing still grows it up to the dragged height.
+    return () => sentSinceDrag.left(k);
   });
 
   /**
@@ -813,7 +818,20 @@
   $effect(() => {
     const onresize = () => autogrow();
     window.addEventListener("resize", onresize);
-    return () => window.removeEventListener("resize", onresize);
+    // Item 849: and the window coming back to the front re-measures — a
+    // hand-off made while he was away ran with the window behind others,
+    // where WebKit holds animation frames, so the box is measured afresh
+    // when he can see it rather than left at whatever it last read.
+    const onback = () => {
+      if (document.visibilityState === "visible") requestAnimationFrame(autogrow);
+    };
+    window.addEventListener("focus", onback);
+    document.addEventListener("visibilitychange", onback);
+    return () => {
+      window.removeEventListener("resize", onresize);
+      window.removeEventListener("focus", onback);
+      document.removeEventListener("visibilitychange", onback);
+    };
   });
 
   // A switched-to draft is a different height; the box is measured once
