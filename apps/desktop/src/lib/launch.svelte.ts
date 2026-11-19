@@ -8,9 +8,13 @@
  * the top bar said "not connected", which read as broken rather than
  * "still starting".
  *
- * Now: the window shows the moon and "Opening <project>…" until the project
- * list is read and the last project has reopened (or `REOPEN_DEADLINE_MS`
- * has passed, when the app shows and the reopen finishes behind it); the
+ * Now: the window shows the moon and "Opening <project>…" until the last
+ * project has reopened (or `REOPEN_DEADLINE_MS` has passed, when the app
+ * shows and the reopen finishes behind it); ~~until the project list is
+ * read~~ (item 865, 2026-11-19: the list's cold first read took 3.4–7 s on
+ * 4 of his last 10 launches, and everything waited on it) — the list is read
+ * beside the reopen, and only `after` (the restored tabs, which the list
+ * decides) waits for it; the
  * connect runs beside the reads rather than after them; and the connection
  * reads "connecting…" until the launch's connect has actually settled —
  * "not connected" only once it has failed, or when there was nothing to
@@ -19,7 +23,7 @@
 
 /** What the launch screen and the connection label read. */
 export const launch = $state({
-  /** The launch screen is up: the list is not read or the reopen not done. */
+  /** The launch screen is up: the last project's reopen is not done. */
   opening: true,
   /** The project being reopened, by name once the list has it. */
   project: null as string | null,
@@ -70,8 +74,9 @@ export function composerConnectHint(s: {
 export interface LaunchSteps {
   /** Read the project list (`refreshProjects`). */
   listProjects(): Promise<void>;
-  /** The project to reopen, read after the list: id and name, or null. */
-  lastProject(): { id: string; name: string } | null;
+  /** The project to reopen, without the list (item 865): its id and the
+   *  name it had when last opened (null when not known), or null. */
+  lastProject(): { id: string; name: string | null } | null;
   /** Reopen it; rejects when it cannot be opened. */
   openProject(id: string): Promise<void>;
   /** Forget the last project (its reopen failed). */
@@ -82,7 +87,7 @@ export interface LaunchSteps {
   connect(): Promise<void>;
   /** Reads that need the project but not the connection; run together. */
   reads: Array<[string, () => Promise<void>]>;
-  /** After the lists and the connect (`restoreTabs`). */
+  /** After the project list, the reads and the connect (`restoreTabs`). */
   after(): Promise<void>;
   /** The window's timing of a step, for the startup log. */
   mark(step: string, ms: number, detail?: string): void;
@@ -99,10 +104,12 @@ async function timed<T>(s: LaunchSteps, step: string, p: () => Promise<T>): Prom
 }
 
 /**
- * The launch, in order: the list; the last project's reopen (the launch
- * screen waits on it up to `reopenMs`, the connect waits on it always —
- * the project decides the workspace the tools are rooted at); the next
- * chat's kind; then the connect and the reads together; then `after`.
+ * The launch, in order: the last project's reopen (the launch screen waits
+ * on it up to `reopenMs`, the connect waits on it always — the project
+ * decides the workspace the tools are rooted at); the next chat's kind;
+ * then the connect and the reads together; then `after`. The project list
+ * is read from the start beside all of it (item 865) and only `after`
+ * waits for it.
  */
 export async function runLaunch(s: LaunchSteps, reopenMs = REOPEN_DEADLINE_MS): Promise<void> {
   launch.opening = true;
@@ -110,9 +117,11 @@ export async function runLaunch(s: LaunchSteps, reopenMs = REOPEN_DEADLINE_MS): 
   launch.connectSettled = false;
   const t0 = s.now();
   try {
-    await timed(s, "listProjects", () => s.listProjects());
+    // Off the critical path (item 865): a list read that fails or hangs
+    // holds only the restored tabs (`after`), never the window.
+    const listing = timed(s, "listProjects", () => s.listProjects()).catch(() => {});
     const last = s.lastProject();
-    launch.project = last?.name ?? null;
+    launch.project = last?.name || null;
     if (last) {
       const opened = s.now();
       const reopen = s.openProject(last.id).then(
@@ -143,7 +152,7 @@ export async function runLaunch(s: LaunchSteps, reopenMs = REOPEN_DEADLINE_MS): 
     const reading = Promise.all(
       s.reads.map(([name, r]) => timed(s, name, () => r().catch(() => {}))),
     );
-    await Promise.all([connecting, reading]);
+    await Promise.all([connecting, reading, listing]);
     await timed(s, "after", () => s.after());
   } finally {
     launch.opening = false;

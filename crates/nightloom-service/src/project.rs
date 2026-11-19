@@ -1344,11 +1344,30 @@ pub fn list_notes(dir: &Path) -> Vec<Note> {
     let bounds = Walk {
         depth: NOTE_DEPTH,
         limit: NOTE_LIMIT,
+        read: true,
     };
     walk_notes(dir, dir, 0, bounds, &mut out, &mut None);
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out.truncate(NOTE_LIMIT);
     out
+}
+
+/// How many notes [`list_notes`] would list, without opening one (item 865).
+///
+/// The project list shows only this count, and `list_notes` opens every note
+/// for its summary: across his 25 projects in iCloud-synced Documents that was
+/// ~480 opens, each a File Provider round trip, 3.4–7 s on a launch's cold
+/// first read (66 ms for the same walk with stats only). Same walk, same
+/// bounds, same cap — so the same number — with the reads left out.
+pub fn count_notes(dir: &Path) -> usize {
+    let mut out = Vec::new();
+    let bounds = Walk {
+        depth: NOTE_DEPTH,
+        limit: NOTE_LIMIT,
+        read: false,
+    };
+    walk_notes(dir, dir, 0, bounds, &mut out, &mut None);
+    out.len().min(NOTE_LIMIT)
 }
 
 /// Notes the Notes panel lists at most (item 457). The panel is a file
@@ -1366,6 +1385,9 @@ const PANEL_DEPTH: usize = 12;
 struct Walk {
     depth: usize,
     limit: usize,
+    /// Open each note for its summary and kind; false only to count them
+    /// (item 865: [`count_notes`]).
+    read: bool,
 }
 
 /// The docspace as the Notes panel shows it (item 457): every note, every
@@ -1389,6 +1411,7 @@ pub fn list_note_tree(dir: &Path) -> NoteTree {
     let bounds = Walk {
         depth: PANEL_DEPTH,
         limit: PANEL_NOTE_LIMIT,
+        read: true,
     };
     let complete = walk_notes(dir, dir, 0, bounds, &mut notes, &mut folders);
     notes.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1552,7 +1575,7 @@ fn walk_notes(
         // An iCloud-evicted file is listed without opening it: open() waits for
         // the download, and on 2026-11-11 one evicted file held the launch at
         // "Opening Nightloom…" for minutes (list_projects walks every project).
-        let (summary, kind) = if dataless(&meta) {
+        let (summary, kind) = if !bounds.read || dataless(&meta) {
             (None, None)
         } else {
             summarize(&path)
@@ -2052,6 +2075,34 @@ mod tests {
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+    /// Item 865: the project list's count is `list_notes`' length — hidden
+    /// files, the depth bound and the cap included — read without a summary.
+    #[test]
+    fn count_notes_matches_list_notes_without_reading_them() {
+        let dir = temp_dir("count-notes");
+        fs::create_dir_all(dir.join("a/b/c/d/e/f")).unwrap();
+        fs::write(dir.join("one.md"), "# One").unwrap();
+        fs::write(dir.join(".hidden.md"), "x").unwrap();
+        fs::write(dir.join("a/two.md"), "two").unwrap();
+        fs::write(dir.join("a/b/c/d/e/f/deep.md"), "too deep").unwrap();
+        assert_eq!(count_notes(&dir), list_notes(&dir).len());
+        for i in 0..NOTE_LIMIT + 5 {
+            fs::write(dir.join(format!("n{i:03}.md")), "n").unwrap();
+        }
+        assert_eq!(count_notes(&dir), NOTE_LIMIT);
+        assert_eq!(count_notes(&dir), list_notes(&dir).len());
+        assert_eq!(count_notes(&dir.join("missing")), 0);
+        let mut out = Vec::new();
+        let bounds = Walk {
+            depth: NOTE_DEPTH,
+            limit: 10,
+            read: false,
+        };
+        walk_notes(&dir, &dir, 0, bounds, &mut out, &mut None);
+        assert!(out.iter().all(|n| n.summary.is_none() && n.kind.is_none()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_file_on_disk_is_not_dataless_and_is_summarized() {
         // The evicted case cannot be made in a test (only iCloud sets the
@@ -2068,6 +2119,7 @@ mod tests {
             Walk {
                 depth: 4,
                 limit: 10,
+                read: true,
             },
             &mut out,
             &mut None,

@@ -173,7 +173,7 @@ import { usable, autoConnect, chatChoice, saveChatChoices, adoptChatRules, windo
 import { bgTurns, backgroundTurnOf, backgroundName, whereItRuns, openRunningChat, turnsRunning, canDeleteChat, keepPaneLog, refreshPaneLog, providerElsewhere, providerElsewhereName, providerDrains, canLeaveProject, openWaiting, waitingChatName, liveChats, connectionWindowFor, chatRuns, runningWork, openRun, paneChat, loadPaneLog, browseFree, registerProviderDrain, registerRunDrain, runDrainNow, turnChatRef, canLeaveRunning, type LiveChat } from "./state/running.svelte";
 import { stillRunningAsked, injectIntoTurn, nudgeInjects, openChatKey, takeQueuedFor, injectLater, retryInjects, handWhy, handKey, handReason, RETRY_HAND_MS, replyToPending, turnOwnsKey, takeQueued, sendNowRow, slipRow, sendNowPlan, stopSend, stopSendFor, takeStopSend, frontQueued, stopAndSendRow, sendNowAny, type HandReason, type SendNowPlan } from "./state/queue.svelte";
 import { peekNew, viewMark, sameView, adoptOpen, settleTurnView, openSession, compactSession, deleteSession, moveSession, remoteSend, remoteNewChat } from "./state/sessions.svelte";
-import { loadLastProject, saveLastProject, loadDreamPrefs, loadPalette, loadLayout, viewport, loadReadPages, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY, type Palette, type DreamPrefs, type Layout } from "./state/prefs.svelte";
+import { loadLastProject, loadLastProjectName, saveLastProject, loadDreamPrefs, loadPalette, loadLayout, viewport, loadReadPages, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY, type Palette, type DreamPrefs, type Layout } from "./state/prefs.svelte";
 import { nextModel } from "./nextChatModel.svelte";
 import { runMenuCommand, menuInterceptors, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits } from "./state/menu.svelte";
 import { rewindTo, setAsideRewound, keepRewound, restoreRewound, keepRewindFiles, undoRestore } from "./state/rewind.svelte";
@@ -1014,6 +1014,14 @@ export function persistNoteDrafts(): (() => void) | null {
 export async function init(): Promise<void> {
   if (initialized) return;
   initialized = true;
+  // Item 865: the provider list (a keychain read per provider) is asked for
+  // now and read beside the listeners below, awaited where it always was;
+  // the two marks say where the time before the launch steps goes.
+  const initStart = performance.now();
+  const providersRead = api.providers().then(
+    (rows) => ({ rows }),
+    (e: unknown) => ({ error: e }),
+  );
   persistNoteDrafts();
   await listen<TurnEvent & { chat?: string }>("turn-event", (e) => applyTurnEvent(e.payload));
   // The aside's answer as it streams (nightshift backlog 128): a delta
@@ -1206,11 +1214,12 @@ export async function init(): Promise<void> {
   } catch {
     // Never blocks the launch.
   }
-  try {
-    app.providers = await api.providers();
-  } catch (e) {
-    app.error = String(e);
-  }
+  const listened = performance.now();
+  void api.startupMark("init_listeners", listened - initStart).catch(() => {});
+  const providers = await providersRead;
+  if ("rows" in providers) app.providers = providers.rows;
+  else app.error = String(providers.error);
+  void api.startupMark("providers_wait", performance.now() - listened).catch(() => {});
   // The launch (item 220, 2026-09-26; `launch.svelte.ts`): ~~each step
   // awaited in turn, the connect last~~ — the window showed an empty app
   // saying "not connected" for 7–86 s on 2026-09-25. Now the launch screen
@@ -1220,13 +1229,17 @@ export async function init(): Promise<void> {
   // would root the tools at the previous folder and then re-connect.
   await runLaunch({
     listProjects: refreshProjects,
+    // ~~The row from the list just read~~ — item 865: the list is read
+    // beside the reopen now, so the id and name are the ones kept when it
+    // was last opened; one the registry no longer has fails to open and is
+    // forgotten, as a missing row was skipped before.
     lastProject: () => {
       const id = loadLastProject();
-      const row = id ? app.projects.find((p) => p.id === id) : undefined;
-      return row ? { id: row.id, name: row.name } : null;
+      return id ? { id, name: app.projects.find((p) => p.id === id)?.name ?? loadLastProjectName() } : null;
     },
     openProject: async (id) => {
       app.project = await api.openProject(id);
+      saveLastProject(app.project.id, app.project.name);
       // Opening bumps last-opened on the backend, so the list read a
       // moment ago is stale in its ordering — re-read behind the launch.
       void refreshProjects();

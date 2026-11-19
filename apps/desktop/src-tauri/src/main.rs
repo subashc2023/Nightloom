@@ -410,7 +410,9 @@ impl ProjectInfo {
                 .map(|f| f.to_string_lossy().into_owned())
                 .collect(),
             notes_dir: project.notes_dir().to_string_lossy().into_owned(),
-            notes: project::list_notes(&project.notes_dir()).len(),
+            // Counted without opening a note (item 865): the cold first read
+            // opened ~480 iCloud files for summaries this row never shows.
+            notes: project::count_notes(&project.notes_dir()),
             // Counted, not listed. This runs on every rail refresh and once
             // per project in the project picker, and `list` reads every log
             // it names — a hundred megabytes, after an import, to learn a
