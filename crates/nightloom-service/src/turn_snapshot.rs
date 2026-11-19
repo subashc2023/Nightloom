@@ -851,6 +851,36 @@ mod tests {
     }
 
     #[test]
+    fn a_merge_in_progress_is_snapshotted_and_left_unmerged() {
+        let d = repo("merge");
+        sh(&d, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(d.join("kept.txt"), "side\n").unwrap();
+        sh(&d, &["commit", "-q", "-am", "side"]);
+        sh(&d, &["checkout", "-q", "-"]);
+        std::fs::write(d.join("kept.txt"), "main\n").unwrap();
+        sh(&d, &["commit", "-q", "-am", "main"]);
+        // The merge stops on a conflict; his index holds it unmerged.
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&d)
+            .args(["merge", "-q", "side"])
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap();
+        let status = out(&d, &["status", "--porcelain"]);
+        assert_eq!(status, "UU kept.txt\n");
+        let index = std::fs::read(d.join(".git/index")).unwrap();
+        snapshot_turn(&d, "c", 1, Edge::Start).unwrap();
+        assert_eq!(std::fs::read(d.join(".git/index")).unwrap(), index);
+        assert_eq!(out(&d, &["status", "--porcelain"]), status);
+        assert!(d.join(".git/MERGE_HEAD").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn a_snapshot_past_its_deadline_is_dropped() {
         let d = repo("slow");
         assert_eq!(snapshot_commit(&d, Instant::now()), Err(Skip::Slow));
