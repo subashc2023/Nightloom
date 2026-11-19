@@ -547,7 +547,7 @@ fn slow() -> std::sync::MutexGuard<'static, BTreeSet<PathBuf>> {
 
 /// How long a turn's snapshots are kept. A rewind further back has no
 /// file restore; the snapshots' objects become his `git gc`'s to drop.
-pub const KEEP: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+pub const KEEP: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
 /// Drop the repository's turn snapshots (every chat's) older than `keep`.
 /// How many it dropped.
@@ -826,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_older_than_a_month_are_pruned() {
+    fn snapshots_older_than_two_weeks_are_pruned() {
         let d = repo("prune");
         snapshot_turn(&d, "c", 2, Edge::Start).unwrap();
         // One from two months ago, as its commit date says.

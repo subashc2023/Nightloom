@@ -93,6 +93,8 @@ mod model_list;
 mod nightshift;
 /// Edit a note by prompt (nightshift backlog 151).
 mod note_edit;
+/// The notes folders followed from outside Nightloom (item 869).
+mod notes_watch;
 /// A debug build's off-screen window for live tests (backlog 339). Not
 /// compiled into a release (backlog 341): there it is a stub that is off.
 #[cfg(debug_assertions)]
@@ -1555,6 +1557,7 @@ fn main() {
             });
             // The Nightshift file watches, beside `AppState` rather than in it.
             app.manage(nightshift::Watches::default());
+            app.manage(notes_watch::NotesWatches::default());
             app.manage(nightshift::PendingLaunches::default());
             app.manage(nightshift::Interviews::default());
             app.manage(prompt_hold::Pending::default());
@@ -1933,6 +1936,7 @@ fn main() {
             nightshift::nightshift_revert,
             nightshift::nightshift_watch,
             nightshift::nightshift_unwatch,
+            notes_watch::watch_notes,
             webtab::web_open,
             webtab::web_bounds,
             webtab::web_nav,

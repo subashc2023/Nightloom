@@ -105,7 +105,10 @@
     noteCodeProject,
     neverHandsOff,
   } from "./handoff.svelte";
-  import { fold, isFolded, noteStay, unfold } from "./handoffFold.svelte";
+  import { cardSize, dragCard, fold, noteStay, setCardSize, steppedMark, typedMark, unfold, type CardSize } from "./handoffFold.svelte";
+  // Item 705 (option A, Console): the themed selects, and the next chat's model.
+  import HudSelect from "./HudSelect.svelte";
+  import { nextModelLabel, nextModelMenu, nextModelRows, setNextModel } from "./nextChatModel.svelte";
   // Item 768: wrap up while warm; one chip on return to a cold big chat.
   import { chipCosts, coldButtons, coldChipShows, coldTip, coldTitle, contextOf, sentToast, warmDetail, warmTitle, warmWrapAct } from "./warmWrap";
   import { actedOn, keepCold, keptCold, markActed, warmWrap } from "./warmWrap.svelte";
@@ -713,12 +716,33 @@
   function handleDown(e: PointerEvent) {
     if (!ta) return;
     dragging = true;
+    // Item 705 (option A, Console): with the hand-off card up, the one grip
+    // sizes the card first — down to compact, then to its one line — and the
+    // box only with what is left of the drag; up grows the card back first.
+    const chat = app.activeSessionId;
+    const start: CardSize | null = handoffCardUp ? cardSize(chat, "due") : null;
+    const startH = ta.offsetHeight;
+    let boxMoved = start === null;
     // The pointer half is `boxGrow.ts`'s since backlog 226 (the aside
     // boxes drag with it too); the handle is on the top edge.
-    dragHeight(e, ta.offsetHeight, "top", setHeight, () => {
-      dragging = false;
-      persistHeight();
-    });
+    dragHeight(
+      e,
+      startH,
+      "top",
+      (h) => {
+        if (start === null) return setHeight(h);
+        const r = dragCard(start, startH - h);
+        if (r.size !== cardSize(chat, "due")) setCardSize(chat, "due", r.size);
+        if (r.rest !== 0 || boxMoved) {
+          boxMoved = true;
+          setHeight(startH - r.rest);
+        }
+      },
+      () => {
+        dragging = false;
+        if (boxMoved) persistHeight();
+      },
+    );
   }
 
   function handleReset() {
@@ -1025,6 +1049,14 @@
   /** The read order this chat's continuation opens with (backlog 193). */
   /** The wrap-up Nightloom queued while he was away is still in the queue. */
   const wrapUpQueued = $derived(handoff.queuedId !== 0 && queue.some((q) => q.id === handoff.queuedId));
+  // Item 705 (option A, Console): the notice is up, and at which of its three sizes.
+  const handoffCardUp = $derived(!handedNext && handoffHere && handoff.stage === "due" && !busy);
+  const handoffSize = $derived(cardSize(app.activeSessionId, "due"));
+  const nextLabel = $derived(nextModelLabel(app.activeSessionId));
+  /** The − / + of the mark's stepper: by 5, to the nearest 5. */
+  function stepMark(dir: 1 | -1): void {
+    setChatThreshold(String(steppedMark(handoffThresholdPct, dir)));
+  }
 
   /** **Wrap up now**: the message as it stands, as a turn of its own. */
   async function sendWrapUpNow(): Promise<void> {
@@ -1047,10 +1079,19 @@
 
   /** The per-chat mark on the notice: raising it above the fill puts the notice away. */
   function setChatThreshold(v: string): void {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return;
-    setThreshold(app.activeSessionId, Math.min(100, Math.max(1, Math.round(n))) / 100);
+    // Item 705 review: an emptied box is no number (`Number("")` is 0, which
+    // set the mark to 1%); it changes nothing.
+    const pct = typedMark(v);
+    if (pct === null) return;
+    setThreshold(app.activeSessionId, pct / 100);
     reconsider(app.activeSessionId);
+  }
+  /** Item 705 review: the typed mark, then the box shows the mark as kept —
+   *  a value clamped (150 → 100), rounded or refused (empty) would otherwise
+   *  stay typed in the box while the mark is something else. */
+  function typeMark(input: HTMLInputElement): void {
+    setChatThreshold(input.value);
+    input.value = String(handoffThresholdPct);
   }
 
   /*
@@ -2919,6 +2960,19 @@
   // `chat's · claude-opus-5-5`~~ — the model's name, `Opus 5.5`, as the
   // chat's own button reads (`modelChipLabel`); an alias stays as it is.
   const chatModelName = $derived(app.draft.agentModel.trim() ? displayName(app.draft.agentModel) : "default");
+  // Item 705: the *Next chat* pick's rows, one per family as the model menu
+  // draws them; the main box is their one writer, the reply's card reads them.
+  $effect(() => {
+    if (aside || !agentMode) return;
+    const fams = familyRows(AGENT_PILLS, newestIds, modelSeen.byAlias, cliNow, "").map((f) => ({
+      key: f.key,
+      pick: f.pick,
+      label: f.label,
+      detail: f.detail.replace(/ · current.*$/, "").replace(/^·\s*/, ""),
+    }));
+    nextModelMenu.chatName = chatModelName;
+    nextModelMenu.families = fams;
+  });
   const chatEffortName = $derived(app.draft.agentEffort || `default · ${effortDefaultText}`);
   const asideModelLabel = $derived(aside?.model ? displayName(aside.model) : `chat's · ${chatModelName}`);
   // Item 644: the family of the model this box sends to, live with the pickers (the chip's choice).
@@ -3549,6 +3603,7 @@
   class:aside={aside !== null}
   class:compact
   class:dropping={dragDepth > 0}
+  class:hc-grip={handoffCardUp}
   data-drop-box={aside ? "aside" : "main"}
   data-drop-for={aside ? key : undefined}
   data-composer-row={composerRow.value}
@@ -3566,7 +3621,9 @@
       {dragging}
       label="Composer height"
       value={floorPx ?? undefined}
-      hint={floorPx === null && capPx === null
+      hint={handoffCardUp
+        ? "Drag down to shrink the hand-off card (compact, then one line), then the box · up to grow them · double-click resets the box"
+        : floorPx === null && capPx === null
         ? "Drag to resize · double-click to reset (⌥⌘↑ / ⌥⌘↓ by a line)"
         : `Drag to resize · double-click to reset — ${floorPx === null ? "automatic" : `${floorPx}px`} for this chat${capPx === null ? "" : `, grows to ${capPx}px`}`}
       ondown={handleDown}
@@ -3787,79 +3844,119 @@
       <button class="ns-btn accent small" onclick={() => void openSession(handedNext.id)}>Open it</button>
     </div>
   {/if}
-  {#if !handedNext && handoffHere && handoff.stage === "due" && !busy && isFolded(app.activeSessionId, "due")}
-    <!-- Item 702 (his ask, 2026-11-15): a click anywhere on the bar expands it, not just Expand; its buttons keep their own clicks. -->
+  {#if handoffCardUp && handoffSize === "mini"}
+    <!-- Item 702 (his ask, 2026-11-15): a click anywhere on the bar expands it, not just Expand; its buttons keep their own clicks.
+         Item 705 (option A, Console): the one line — kicker, title, the fill gauge, Wrap up now, ▴. -->
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-    <div class="handoff handoff-min handoff-min-open" role="status" aria-label="Hand-off notice, minimized — click to expand" onclick={(e) => { if (!(e.target as HTMLElement).closest("button")) unfold(app.activeSessionId); }}>
-      <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
-      <strong class="handoff-min-title">Context {handoffPct}% — past this chat's {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} hand-off mark</strong>
-      <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+    <div class="handoff handoff-min handoff-min-open hc hc-mini" role="status" aria-label="Hand-off notice, minimized — click to expand" onclick={(e) => { if (!(e.target as HTMLElement).closest("button")) unfold(app.activeSessionId); }}>
+      <span class="hc-kicker">Hand-off</span>
+      <strong class="handoff-min-title hc-title">Context {handoffPct}%, past the {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} mark</strong>
+      <span class="hc-gauge hc-gauge-mini" aria-hidden="true"><i style:width={`${Math.min(100, handoffPct)}%`}></i><b style:left={`${Math.min(100, handoffThresholdPct)}%`}></b></span>
+      <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)}</span>
       <span class="spacer"></span>
-      {#if !wrapUpQueued}<button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>{/if}
-      <button class="ns-btn ghost small" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>Expand</button>
+      {#if !wrapUpQueued}<button class="ns-btn accent small hc-go" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>{/if}
+      <button class="hc-ico" aria-label="Expand" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>▴</button>
     </div>
-  {:else if !handedNext && handoffHere && handoff.stage === "due" && !busy}
+  {:else if handoffCardUp}
     <!-- The notice (backlog 086 pass 2, blocker 120): the board's hand-off
          card — accent rule, a heading with the fill, one line of what
          happens, the two things he can change for this chat, the actions.
-         Nothing goes by itself while it is on screen. -->
-    <div class="handoff" role="status" aria-label="Hand-off notice">
-      <div class="handoff-head">
-        <strong>Context {handoffPct}% — past this chat's {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} hand-off mark</strong>
-        <span class="spacer"></span>
-        <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+         Nothing goes by itself while it is on screen.
+         Item 705 (option A, Console — his pick, blocker 2167): a kicker and
+         title over a fill gauge, every control on one row (thread, the mark's
+         stepper, the next chat's model), the message, the goal, the buttons.
+         Compact (the grip dragged down once) hides the explanation and the
+         goal and folds the message to two lines; nothing is dropped. -->
+    {@const full = handoffSize === "full"}
+    <div class="handoff hc" class:hc-compact={!full} role="status" aria-label="Hand-off notice">
+      <div class="hc-head">
+        <span class="hc-kicker">Hand-off</span>
+        <strong class="hc-title">Context {handoffPct}%, past this chat's {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} mark</strong>
+        <span class="hc-x">
+          {#if !full}<button class="hc-ico" aria-label="Show the whole card" use:tip={"The whole card: the explanation, the goal, the full message"} onclick={() => setCardSize(app.activeSessionId, "due", "full")}>▾</button>{/if}
+          <button class="hc-ico" aria-label="Minimize" use:tip={"Fold this card to one line above the box (or drag the grip down)"} onclick={() => fold(app.activeSessionId, "due")}>–</button>
+        </span>
       </div>
-      <p class="handoff-d">
-        {#if wrapUpQueued}
-          The wrap-up below is in the queue — put there while you were away — and goes when this turn ends;
-          its × takes it back.
-        {:else}
-          <strong>Wrap up now</strong> sends the message below as a turn of its own: the model finishes what is
-          half-done, {#if threadAndHandoff}updates the thread's files, adds a section to <code>HANDOFF.md</code>, commits{:else if threadHandoff}updates the thread's files{:else}writes <code>HANDOFF.md</code>, commits{/if}, and
-          ends with a start prompt for the new chat. Or raise this chat's mark and keep going. Nothing is sent by
-          itself while this notice is open.
+      <div class="hc-body">
+        {#if full}
+          <div class="hc-meter">
+            <span class="hc-gauge" aria-hidden="true"><i style:width={`${Math.min(100, handoffPct)}%`}></i><b style:left={`${Math.min(100, handoffThresholdPct)}%`}></b></span>
+            <span class="mono handoff-fill hc-gnum"><em>{fmtTokens(handoff.used)}</em> of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+          </div>
+          <p class="handoff-d">
+            {#if wrapUpQueued}
+              The wrap-up below is in the queue — put there while you were away — and goes when this turn ends;
+              its × takes it back.
+            {:else}
+              <strong>Wrap up now</strong> sends the message below as its own turn. The model finishes what is
+              half-done, {#if threadAndHandoff}updates the thread's files and <code>HANDOFF.md</code>, commits{:else if threadHandoff}updates the thread's files{:else}writes <code>HANDOFF.md</code>, commits{/if}, and
+              ends with the next chat's prompt. Or raise this chat's mark and keep going. Nothing is sent while this is open.
+            {/if}
+          </p>
         {/if}
-      </p>
-      <ThreadPicker />
-      <label class="handoff-row">
-        <span>Hand off this chat at</span>
-        <input
-          type="number"
-          min="1"
-          max="100"
-          step="1"
-          value={handoffThresholdPct}
-          aria-label="This chat's hand-off threshold, percent of the context window"
-          onchange={(e) => setChatThreshold((e.currentTarget as HTMLInputElement).value)}
-        />
-        <span>% of the window{hasOwnThreshold(app.activeSessionId) ? ` (the default is ${handoffDefaultRule})` : ` (the default: ${handoffDefaultRule})`}</span>
-      </label>
-      <textarea
-        class="handoff-msg"
-        rows="5"
-        autocorrect="off"
-        autocapitalize="off"
-        spellcheck="false"
-        aria-label="The wrap-up message for this chat"
-        use:tip={"What Wrap up now sends. Edits are kept for this chat only; the default is in Settings → Subscription."}
-        value={wrapUpText}
-        oninput={(e) => {
-          noteActivity();
-          setMessage(app.activeSessionId, (e.currentTarget as HTMLTextAreaElement).value);
-        }}
-      ></textarea>
-      <!-- Item 747: the goal for the next chat, and what Nightloom adds under the message. -->
-      <HandoffGoal chat={app.activeSessionId} />
-      <div class="handoff-acts">
-        {#if !wrapUpQueued}
-          <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>
-        {/if}
-        <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId); stayHere(); }}>Stay here</button>
-        <button class="ns-btn ghost small" use:tip={"Fold this card to one line above the box"} onclick={() => fold(app.activeSessionId, "due")}>Minimize</button>
-        {#if hasOwnMessage(app.activeSessionId)}
-          <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearMessage(app.activeSessionId)}>Reset the message</button>
-        {/if}
-        <span class="handoff-keys mono">stay past {reAskPct}% and the wrap-up is asked again</span>
+        <div class="hc-fields">
+          <ThreadPicker menu />
+          {#if full}<span class="hc-sep" aria-hidden="true"></span><span class="hc-lbl">Hand off at</span>{/if}
+          <span class="hc-step" role="group" aria-label="This chat's hand-off mark" use:tip={`% of the window${hasOwnThreshold(app.activeSessionId) ? ` (the default is ${handoffDefaultRule})` : ` (the default: ${handoffDefaultRule})`}`}>
+            <button type="button" aria-label="Lower the mark by 5%" onclick={() => stepMark(-1)}>−</button>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              step="1"
+              value={handoffThresholdPct}
+              aria-label="This chat's hand-off threshold, percent of the context window"
+              onchange={(e) => typeMark(e.currentTarget as HTMLInputElement)}
+            /><small aria-hidden="true">%</small>
+            <button type="button" aria-label="Raise the mark by 5%" onclick={() => stepMark(1)}>+</button>
+          </span>
+          {#if full}<span class="hc-sep" aria-hidden="true"></span>{/if}
+          {#if agentMode}
+            <HudSelect
+              kicker={full ? "Next chat" : "Next"}
+              value={nextLabel.name}
+              note={full && nextLabel.isDefault ? "this chat's" : ""}
+              head="The next chat's model"
+              label="The model the next chat starts on"
+              hint={"The model the next chat opens on — this chat's unless picked here; the next-chat card shows the same pick"}
+              rows={nextModelRows(app.activeSessionId)}
+              onpick={(id) => setNextModel(app.activeSessionId, id)}
+            />
+          {/if}
+          {#if !full}
+            <span class="hc-fill-row">
+              <span class="hc-gauge hc-gauge-row" aria-hidden="true"><i style:width={`${Math.min(100, handoffPct)}%`}></i><b style:left={`${Math.min(100, handoffThresholdPct)}%`}></b></span>
+              <span class="mono handoff-fill hc-gnum"><em>{fmtTokens(handoff.used)}</em> / {fmtTokens(handoff.limit)}</span>
+            </span>
+          {/if}
+        </div>
+        <textarea
+          class="handoff-msg"
+          class:hc-clip={!full}
+          rows={full ? 4 : 2}
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          aria-label="The wrap-up message for this chat"
+          use:tip={"What Wrap up now sends. Edits are kept for this chat only; the default is in Settings → Subscription."}
+          value={wrapUpText}
+          oninput={(e) => {
+            noteActivity();
+            setMessage(app.activeSessionId, (e.currentTarget as HTMLTextAreaElement).value);
+          }}
+        ></textarea>
+        <!-- Item 747: the goal for the next chat, and what Nightloom adds under the message. -->
+        {#if full}<HandoffGoal chat={app.activeSessionId} />{/if}
+        <div class="handoff-acts">
+          {#if !wrapUpQueued}
+            <button class="ns-btn accent hc-go" class:small={!full} disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>
+          {/if}
+          <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId); stayHere(); }}>Stay here</button>
+          {#if hasOwnMessage(app.activeSessionId)}
+            <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearMessage(app.activeSessionId)}>Reset the message</button>
+          {/if}
+          <span class="handoff-keys mono">{full ? `stay past ${reAskPct}% and it asks again` : "click the text to edit it"}</span>
+        </div>
       </div>
     </div>
   {:else if handoffHere && handoff.stage === "wrapping"}
@@ -5877,37 +5974,7 @@
     font-family: var(--mono);
     font-size: 12px;
   }
-  .handoff-row {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    flex-wrap: wrap;
-    font-size: 12.5px;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .handoff-row input {
-    width: 4rem;
-    font-family: var(--mono);
-    font-size: 12px;
-    background: var(--term);
-    color: var(--ink);
-    border: 1px solid var(--line2);
-    border-radius: var(--r1);
-    padding: 3px 6px;
-  }
-  :global(:where([data-layout="classic"])) .handoff-row input {
-    width: 4rem;
-    font-family: var(--mono);
-    font-size: 12px;
-    background: var(--paper);
-    color: var(--ink);
-    border: 1px solid var(--line2);
-    border-radius: 6px;
-    padding: 3px 6px;
-  }
-  .handoff-row input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
+  /* ~~`.handoff-row` and its number box~~ — item 705: the mark is the card's stepper (`.hc-step`). */
   /* The message: the composer's own field face, so it reads as the one
      thing here that is typed into. */
   :global(:where(:root:not([data-layout="classic"]))) .handoff-msg {
@@ -5948,6 +6015,286 @@
     margin-left: auto;
     font-size: 11px;
     color: var(--dim);
+  }
+
+  /* Item 705 (option A, Console — his pick, blocker 2167; the mockup is
+     nightshift-code notes/runner-design/705-options-2026-11-18/): a kicker
+     and title, a fill gauge with the mark as a tick, one row of controls,
+     the message, the buttons. Layout here for both layouts; the look in
+     Jarvis is the glass in the hand-off's amber, in Classic the sheet as
+     before (Classic is a backup). */
+  .handoff.hc {
+    position: relative;
+    padding: 0;
+    gap: 0;
+    box-sizing: border-box;
+  }
+  .hc-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px 0;
+    min-width: 0;
+  }
+  .hc-kicker {
+    flex: none;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent-ink, var(--accent));
+  }
+  .hc-title {
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 500;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .hc-x {
+    margin-left: auto;
+    display: flex;
+    gap: 4px;
+    flex: none;
+  }
+  .hc-ico {
+    width: 24px;
+    height: 24px;
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--r1, 6px);
+    background: none;
+    color: var(--dim);
+    font: 13px var(--mono);
+    cursor: pointer;
+  }
+  .hc-ico:hover,
+  .hc-ico:focus-visible {
+    background: var(--well, var(--paper));
+    color: var(--ink);
+    outline: none;
+  }
+  .hc-body {
+    padding: 10px 14px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .hc-compact .hc-body {
+    gap: 8px;
+  }
+  .hc-meter {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .hc-gauge {
+    position: relative;
+    display: block;
+    height: 4px;
+    flex: 1;
+    min-width: 40px;
+    border-radius: 3px;
+    background: var(--well, var(--line));
+  }
+  .hc-gauge > i {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    border-radius: 3px;
+    background: var(--accent);
+  }
+  .hc-gauge > b {
+    position: absolute;
+    top: -3px;
+    width: 2px;
+    height: 10px;
+    margin-left: -1px;
+    border-radius: 1px;
+    background: var(--ink);
+  }
+  /* Compact: the gauge and its number go together at the row's right, and wrap as one. */
+  .hc-fill-row {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    white-space: nowrap;
+  }
+  /* A width, not only a basis: an empty span's basis does not count in the
+     group's own width (WebKit measured the group 101 px for 171 px of parts). */
+  .hc-gauge-row {
+    flex: none;
+    width: 110px;
+  }
+  .hc-gauge-mini {
+    flex: none;
+    width: 90px;
+  }
+  .hc-gnum {
+    white-space: nowrap;
+  }
+  .hc-gnum em {
+    font-style: normal;
+    color: var(--accent-ink, var(--accent));
+  }
+  .hc-fields {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .hc-sep {
+    width: 1px;
+    height: 18px;
+    margin: 0 2px;
+    background: var(--line2);
+  }
+  .hc-lbl {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  /* The mark's stepper: − value% +, mono; the value is typed in too. */
+  .hc-step {
+    display: inline-flex;
+    align-items: stretch;
+    height: 28px;
+    box-sizing: border-box;
+    border: 1px solid var(--line2);
+    overflow: hidden;
+  }
+  .hc-step > button {
+    width: 26px;
+    padding: 0;
+    border: none;
+    color: var(--ink2);
+    font: 14px var(--mono);
+    cursor: pointer;
+  }
+  .hc-step > button:first-child {
+    border-right: 1px solid var(--line2);
+  }
+  .hc-step > button:last-child {
+    border-left: 1px solid var(--line2);
+  }
+  .hc-step > button:hover {
+    color: var(--ink);
+  }
+  .hc-step > input {
+    width: 2.6em;
+    padding: 0 0 0 6px;
+    border: none;
+    background: none;
+    color: var(--ink);
+    font: 500 12.5px var(--mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+  .hc-step > input::-webkit-inner-spin-button,
+  .hc-step > input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .hc-step > input:focus {
+    outline: none;
+  }
+  .hc-step > small {
+    display: flex;
+    align-items: center;
+    padding: 0 6px 0 1px;
+    color: var(--dim);
+    font: 12px var(--mono);
+  }
+  .hc-step:focus-within {
+    border-color: var(--accent);
+  }
+  .hc .handoff-msg {
+    box-sizing: border-box;
+    padding: 8px 10px;
+    line-height: 1.5;
+  }
+  /* Compact: the message folds to two lines and fades; a click edits it in full. */
+  .hc .handoff-msg.hc-clip {
+    resize: none;
+    -webkit-mask-image: linear-gradient(180deg, #000 55%, transparent);
+    mask-image: linear-gradient(180deg, #000 55%, transparent);
+  }
+  .hc .handoff-msg.hc-clip:focus {
+    -webkit-mask-image: none;
+    mask-image: none;
+    min-height: 7.5em;
+  }
+  /* The one line. */
+  .handoff.hc.hc-mini {
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px 6px 12px;
+  }
+  .hc-mini .hc-title {
+    font-size: 13px;
+  }
+  @container (max-width: 560px) {
+    .hc-mini .hc-gauge-mini {
+      display: none;
+    }
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .handoff.hc {
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line2));
+    background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, var(--raised)), var(--raised) 60%);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--accent) 30%, transparent),
+      0 10px 30px rgba(0, 0, 0, 0.35);
+    margin-bottom: 8px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .hc-gauge > i {
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, transparent), var(--accent));
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .hc-step {
+    border-radius: var(--r1);
+    background: var(--term);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .hc-step > button {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .hc .ns-btn.accent.hc-go {
+    background: var(--term);
+    border: 1px solid color-mix(in srgb, var(--accent) 70%, var(--line2));
+    color: var(--accent-ink);
+    box-shadow: inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent), var(--glow-main);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .handoff-msg:focus,
+  :global(:where(:root:not([data-layout="classic"]))) .hc .handoff-msg:focus {
+    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
+  }
+  /* The grip, lit while the card is up: it sizes the card first. */
+  :global(:where(:root:not([data-layout="classic"]))) .composer.hc-grip > :global(.handle)::after {
+    width: 46px;
+    background: color-mix(in srgb, var(--accent) 50%, var(--line2));
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  :global(:where([data-layout="classic"])) .hc-step {
+    border-radius: 6px;
+    background: var(--paper);
+  }
+  :global(:where([data-layout="classic"])) .hc-step > button {
+    background: var(--sheet);
+  }
+  :global(:where([data-layout="classic"])) .composer.hc-grip > :global(.handle)::after {
+    background: var(--accent);
   }
 
   /* The `/` picker (backlog 077): a plain list joined to the card's top. */

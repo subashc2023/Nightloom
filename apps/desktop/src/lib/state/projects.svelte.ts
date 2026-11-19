@@ -2,6 +2,7 @@
 import { projectSwitch } from "../projectSwitch.svelte";
 import * as api from "../api";
 import { refreshWithin } from "../afterWrite";
+import { watchWhenMoved } from "../notesFollow";
 import { withProject, withoutProject } from "../projectRows";
 import { canDetach } from "../browse";
 import * as tabs from "../tabs";
@@ -50,7 +51,17 @@ export async function refreshProjects(): Promise<void> {
  * note the model just left appears in the sidebar without a reload. Both are
  * refreshed together because the model can write to either.
  */
+/** Item 869: the watch on the folders this list mirrors, re-asked for only
+ *  when the open project or the vault moved. */
+const followNotes = watchWhenMoved(() => api.watchNotes());
+
 export async function refreshNotes(): Promise<void> {
+  // Item 869: the list follows changes made outside Nightloom too.
+  try {
+    followNotes(`${app.project?.id ?? ""}|${app.knowledge?.dir ?? ""}`);
+  } catch {
+    // A test's api mock without the watch: the list still reads.
+  }
   // As a tree since item 457: the same notes, plus the folders (an empty
   // one is still a place to drop a note) and whether the list is whole.
   if (app.project) {

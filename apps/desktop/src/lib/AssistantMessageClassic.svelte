@@ -804,11 +804,13 @@
               {@const hm = helperMark(seg.call, app.subagents, app.activeSessionId, streaming)}
               {@const shell = isShellCall(seg.call.name)}
               {@const remnant = !running && shell && passingEnded(seg.call.id)}
-              <div class="row-wrap tool" class:rm-born={bornW} class:rm-finished={bornW && !running} class:bash-pass={(running && shell) || remnant}>
+              <div class="row-wrap tool" class:rm-born={bornW} class:rm-finished={bornW && !running} class:bash-pass={(running && (shell || isAgentCall(seg.call.name))) || remnant}>
                 <!-- Item 721: the command's real output passing behind the row,
                      headed by its first line; its remnant a moment after. -->
                 {#if running && shell}<BashPassing id={seg.call.id} input={seg.call.input} />{/if}
                 {#if remnant}<BashPassing id={seg.call.id} ended input={seg.call.input} />{/if}
+                <!-- Item 761: a spawn the hook holds for a sibling's first reply says so. -->
+                {#if running && isAgentCall(seg.call.name)}<BashPassing id={seg.call.id} />{/if}
                 <!-- An Agent call's row is a drag source (backlog 160): its
                      subagent's transcript as a tab, dropped on a strip or a
                      pane's half — live while it runs (guess pass 2026-09-25,

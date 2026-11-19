@@ -54,6 +54,7 @@ import {
   type ChatChoice,
 } from "./chatChoice";
 import { madeChatRow } from "./afterWrite";
+import { coalesced } from "./notesFollow";
 import { runLaunch } from "./launch.svelte";
 import { chatName, notifyNeedsYou, notifyNudge, postHeldNeedsYou } from "./notify";
 import { connectorWords } from "../remote/rules";
@@ -173,6 +174,7 @@ import { bgTurns, backgroundTurnOf, backgroundName, whereItRuns, openRunningChat
 import { stillRunningAsked, injectIntoTurn, nudgeInjects, openChatKey, takeQueuedFor, injectLater, retryInjects, handWhy, handKey, handReason, RETRY_HAND_MS, replyToPending, turnOwnsKey, takeQueued, sendNowRow, slipRow, sendNowPlan, stopSend, stopSendFor, takeStopSend, frontQueued, stopAndSendRow, sendNowAny, type HandReason, type SendNowPlan } from "./state/queue.svelte";
 import { peekNew, viewMark, sameView, adoptOpen, settleTurnView, openSession, compactSession, deleteSession, moveSession, remoteSend, remoteNewChat } from "./state/sessions.svelte";
 import { loadLastProject, saveLastProject, loadDreamPrefs, loadPalette, loadLayout, viewport, loadReadPages, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY, type Palette, type DreamPrefs, type Layout } from "./state/prefs.svelte";
+import { nextModel } from "./nextChatModel.svelte";
 import { runMenuCommand, menuInterceptors, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits } from "./state/menu.svelte";
 import { rewindTo, setAsideRewound, keepRewound, restoreRewound, keepRewindFiles, undoRestore } from "./state/rewind.svelte";
 import { addToast, TOAST_MS, ACTION_TOAST_MS, dismissToast, runToastAction } from "./state/toasts.svelte";
@@ -943,6 +945,10 @@ let initialized = false;
  */
 let compactedThisTurn = false;
 
+/** Item 869: the notes re-read a folder change or a focus asks for —
+ *  coalesced, so a sync landing many files is at most two re-reads. */
+const followNotesNow = coalesced(() => refreshNotes());
+
 export async function init(): Promise<void> {
   if (initialized) return;
   initialized = true;
@@ -1074,6 +1080,9 @@ export async function init(): Promise<void> {
   // Only the watched project (selectNightshiftProject calls nightshiftWatch)
   // emits this, and only that project's row and morning page are worth
   // re-reading — a change event for anything else could not reach here.
+  // Item 869: a notes folder changed (outside Nightloom or in); one
+  // coalesced re-read, so a burst is never a re-read storm.
+  await listen("notes-changed", () => void followNotesNow());
   await listen<NightshiftChange>("nightshift-change", (e) => {
     // The bell's morning and blocker counts follow the watched root.
     void refreshCentre();
@@ -1117,7 +1126,11 @@ export async function init(): Promise<void> {
   // the time they return. Cheap enough to leave unconditional — one command
   // that stats a handful of paths, and only when the window is activated —
   // where a poll would be a filesystem check every few seconds forever.
-  window.addEventListener("focus", () => void refreshProjects());
+  // Item 869: the notes too — the safety net under the folder watch.
+  window.addEventListener("focus", () => {
+    void refreshProjects();
+    void followNotesNow();
+  });
   const last = loadLastConnection();
   if (last) {
     app.draft = last;
@@ -1483,6 +1496,16 @@ async function openContinuation(from: string | null, prompted: boolean): Promise
   if (thread && prompted) void takeThreadHandoff(thread, res.session);
   // The chat just left is finished as far as memory is concerned (item 278).
   maybeHandoffPass();
+  // Item 705: the new chat on the *Next chat* pick; "" (this chat's) keeps the
+  // model it was opened on. A failed switch is a toast, never a lost continuation.
+  const pick = nextModel(from);
+  if (pick && app.draft.engine === "claude-code" && app.draft.agentModel !== pick) {
+    try {
+      await switchModel(pick);
+    } catch (e) {
+      addToast(`The next chat stayed on this chat's model: ${String(e)}`);
+    }
+  }
   return res.session;
 }
 

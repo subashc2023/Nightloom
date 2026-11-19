@@ -45,6 +45,15 @@
   import { isHtmlPath } from "./htmlPage";
   import { splitExt, whoFoldKey } from "./noteHead";
   import { exactTime, relativeTime } from "./time";
+  import {
+    coalesced,
+    noteVanished,
+    stillThere,
+    touchesNote,
+    vanishedMessage,
+    type NotesChanged,
+  } from "./notesFollow";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -76,6 +85,10 @@
   let saved = $state("");
   let loading = $state(false);
   let error = $state<string | null>(null);
+  /** Item 869: the file was moved or deleted outside Nightloom. With his
+   *  unsaved edits the buffer holds them (Save puts the file back); without,
+   *  a plain message and Close — never the os error string. */
+  let gone = $state(false);
   /** A note that is not text (backlog 307): drawn, never edited. */
   let media = $state<api.FileTabData | null>(null);
   /**
@@ -343,12 +356,56 @@
     jump += 1;
   });
 
+  /**
+   * Item 869: a note already open whose file is deleted or moved outside
+   * Nightloom. The folder watch's `notes-changed` re-checks the open file
+   * (one read, coalesced); gone shows the banner and Close, and the buffer —
+   * his unsaved edits included — stays, so Save puts the file back.
+   */
+  $effect(() => {
+    const target = open;
+    if (!target || (target.scope !== "project" && target.scope !== "knowledge")) return;
+    let alive = true;
+    let stop: UnlistenFn | null = null;
+    const check = coalesced(async () => {
+      const isMedia = untrack(() => media) !== null;
+      const there = await stillThere(() =>
+        isMedia ? api.readNoteMedia(target.scope, target.name) : api.readNote(target.scope, target.name),
+      );
+      if (!alive || open?.scope !== target.scope || open?.name !== target.name) return;
+      if (there === false) gone = true;
+      else if (there === true && untrack(() => gone)) {
+        // Review of 869: the file came back (an editor's save by rename, a
+        // Trash put-back, iCloud). With his unsaved edits the buffer keeps
+        // them and the banner clears; with none — or only the vanished
+        // message showing — the note is read again, so the editor shows
+        // the file as it now is and a later Save cannot write the old text
+        // over what came back.
+        if (untrack(() => dirty)) gone = false;
+        else void load(target);
+      }
+    });
+    listen<NotesChanged>("notes-changed", (e) => {
+      if (touchesNote(e.payload, target.scope, target.name)) void check();
+    })
+      .then((s) => {
+        if (alive) stop = s;
+        else s();
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      stop?.();
+    };
+  });
+
   async function load(target: { scope: NoteScope; name: string } | null) {
     bufferKey = null;
     caret = 0;
     text = "";
     saved = "";
     error = null;
+    gone = false;
     media = null;
     backlinks = [];
     images.clear();
@@ -379,7 +436,19 @@
       }
       bufferKey = key;
     } catch (e) {
-      error = String(e);
+      const msg = String(e);
+      if (noteVanished(msg)) {
+        gone = true;
+        const key = noteDraftKey(target.scope, target.name);
+        const draft = app.noteDrafts[key];
+        if (draft !== undefined) {
+          // His edits stay offered back (practices §7): the file is gone, so
+          // the saved baseline is empty and Save writes the edits back.
+          saved = "";
+          text = draft;
+          bufferKey = key;
+        } else error = vanishedMessage(target.name, false);
+      } else error = msg;
     } finally {
       loading = false;
     }
@@ -1016,8 +1085,15 @@
     </div>
     <hr />
   </div>
+  {#if gone && !error}
+    <p class="err gone">{vanishedMessage(open?.name ?? "", dirty)}</p>
+    <button class="ghost gone-close" onclick={() => closeNote()}>Close</button>
+  {/if}
   {#if error}
     <p class="err">{error}</p>
+    {#if gone}
+      <button class="ghost gone-close" onclick={() => closeNote()}>Close</button>
+    {/if}
   {:else if loading}
     <p class="err quiet">Reading…</p>
   {:else if media}
