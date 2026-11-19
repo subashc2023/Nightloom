@@ -145,14 +145,15 @@
     type Converted,
     type LongPaste,
   } from "./pasteAttach";
-  import { badgeOf, extOf, routeLabel, type Engine } from "./attachKinds";
+  import { badgeOf, convertingWords, extOf, routeLabel, type Engine } from "./attachKinds";
   import PdfRouteSwitch from "./PdfRouteSwitch.svelte";
   import { draftImageContent, openAttachment } from "./attachments.svelte";
   import { sendTip, tip } from "./tip";
   import { armStop, stopChordLabel, stopChordTarget } from "./stopButton";
   import { stopPref } from "./stopShape.svelte";
   import { releaseStop, slowDueIn, slowStopLine, stopPhase } from "./stopState";
-  import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, settleRestored, splitChips, trackPending } from "./attachFiles.svelte";
+  import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, stepChips, trackPending } from "./attachFiles.svelte";
+  import { clock, tickWhile } from "./convertClock.svelte";
   import { floatMenu } from "./floatMenu";
   import { ghostFor } from "./suggestions.svelte";
   import { queuedElsewhereToast } from "./browse";
@@ -189,7 +190,7 @@
   import { chipLabel, shownQuote, commentLabel, commentsMessage, commentWhere, type PassageComment } from "./passageComments";
   import { commentRequest, takeCommentFocus } from "./commentRequest.svelte";
   import type { Attachment } from "./types";
-  import { chipStep, isChipTag } from "./chipSteps";
+  import { isChipTag } from "./chipSteps";
   // Scheduled send (backlog 224): the ▾ beside Send and the chip above.
   import ScheduleMenu from "./ScheduleMenu.svelte";
   import FilamentMark from "./FilamentMark.svelte";
@@ -504,6 +505,8 @@
     return { ...estimate, title: draftEstimateTitle(estimate.tokens, why) };
   });
   const attachments = $derived(draft.attachments);
+  // Item 868: "converting slides · 1:12" ticks while a chip converts.
+  tickWhile(() => attachments.some((a) => a.pending && !!a.converting));
   /**
    * Messages held while a turn runs (nightshift backlog 089, 2026-09-16).
    * ↵ during a turn queues instead of doing nothing; the tray above the box
@@ -2046,16 +2049,10 @@
     }
     // Item 458: an attach or a remove, undone or redone.
     if (isChipTag(s.tag)) {
-      // Leaves at once, as a chip's × takes it: no fade to wait out.
-      const stepped = chipStep(s.tag, dir, $state.snapshot(attachments) as Attachment[]).chips;
-      // A conversion that ended while the chip was out lands on it now (review fix).
-      setDraftAttachments(
-        key,
-        stepped.flatMap((c) => {
-          const back = settleRestored(c);
-          return back ? [back] : [];
-        }),
-      );
+      // Leaves at once, as a chip's × takes it: no fade to wait out. A
+      // conversion that ended while the chip was out lands on it now
+      // (review fix); a split deck's parts move with part 1 (item 868).
+      setDraftAttachments(key, stepChips(s.tag, dir, $state.snapshot(attachments) as Attachment[]));
     }
     setDraftText(key, s.text);
     void tick().then(() => {
@@ -3762,7 +3759,8 @@
                 <span class="file-name">{a.name}</span>
                 <!-- Item 491: a long PDF's route stands in for the label
                      (its pages are in both; the label stays in the tip). -->
-                {#if a.label && !routeLabel(a, chipEngine)}<span class="file-label">{a.label}</span>{/if}
+                {#if a.pending && a.converting}<span class="file-label">{convertingWords(a.name, a.converting.to, clock.now - a.converting.since)}</span>
+                {:else if a.label && !routeLabel(a, chipEngine)}<span class="file-label">{a.label}</span>{/if}
                 <PdfRouteSwitch chip={a} draftKey={key} engine={chipEngine} />
               </span>
             {/if}

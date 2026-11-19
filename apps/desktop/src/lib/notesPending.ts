@@ -11,6 +11,7 @@
  * store (`notesPending.svelte.ts`) holds them outside the panel, so a
  * conversion that outlives a switch to Chats and back still shows.
  */
+import { convertingWords, routeOf } from "./attachKinds";
 
 /** One file on its way into the notes. `project`: the project's id, so a
  *  row shows only in the project it was dropped into. `folder`: the
@@ -25,6 +26,9 @@ export type PendingNote = {
   phase: "adding" | "failed";
   /** Why it failed, in the drop's own words. */
   why?: string;
+  /** Item 868: when the row appeared (ms), for an office file's
+   *  "converting slides · 1:12" while it converts. */
+  since?: number;
 };
 
 /** What a drop tells its rows: one per file at the moment of the drop,
@@ -42,6 +46,7 @@ export function addRows(
   folder: string,
   files: readonly { name: string; zip: boolean }[],
   nextId: () => number,
+  now: number = Date.now(),
 ): { list: PendingNote[]; ids: number[] } {
   const made = files.map((f) => ({
     id: nextId(),
@@ -50,6 +55,7 @@ export function addRows(
     name: f.name,
     zip: f.zip,
     phase: "adding" as const,
+    since: now,
   }));
   return { list: [...list, ...made], ids: made.map((r) => r.id) };
 }
@@ -70,12 +76,19 @@ export function dismissRow(list: readonly PendingNote[], id: number): PendingNot
 }
 
 /** The words on a row. */
-export function rowWords(r: Pick<PendingNote, "phase" | "zip" | "folder" | "why"> & { name?: string }): string {
+export function rowWords(
+  r: Pick<PendingNote, "phase" | "zip" | "folder" | "why"> & { name?: string; since?: number },
+  // Item 868: the clock, for an office file's elapsed time; without it the
+  // row says "adding to …" as before.
+  now?: number,
+): string {
   if (r.phase === "failed") {
     // The row already names the file: "deck.pptx: it is damaged" → "it is damaged".
     const why = r.why ?? "could not be added";
     return r.name && why.startsWith(`${r.name}: `) ? why.slice(r.name.length + 2) : why;
   }
+  if (!r.zip && r.name && now !== undefined && r.since !== undefined && routeOf(r.name, "") === "office")
+    return convertingWords(r.name, "pdf", now - r.since);
   return r.zip ? `unpacking into ${r.folder}/…` : `adding to ${r.folder}/…`;
 }
 

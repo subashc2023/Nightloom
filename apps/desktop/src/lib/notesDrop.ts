@@ -59,6 +59,9 @@ export type KeepDeps = {
   keep: (key: string, name: string, mediaType: string, from: { data: string }, source?: string) => Promise<void | string>;
   /** Drop the scratch box. */
   discard: (key: string) => void;
+  /** Item 868: a split deck's parts 2..n (`partChips`), kept beside its
+   *  first chip. Without it, only the first is kept. */
+  parts?: (key: string, id: number) => readonly Attachment[];
   /** Item 414: how a zip is unpacked and its entries kept. Without it, a
    *  zip goes through `attach` as any file. */
   zip?: ZipDeps;
@@ -156,18 +159,20 @@ async function keepFilesRows(files: readonly File[], ids: readonly number[], d: 
         continue;
       }
       for (const t of said[i]) d.toast(t);
-      const k = keepKey(a.name, a.data);
-      const s = d.state(k);
-      if (s.phase === "kept") d.forget(k);
-      else if (s.phase === "keeping") {
-        d.toast(`${a.name} is being kept already`);
-        rows.end(ids[i]);
-        continue;
+      // Item 868: a deck split into parts keeps every part, on one row.
+      for (const c of [a, ...(d.parts?.(key, a.id) ?? [])]) {
+        const k = keepKey(c.name, c.data);
+        const s = d.state(k);
+        if (s.phase === "kept") d.forget(k);
+        else if (s.phase === "keeping") {
+          d.toast(`${c.name} is being kept already`);
+          continue;
+        }
+        asked++;
+        const src = c.source_sha256 ? [c.source_sha256] : [];
+        const failed = await d.keep(k, c.name, c.media_type, { data: c.data }, ...src);
+        if (typeof failed === "string") rows.fail(ids[i], failed);
       }
-      asked++;
-      const src = a.source_sha256 ? [a.source_sha256] : [];
-      const failed = await d.keep(k, a.name, a.media_type, { data: a.data }, ...src);
-      if (typeof failed === "string") rows.fail(ids[i], failed);
       // The keep refreshed Notes before it returned: the note's own row
       // is in the list as this one goes.
       rows.end(ids[i]);
@@ -189,6 +194,8 @@ async function keepFiles(files: readonly File[], d: KeepDeps): Promise<number> {
     // the chip's Keep button does (disabled while `pending`).
     await Promise.allSettled(d.jobs(key));
     const ids = new Set(made.map((a) => a.id));
+    // Item 868: a split deck's parts 2..n are kept with it.
+    for (const a of made) for (const p of d.parts?.(key, a.id) ?? []) ids.add(p.id);
     // A chip whose conversion failed was removed (and said so).
     const ready = d.chips(key).filter((a) => ids.has(a.id) && !a.pending && a.data);
     for (const a of ready) {
@@ -320,12 +327,15 @@ export async function keepZip(file: File, d: KeepDeps, z: ZipDeps, fail?: (why: 
         skipped.push({ name: path, why: reason(path, "could not be converted") });
         continue;
       }
-      try {
-        const k = await z.keepAt(a.name, a.media_type, a.data, dirOf(path));
-        rels.push(k.rel);
-        anyNew ||= !k.already;
-      } catch (e) {
-        skipped.push({ name: path, why: String(e) });
+      // Item 868: a split deck's parts 2..n land beside part 1.
+      for (const c of [a, ...(d.parts?.(key, a.id) ?? [])]) {
+        try {
+          const k = await z.keepAt(c.name, c.media_type, c.data, dirOf(path));
+          rels.push(k.rel);
+          anyNew ||= !k.already;
+        } catch (e) {
+          skipped.push({ name: path, why: String(e) });
+        }
       }
     }
   } finally {

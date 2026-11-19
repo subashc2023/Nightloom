@@ -28,7 +28,8 @@
   import { viewGet, viewSet } from "./viewState";
   import { projectFilesChanged, refreshNotes } from "./state.svelte";
   import { carriesFiles } from "./dropLook";
-  import { acceptFiles, conversionJobs, readBase64 } from "./attachFiles.svelte";
+  import { acceptFiles, conversionJobs, partChips, readBase64 } from "./attachFiles.svelte";
+  import { clock, tickWhile } from "./convertClock.svelte";
   import { discardDraft, readDraft } from "./drafts.svelte";
   import {
     holdKeptNotices,
@@ -452,6 +453,7 @@
         attach: acceptFiles,
         jobs: conversionJobs,
         chips: (k) => readDraft(k).attachments,
+        parts: partChips,
         state: keepStateOf,
         forget: (k) => delete keeps[k],
         keep: async (_k, name, mediaType, from, source) => {
@@ -604,6 +606,8 @@
     placeRows(pendingHere, new Set(projectRows.filter((r) => r.kind === "folder").map((r) => r.path))),
   );
   const adding = $derived(pendingHere.filter((r) => r.phase === "adding").length);
+  // Item 868: an office file's row says "converting slides · 1:12", ticking.
+  tickWhile(() => adding > 0);
   const vaultRows = $derived(
     visibleRows(buildTree(shownVault, searching ? [] : app.noteFolders.knowledge), openFolders.knowledge, searching),
   );
@@ -1035,7 +1039,7 @@
     data-pending={p.id}
     aria-busy={p.phase === "adding"}
   >
-    <span class="prow" use:tip={`${p.name} — ${rowWords(p)}`}>
+    <span class="prow" use:tip={`${p.name} — ${rowWords(p, clock.now)}`}>
       <span class="line">
         {#if p.phase === "adding"}
           <span class="spin" aria-hidden="true"></span>
@@ -1044,7 +1048,7 @@
         {/if}
         <span class="name">{p.name}</span>
       </span>
-      <span class="pwords" role={p.phase === "failed" ? "alert" : "status"}>{rowWords(p)}</span>
+      <span class="pwords" role={p.phase === "failed" ? "alert" : "status"}>{rowWords(p, clock.now)}</span>
     </span>
     {#if p.phase === "failed"}
       <button class="pdismiss" aria-label="Dismiss {p.name}" use:tip={"Dismiss"} onclick={() => dismissPending(p.id)}>×</button>
