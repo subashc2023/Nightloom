@@ -22,9 +22,13 @@ import { resetHandoff } from "./handoff.svelte";
 import { app, continueWithPrompt } from "./state.svelte";
 import type { AsideResult } from "./types";
 import buttonSrc from "./handoffButton.ts?raw";
-import transcriptSrc from "./Transcript.svelte?raw";
-import classicSrc from "./TranscriptClassic.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
+import classicSrcRaw from "./TranscriptClassic.svelte?raw";
 import editsSrc from "../../src-tauri/src/commands/edits.rs?raw";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
+const classicSrc = asOneFile(classicSrcRaw, transcriptLogicRaw);
 
 const fs = (await import(/* @vite-ignore */ "node:" + "fs")) as { readFileSync(u: URL, enc: string): string };
 const cssSrc = fs.readFileSync(new URL("../app.css", import.meta.url), "utf8");

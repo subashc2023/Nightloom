@@ -23,6 +23,10 @@
   import { asideEvents, asideLive } from "./asideTranscript";
   import type { LimitCard, TranscriptSource } from "./transcriptSource.svelte";
   import Transcript from "./Transcript.svelte";
+  // Item 856: Classic draws an aside through its own transcript too, now
+  // that both looks share one logic (supersedes blocker 1989's default).
+  import TranscriptClassic from "./TranscriptClassic.svelte";
+  import { classic } from "./layout.svelte";
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
   import { noteWaiting } from "./asideNotes.svelte";
 
@@ -293,9 +297,10 @@
     },
     waitNote,
   });
+  const View = $derived(classic() ? TranscriptClassic : Transcript);
 </script>
 
-<Transcript {source} {lead}>
+<View {source} {lead}>
   {#snippet afterLive()}
     {#if asking && wait?.kind === "stalled" && !waiting}
       <!-- Item 404: silence past ASIDE_STALL_MS is said, with a way on. -->
@@ -316,7 +321,7 @@
   {#snippet foot()}
     {#if !aside.draft}<AsideFoldPanel {aside} part="panel" {open} />{/if}
   {/snippet}
-</Transcript>
+</View>
 
 <style>
   .aside-stalled {

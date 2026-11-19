@@ -1,5 +1,5 @@
-import transcriptSrc from "./Transcript.svelte?raw";
-import classicSrc from "./TranscriptClassic.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
+import classicSrcRaw from "./TranscriptClassic.svelte?raw";
 import asideSrc from "./AsideTranscript.svelte?raw";
 import answeredSrc from "./AskAnswered.svelte?raw";
 import msgSrc from "./AssistantMessage.svelte?raw";
@@ -14,6 +14,10 @@ import {
   closedAskReason,
   closedPickText,
 } from "./askSettled";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
+const classicSrc = asOneFile(classicSrcRaw, transcriptLogicRaw);
 
 // vitest empties CSS imports (codeCopy.test.ts, askLockK.test.ts): app.css is read from disk.
 const fs = (await import(/* @vite-ignore */ "node:" + "fs")) as { readFileSync(u: URL, enc: string): string };

@@ -22,8 +22,11 @@ import { app } from "./state.svelte";
 import { drafts, readDraft, setDraftText } from "./drafts.svelte";
 import { endsTurn, redoOf } from "./retry";
 import { retryReply } from "./retry.svelte";
-import transcriptSrc from "./Transcript.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
 import messageSrc from "./AssistantMessage.svelte?raw";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
 
 /**
  * Item 439 (2026-10-27, his words: "why is there no like redo button like
@@ -87,7 +90,8 @@ describe("the markup", () => {
     expect(rewind).toBeGreaterThan(0);
     expect(redo).toBeGreaterThan(rewind);
     expect(redo).toBeLessThan(edit);
-    expect(transcriptSrc).toContain("onclick={() => void retryReply(redo.reply)}");
+    // test-change: item 856 — `redo` is the logic's getter now, so the closure asserts it.
+    expect(transcriptSrc).toContain("onclick={() => void retryReply(redo!.reply)}");
   });
   it("the reply footer's button says Redo too", () => {
     expect(messageSrc).toContain('aria-label="Redo this reply"');

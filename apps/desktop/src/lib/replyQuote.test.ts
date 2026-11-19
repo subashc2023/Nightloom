@@ -13,7 +13,10 @@ import {
   takeReply,
   tightenDisplayMath,
 } from "./replyQuote.svelte";
-import transcriptSrc from "./Transcript.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
 
 describe("quoteBlock (backlog 215)", () => {
   it("puts each line behind `> ` and a blank line as a bare `>`", () => {

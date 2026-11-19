@@ -5,8 +5,8 @@
  * and the pill and composer wiring.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import transcriptSrc from "./Transcript.svelte?raw";
-import classicSrc from "./TranscriptClassic.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
+import classicSrcRaw from "./TranscriptClassic.svelte?raw";
 import composerSrc from "./Composer.svelte?raw";
 import approvalSrc from "./ApprovalPrompt.svelte?raw";
 import { chipLabel, commentLabel, commentsMessage, commentWhere, readComments, type PassageComment } from "./passageComments";
@@ -171,6 +171,10 @@ describe("wiring", () => {
 
 
 import { diffQuote } from "./diffPassage";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
+const classicSrc = asOneFile(classicSrcRaw, transcriptLogicRaw);
 describe("a diff passage", () => {
   it("is unified-diff lines under the file's path", () => {
     expect(

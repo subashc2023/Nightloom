@@ -12,8 +12,12 @@ import composerSrc from "./Composer.svelte?raw";
 import pickerSrc from "./ThreadPicker.svelte?raw";
 import buttonSrc from "./handoffButton.ts?raw";
 import stateSrc from "./state.svelte.ts?raw";
-import transcriptSrc from "./Transcript.svelte?raw";
-import classicSrc from "./TranscriptClassic.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
+import classicSrcRaw from "./TranscriptClassic.svelte?raw";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
+const classicSrc = asOneFile(classicSrcRaw, transcriptLogicRaw);
 
 vi.mock("./api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./api")>()),

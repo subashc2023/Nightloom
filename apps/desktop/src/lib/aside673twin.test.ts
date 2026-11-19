@@ -45,9 +45,9 @@ describe("673 C1 Twin: the aside tab's header card", () => {
     expect(viewSrc).toMatch(/<AsideTranscript \{aside\} \{open\} owner=\{session\} frame="full" scrollKey=\{[^}]*\}[^/]*\/>/);
     // ~~no `lead=` at all~~ — item 685: the lead is the card's room, never the quote.
     expect(viewSrc).not.toMatch(/<AsideTranscript[^>]*lead=\{quoted\}/);
-    expect(viewSrc).toMatch(/<AsideTranscript[^>]*lead=\{room\}/);
-    // Classic still leads its own thread with the passage.
-    expect(viewSrc).toMatch(/\{@render quoted\(\)\}/);
+    // test-change: item 856 — Classic's thread is the shared transcript too, and it
+    // still leads with the passage (its head has no card to hold it).
+    expect(viewSrc).toMatch(/<AsideTranscript[^>]*lead=\{classic\(\) \? quoted : room\}/);
   });
 
   it("the foot is the composer's row: about, Fold with the coil, Close at 28 px", () => {

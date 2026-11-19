@@ -21,9 +21,8 @@
   import { foldMotion } from "./foldMotion";
   import { asideLabel } from "./asides";
   import type { Zone } from "./floatingMove";
-  import { tick, untrack } from "svelte";
-  import { asideSendJumps } from "./sendScroll";
-  import { asideCardScrollKey, putBack, recallScroll, rememberScroll, returnEntry } from "./scroll.svelte";
+  import { tick } from "svelte";
+  import { asideCardScrollKey } from "./scroll.svelte";
   import type { Aside } from "./state.svelte";
   import type { Placement } from "./asideCard";
   import MoveZone from "./MoveZone.svelte";
@@ -34,10 +33,9 @@
   import Composer from "./Composer.svelte";
   import StartCards from "./StartCards.svelte";
   import { isHome } from "./home";
-  import AsideThread from "./AsideThread.svelte";
-  // Item 674: the thread is the chat's transcript; Classic keeps AsideThread.
+  // Item 674: the thread is the chat's transcript; Classic's too since item
+  // 856 (it kept `AsideThread` until then, blocker 1989).
   import AsideTranscript from "./AsideTranscript.svelte";
-  import { classic } from "./layout.svelte";
   import { fmtTokens } from "./tokens";
   import { firstFit, onOneLine } from "./fold";
 
@@ -132,7 +130,6 @@
   } = $props();
 
   let root = $state<HTMLElement | null>(null);
-  let body = $state<HTMLElement | null>(null);
   // ~~`askBox` / `followBox`, `AsideBox` and its room~~ — the card's box
   // is the chat's composer since backlog 283 (`Composer` with `aside`),
   // pinned at the card's foot under the thread; its text, chips and held
@@ -307,97 +304,9 @@
     aside.moved = null;
   }
 
-  // The body follows the answer as the transcript follows a reply: a card
-  // taller than its room scrolls inside, and the newest text — the
-  // streaming answer, then the follow-up box — is what he is reading.
-  // Released the moment he scrolls up in it, held again at the foot.
-  let bodyPinned = true;
-  // Item 502: the card keeps his place in its thread across a remount (a
-  // chat switch, the card folded and opened): held at the foot as before
-  // when it was, else the line he left, put back while the thread draws.
-  const placeKey = $derived(owner ? asideCardScrollKey(owner, aside.id) : null);
-  let putting: ReturnType<typeof putBack> | null = null;
-  function bodyScrolled(): void {
-    if (!body) return;
-    bodyPinned = body.scrollHeight - body.scrollTop - body.clientHeight < 4;
-    if (placeKey && !putting?.busy()) rememberScroll(placeKey, body.scrollTop, bodyPinned);
-  }
-  $effect(() => {
-    const key = placeKey;
-    const el = body;
-    if (!key || !el) return;
-    return untrack(() => {
-      const entry = returnEntry(recallScroll(key), el.scrollHeight, el.clientHeight);
-      if (entry) bodyPinned = entry.pinned;
-      const p = putBack(el, entry);
-      putting = p;
-      return () => {
-        p.cancel();
-        if (putting === p) putting = null;
-      };
-    });
-  });
-  // A card whose room shrinks — a shorter window, more cards stacked
-  // above the composer — keeps its foot where it was: held at the bottom
-  // before the change, held there after, so the buttons stay (backlog
-  // 233). Measured on a change of the body's height only.
-  $effect(() => {
-    const el = body;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    let height = el.clientHeight;
-    let atFoot = el.scrollHeight - el.scrollTop - el.clientHeight < 4;
-    const keep = () => (atFoot = el.scrollHeight - el.scrollTop - el.clientHeight < 4);
-    el.addEventListener("scroll", keep);
-    const ro = new ResizeObserver(() => {
-      if (el.clientHeight === height) return;
-      height = el.clientHeight;
-      if (atFoot) el.scrollTop = el.scrollHeight;
-      keep();
-    });
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      el.removeEventListener("scroll", keep);
-    };
-  });
-  // Item 468: a follow-up Send from near the foot lands at the bottom, as
-  // the transcript's does (item 313's `sendJumps`, the body's height for
-  // the screen). The distance is read before the new turn is drawn, so it
-  // is the reader's, not the reader's plus the new question's height. Run
-  // before the follow effect below, which then sees the body pinned.
-  /** The thread's turn count at the last look; -1 before the first. */
-  let preTurns = -1;
-  let preDistance = 0;
-  let preHeight = 0;
-  $effect.pre(() => {
-    void aside.turns.length;
-    untrack(() => {
-      if (!body) return;
-      preDistance = body.scrollHeight - body.scrollTop - body.clientHeight;
-      preHeight = body.clientHeight;
-    });
-  });
-  $effect(() => {
-    const n = aside.turns.length;
-    untrack(() => {
-      const t = aside.turns[n - 1];
-      const asking = !!t && t.answer === null && !t.error && !t.cancelled;
-      if (preTurns >= 0 && asideSendJumps(bodyPinned, preTurns, n, asking, preDistance, preHeight)) bodyPinned = true;
-      preTurns = n;
-    });
-  });
-  $effect(() => {
-    void last?.partial;
-    void last?.answer;
-    void aside.turns.length;
-    void asking;
-    const el = body;
-    if (!el || !bodyPinned) return;
-    tick().then(() => {
-      if (bodyPinned) el.scrollTop = el.scrollHeight;
-    });
-  });
-
+  // ~~The body's own follow, kept place, foot-hold and send jump (468, 502,
+  // 233)~~ — Classic's `AsideThread` scroller's; since item 856 Classic draws
+  // the thread through its transcript too, which does all four.
   /** The transcript puts the caret here once the card is placed. */
   export function focusBox(): void {
     const box = root?.querySelector<HTMLElement>(".composer textarea, .composer [contenteditable='true']");
@@ -639,10 +548,11 @@
     {/if}
   </div>
   {#if !folded}
-  {#if (!aside.draft || panel) && !classic()}
+  {#if !aside.draft || panel}
     <!-- Item 674 (blocker 1990): the chat's own transcript in the card's
          room — the same turns, tools, folds and reading place as the tab
-         and the chat; no ground and no rail in this frame. -->
+         and the chat; no ground and no rail in this frame. Classic too
+         since item 856 (TranscriptClassic shares the logic). -->
     {#snippet quoted()}
       {#if aside.quote && panel}
         <!-- The passage it hangs off (283): under its passage the card
@@ -661,20 +571,6 @@
           lead={quoted}
         />
       {/key}
-    </div>
-  {:else if !aside.draft || panel}
-    <!-- Classic keeps its own thread (blocker 1989). -->
-    <div class="aside-card-body" bind:this={body} onscroll={bodyScrolled}>
-      {#if aside.quote && panel}
-        <!-- The passage it hangs off (283): under its passage the card
-             needs none — the passage is marked right above — but in the
-             side panel it is far from it. -->
-        <blockquote class="aside-card-quote">{@html renderReply(aside.quote.text)}</blockquote>
-      {/if}
-      {#if !aside.draft}
-        <AsideThread {aside} open={!readOnly} {owner} />
-        <AsideFoldPanel {aside} part="panel" open={!readOnly} />
-      {/if}
     </div>
   {/if}
   <!-- The chat's composer (backlog 283), at the card's foot: the first

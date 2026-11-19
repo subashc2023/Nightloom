@@ -3,9 +3,12 @@ import * as api from "./api";
 import { drafts, enqueueMessage, historyFor, markInjected, readDraft } from "./drafts.svelte";
 import { cancelPending, editPending, offersChoice, pendingLabel, pendingRows, pendingState } from "./pendingBubble.svelte";
 import assistantSource from "./AssistantMessage.svelte?raw";
-import transcriptSource from "./Transcript.svelte?raw";
+import transcriptSourceRaw from "./Transcript.svelte?raw";
 import bubbleSource from "./MidTurnBubble.svelte?raw";
 import stateSource from "./state.svelte.ts?raw";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSource = asOneFile(transcriptSourceRaw, transcriptLogicRaw);
 
 // Item 465 (2026-10-28): a message sent while a turn runs is his bubble —
 // greyed with a pending mark and its choices until the turn takes it, an

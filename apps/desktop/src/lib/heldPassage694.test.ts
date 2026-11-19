@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import composerSrc from "./Composer.svelte?raw";
-import transcriptSrc from "./Transcript.svelte?raw";
-import classicSrc from "./TranscriptClassic.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
+import classicSrcRaw from "./TranscriptClassic.svelte?raw";
 import { app, askAside } from "./state.svelte";
 import { boxAsideArgs, dropHeld, focusIsMainBox, heldFor, heldLabel, heldPassage, holdPassage, takeHeld } from "./heldPassage.svelte";
 import * as api from "./api";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
+const classicSrc = asOneFile(classicSrcRaw, transcriptLogicRaw);
 
 /**
  * Item 694: highlight a passage, click into the message box, type, click

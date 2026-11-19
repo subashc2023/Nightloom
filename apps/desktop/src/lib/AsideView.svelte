@@ -10,8 +10,7 @@
   import Composer from "./Composer.svelte";
   import StartCards from "./StartCards.svelte";
   import { isHome } from "./home";
-  import AsideThread from "./AsideThread.svelte";
-  import { asideScrollKey, putBack, recallScroll, rememberScroll, returnEntry } from "./scroll.svelte";
+  import { asideScrollKey } from "./scroll.svelte";
   import { asideLabel } from "./asides";
   import { renameAside } from "./asides.svelte";
   import { closeAsideToChat, refillAsideTab, reopenIntoTab } from "./asideSidebar.svelte";
@@ -21,9 +20,8 @@
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
   import * as tabs from "./tabs";
   import { fmtTokens } from "./tokens";
-  import { followThread } from "./asideFollow.svelte";
-  // Item 674: the thread is drawn by the chat's transcript; Classic keeps
-  // `AsideThread` and this view's own scroller (blocker 1989).
+  // Item 674: the thread is drawn by the chat's transcript; Classic's too
+  // since item 856 (it kept `AsideThread` and its own scroller until then).
   import AsideTranscript from "./AsideTranscript.svelte";
   import { classic } from "./layout.svelte";
   // Item 685: the header card folds to one line down the thread.
@@ -101,40 +99,9 @@
     return chatLabel(s, session.slice(0, 8));
   });
 
-  // Where he was in the thread (nightshift backlog 237, 2026-09-26): the
-  // tab unmounts when another tab takes its pane, and came back at the
-  // top. The place is kept per thread in 065's scroll map, written as he
-  // scrolls and put back when the view mounts or shows another thread.
-  let view = $state<HTMLDivElement | null>(null);
-  const viewKey = $derived(aside ? asideScrollKey(session, aside.id) : null);
-  // Item 485: a follow-up sent near the foot lands at the bottom and
-  // follows the answer (468's rule, the card's; the tab had none).
-  const follow = followThread(
-    () => view,
-    () => aside ?? null,
-  );
-  // Item 502: put back while the thread draws (`putBack`), not once a
-  // tick after mount — the thread was still short then, the place was cut
-  // to near the top, and that cut's own scroll event wrote it over his.
-  let putting: ReturnType<typeof putBack> | null = null;
-  function scrolled() {
-    follow.scrolled();
-    if (!view || !viewKey || putting?.busy()) return;
-    rememberScroll(viewKey, view.scrollTop, view.scrollHeight - view.scrollTop - view.clientHeight < 4);
-  }
-  $effect(() => {
-    const key = viewKey;
-    const el = view;
-    if (!key || !el) return;
-    return untrack(() => {
-      const p = putBack(el, returnEntry(recallScroll(key), el.scrollHeight, el.clientHeight));
-      putting = p;
-      return () => {
-        p.cancel();
-        if (putting === p) putting = null;
-      };
-    });
-  });
+  // ~~The tab's own scroller: kept place (065, 502) and follow (485)~~ —
+  // Classic's `AsideThread` view's; since item 856 Classic draws the thread
+  // through its transcript too, which keeps both.
 
   // Item 685 (his "when I scroll down, it automatically has an animation
   // to become like a one-line thing … once I scroll up to the top … re-get
@@ -398,19 +365,6 @@
         </p>
       </div>
     </div>
-  {:else if classic()}
-    <!-- Classic keeps its own thread (blocker 1989): 1d4ca17's look. -->
-    <div class="aside-view-scroll" bind:this={view} onscroll={scrolled}>
-      <div class="aside-view-col">
-        {@render quoted()}
-        {#if !aside.draft}
-          <div class="aside-view-turns">
-            <AsideThread {aside} {open} owner={session} />
-            <AsideFoldPanel {aside} part="panel" {open} />
-          </div>
-        {/if}
-      </div>
-    </div>
   {:else}
     <!-- Item 674: the chat's own transcript — its dot ground, rail, ⌄,
          reading place, tools — given this thread; the frame is positioned
@@ -434,7 +388,7 @@
            transcript gets no quote as its `lead` (Classic still leads with
            it); since item 685 its lead is the card's room. -->
       {#key aside.uid ?? aside.id}
-        <AsideTranscript {aside} {open} owner={session} frame="full" scrollKey={asideScrollKey(session, aside.id)} lead={room} />
+        <AsideTranscript {aside} {open} owner={session} frame="full" scrollKey={asideScrollKey(session, aside.id)} lead={classic() ? quoted : room} />
       {/key}
     </div>
   {/if}
@@ -986,12 +940,6 @@
      and formatting, not its raw source. */
   .aside-view-quote :global(p) {
     margin: 0;
-  }
-  .aside-view-turns {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    max-width: 760px;
   }
   /* ~~`.aside-view-q` / `-a` / `-wait`~~ — `AsideThread.svelte` since
      backlog 283 (Classic only since item 674); the box is the chat's composer. */

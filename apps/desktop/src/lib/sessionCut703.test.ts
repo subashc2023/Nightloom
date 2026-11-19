@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { asOneFile } from "../test/oneFile";
 
 /*
  * Item 703 (2026-11-15, chat e1f2156b): Send now on a queued row took item 536's Stop + send while the
@@ -82,8 +83,8 @@ beforeEach(async () => {
 
 
 const { cutsOf, cutText, placeCuts, noteCut, besideAgentsToast, shortName, CUTS_KEY } = await import("./sessionCut");
-const transcriptSrc = (await import("./Transcript.svelte?raw")).default as string;
-const classicSrc = (await import("./TranscriptClassic.svelte?raw")).default as string;
+const transcriptSrc = asOneFile((await import("./Transcript.svelte?raw")).default as string, (await import("./transcript/logic.svelte.ts?raw")).default as string);
+const classicSrc = asOneFile((await import("./TranscriptClassic.svelte?raw")).default as string, (await import("./transcript/logic.svelte.ts?raw")).default as string);
 
 function agentRow(description: string, status = "running") {
   return { session: CHAT, status, description, tool_use_id: description, task_id: description, turn: 0, startedAt: 0, updatedAt: 0, segments: [] } as never;

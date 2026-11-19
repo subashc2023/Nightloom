@@ -5,11 +5,14 @@ import { openTasksOn, tasksFocus } from "./tasksFocus.svelte";
 import lineSrc from "./StillRunningLine.svelte?raw";
 import messageSrc from "./AssistantMessage.svelte?raw";
 import tasksSrc from "./RunningTasks.svelte?raw";
-import transcriptSrc from "./Transcript.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
 import composerSrc from "./Composer.svelte?raw";
 import editAttachSrc from "./EditAttachments.svelte?raw";
 import apiSrc from "./api.ts?raw";
 import type { SubagentStatus, TurnEvent } from "./types";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
 
 /**
  * Nightshift backlog 357 (2026-10-13, his screenshot): the line a reply

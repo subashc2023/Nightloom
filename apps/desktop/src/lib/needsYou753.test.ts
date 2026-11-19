@@ -3,8 +3,12 @@ import { badgeWords, followUpTitle, groupNeeds, needRows, parseEnded, trimEnded,
 import type { RunEntry } from "./running";
 import view from "./NeedsYou.svelte?raw";
 import app from "../App.svelte?raw";
-import jarvis from "./Transcript.svelte?raw";
-import classic from "./TranscriptClassic.svelte?raw";
+import jarvisRaw from "./Transcript.svelte?raw";
+import classicRaw from "./TranscriptClassic.svelte?raw";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const jarvis = asOneFile(jarvisRaw, transcriptLogicRaw);
+const classic = asOneFile(classicRaw, transcriptLogicRaw);
 
 const run = (over: Partial<RunEntry>): RunEntry => ({
   id: "turn:c1",

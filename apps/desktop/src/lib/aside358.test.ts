@@ -65,9 +65,9 @@ describe("358: the aside after its answer completes", () => {
     expect(viewSrc).toMatch(/\.aside-view-scroll \{[^}]*padding: 18px 20px 20px;/);
     expect(viewSrc).toMatch(/\.aside-head-in \{\s*max-width: 760px;\s*margin: 0 auto;/);
     expect(viewSrc).toMatch(/<AsideTranscript \{aside\} \{open\} owner=\{session\} frame="full"/);
-    const open = viewSrc.indexOf('<div class="aside-view-col">');
-    expect(open).toBeGreaterThan(-1);
-    expect(viewSrc.indexOf('class="aside-view-turns"')).toBeGreaterThan(open);
+    // ~~Classic's own column (`.aside-view-turns` in `.aside-view-col`)~~ —
+    // test-change: item 856: Classic's thread is the shared transcript's column too.
+    expect(viewSrc).not.toMatch(/class="aside-view-turns"/);
   });
 
   it("tab: the head is one row and the chat's name gives way, so the prompt is not printed in full", () => {

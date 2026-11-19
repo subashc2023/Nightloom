@@ -3,8 +3,12 @@ import { describe, expect, it } from "vitest";
 import { cardMinimized, carryGoal, miniText, setCardMinimized, setCarryGoal } from "./handoffButton";
 import buttonSrc from "./handoffButton.ts?raw";
 import liveSrc from "./liveHtml.ts?raw";
-import transcriptSrc from "./Transcript.svelte?raw";
-import classicSrc from "./TranscriptClassic.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
+import classicSrcRaw from "./TranscriptClassic.svelte?raw";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
+const classicSrc = asOneFile(classicSrcRaw, transcriptLogicRaw);
 
 const files: Record<string, string> = {
   "./handoffButton.ts": buttonSrc,

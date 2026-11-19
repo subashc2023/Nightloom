@@ -307,8 +307,9 @@ describe("503 review 3: an aside of a chat that is not open", () => {
   it("the owning chat comes from the caller, not the open chat", async () => {
     const src = (await import("./AsideThread.svelte?raw")).default;
     expect(src).not.toContain("chat: app.activeSessionId");
-    expect((await import("./AsideView.svelte?raw")).default).toContain("<AsideThread {aside} {open} owner={session} />");
-    expect((await import("./AsideCard.svelte?raw")).default).toContain("<AsideThread {aside} open={!readOnly} {owner} />");
+    // test-change: item 856 — both looks draw the thread through AsideTranscript.
+    expect((await import("./AsideView.svelte?raw")).default).toContain("<AsideTranscript {aside} {open} owner={session}");
+    expect((await import("./AsideCard.svelte?raw")).default).toMatch(/<AsideTranscript\s+\{aside\}\s+open=\{!readOnly\}\s+\{owner\}/);
   });
   it("an aside no longer found keeps the output in the tab, and the chat's line gets nothing", async () => {
     const row = await runBlock("ls", { chat: "b", aside: 999 });

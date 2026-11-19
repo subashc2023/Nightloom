@@ -3,9 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetReviews, reviewLabel, reviewLine, reviewOf, runReview, type ReviewDeps, type ReviewTarget } from "./chatReview.svelte";
 import type { AsideResult } from "./types";
 import buttonSrc from "./handoffButton.ts?raw";
-import transcriptSrc from "./Transcript.svelte?raw";
-import classicSrc from "./TranscriptClassic.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
+import classicSrcRaw from "./TranscriptClassic.svelte?raw";
 import mainSrc from "../../src-tauri/src/main.rs?raw";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
+const classicSrc = asOneFile(classicSrcRaw, transcriptLogicRaw);
 
 const target = (over: Partial<ReviewTarget> = {}): ReviewTarget => ({
   chat: "c796",

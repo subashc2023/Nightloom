@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import cardSrc from "./AsideCard.svelte?raw";
 import viewSrc from "./AsideView.svelte?raw";
 import threadSrc from "./AsideThread.svelte?raw";
-import transcriptSrc from "./Transcript.svelte?raw";
+import asideTranscriptSrc from "./AsideTranscript.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
 import composerSrc from "./Composer.svelte?raw";
 import {
   ATTACHMENTS_ONLY,
@@ -29,6 +30,9 @@ import { foldBlocked } from "./asideFold";
 import "./asides.svelte";
 import * as api from "./api";
 import type { Attachment } from "./types";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
 
 /**
  * Nightshift backlog 283 (2026-10-02): an aside's box is the chat's
@@ -285,6 +289,7 @@ describe("what an aside draws and hides (283)", () => {
     "./AsideCard.svelte": cardSrc,
     "./AsideView.svelte": viewSrc,
     "./AsideThread.svelte": threadSrc,
+    "./AsideTranscript.svelte": asideTranscriptSrc,
     "./Transcript.svelte": transcriptSrc,
     "./Composer.svelte": composerSrc,
   };
@@ -303,7 +308,9 @@ describe("what an aside draws and hides (283)", () => {
     for (const f of ["./AsideCard.svelte", "./AsideView.svelte"]) {
       const s = src(f);
       expect(s).toMatch(/<Composer \{aside\}/);
-      expect(s).toMatch(/<AsideThread \{aside\}/);
+      // test-change: item 856 — Classic draws the shared thread too (AsideThread mounts nowhere).
+      expect(s).toMatch(/<AsideTranscript\b/);
+      expect(s).not.toMatch(/<AsideThread\b/);
       expect(s).not.toMatch(/<AsideBox/);
       // Item 673: the tab's head reads "ASIDE · of ‹chat›" (the kicker).
       expect(s).toMatch(f.includes("View") ? /class="aside-kick">Aside<\/span>[\s\S]{0,400}>of <em>/ : /Aside of <em>/);
@@ -335,8 +342,9 @@ describe("what an aside draws and hides (283)", () => {
     for (const f of ["./AsideCard.svelte", "./AsideView.svelte"]) {
       const s = src(f);
       expect(s).toMatch(/<AsideFoldPanel \{aside\} part="button"/);
-      expect(s).toMatch(/<AsideFoldPanel \{aside\} part="panel"/);
     }
+    // test-change: item 856 — the panel is the shared thread's, at its column's end, in both looks.
+    expect(src("./AsideTranscript.svelte")).toMatch(/<AsideFoldPanel \{aside\} part="panel"/);
   });
 });
 

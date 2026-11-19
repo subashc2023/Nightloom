@@ -1,5 +1,5 @@
 import composerSrc from "./Composer.svelte?raw";
-import transcriptSrc from "./Transcript.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ScrollHold, placeOf, putPlace, trackPlace, type BoxPlace, type PlaceBox } from "./boxPlace";
 import {
@@ -15,6 +15,9 @@ import {
   takeEdit,
 } from "./drafts.svelte";
 import { editReduce } from "./edit";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
 
 // Backlog 355: a draft taller than its box comes back at its scroll place
 // after a switch — the chat's box and an aside's (the composer: the drafts

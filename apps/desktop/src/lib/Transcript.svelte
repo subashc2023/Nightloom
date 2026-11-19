@@ -1,2696 +1,108 @@
 <script lang="ts">
-  import { HOW_RESTORE, tickedAtFirst, type RestoreFile } from "./rewindRestore";
-  import { fitToText } from "./boxGrow";
+  import { HOW_RESTORE } from "./rewindRestore";
   // Item 703: where a turn's end cut running agents.
   import SessionCutNotice from "./SessionCutNotice.svelte";
   import ChatDividers from "./ChatDividers.svelte";
   import ChapterRule from "./ChapterRule.svelte";
   import ChapterContents from "./ChapterContents.svelte";
-  import { CONTENTS_CLEAR, chaptersOf, placeChapters } from "./chapters";
-  import { editsFor, syncChapterEdits, withEdits, type ShownChapter } from "./chapterEdits.svelte";
-  import { peekChapterJump, takeChapterJump } from "./chapterJump.svelte";
   import ScanCard from "./ScanCard.svelte";
-  import { handOffsOf, isScanMessage, placeDividers } from "./home";
-  import { placeCuts } from "./sessionCut";
-  import { cutsFor } from "./sessionCut.svelte";
+  import { isScanMessage } from "./home";
   import { tip } from "./tip";
-  import { rewoundRuns } from "./rewindDraft.svelte";
-  // Every Copy button goes through the in-app clipboard ring (backlog 173).
-  import { copyText } from "./clipRing.svelte";
   import { exactTime, relativeTimeLong } from "./time";
-  import { onDestroy, tick, untrack } from "svelte";
-  import {
-    app,
-    addToast,
-    menuInterceptors,
-    denialReason,
-    draftAside,
-    liveFlags,
-    removeBlock,
-    removeTurn,
-    restoreBlock,
-    restoreTurn,
-    rewindTo,
-    saveEdit,
-    saveReplyEdit,
-    sendEdit,
-    setCheckpoint,
-    openSession,
-    retryConnect,
-    runningChatName,
-    setAsideRewound,
-    keepRewound,
-    restoreRewound,
-    keepRewindFiles,
-    undoRestore,
-    loadPaneLog,
-    tabOpening,
-    continuedThisRun,
-    continueWithPrompt,
-  } from "./state.svelte";
-  import { scheduledFor } from "./scheduled.svelte";
-  import type { Segment } from "./state.svelte";
-  import { asideReads } from "./state.svelte";
-  import { coldUsdFor } from "./cacheRates.svelte";
-  import { cardLog, continuableReply, continuedFromReply, nextChatMessage, type NextChat } from "./handoffButton";
-  import { nextModelLabel, nextModelRows, setNextModel } from "./nextChatModel.svelte";
-  import { cancelReview, reviewOf, runReview } from "./chatReview.svelte";
-  import { openPathAsTab } from "./forYou.svelte";
-  import { carryFor } from "./handoffCarryFor";
-  import { pushUndo } from "./state/edits.svelte";
+  import { tick } from "svelte";
+  import { app, removeBlock, restoreBlock, restoreTurn, setCheckpoint, openSession, retryConnect, runningChatName, setAsideRewound, keepRewound, restoreRewound, keepRewindFiles, undoRestore } from "./state.svelte";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
-  import {
-    REMOVED_PLACEHOLDER,
-    blockEdits,
-    blockElisions,
-    displayTexts,
-    editButtons,
-    editChanges,
-    editLine,
-    editorKey,
-    chipPrint,
-    chipsOf,
-    editDirty,
-    editParts,
-    editReduce,
-    editTexts,
-    editAttachments,
-    chipsChanged,
-    elideFlags,
-    isEditable,
-    type EditState,
-  } from "./edit";
-  import { toolInputSummary } from "./transcriptPrefs.svelte";
-  import { forkLine } from "./edit";
-  import { parseSubagentBlock, placeSubagentBlock } from "./subagent";
+  import { editButtons, editReduce } from "./edit";
   import { splitAdopted } from "./subagentAsk";
   import { councilOfTurn, rosterLabel } from "./council";
   import { wordDiff } from "./textdiff";
-  import { continuedFlags } from "./runs";
-  import { samePassage, selectionText, type AsideQuote } from "./asideQuote";
-  import { pillParts, requestReply } from "./replyQuote.svelte";
-  import { addComment } from "./drafts.svelte";
-  import { requestCommentFocus } from "./commentRequest.svelte";
-  import type { CommentSource } from "./passageComments";
-  import { diffPassage } from "./diffPassage";
-  // Item 694: a passage that gives way to the message box is held there.
-  import { dropHeld, focusIsMainBox, holdPassage } from "./heldPassage.svelte";
-  import { PREFERRED_CARD_HEIGHT, chooseSide, offsetsOf, type AsideAnchor } from "./asideCard";
+  import { pillParts } from "./replyQuote.svelte";
   import { isMac } from "./platform";
-  import { fmtShare, shareOf, turnSizes, userFigure } from "./tokens";
+  import { fmtShare, shareOf, userFigure } from "./tokens";
   import { replyUsageView } from "./replyUsage";
-  import { loadReplyUsage, replyUsageOf } from "./replyUsage.svelte";
-  import { cacheState } from "./cache";
-  import { leaveScroll, moveScroll, recallScroll, rememberScroll, NEW_SCROLL_KEY } from "./scroll.svelte";
-  import {
-    BUFFER_SCREENS,
-    FILL_SCREENS,
-    FIRST_ITEMS,
-    firstWindow,
-    grown,
-    wantsMore,
-    windowFor,
-    windowWants,
-  } from "./transcriptWindow.svelte";
-  import { presence, watchPresence } from "./away.svelte";
-  import {
-    addAttachment,
-    editDraftKey,
-    nextAttachmentId,
-    readDraft,
-    removeAttachment,
-    setDraftAttachments,
-    stashEdit,
-    takeEdit,
-    updateAttachment,
-    draftKey,
-  } from "./drafts.svelte";
-  import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "./attachFiles.svelte";
-  import { placeOf, putPlace, trackPlace, type BoxPlace } from "./boxPlace";
+  import { placeOf, trackPlace } from "./boxPlace";
   // Item 399: the edit box draws and pastes as the composer does.
   import BoxLayer, { layerShown } from "./BoxLayer.svelte";
   import LiveBox from "./LiveBox.svelte";
-  import { LiveBoxHandle, type ComposerBox } from "./composerEditor";
-  import { takeBlockKey } from "./codeBlockKeys";
   import { composerFormat } from "./composerFormat.svelte";
-  import { hasTable } from "./mdTable";
-  import { fenced, findFences, withFenceLanguage } from "./codeDetect";
-  import { pasteSteps, textPastePlan } from "./textPaste";
-  import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
-  import { attachPastedImages, fetchPasteImage, htmlImagePaste, preparePaste, rasterize } from "./pasteImages";
-  import {
-    canUndo,
-    followOffer,
-    isPasteAsAttachmentKey,
-    longPasteOffer,
-    normalizeNewlines,
-    pasteAction,
-    undoConverted,
-    type Converted,
-    type LongPaste,
-  } from "./pasteAttach";
+  import { editKind } from "./boxHistory";
   import PasteOfferRow from "./PasteOfferRow.svelte";
-  import { AttachMark, attachPastedText, convertOffer, isConvertTag, pasteAsAttachment, type ConvertTag } from "./pastedText.svelte";
-  import { recordImage, recordText } from "./clipRing.svelte";
-  import { markPasted } from "./dropLook.svelte";
   import EditAttachments from "./EditAttachments.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
-  import { removeAsk, removeTip, type RemoveKind } from "./removeAsk";
-  import { joinAttachNote, shownText, splitAttachNote } from "./keep";
-  // For its effect: the aside threads' keeper (backlog 137).
-  import "./asides.svelte";
-  import {
-    JUMP_OFFSET,
-    MIN_TICKS,
-    activeTick,
-    anchorSelector,
-    animateScroll,
-    cancelScroll,
-    liveTick,
-    replyGoing,
-    scrollToLatest,
-    showJumpDown,
-    stepTick,
-    ticks as tickModel,
-  } from "./navigator";
-  import type {
-    ApprovalRequest,
-    Attachment,
-    DocumentInput,
-    ImageInput,
-    Usage,
-  } from "./types";
+  import { removeAsk, removeTip } from "./removeAsk";
+  import { shownText, splitAttachNote } from "./keep";
+  import { cancelScroll } from "./navigator";
   import AssistantMessage from "./AssistantMessage.svelte";
   // Item 495 part 2: the chat view's folds kept past a chat switch.
-  import { keptGet, keptOpen, keptSet, type FoldScope } from "./keptFolds.svelte";
+  import { keptOpen } from "./keptFolds.svelte";
   import WaitingMoon from "./WaitingMoon.svelte";
   import UserBubble from "./UserBubble.svelte";
   import MathText from "./MathText.svelte";
   import PendingBubbles from "./PendingBubbles.svelte";
   import KeepWarmNotice from "./KeepWarmNotice.svelte";
-  import { touchedUntil } from "./keepWarm";
-  import { keepWarm } from "./keepWarm.svelte";
   import AsideLayer from "./AsideLayer.svelte";
   import { openAttachment } from "./attachments.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import TurnAskHost from "./TurnAskHost.svelte";
-  import { ASK_ANSWER_EVENT, type AskAnswerDetail } from "./askSettled";
-  import { answerAsk as answerTurnAsk, hereTarget as askTarget } from "./needsBoard.svelte";
   import AskHandBack from "./AskHandBack.svelte";
   import BudgetStopCard from "./BudgetStopCard.svelte";
-  import { afterWrapTurn, wrapAsk } from "./budgetWrap.svelte";
-  import { PROSE_BLOCKS, nearestDelta, proseHolds, settledTop, type BlockEl, type Hold } from "./readingPlace";
-  import { nudgeDone } from "./doneNudge";
   import Icon from "./Icon.svelte";
   import Navigator from "./Navigator.svelte";
   // Edits as versions (item 299): ‹ n/N › under an edited message.
-  import { ensureForkInfo, openVersion, versionsOf } from "./versions.svelte";
-  import { endsTurn, redoOf } from "./retry";
+  import { openVersion, versionsOf } from "./versions.svelte";
   import { retryReply } from "./retry.svelte";
   import { versionPlace } from "./versions";
   import { handoffIsPlain } from "./handoffBubble";
-  import { arrive, hasLaunch } from "./sendMotion";
-  // Items 396 and 397: a rewind and a removal of his message play out
-  // over a copy of the thread laid down just before the call.
-  import { prepareDelete, prepareRewind } from "./messageMotion";
-  // A Send near the foot lands at the bottom (item 313).
-  import { followStep, restDistance, sendJumps } from "./sendScroll";
-  // The first-paint mark of the message's timing line (item 256).
-  import { hasText, turnClock } from "./turnTiming";
-  // The dot ground the pointer pushes (item 621).
-  import { dotField } from "./dotField";
-  // Item 674: what is drawn — the open chat, a pane's chat, or an aside.
-  import { chatSource, paneSource, type TranscriptSource } from "./transcriptSource.svelte";
-  import type { Snippet } from "svelte";
-
-  interface AssistantFooter {
-    model: string;
-    usage: Usage;
-    stop_reason: string | null;
-    /** Recorded when the exchange ran; absent means unpriced, not free. */
-    cost?: number;
-    /** When the reply was recorded — its completion (backlog 123). */
-    at: string;
-  }
-
-  type Body =
-    | {
-        kind: "user";
-        text: string;
-        images: ImageInput[];
-        documents: DocumentInput[];
-        at: string;
-        /** Item 515: files for Claude Code still being saved (the
-         *  optimistic message's names; the log has the note instead). */
-        sending?: string[];
-      }
-    | { kind: "assistant"; segs: Segment[]; footer: AssistantFooter }
-    | { kind: "compaction"; summary: string };
-
-  /**
-   * A rendered turn, plus where it sits in the log.
-   *
-   * `index` is what `rewind` takes, and `superseded` marks a turn a rewind
-   * dropped. Since backlog 247 superseded turns are not drawn — a quiet
-   * "N messages rewound" line stands in for each run (blocker 582) — and
-   * the log still keeps them, so Undo brings them back.
-   *
-   * `original` is the text before an edit, when there was one, for the
-   * `edited` mark to unfold; `removed` marks a turn an `elide` hides, drawn
-   * as its placeholder, greyed, with the original a click away; `editable`
-   * is whether Edit is offered at all (a reply with a tool call is
-   * remove-only). All three come from `edit.ts`, which mirrors the core.
-   * `originals` (backlog 105), on a reply, is per segment the block's text
-   * before its edit — `null` for a block that was not edited, `""` for the
-   * appended one — so the `edited` mark can draw each block's edit as a
-   * diff over the current text.
-   */
-  type Item = Body & {
-    index: number;
-    superseded: boolean;
-    original: string | null;
-    removed: boolean;
-    editable: boolean;
-    originals?: (string | null)[];
-  };
-
-  /**
-   * Both panes live (nightshift backlog 159, piece 5, 2026-09-30): given
-   * `chat`, this transcript draws that chat in a pane that is not the open
-   * chat's — its log and its live stream from wherever they are kept
-   * (`paneChat`: off screen, parked, on screen, or its log read for the
-   * pane), read-only. No editor, no rewind, no prompts to answer, no
-   * asides, no window keys: a click in the pane opens the chat there
-   * (`focusPane`), and this gives way to the open chat's transcript.
-   * Without `chat` it is the open chat's, as it always was.
-   */
-  /*
-   * Item 674 (2026-11-12): one transcript for the chat, a pane and an
-   * aside. Everything that differs between them is read from `src`
-   * (`transcriptSource.svelte.ts`): `source` given (an aside's, built by
-   * `AsideTranscript.svelte`), else the pane's chat for `chat`, else the
-   * open chat. `lead` / `foot` are drawn at the column's head and end, and
-   * `afterLive` under the running reply — an aside's own parts (its quoted
-   * passage, Fold into thread, the stalled notice), added, never forked.
-   */
-  let {
-    chat,
-    source,
-    lead,
-    foot,
-    afterLive,
-  }: { chat?: string; source?: TranscriptSource; lead?: Snippet; foot?: Snippet; afterLive?: Snippet } = $props();
-  const src = $derived<TranscriptSource>(source ?? (chat !== undefined ? paneSource(chat) : chatSource()));
-  const inPane = $derived(src.kind === "pane");
-  /** The open chat's own transcript: the chat-level cards, prompts, keys. */
-  const isChat = $derived(src.kind === "chat");
-  const inAside = $derived(src.kind === "aside");
-  const compact = $derived(src.frame === "compact");
-  /** The events drawn: the open chat's, the pane's chat's, an aside's. */
-  const evs = $derived(src.events);
-  /** The live turn drawn. */
-  const liveNow = $derived(src.live);
-  /** The prompts answered here: none in a pane (the click opens the chat). */
-  const approvalsNow = $derived(src.approvals);
-  /** The per-message controls are off while a turn runs, and in a pane. */
-  const locked = $derived(src.locked);
-  /** The chat drawn; null for an aside, which has none of a chat's own
-   *  (versions, plan use, keep-warm). */
-  const chatId = $derived(src.chat);
-  /** Its Claude Code session, where a tool result's images are read from
-   *  (backlog 434): the log's, or for a first turn not yet re-synced the
-   *  open chat's init line. */
-  const cliSession = $derived(src.cliSession);
-  // The versions under an edited message (item 299): the forks in this
-  // chat's lineage are read once each, so the arrows know where each one's
-  // edited message is.
-  $effect(() => {
-    const id = chatId;
-    const events = evs;
-    void app.sessions;
-    if (id) untrack(() => ensureForkInfo(id, events));
-  });
-  // A pane's chat whose log has not been read yet: read it — unless a tab
-  // click is opening this very chat, whose log is on its way (item 454).
-  $effect(() => {
-    if (src.kind === "pane" && src.chat && src.pending && tabOpening.chat !== src.chat) void loadPaneLog(src.chat);
-  });
-
-  // His latest live message (backlog 582): the keep-warm notice sits under it.
-  const lastUserIndex = $derived.by(() => {
-    for (let i = items.length - 1; i >= 0; i--) {
-      const it = items[i];
-      if (it.kind === "user" && !it.superseded) return it.index;
-    }
-    return -1;
-  });
-  // Item 663: the keep-warm notice sits under the model's latest live
-  // reply to that message — under his message only until a reply arrives.
-  const warmNoticeIndex = $derived.by(() => {
-    for (let i = items.length - 1; i >= 0; i--) {
-      const it = items[i];
-      if (it.index <= lastUserIndex) break;
-      if (it.kind === "assistant" && !it.superseded && !it.removed) return it.index;
-    }
-    return lastUserIndex;
-  });
-  // Project SessionEvents into renderable items. tool_result events are
-  // consumed by lookup against tool_use blocks and never rendered standalone.
-  const items: Item[] = $derived.by(() => {
-    const results = new Map<
-      string,
-      { content: string; is_error: boolean; denied: boolean }
-    >();
-    for (const e of evs) {
-      if (e.event === "tool_result") {
-        const isError = e.is_error ?? false;
-        // A refused call is logged as an error result; read the refusal back
-        // out so it renders as a decision rather than as a tool failure.
-        const refusal = denialReason(e.content, isError);
-        results.set(e.tool_use_id, {
-          content: refusal ?? e.content,
-          is_error: isError,
-          denied: refusal !== null,
-        });
-      }
-    }
-    const out: Item[] = [];
-    const live = liveFlags(evs);
-    const edited = editTexts(evs);
-    // Item 336: an edit's attachments stand in for the turn's own.
-    const editedSets = editAttachments(evs);
-    const removed = elideFlags(evs);
-    const edits = blockEdits(evs);
-    const gone = blockElisions(evs);
-    let index = -1;
-    const push = (body: Body, original: string | null = null, originals?: (string | null)[]) =>
-      out.push({
-        ...body,
-        index,
-        superseded: !live[index],
-        original,
-        removed: removed[index],
-        editable: isEditable(evs, index),
-        ...(originals ? { originals } : {}),
-      });
-    for (const e of evs) {
-      index++;
-      if (e.event === "user_message") {
-        // Sessions logged before attachments existed carry neither key.
-        const text = edited[index];
-        push(
-          {
-            kind: "user",
-            text: removed[index] ? REMOVED_PLACEHOLDER : (text ?? e.text),
-            images: removed[index] ? [] : (editedSets[index]?.images ?? e.images ?? []),
-            documents: removed[index] ? [] : (editedSets[index]?.documents ?? e.documents ?? []),
-            at: e.at,
-            ...(e.sending_files && !removed[index] ? { sending: e.sending_files } : {}),
-          },
-          removed[index] ? (text ?? e.text) : text != null ? e.text : null,
-        );
-      } else if (e.event === "assistant_message") {
-        const segs: Segment[] = [];
-        // A whole removal stands in for the text and the thinking and
-        // keeps the calls, as the core's elision does. Otherwise each
-        // block says its latest edit, a block removed on its own draws
-        // its placeholder (backlog 066), and every block carries its
-        // index so the hover Remove and Restore can name it.
-        const whole = removed[index];
-        let placed = false;
-        const said: string[] = [];
-        const originals: (string | null)[] = [];
-        e.blocks.forEach((b, block) => {
-          switch (b.type) {
-            case "thinking":
-              if (whole) break;
-              segs.push({ kind: "thinking", text: b.text, done: true });
-              break;
-            case "redacted_thinking":
-              if (whole) break;
-              segs.push({ kind: "redacted" });
-              break;
-            case "text": {
-              // A subagent's recorded turn (backlog 075) nests under the
-              // call that spawned it — in this message for a foreground
-              // subagent, in an earlier one of the turn for a background
-              // one — as one text segment of the narrative; it is not the
-              // reply's own prose and never counts as `said`.
-              // Placed in an agent's box, always (backlog 330) — never
-              // the reply's prose, whose wall of `▸`/`↳` lines it was
-              // when its call sat past his next message or inside
-              // another subagent.
-              const sub = parseSubagentBlock(b.text);
-              if (sub && !whole) {
-                placeSubagentBlock(sub, segs, earlierSegs(out));
-                break;
-              }
-              said.push(b.text);
-              if (whole) {
-                if (!placed) segs.push({ kind: "text", text: REMOVED_PLACEHOLDER });
-                placed = true;
-              } else if (gone[index].has(block)) {
-                segs.push({ kind: "removed_text", block, text: b.text });
-              } else {
-                const now = edits[index].get(block);
-                segs.push({ kind: "text", text: now ?? b.text });
-                originals[segs.length - 1] = now != null ? b.text : null;
-              }
-              break;
-            }
-            case "tool_use": {
-              const result = results.get(b.id) ?? null;
-              const call = {
-                id: b.id,
-                name: b.name,
-                input: b.input,
-                result,
-                denied: result?.denied ?? false,
-              };
-              if (gone[index].has(block)) segs.push({ kind: "removed_tool", block, call });
-              else segs.push({ kind: "tool", call, block });
-              break;
-            }
-            default:
-              // Unknown content block types are ignored by contract.
-              break;
-          }
-        });
-        const appended = edits[index].get(e.blocks.length);
-        if (appended != null && !whole) {
-          segs.push({ kind: "text", text: appended });
-          originals[segs.length - 1] = "";
-        }
-        if (whole && !placed) segs.unshift({ kind: "text", text: REMOVED_PLACEHOLDER });
-        push(
-          {
-            kind: "assistant",
-            segs,
-            footer: {
-              model: e.model,
-              usage: e.usage,
-              stop_reason: e.stop_reason,
-              cost: e.cost,
-              at: e.at,
-            },
-          },
-          whole || edits[index].size > 0 ? said.join("") : null,
-          !whole && edits[index].size > 0 ? originals : undefined,
-        );
-      } else if (e.event === "compaction") {
-        push({ kind: "compaction", summary: e.summary });
-      }
-      // session_created / tool_result / unknown events: not rendered.
-    }
-    return out;
-  });
-  // Item 703: each cut before his first message after it (the next turn's
-  // start, so "resumed"), else at the end of the thread.
-  const cutPlaces = $derived(
-    placeCuts(
-      isChat ? cutsFor(chatId) : [],
-      items.flatMap((it, i) => (it.kind === "user" ? [{ index: i, at: it.at }] : [])),
-    ),
-  );
-  // Item 763 (H3): one continuous chat — a date line where two messages'
-  // local days differ, a hand-off line where the chat handed off in place.
-  const dividerPlaces = $derived(
-    placeDividers(
-      items.map((it) => ({
-        index: it.index,
-        at: it.superseded ? null : it.kind === "user" ? it.at : it.kind === "assistant" ? it.footer.at : null,
-      })),
-      handOffsOf(evs),
-    ),
-  );
-  // Item 799: chapters — dividers at the phase changes code can see (a
-  // plan approved, a helper wave, a turn's commits; hand-offs have their own
-  // line above) and the contents list at the top right that jumps to them.
-  // Kept per chat — a pane's chat too — and an aside by its own fold name.
-  const chapterScope = $derived(inAside ? (src.foldChat ?? null) : chatId);
-  const chapterList: ShownChapter[] = $derived(
-    chapterScope ? withEdits(chaptersOf(evs, liveFlags(evs)), editsFor(chapterScope, evs)) : [],
-  );
-  const chapterPlaces = $derived(placeChapters(items, chapterList.filter((c) => !c.removed)));
-  // Item 842: his edits live in the chat's log (the phone reads them there);
-  // an edit this window holds that the log does not say yet is sent to it.
-  $effect(() => syncChapterEdits(chapterScope, evs));
-
-  // ~~`findCallIn`~~ moved to `subagent.ts` with the placing (backlog 330).
-  /** The assistant messages already projected, newest first — a
-   *  background subagent's block lands after its parent's message
-   *  (backlog 075), past his next message too (backlog 330:
-   *  ~~stopped at the first user message~~). */
-  function earlierSegs(items: Item[]): Segment[][] {
-    const out: Segment[][] = [];
-    for (let i = items.length - 1; i >= 0; i--) {
-      const it = items[i];
-      if (it.kind === "assistant") out.push(it.segs);
-    }
-    return out;
-  }
-
-  /**
-   * Prompts with no tool call to attach to — the live buffer is gone (an
-   * error path) or the call streamed into a message that has already been
-   * re-synced. They render standalone rather than not at all: an
-   * unanswerable prompt parks the turn forever.
-   */
-  const stranded: ApprovalRequest[] = $derived.by(() => {
-    const shown = new Set<string>();
-    for (const seg of liveNow?.segments ?? []) {
-      if (seg.kind === "tool") shown.add(seg.call.id);
-    }
-    return approvalsNow.filter((r) => !shown.has(r.id));
-  });
-
-  // What each turn added to the context (nightshift backlog 090): a
-  // projection of the log's usage figures (`tokens.ts`), one entry per
-  // event, null where nothing can be said; the share is against the
-  // connected model's window, which the picker rows carry and the top-bar
-  // gauge already scales by. Null window: the figure, no bar. An aside's
-  // source brings its own (item 674, `exchangeSizes`): its usage sums
-  // rounds that each carry the chat's prefix, which `turnSizes` would
-  // read as growth.
-  const sizes = $derived(src.sizes ?? turnSizes(evs, liveFlags(evs)));
-
-  // Each reply's share of the plan (item 323): the chat's lines, re-read
-  // on a chat switch, when a turn ends (`busy` falls) and when the plan
-  // reading changes — a turn's line is written by the next reading after
-  // it, which is the next turn's first response or the chip's refresh.
-  const usageChat = $derived(src.chat);
-  const usageLines = $derived(replyUsageOf(usageChat));
-  $effect(() => {
-    const id = usageChat;
-    void app.busy;
-    void app.planUsage;
-    void loadReplyUsage(id);
-  });
-  const windowLimit = $derived(app.connection?.contextLimit ?? null);
-
-  // Runs of replies (nightshift backlog 121): a reply that follows a reply
-  // from the same model with nothing between them is drawn as a
-  // continuation — no header, the gap collapsed — so a turn the CLI
-  // recorded as several messages reads as one reply. Per item, in step
-  // with `items`; the log and every per-message control are untouched.
-  const continued = $derived(
-    continuedFlags(
-      items.map((it) => ({
-        kind: it.kind,
-        model: it.kind === "assistant" ? it.footer.model : undefined,
-        superseded: it.superseded,
-      })),
-    ),
-  );
-
-  // Item 506: the reply whose card carries *Continue with this prompt*. Only
-  // the chat open here: `continue_session` acts on the open chat, so a pane,
-  // which draws another, shows Copy alone.
-  const nextChat = $derived.by((): NextChat | null => {
-    const from = chatId;
-    if (!isChat || !from) return null;
-    const reply = continuableReply(items.map((it) => ({ ...it, segs: it.kind === "assistant" ? it.segs : undefined })));
-    if (!reply) return null;
-    // Item 747: what the card adds to the prompt, read from this chat's log.
-    const carry = carryFor(from, evs, reply.index, reply.prompt);
-    return {
-      chat: from,
-      index: reply.index,
-      prompt: reply.prompt,
-      carry,
-      // Item 520: nothing goes above the prompt, so the card shows no read order.
-      readOrder: "",
-      used: continuedThisRun(from, reply.index) || continuedFromReply(app.sessions, from, reply.index),
-      blocked: app.busy ? "A turn is running — continue when it ends" : null,
-      // ~~`reply.prompt`~~ — item 747: the goal as the card's field has it, the
-      // prompt, his ticked messages, the artifact list; read at the click.
-      // Item 757: and what it carried goes to the hand-off log (`cardLog`).
-      onContinue: () => {
-        const n = { chat: from, index: reply.index, prompt: reply.prompt, carry };
-        // Item 857: the click's work goes back to the card, which re-arms its button.
-        return continueWithPrompt(from, reply.index, nextChatMessage(n), cardLog(n));
-      },
-      // Item 756: a minimize (or restore) of the card is on the chat's undo stack, so ⌘Z opens it again.
-      onFold: (minimized, undo, redo) =>
-        void pushUndo(from, {
-          label: minimized ? "hand-off card minimize" : "hand-off card restore",
-          undo: async () => undo(),
-          redo: async () => redo(),
-        }),
-
-      // Item 796: "Review this chat" — the digest of the chat's Claude Code
-      // transcript, one aside on its warm cache, a page in its thread.
-      review: cliSession
-        ? {
-            state: reviewOf(from, reply.index),
-            start: () => {
-              const meta = app.sessions.find((s) => s.id === from);
-              void runReview(
-                { chat: from, index: reply.index, agentSession: cliSession, title: meta?.title ?? meta?.first_user ?? "", thread: meta?.thread ?? null },
-                // Item 857: a review that ends after he continued says where its page went.
-                { openChat: () => app.activeSessionId, notify: (m) => addToast(m) },
-              );
-            },
-            open: (path) => void openPathAsTab(path, from),
-            cancel: () => void cancelReview(from, reply.index),
-          }
-        : null,
-      // Item 705: the *Next chat* pick, the hand-off card's value; Claude Code only.
-      model:
-        app.connection?.engine === "claude-code"
-          ? { ...nextModelLabel(from), rows: nextModelRows(from), pick: (id: string) => setNextModel(from, id) }
-          : null,
-    };
-  });
-
-  // Retry (item 333) rides the last reply of each turn.
-  const turnEnds = $derived(endsTurn(items.map((it) => ({ kind: it.kind, superseded: it.superseded }))));
-  // Redo (item 439): the same Retry, in the icon row under his last
-  // message, beside Rewind — where he looked for it.
-  const redo = $derived(redoOf(items, turnEnds));
-
-  // Rewound turns are not drawn (backlog 247): one quiet line stands where
-  // each run of them was (blocker 582).
-  const rewound = $derived(rewoundRuns(items, continued));
-
-  // When the live turn was sent, for its `working · 41 s` row (backlog
-  // 096): both send paths push the optimistic `user_message` just before
-  // `app.live`, so the newest one's `at` is the turn's start. Null when
-  // nothing is live, or when the log has no such message (a turn started
-  // some other way); the message then counts from its own mount.
-  const liveSince: number | null = $derived.by(() => {
-    if (!liveNow) return null;
-    // An aside's exchange knows its own start (item 674).
-    if (liveNow.since !== undefined) return liveNow.since;
-    for (let i = evs.length - 1; i >= 0; i--) {
-      const e = evs[i];
-      if (e.event === "user_message") {
-        const t = new Date(e.at).getTime();
-        return Number.isNaN(t) ? null : t;
-      }
-    }
-    return null;
-  });
-
-  // The clock the message feet read from (nightshift backlog 123): every
-  // message ends in `37 minutes ago`, and a relative time that is computed
-  // once freezes — review finding F14 caught the plan chip's age doing
-  // exactly that. Half a minute is enough for a text whose finest unit is
-  // a minute; the interval lives as long as the transcript does.
-  let now = $state(Date.now());
-  // A Wrap up pressed during a turn that no tool call carried goes as the
-  // next message when the turn ends (nightshift backlog 192).
-  $effect(() => {
-    if (isChat && !app.busy && wrapAsk.session) void afterWrapTurn();
-  });
-  $effect(() => {
-    const t = setInterval(() => (now = Date.now()), 30_000);
-    return () => clearInterval(t);
-  });
-
-  // The in-place editor (nightshift backlog 062): one turn open at a time,
-  // its draft, and the cache line as it read when the editor opened — a
-  // fixed reading rather than a ticking one, since the sentence is advice
-  // about the edit being typed, not a clock.
-  let editing = $state<EditState>(null);
-  let editCacheLine = $state("");
-  // The edited mark's toggle (nightshift backlog 105): the turns whose edit
-  // is drawn as a diff over the current text — what the edit removed struck
-  // through, what it added marked — rather than as the plain text. Per
-  // turn index, ~~this screen only~~ kept per chat and turn since item 495
-  // part 2 (`keptFolds`, session only: a chat switch and back keeps it;
-  // a chat with no id yet keeps its own); a click on the mark flips it.
-  let diffLocal = $state<Record<number, boolean>>({});
-  /** A turn's name in the fold scope: its log index — or what the source
-   *  says (an aside's exchange number, item 674, so its kept folds are the
-   *  ones `AsideThread` wrote). */
-  const foldTurn = (turn: number | string): string | null =>
-    src.foldTurn && typeof turn === "number" ? src.foldTurn(turn) : String(turn);
-  const isDiffOpen = (index: number): boolean => {
-    const key = turnFold(index, "edited");
-    return key ? keptGet(key, false) : !!diffLocal[index];
-  };
-  /** Where turn `index`'s folds are kept: this chat's, by turn. */
-  const turnFolds = (turn: number | string): FoldScope | null => {
-    const t = foldTurn(turn);
-    return src.foldChat && t !== null ? { chat: src.foldChat, turn: t } : null;
-  };
-  /** The running reply's folds: its own scope in a chat; in an aside the
-   *  exchange's, the same once it settles (a click mid-stream holds). */
-  const liveFolds = (since: number | null): FoldScope | null => {
-    const t = src.foldTurn ? src.foldTurn("live") : `live:${since ?? ""}`;
-    return src.foldChat && t !== null ? { chat: src.foldChat, turn: t } : null;
-  };
-  /** A native fold of turn `index` (`<details use:keptOpen>`), or null. */
-  const turnFold = (index: number, name: string): string | null => {
-    const t = foldTurn(index);
-    return src.foldChat && t !== null ? `fold:${src.foldChat}|${t}|${name}` : null;
-  };
-  // ~~`textOpen`~~ — a text attachment's fold (item 284) is the bubble's
-  // own state since backlog 283 (`UserBubble.svelte`).
-  // The toggle keeps the reader's place (backlog 115): the diff view is a
-  // different height from the rendered text even for a one-word change —
-  // struck and added spans, and the source's lines against the markdown's
-  // headings and lists — so whatever is under the cursor is held there.
-  // That is the mark itself, except when the view is at the foot, where
-  // the message's bottom edge is held (his "the latest part of the
-  // message stays at the bottom"); on a reply the mark sits under the
-  // message, so the two agree there anyway.
-  function toggleDiff(index: number, mark: HTMLElement | null = null): void {
-    const anchor = pinned && atBottom() ? null : mark;
-    void keepPlace(
-      index,
-      () => {
-        const key = turnFold(index, "edited");
-        if (key) keptSet(key, !isDiffOpen(index), false);
-        else diffLocal[index] = !diffLocal[index];
-      },
-      anchor,
-    );
-  }
-  // The rewound turn's files (item 259): which he ticked to set aside.
-  // Created files start ticked; edited ones and shell guesses do not, since
-  // moving an edited file takes what was there before the turn with it.
-  let asideTicks = $state<Record<string, boolean>>({});
-  $effect(() => {
-    void app.rewoundWrites;
-    asideTicks = {};
-  });
-  const asideTicked = (path: string, how: string): boolean => asideTicks[path] ?? how === "created";
-  const asidePaths = $derived(
-    (app.rewoundWrites?.files ?? []).filter((f) => asideTicked(f.path, f.how)).map((f) => f.path),
-  );
-  const HOW_LABEL: Record<string, string> = { created: "created", edited: "edited", shell: "shell, a guess" };
-  // Item 765: the restore card's ticks — every file not changed since
-  // starts ticked; one changed since cannot be ticked.
-  let restoreTicks = $state<Record<string, boolean>>({});
-  $effect(() => {
-    void app.rewindRestore;
-    restoreTicks = {};
-  });
-  const restoreTicked = (f: RestoreFile): boolean => !f.since && (restoreTicks[f.path] ?? tickedAtFirst(f));
-  const restoreCount = $derived((app.rewindRestore?.files ?? []).filter(restoreTicked).length);
-  let editorEl = $state<HTMLTextAreaElement | null>(null);
-  // Item 399: with the composer's format toggle on (item 276), a user
-  // turn's editor is the composer's formatted box (`LiveBox`), as the
-  // composer is; this is its handle, null while the textarea stands.
-  let editorLive = $state<ComposerBox | null>(null);
-  /** Item 689: the edit box draws a table as a grid — the formatted box
-   *  drawing only the grid, quotes and code while the draft holds a table,
-   *  kept for this message once it came on (the composer's `gridKey`). */
-  let editGridAt = $state<number | null>(null);
-  const editGrid = $derived(!composerFormat.on && !!editing && (editGridAt === editing.index || hasTable(editing.draft)));
-  $effect(() => {
-    if (editGrid && editing && editGridAt !== editing.index) {
-      const i = editing.index;
-      untrack(() => (editGridAt = i));
-    }
-  });
-  // A reply's editor is one textarea per text block (backlog 066); the
-  // first takes the focus and each grows to its own text.
-  let editorEls = $state<(HTMLTextAreaElement | null)[]>([]);
-  // Backlog 355: each editor box's scroll and caret as he leaves it (the
-  // user turn's box at 0, a reply's block p at p + 1), stashed with the
-  // edit and put back once the editor is drawn again (`boxPlace.ts`).
-  let editPlaces: (BoxPlace | null)[] = [];
-  function placeBack(boxes: (BoxPlace | null)[] | undefined): void {
-    editPlaces = boxes?.slice() ?? [];
-    if (!boxes?.length) return;
-    void tick().then(() => [editorLive ?? editorEl, ...editorEls].forEach((el, i) => putPlace(el, boxes[i])));
-  }
-  /** The editor boxes' places for a stash: the formatted box's read now
-   *  (it has no `trackPlace`; its place is its handle's). */
-  function editBoxPlaces(): (BoxPlace | null)[] {
-    if (editorLive) editPlaces[0] = placeOf(editorLive);
-    return editPlaces.slice();
-  }
-  const onClaudeCode = $derived(app.connection?.engine === "claude-code");
-  const controlsTitle = $derived(
-    onClaudeCode
-      ? "The next turn resumes a rewritten copy of Claude Code's history; the original session file is kept."
-      : "",
-  );
-  // Rewind on this engine only edits the CLI's conversation history (backlog
-  // 087): it does not touch anything a tool wrote to disk. A "code restore"
-  // that would undo those file writes is wanted but not built — see 062 and
-  // docs/service-agent.md "Editing the CLI's history".
-  const rewindTitle = $derived(
-    onClaudeCode
-      ? "Rewind to here: this turn and everything after it stop counting. Conversation only — files stay as they are; git is the undo."
-      : "Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted.",
-  );
-  // The user messages' log indexes, ascending, for the checkpoint's owner
-  // (nightshift backlog 104): the exchange helpers fork from.
-  const userIndexes = $derived(items.filter((it) => it.kind === "user").map((it) => it.index));
-
-  /**
-   * Keep the reader's place across a change that resizes a message
-   * (nightshift backlog 122 and 115): the turn's bottom edge is measured,
-   * the change made, and after the DOM has settled the viewport is moved
-   * by however much that edge moved. The foot rather than the top, since
-   * the controls that start these changes — the pencil, Cancel, the
-   * `edited` mark — sit at the foot, and "the latest part of the message
-   * stays at the bottom" was his words. Under `scrollingSelf`, so the pin
-   * logic does not take the write for the user's own scroll. A turn no
-   * longer on screen after the change (a fork switched the chat) is left
-   * alone. The webview has no scroll anchoring of its own to do this.
-   * `anchor` names another element whose bottom edge to hold instead —
-   * the `edited` mark under the cursor (backlog 115).
-   */
-  async function keepPlace(
-    index: number,
-    change: () => void | Promise<void>,
-    anchor: HTMLElement | null = null,
-  ): Promise<void> {
-    const el = anchor ?? viewport?.querySelector<HTMLElement>(`[data-turn="${index}"]`) ?? null;
-    const before = el?.getBoundingClientRect().bottom ?? null;
-    await change();
-    await tick();
-    if (before === null || !el?.isConnected || !viewport) return;
-    const delta = el.getBoundingClientRect().bottom - before;
-    if (Math.abs(delta) < 1) return;
-    scrollingSelf = true;
-    viewport.scrollTop += delta;
-    requestAnimationFrame(() => (scrollingSelf = false));
-  }
-
-  // Copy on his own message (nightshift backlog 181): which turn just
-  // copied, for the check mark's second, and the copy itself.
-  let copiedTurn = $state<number | null>(null);
-  async function copyUserText(index: number, text: string): Promise<void> {
-    try {
-      await copyText(text);
-      copiedTurn = index;
-      setTimeout(() => {
-        if (copiedTurn === index) copiedTurn = null;
-      }, 1200);
-    } catch {
-      // The webview refused the clipboard; nothing to show but the button.
-    }
-  }
-  function beginEdit(item: Item) {
-    // Opening a second turn closes the first: ask before that drops a
-    // changed edit (practices §7, item 336).
-    if (editing && editing.index !== item.index && editDirty(editing, editChipsFor(editing))) {
-      dropAsk = { what: "open", run: () => openEditor(item) };
-      return;
-    }
-    openEditor(item);
-  }
-  function openEditor(item: Item) {
-    editPlaces = [];
-    // Item 515: his words only; the note for the CLI goes back on at Save.
-    const text = item.kind === "user" ? splitAttachNote(item.text).said : item.kind === "assistant" ? textOf(item.segs) : "";
-    const parts =
-      item.kind === "assistant"
-        ? editParts(evs, item.index, (b) => `${b.name} ${toolInputSummary(b.input)}`.trim())
-        : undefined;
-    // Item 336: a user turn's editor opens on its own attachments as chips
-    // (his report: the image vanished from the edit box). A reply's has none.
-    const chips = item.kind === "user" ? chipsOf(item.images, item.documents, nextAttachmentId) : [];
-    setDraftAttachments(editKey, chips);
-    const chipsAt = item.kind === "user" ? chips.map(chipPrint) : undefined;
-    void keepPlace(item.index, () => {
-      editing = editReduce(editing, { type: "begin", index: item.index, text, parts, chipsAt });
-      editCacheLine = src.words
-        ? src.words.editLine
-        : editLine(cacheState(evs, Date.now(), chatId ? touchedUntil(keepWarm.byChat[chatId]) : null, asideReads(chatId)), coldUsdFor(evs, app.connection));
-    }).then(() => {
-      if (editorLive) {
-        editorLive.focus();
-        return;
-      }
-      const first = editorEl ?? editorEls.find((el) => el);
-      // Not `focus()` bare: that scrolls the textarea's top edge into view,
-      // which on a long message is a jump to its top (backlog 122). The
-      // place was kept above; the caret needs no scroll.
-      first?.focus({ preventScroll: true });
-    });
-  }
-  function textOf(segs: Segment[]): string {
-    return segs
-      .filter((s) => s.kind === "text")
-      .map((s) => s.text)
-      .join("");
-  }
-  function autogrow(el: HTMLTextAreaElement | null = null) {
-    const els = el ? [el] : [editorEl, ...editorEls];
-    for (const e of els) {
-      if (!e) continue;
-      fitToText(e, 420);
-    }
-  }
-  /**
-   * The editor's textarea sized to its text the moment it mounts (backlog
-   * 122). `autogrow` used to run only from `beginEdit`, so a textarea that
-   * mounted any other way — an edit draft restored on switching back to
-   * its chat — sat at its minimum height until the first keystroke; his
-   * "the second I click back into the chat it majorly condenses the text
-   * box". An action rather than an effect, since it is about the one
-   * element and needs no dependency.
-   */
-  function grow(node: HTMLTextAreaElement) {
-    autogrow(node);
-  }
-  /** The chips that count for `state`: a user turn's; none for a reply. */
-  function editChipsFor(state: EditState) {
-    return state && !state.parts ? editChips : undefined;
-  }
-  /** A pending "drop this edit?" question (practices §7, item 336). */
-  let dropAsk = $state<{ what: "cancel" | "open"; run: () => void } | null>(null);
-  // Remove asks first (item 356): the turn the trash button names, until
-  // the dialog's Remove or Cancel. `key` is the chat it was asked in: the
-  // service removes by index in the open chat, so a switch while the
-  // dialog is open drops the question (wave 8 review) rather than
-  // removing the same index from the chat switched to.
-  let removing = $state<{ index: number; kind: RemoveKind; text: string; key: string } | null>(null);
-  // The motions (items 396, 397): the copy goes down before the call and
-  // plays once it lands; the state change itself is never held back, and a
-  // refused or failed call lets the copy go on the next frame.
-  async function rewindHere(index: number): Promise<void> {
-    const m = prepareRewind(viewport, index);
-    // An aside rewinds its own exchanges (item 674); false: nothing went.
-    if (src.actions.rewind) {
-      const went = await src.actions.rewind(index);
-      if (went === false) m?.cancel();
-      else m?.commit();
-      return;
-    }
-    try {
-      await rewindTo(index, true);
-    } finally {
-      m?.commit();
-    }
-  }
-  async function removeHere(index: number): Promise<void> {
-    const m = prepareDelete(viewport, index);
-    try {
-      await removeTurn(index);
-    } finally {
-      m?.commit();
-    }
-  }
-  $effect(() => {
-    const k = sessionKey;
-    untrack(() => {
-      if (removing && removing.key !== k) removing = null;
-    });
-  });
-  function cancelEdit(): void {
-    if (!editing) return;
-    // A changed edit is not dropped on one key: Cancel and Escape ask.
-    if (editDirty(editing, editChipsFor(editing))) {
-      dropAsk = { what: "cancel", run: closeEditor };
-      return;
-    }
-    closeEditor();
-  }
-  function closeEditor(): void {
-    if (!editing) return;
-    void keepPlace(editing.index, () => {
-      editing = editReduce(editing, { type: "cancel" });
-      stashEdit(sessionKey, null);
-      setDraftAttachments(editKey, []);
-    });
-  }
-  /**
-   * A paste into a user turn's editor, read as the composer reads one
-   * (item 399, his "if i copy in code it doesnt render it as code, neither
-   * in the edit screen or even when i click send"): files become chips
-   * (item 336) and pasted images land with the drop's shine (388); text
-   * copied with images keeps them in place as `[image N]` and chips (382);
-   * math from a web page goes in as its LaTeX (348); code goes in fenced
-   * with its language, ⌘Z giving back the paste as it came (315) — the
-   * plan is `textPastePlan`, the composer's own. Anything else is the
-   * box's own paste. The text goes into the clipboard ring as the
-   * composer's pastes do (173).
-   */
-  function editorPaste(e: ClipboardEvent): void {
-    if (!editing || editing.parts) return;
-    const box: ComposerBox | null = editorLive ?? editorEl;
-    const plain = e.clipboardData?.getData("text/plain") ?? "";
-    const files = Array.from(e.clipboardData?.files ?? []);
-    const html = files.length === 0 ? (e.clipboardData?.getData("text/html") ?? "") : "";
-    // Item 399b: ⌥⌘V's paste puts the text in as an attachment (284); a
-    // clipboard holding a file is pasted as ⌘V would.
-    const act = pasteAction(editAttachMark.take(), plain, files.length);
-    if (act !== "box") {
-      e.preventDefault();
-      if (act === "attach") void attachPastedText(editKey, plain);
-      else addToast("The clipboard holds no text to attach");
-      return;
-    }
-    const firstImage = editChips.filter((a) => a.kind === "image").length + 1;
-    const withImages = files.length === 0 ? htmlImagePaste(html, firstImage) : null;
-    const caret = box ? Math.min(box.selectionStart, box.selectionEnd) : editing.draft.length;
-    // Every text paste replaces the last one's offer (284), as in the composer.
-    editConverted = null;
-    if (withImages && box) {
-      e.preventDefault();
-      editPasteWithImages(box, withImages);
-      return;
-    }
-    const plan = textPastePlan({ plain, html, fileCount: files.length, text: editing.draft, caret });
-    if (plain) recordText("pasted", plan.kind === "math" ? plan.text : plain);
-    if (plan.kind === "math" && box && !(box instanceof LiveBoxHandle) && editing && hasTable(plan.text)) {
-      // Item 689: the grid box first, then the paste into it (⌘Z takes it back).
-      e.preventDefault();
-      const from = Math.min(box.selectionStart, box.selectionEnd);
-      const to = Math.max(box.selectionStart, box.selectionEnd);
-      const at = editing.index;
-      const text = plan.text;
-      editGridAt = at;
-      void tick().then(() => {
-        const live = editorLive;
-        if (!(live instanceof LiveBoxHandle) || editing?.index !== at) return;
-        live.focus();
-        live.selectionStart = from;
-        live.selectionEnd = to;
-        live.pasteText(text);
-        editOffer = longPasteOffer(text, from);
-      });
-      return;
-    }
-    if (plan.kind === "math" && box) {
-      e.preventDefault();
-      editInsert(box, plan.text);
-      editOffer = longPasteOffer(plan.text, caret);
-      return;
-    }
-    if (plan.kind === "code" && box) {
-      e.preventDefault();
-      editOffer = null;
-      if (box instanceof LiveBoxHandle) box.pasteAsCode(plan.raw, (before, after) => fenced(plan.raw, plan.lang, before, after));
-      else editPasteSteps(box as HTMLTextAreaElement, plan.raw, plan.lang);
-      return;
-    }
-    // A long ⌘V paste: the text goes in as always (the box's own paste),
-    // and the offer under the box can move it into an attachment (284).
-    if (plain && files.length === 0) editOffer = longPasteOffer(plain, caret);
-    if (files.length === 0) return;
-    if (!plain) e.preventDefault();
-    markPasted(files.filter((f) => f.type.startsWith("image/")).map((f) => f.name || "pasted image"));
-    void acceptFiles(editKey, files).then((chips) => {
-      for (const c of chips) if (c.kind === "image") recordImage("pasted", c);
-    });
-  }
-  /** Text in place of the edit box's selection, one undo step, as a paste. */
-  function editInsert(box: ComposerBox, text: string): void {
-    if (box instanceof LiveBoxHandle) box.pasteText(text);
-    else editPasteSteps(box as HTMLTextAreaElement, text, null);
-  }
-  /** A paste in the edit box's textarea as the composer's is: each step
-   *  (`pasteSteps`) one of the box's own undo history, the last shown. */
-  function editPasteSteps(box: HTMLTextAreaElement, raw: string, lang: string | null): void {
-    if (!editing || editing.parts) return;
-    const from = Math.min(box.selectionStart, box.selectionEnd);
-    const to = Math.max(box.selectionStart, box.selectionEnd);
-    const steps = pasteSteps(editing.draft, from, to, raw, lang);
-    const last = steps[steps.length - 1];
-    editHist.select(from, to);
-    for (const st of steps) editHist.external(st.text, st.caret);
-    editing = editReduce(editing, { type: "draft", text: last.text });
-    void tick().then(() => {
-      box.selectionStart = box.selectionEnd = last.caret;
-      autogrow(box);
-    });
-  }
-
-  /*
-   * Item 399b (his answer to blocker 1508): the long paste's offer and
-   * ⌥⌘V in the edit box, the composer's own (`pastedText.svelte.ts`,
-   * `PasteOfferRow`): "Make this an attachment" under the box while it is
-   * as the paste left it; one click moves the span into a chip of this
-   * edit; Undo (or ⌘Z) puts it back while nothing has changed since.
-   */
-  let editOffer = $state<LongPaste | null>(null);
-  let editConverted = $state<Converted | null>(null);
-  const editAttachMark = new AttachMark();
-  /** Whether the conversion's Undo still applies (a function: the edit's
-   *  chips are declared further down). */
-  function editUndoable(): boolean {
-    return !!editing && !editing.parts && canUndo(editConverted, editing.draft, editChips.map((a) => a.id));
-  }
-  $effect(() => {
-    const t = editing && !editing.parts ? editing.draft : null;
-    untrack(() => {
-      editOffer = t === null ? null : followOffer(editOffer, t);
-    });
-  });
-  // Another turn's editor, or none: the offer and its Undo were this one's.
-  // On the index alone (a derived), not on every keystroke's new state.
-  const editIndex = $derived(editing && !editing.parts ? editing.index : null);
-  $effect(() => {
-    void editIndex;
-    untrack(() => {
-      editOffer = null;
-      editConverted = null;
-    });
-  });
-  async function editConvert(): Promise<void> {
-    const o = editOffer;
-    if (!o || !editing || editing.parts) return;
-    editOffer = null;
-    const at = editing.index;
-    const key = editKey;
-    const read = () => (editing && editing.index === at && !editing.parts ? editing.draft : null);
-    const done = await convertOffer(o, key, read, (t) => attachPastedText(key, t));
-    if (!done || !editing || editing.index !== at || editing.parts) return;
-    // Blocker 1210: a step of the box's history that carries the chip.
-    const tag: ConvertTag = { convert: true, chip: $state.snapshot(done.chip) as Attachment, before: done.before, after: done.after, caret: o.start };
-    editHist.external(done.after, o.start, tag);
-    editing = editReduce(editing, { type: "draft", text: done.after });
-    editConverted = { before: done.before, after: done.after, chipId: done.chip.id, caret: o.start };
-    void tick().then(() => editCaret(o.start));
-  }
-  function editUndoConvert(): boolean {
-    const c = editConverted;
-    editConverted = null;
-    if (!editing || editing.parts || !canUndo(c, editing.draft, editChips.map((a) => a.id))) return false;
-    const tag = editHist.undoTag;
-    if (!editorLive && isConvertTag(tag) && tag.chip.id === c.chipId) return editStep("undo");
-    const r = undoConverted(c);
-    removeAttachment(editKey, c.chipId);
-    editHist.external(r.text, r.caret);
-    editing = editReduce(editing, { type: "draft", text: r.text });
-    void tick().then(() => editCaret(r.caret));
-    return true;
-  }
-  /** The edit box focused with its caret at `at` (either box). */
-  function editCaret(at: number): void {
-    const box: ComposerBox | null = editorLive ?? editorEl;
-    if (!box) return;
-    box.focus();
-    box.selectionStart = box.selectionEnd = at;
-    if (editorEl) autogrow(editorEl);
-  }
-
-  /*
-   * Item 399: the edit box's undo is the composer's own history (blocker
-   * 1210, `boxHistory.ts`) — WebKit's goes stale after any text the page
-   * sets, and folds a scripted paste into the typing before it, so ⌘Z
-   * after a code paste took his typing with it (measured). His keystrokes
-   * are recorded from `beforeinput` / `input`; every other change to the
-   * draft (a fence, a relabel, a marker rewritten) is seen by the effect
-   * and recorded as a step of its own. Opening an editor starts afresh.
-   */
-  const editHist = new BoxHistory("");
-  let editHistAt: number | null = null;
-  let editComposing = false;
-  let editNativeStepped = false;
-  $effect(() => {
-    const e = editing;
-    const t = e && !e.parts ? e.draft : null;
-    untrack(() => {
-      if (!e || t === null) {
-        editHistAt = null;
-        return;
-      }
-      if (e.index !== editHistAt) {
-        editHistAt = e.index;
-        editHist.reset(t);
-        editComposing = false;
-      } else if (t !== editHist.current.text) editHist.external(t);
-    });
-  });
-  const editSnap = (el: HTMLTextAreaElement) => ({ text: el.value, start: el.selectionStart, end: el.selectionEnd });
-  function editBeforeInput(e: InputEvent): void {
-    const el = e.currentTarget as HTMLTextAreaElement;
-    const h = historyInput(e.inputType);
-    if (h) {
-      // WebKit's own undo (the Edit menu's, the context menu's): never
-      // applied — its stack is the stale one — but answered from the box's.
-      e.preventDefault();
-      if (!editNativeStepped) {
-        editNativeStepped = true;
-        const mc = new MessageChannel();
-        mc.port1.onmessage = () => (editNativeStepped = false);
-        mc.port2.postMessage(0);
-        editStep(h);
-      }
-      return;
-    }
-    editHist.before(editSnap(el));
-  }
-  /** One undo or redo in the edit box's textarea; false when there is none. */
-  function editStep(dir: "undo" | "redo"): boolean {
-    const el = editorEl;
-    if (!el || !editing || editing.parts || editorLive) return false;
-    // Not while an input method's marked text shows (as the composer).
-    if (editComposing) return true;
-    const st = dir === "undo" ? editHist.undo() : editHist.redo();
-    if (!st) return true;
-    // 399b: a conversion's chip goes with its undo and comes back with its
-    // redo, so the pasted words are always in the box or in the chip.
-    if (isConvertTag(st.tag)) {
-      const t = st.tag;
-      const has = editChips.some((a) => a.id === t.chip.id);
-      if (dir === "undo") {
-        editConverted = null;
-        if (has) removeAttachment(editKey, t.chip.id);
-      } else {
-        if (!has) addAttachment(editKey, t.chip);
-        editConverted = { before: t.before, after: t.after, chipId: t.chip.id, caret: t.caret };
-      }
-    }
-    editing = editReduce(editing, { type: "draft", text: st.text });
-    void tick().then(() => {
-      el.focus({ preventScroll: true });
-      el.setSelectionRange(st.start, st.end);
-      autogrow(el);
-    });
-    return true;
-  }
-  // The Edit menu's Undo while the edit box has the keyboard (macOS: the
-  // menu takes ⌘Z before the box sees it), as the composer's.
-  $effect(() => {
-    const take = (id: string): boolean => {
-      if (id !== "undo_app" && id !== "redo_app") return false;
-      const box = editorLive instanceof LiveBoxHandle ? editorLive.element : editorEl;
-      if (!box || !box.contains(document.activeElement)) return false;
-      if (id === "undo_app" && editUndoable()) return editUndoConvert();
-      return editStep(id === "undo_app" ? "undo" : "redo");
-    };
-    menuInterceptors.push(take);
-    return () => {
-      const i = menuInterceptors.indexOf(take);
-      if (i >= 0) menuInterceptors.splice(i, 1);
-    };
-  });
-  /** Item 382 in the edit box: the paste's text with its markers at the
-   *  caret, then its images as chips of this edit, in marker order. */
-  function editPasteWithImages(box: ComposerBox, paste: NonNullable<ReturnType<typeof htmlImagePaste>>): void {
-    const chatKey = editKey;
-    const at = editing?.index;
-    const ready = preparePaste(paste, MAX_IMAGE_BASE64);
-    const raw = normalizeNewlines(ready.text);
-    const start = Math.min(box.selectionStart, box.selectionEnd);
-    editInsert(box, raw);
-    editOffer = longPasteOffer(raw, start);
-    recordText("pasted", raw);
-    markPasted(ready.images.map((i) => `image ${i.n}`));
-    void attachPastedImages(ready.images, ready.failed, {
-      nextId: nextAttachmentId,
-      add: (chip) => addAttachment(chatKey, chip),
-      update: (id, patch) => void updateAttachment(chatKey, id, patch),
-      remove: (id) => removeAttachment(chatKey, id),
-      chips: () => readDraft(chatKey).attachments,
-      // A marker rewritten (an image that could not come) in this edit's
-      // text, while this edit is the one open.
-      readText: () => (editing && editing.index === at ? editing.draft : ""),
-      setText: (t) => {
-        if (editing && editing.index === at && !editing.parts) editing = editReduce(editing, { type: "draft", text: t });
-      },
-      fetch: fetchPasteImage,
-      convert: rasterize,
-      track: trackPending,
-      record: (chip) => recordImage("pasted", chip),
-      cap: MAX_IMAGE_BASE64,
-      toast: (m) => addToast(m),
-    });
-  }
-  /** Item 315 in the edit box: a block's language picked from its label —
-   *  only the fence's info string changes, as one undoable edit. */
-  function editRelabel(k: number, lang: string): void {
-    if (!editing || editing.parts) return;
-    const f = findFences(editing.draft)[k];
-    const box = editorLive ?? editorEl;
-    if (!f || !box) return;
-    if (box instanceof LiveBoxHandle) {
-      box.replaceRange(f.infoFrom, f.infoTo, lang);
-      return;
-    }
-    const ta = box as HTMLTextAreaElement;
-    const caret = ta.selectionStart;
-    const shift = lang.length - (f.infoTo - f.infoFrom);
-    editing = editReduce(editing, { type: "draft", text: withFenceLanguage(editing.draft, f, lang) });
-    void tick().then(() => {
-      const back = caret >= f.infoTo ? caret + shift : Math.min(caret, f.infoFrom);
-      ta.selectionStart = ta.selectionEnd = back;
-    });
-  }
-  function editorDragOver(e: DragEvent): void {
-    if (!e.dataTransfer?.types.includes("Files")) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
-  }
-  function editorDrop(e: DragEvent): void {
-    const files = Array.from(e.dataTransfer?.files ?? []);
-    if (files.length === 0) return;
-    e.preventDefault();
-    e.stopPropagation();
-    void acceptFiles(editKey, files);
-  }
-  /** Wait for the edit box's office conversions, saying so; false when
-   *  the editor closed or moved meanwhile. */
-  async function editConversions(index: number): Promise<boolean> {
-    const jobs = conversionJobs(editKey);
-    if (jobs.length === 0) return true;
-    const names = editChips.filter((a) => a.pending).map((a) => a.name);
-    addToast(`Converting ${names.join(", ")} — the message sends when ${names.length === 1 ? "it is" : "they are"} ready`);
-    await Promise.all(jobs);
-    return editing?.index === index;
-  }
-  /** Item 515: an edit of his words keeps the turn's note for the CLI —
-   *  its saved files stay named, byte for byte — though the box never
-   *  showed it. */
-  function withNote(index: number, draft: string): string {
-    const it = items.find((x) => x.index === index);
-    return it && it.kind === "user" ? joinAttachNote(draft, splitAttachNote(it.text).note) : draft;
-  }
-  async function commitSave() {
-    if (!editing || !editButtons(editing, editChipsFor(editing)).save) return;
-    if (!editing.parts) {
-      // Item 336: a converting chip is waited for; a file for Claude Code
-      // has no place in a past turn (the log keeps none), so it goes by Send.
-      if (!(await editConversions(editing.index)) || !editing) return;
-      const files = editChips.filter((a) => a.kind === "file");
-      if (files.length > 0) {
-        addToast(
-          `${files.map((f) => f.name).join(", ")}: a file Claude Code opens itself can go only with a new message — Send starts a fork with it, or remove it to Save`,
-        );
-        return;
-      }
-    }
-    const { index, draft, parts } = editing;
-    const changes = editChanges(editing);
-    await keepPlace(index, async () => {
-      // Item 336: a user turn's chips go with the Save when they changed —
-      // the whole set, the turn's own less the removed plus the added.
-      const set = !parts && chipsChanged(editing, editChips) ? splitChips($state.snapshot(editChips)) : null;
-      const ok = parts
-        ? await saveReplyEdit(index, changes)
-        : await saveEdit(index, withNote(index, draft), set ? { images: set.images, documents: set.documents } : null);
-      if (ok) {
-        editing = editReduce(editing, { type: "done" });
-        stashEdit(sessionKey, null);
-        setDraftAttachments(editKey, []);
-      }
-    });
-  }
-  async function commitSend(item: Item) {
-    if (!editing || !editButtons(editing, editChips).send || item.kind !== "user") return;
-    const { index } = editing;
-    // Item 336: the fork's first message carries the edit box's chips —
-    // the turn's own, less any removed, plus any added — not the turn's
-    // originals. An office file still converting is waited for first.
-    if (!(await editConversions(index)) || !editing) return;
-    const chips = $state.snapshot(editChips) as typeof editChips;
-    if (filesBlocked(chips)) return;
-    const { draft } = editing;
-    const wire = splitChips(chips);
-    const before = editing;
-    const line = editCacheLine;
-    const key = sessionKey;
-    const chipsKey = editKey;
-    await keepPlace(index, () => {
-      editing = editReduce(editing, { type: "done" });
-      stashEdit(sessionKey, null);
-      setDraftAttachments(editKey, []);
-    });
-    // An aside asks the edit in place of the exchange (item 674); the chat
-    // forks from here.
-    const ok = src.actions.askEdited
-      ? (await src.actions.askEdited(index, draft.trim(), chips)) !== false
-      : await sendEdit(index, withNote(index, draft), wire.images, wire.documents, null, wire.files);
-    // The fork refused (an error toast, or a turn started meanwhile): the
-    // edit comes back — words and chips — rather than vanish on one Enter
-    // (practices §7; w6-review 2026-10-11).
-    if (!ok && sessionKey === key) {
-      setDraftAttachments(chipsKey, chips);
-      if (src.busy) stashEdit(key, { editing: before, line });
-      else if (!editing) {
-        editing = before;
-        editCacheLine = line;
-      }
-    }
-  }
-  function editorKeys(e: KeyboardEvent, item: Item) {
-    // ~~Enter is a newline here; ⌘/Ctrl-Enter saves, ⌘/Ctrl-Shift-Enter
-    // sends~~ (2026-10-11, item 337): in a user turn's editor Enter sends
-    // as the composer's does, Shift+Enter is a newline, and Save is its
-    // button only; a reply's editor keeps Enter a newline and ⌘/Ctrl-Enter
-    // to save. The mapping is `editorKey` (edit.ts), IME-safe (item 322).
-    // Item 399: ⌘Z / ⌘⇧Z in a user turn's textarea step the box's own
-    // history, as in the composer (the formatted box has its own).
-    if (item.kind === "user") {
-      // 399b: ⌥⌘V pastes the clipboard's text as an attachment (284).
-      if (isPasteAsAttachmentKey(e)) {
-        e.preventDefault();
-        void pasteAsAttachment(editAttachMark, (t) => attachPastedText(editKey, t));
-        return;
-      }
-      // Esc while the offer stands dismisses it (318); the paste stays.
-      if (e.key === "Escape" && editOffer && editOffer.after !== null && !editComposing && !e.isComposing && e.keyCode !== 229) {
-        e.preventDefault();
-        e.stopPropagation();
-        editOffer = null;
-        return;
-      }
-      // ⌘Z right after "Make this an attachment" puts the text back.
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && editUndoable()) {
-        e.preventDefault();
-        editUndoConvert();
-        return;
-      }
-    }
-    // Item 648: inside a ``` block the keys are a code editor's — Enter a
-    // new line at the indentation (⌘Enter still sends or saves), Tab
-    // indents, brackets close (`codeBlockKeys.ts`); outside one, nothing.
-    const blockBox = e.currentTarget instanceof HTMLTextAreaElement ? e.currentTarget : editorLive instanceof LiveBoxHandle ? editorLive : null;
-    if (takeBlockKey(e, blockBox)) return;
-    const step = item.kind === "user" && !editorLive ? historyKey(e, isMac) : null;
-    if (step && editStep(step)) {
-      e.preventDefault();
-      return;
-    }
-    const action = editorKey(e, item.kind !== "user");
-    if (!action) return;
-    e.preventDefault();
-    // In an aside's card the Escape is the editor's, never the card's ×.
-    if (inAside) e.stopPropagation();
-    // The "drop this edit?" question is already up: Escape answers it
-    // "keep" (in an aside the key never reaches the dialog's own listener).
-    if (action === "cancel" && dropAsk) dropAsk = null;
-    else if (action === "cancel") cancelEdit();
-    else if (action === "send") void commitSend(item);
-    else void commitSave();
-  }
-  // A turn starting closes the editor rather than leave it over a
-  // transcript changing under it — but the draft is kept (backlog 137: a
-  // turn from the phone, a wake's "continue", a hand-off's wrap-up used to
-  // discard it), and comes back when the turn ends: the turn appends, so
-  // the edited turn is where it was.
-  $effect(() => {
-    const busy = src.busy;
-    // A pane opens no editor (piece 5): the open chat's transcript holds it.
-    if (inPane) return;
-    untrack(() => {
-      if (busy) {
-        if (editing) stashEdit(sessionKey, { editing, line: editCacheLine, boxes: editBoxPlaces() });
-        editing = editReduce(editing, { type: "busy" });
-      } else if (!editing) {
-        const back = takeEdit(sessionKey);
-        if (back) {
-          editing = back.editing;
-          editCacheLine = back.line;
-          placeBack(back.boxes);
-        }
-      }
-    });
-  });
-
-  let viewport = $state<HTMLDivElement | null>(null);
-  // Item 859: an option clicked on a reply's question box (or a closed question card) sends it — to
-  // the open chat: its next message and an answered blocker, as the card sends; an aside: its follow-up (`src.actions.answer`); a pane takes none (a click there opens the chat).
-  $effect(() => {
-    const v = viewport;
-    if (!v) return;
-    const take = (e: Event) => {
-      const d = (e as CustomEvent<AskAnswerDetail>).detail;
-      if (!d?.answer || e.defaultPrevented) return;
-      if (src.kind === "chat") {
-        e.preventDefault();
-        void answerTurnAsk(askTarget(), d.ask, d.answer);
-      } else if (src.actions.answer) {
-        e.preventDefault();
-        void src.actions.answer(d.answer);
-      }
-    };
-    v.addEventListener(ASK_ANSWER_EVENT, take);
-    return () => v.removeEventListener(ASK_ANSWER_EVENT, take);
-  });
-  // Item 621: the canvas behind the scroller that draws its dot ground
-  // while the field runs (`dotField` decides; it drops the CSS tile then).
-  let dotCanvas = $state<HTMLCanvasElement | null>(null);
-  $effect(() => {
-    if (!dotCanvas || !viewport || compact) return;
-    const f = dotField(dotCanvas, viewport);
-    return () => f.destroy();
-  });
-  // Pin to bottom until the user scrolls up; re-pin when they reach the
-  // bottom again. Deliberately not $state: changes to it should not
-  // re-trigger the effect.
-  let pinned = true;
-  // Set around our own scrollTop writes so the scroll event they raise is
-  // not mistaken for the user's.
-  let scrollingSelf = false;
-
-  function atBottom(): boolean {
-    if (!viewport) return true;
-    return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 8;
-  }
-
-  // The user's intent arrives before the scroll position does: one wheel
-  // tick up moves ~40px, and a "pinned unless more than 80px up" rule read
-  // that as still pinned, so the next delta snapped the view back to the
-  // foot — his "glitching back and forth" while trying to read a fast
-  // reply from the top (2026-09-14). Any upward input unpins at once.
-  // As an action rather than markup handlers: these read intent off a
-  // scroll container, and the a11y lint (rightly) has no category for that.
-  function scrollIntent(node: HTMLElement) {
-    let touchY = 0;
-    // Any upward input also ends the ⌄'s ride down (item 218).
-    const up = () => {
-      pinned = false;
-      chasing = false;
-    };
-    // Item 359 (review): his own scrolling ends the rail's eased jump
-    // (`animateScroll`), which would otherwise pull the view back to its
-    // target every frame for up to 400 ms. ⌥↑ / ⌥↓ start a jump, so they
-    // never cancel one.
-    const wheel = (e: WheelEvent) => {
-      cancelScroll();
-      if (e.deltaY < 0) up();
-    };
-    const key = (e: KeyboardEvent) => {
-      if (!e.altKey && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key))
-        cancelScroll();
-      if (["ArrowUp", "PageUp", "Home"].includes(e.key)) up();
-    };
-    const touchstart = (e: TouchEvent) => {
-      touchY = e.touches[0]?.clientY ?? 0;
-    };
-    const touchmove = (e: TouchEvent) => {
-      cancelScroll();
-      const y = e.touches[0]?.clientY ?? 0;
-      if (y > touchY) up();
-      touchY = y;
-    };
-    node.addEventListener("wheel", wheel, { passive: true });
-    node.addEventListener("keydown", key);
-    node.addEventListener("touchstart", touchstart, { passive: true });
-    node.addEventListener("touchmove", touchmove, { passive: true });
-    return {
-      destroy() {
-        node.removeEventListener("wheel", wheel);
-        node.removeEventListener("keydown", key);
-        node.removeEventListener("touchstart", touchstart);
-        node.removeEventListener("touchmove", touchmove);
-      },
-    };
-  }
-
-  function onscroll() {
-    if (!scrollingSelf && !chasing) {
-      // A scrollbar drag has no wheel event; it unpins here on its way up
-      // and re-pins here on its way back down. Reaching the foot by any
-      // means re-pins. Not while the ⌄'s smooth scroll is on its way down
-      // (item 218): its own scroll events would unpin it mid-ride, and a
-      // reply landing then would not be followed.
-      pinned = atBottom();
-    }
-    scheduleScrollWork();
-    // The Ask aside pill is fixed to the selection's rectangle, which a
-    // scroll moves — into the viewport as well as out of it (backlog 107).
-    if (asidePill || document.getSelection()?.isCollapsed === false) placePill();
-  }
-
-  $effect(() => {
-    void evs.length;
-    // The stream's every delta: the chat's, a pane's chat's off screen
-    // (piece 5), an aside's (item 674).
-    void src.liveVersion();
-    void approvalsNow.length;
-    // A message he queues or schedules mid-turn is drawn below the reply
-    // (PendingBubbles) and follows the foot like any other (item 560).
-    if (src.queue) {
-      const key = src.queue.key;
-      void readDraft(key).queue.length;
-      void scheduledFor(key);
-    }
-    void tick().then(() => {
-      // The live reply's first words are in the DOM now; the frame that
-      // draws them is its first paint (item 256's timing line) — the open
-      // chat's transcript's frame, not a pane's.
-      if (isChat && turnClock.waitingForPaint() && hasText(liveNow?.segments)) {
-        requestAnimationFrame(() => turnClock.painted());
-      }
-      // Not looking (backlog 347): while the window is in the background
-      // the view stays where he left it and stops following — the refocus
-      // finds his place with the ⌄ showing there is more, and a later
-      // delta does not snap it down. The ⌄ re-pins, as ever.
-      const step = viewport ? followStep(pinned, presence.away, atBottom()) : "stay";
-      if (step === "release") {
-        pinned = false;
-      } else if (step === "follow" && viewport) {
-        scrollingSelf = true;
-        viewport.scrollTop = viewport.scrollHeight;
-        // The scroll event fires asynchronously; clear after it has.
-        requestAnimationFrame(() => (scrollingSelf = false));
-      }
-      measureNav();
-    });
-  });
-  watchPresence();
-
-  // ---- Per-chat scroll position (nightshift backlog 065, 2026-09-15) ----
-  //
-  // The position and `pinned` are written to `scroll.svelte.ts` under the
-  // open chat's key as the view scrolls, one write per frame at most, and
-  // read back when the key changes: `pinned` at once, so the pin effect
-  // above (which fires on the same switch, the event count having changed)
-  // sees the switched-to chat's state and not the last chat's; the
-  // position after the tick that renders the new events. A chat with no
-  // entry lands at the bottom, as every chat did before today.
-  //
-  // The first turn of a pending chat is the one key change that is not a
-  // switch: the key goes from "new" to the created id while this same
-  // transcript is on screen (the composer's `blank` test mounts it on the
-  // send), and the entry follows the key rather than being restored.
-  const sessionKey = $derived(src.scrollKey);
-  /** The edit box's chips (item 336): the chat's `editDraftKey` in the
-   *  drafts store, where the composer's attach code puts them. */
-  const editKey = $derived(editDraftKey(sessionKey));
-  const editChips = $derived(readDraft(editKey).attachments);
-  let lastKey: string | null = null;
-  let scrollFrame = 0;
-
-  // ---- The render window (item 482) ----
-  //
-  // Only `items` from `windowFrom` on are drawn (`transcriptWindow.svelte.ts`).
-  // Re-derived when the chat changes, or when its items arrive after the
-  // key (a pane's log read); grown by assignment as he scrolls up. Its
-  // first value comes before the DOM is built, so a switch never draws
-  // the whole chat first.
-  const hasItems = $derived(items.length > 0);
-  let windowFrom = $derived.by(() => {
-    const key = sessionKey;
-    void hasItems;
-    return untrack(() => firstWindow(items.length, recallScroll(key)));
-  });
-  /** What is drawn: the window, never past the chat's last `FIRST_ITEMS`
-   *  (a log re-read shorter than the window was must still draw its foot). */
-  const drawFrom = $derived(Math.min(windowFrom, Math.max(0, items.length - FIRST_ITEMS)));
-  let growing = false;
-  let fillTimer: ReturnType<typeof setTimeout> | undefined;
-
-  /** Draw from `to` on, holding the view where it is: the batch lands above
-   *  it, so the view moves down by however much taller the page became. */
-  async function growTo(to: number): Promise<void> {
-    const vp = viewport;
-    if (to >= drawFrom) return;
-    if (!vp) {
-      windowFrom = to;
-      return;
-    }
-    const height = vp.scrollHeight;
-    const top = vp.scrollTop;
-    windowFrom = to;
-    await tick();
-    const delta = vp.scrollHeight - height;
-    if (Math.abs(delta) >= 1) {
-      scrollingSelf = true;
-      vp.scrollTop = top + delta;
-      requestAnimationFrame(() => (scrollingSelf = false));
-    }
-    // The place, under the window it is now measured in.
-    rememberScroll(sessionKey, vp.scrollTop, pinned, drawFrom);
-  }
-
-  /** Grow until `screens` screen heights are drawn above the view, one
-   *  batch per task after the first paint (`later`), or all at once before
-   *  it. A switch mid-fill stops it (the key is checked per batch). */
-  async function fillWindow(screens: number, later: boolean): Promise<void> {
-    if (growing) return;
-    growing = true;
-    const key = sessionKey;
-    try {
-      while (viewport && sessionKey === key && wantsMore(drawFrom, viewport.scrollTop, viewport.clientHeight, screens)) {
-        if (later) await new Promise<void>((r) => (fillTimer = setTimeout(r, 0)));
-        if (!viewport || sessionKey !== key) return;
-        await growTo(grown(drawFrom));
-      }
-    } finally {
-      growing = false;
-    }
-  }
-
-  /** The first paint's window filled, then the buffer above it after. */
-  async function openWindow(): Promise<void> {
-    await fillWindow(FILL_SCREENS, false);
-    clearTimeout(fillTimer);
-    fillTimer = setTimeout(() => void fillWindow(BUFFER_SCREENS, true), 0);
-  }
-
-  /** Draw the turn at log index `index` (the rail's, ⌥↑'s targets) before
-   *  scrolling to it. */
-  /** Item 484: each logged turn's place in `items`, for `turnDrawn`. */
-  const itemAt = $derived(new Map(items.map((it, i) => [it.index, i])));
-  /** Whether the turn at log index `turn` is drawn — true for a turn not
-   *  in the items at all, so what cannot be placed keeps its old home. */
-  function turnDrawn(turn: number): boolean {
-    const at = itemAt.get(turn);
-    return at === undefined || at >= drawFrom;
-  }
-
-  async function revealTurn(index: number): Promise<void> {
-    const at = items.findIndex((it) => it.index >= index);
-    await growTo(windowFor(drawFrom, at));
-  }
-
-  // Find in chat searches the page's text: the whole chat is drawn while
-  // the bar is open.
-  $effect(() => {
-    if (windowWants.all && drawFrom > 0) void growTo(0);
-  });
-  onDestroy(() => clearTimeout(fillTimer));
-
-  function scheduleScrollWork() {
-    if (scrollFrame) return;
-    scrollFrame = requestAnimationFrame(() => {
-      scrollFrame = 0;
-      if (viewport) rememberScroll(sessionKey, viewport.scrollTop, pinned, drawFrom);
-      measureNav();
-      // Near the top of what is drawn: the next batches above.
-      if (viewport && wantsMore(drawFrom, viewport.scrollTop, viewport.clientHeight, BUFFER_SCREENS / 2))
-        void fillWindow(BUFFER_SCREENS, true);
-    });
-  }
-
-  // An open editor is per chat too (nightshift backlog 122). `editing` was
-  // one value for the whole transcript: a switch away left it set, so the
-  // other chat's message at the same index showed the editor with this
-  // chat's draft in it, and a switch back re-mounted the textarea. Now the
-  // switch stashes the open edit under the chat it belongs to and restores
-  // the switched-to chat's, if it has one — the draft survives the switch,
-  // as it did by accident before, and stays with its chat. ~~A plain map,
-  // read once per switch, like the scroll entries.~~ The map moved out of
-  // this component (backlog 137, `drafts.svelte.ts`): with the tabs this
-  // component unmounts on a note tab in the same pane, on the live tab
-  // dragged across, and a component-local map went with it. The stash is
-  // written on the switch and on unmount, and read on the switch and on
-  // mount, so the draft is wherever the chat is drawn next. A cancel or a
-  // save forgets the entry (`stashEdit(key, null)`); a switch with no
-  // editor open leaves it, since a turn in progress may be holding it.
-
-  $effect(() => {
-    const key = sessionKey;
-    const from = lastKey;
-    lastKey = key;
-    // Item 359 (review): a rail jump still easing in the chat just left
-    // must not go on scrolling this one (its aim re-reads the anchors each
-    // frame, now this chat's) and overwrite the position restored below.
-    if (from !== null && from !== key) cancelScroll();
-    if (from === NEW_SCROLL_KEY && key !== NEW_SCROLL_KEY) {
-      moveScroll(from, key);
-      return;
-    }
-    if (from !== key && !inPane) {
-      // Untracked: this effect is about the key, and a keystroke in the
-      // editor must not re-run the scroll restore below. (A pane's
-      // transcript leaves the chat's stashed edit for the open one.)
-      untrack(() => {
-        if (from !== null && editing) stashEdit(from, { editing, line: editCacheLine, boxes: editBoxPlaces() });
-        const back = takeEdit(key);
-        editing = back?.editing ?? null;
-        editCacheLine = back?.line ?? "";
-        placeBack(back?.boxes);
-      });
-    }
-    const entry = recallScroll(key);
-    pinned = entry?.pinned ?? true;
-    const place = entry?.holds?.length ? { holds: entry.holds, scrollTop: entry.top } : null;
-    void tick().then(() => {
-      if (!viewport) return;
-      if (entry && !entry.pinned) {
-        scrollingSelf = true;
-        viewport.scrollTop = entry.top;
-        requestAnimationFrame(() => (scrollingSelf = false));
-        if (place) holdPlace(place);
-        // Item 504: the place left may still be the foot; then a reply
-        // running here is followed, as when he never left.
-        pinned = atBottom();
-      } else if (pinned) {
-        // Item 482: at the foot before the window is filled, so the fill
-        // measures from where the view lands (the follow effect's scroll
-        // may not have run yet).
-        scrollingSelf = true;
-        viewport.scrollTop = viewport.scrollHeight;
-        requestAnimationFrame(() => (scrollingSelf = false));
-      }
-      void openWindow().then(() => {
-        if (entry && !entry.pinned && place) {
-          holdPlace(place);
-          pinned = atBottom();
-        }
-        measureNav();
-      });
-      measureNav();
-    });
-  });
-
-  // Item 504: the lines he leaves, read before the DOM takes the next chat
-  // (`$effect.pre`, the old chat still drawn). On unmount the view may be
-  // gone already; then the last entry, no longer held at the foot.
-  let drawnKey: string | null = null;
-  let drawnFrom: number | undefined;
-  $effect(() => {
-    drawnFrom = drawFrom;
-  });
-  function noteLeft(key: string): void {
-    const place = viewport?.isConnected && viewport.clientHeight > 0 ? readingPlace() : null;
-    const last = recallScroll(key);
-    if (place) leaveScroll(key, place.scrollTop, drawnFrom ?? last?.from, place.holds);
-    else if (last) leaveScroll(key, last.top, last.from, last.holds);
-  }
-  $effect.pre(() => {
-    const key = sessionKey;
-    untrack(() => {
-      if (drawnKey !== null && drawnKey !== key && drawnKey !== NEW_SCROLL_KEY) noteLeft(drawnKey);
-      drawnKey = key;
-    });
-  });
-  onDestroy(() => {
-    if (drawnKey !== null && drawnKey !== NEW_SCROLL_KEY) noteLeft(drawnKey);
-  });
-
-  // Unmounted with an editor open — the pane's active tab became a note,
-  // the live tab went to the other pane — the draft is stashed for the
-  // next mount on this chat (backlog 137).
-  onDestroy(() => {
-    if (!inPane && editing && lastKey !== null)
-      stashEdit(lastKey, { editing, line: editCacheLine, boxes: editBoxPlaces() });
-  });
-
-  // ---- The sent message's entrance (nightshift backlog 095, 2026-09-16) ----
-  //
-  // Only the turn just sent moves: a user turn appended while this
-  // transcript was already showing this chat, at the moment a turn started
-  // (`app.live` set in the same flush as the optimistic push — both send
-  // paths do that), gets `.enter` and rises in over 180 ms. A chat opened or
-  // reopened loads whole: the key changed, so the mark resets and nothing
-  // cascades. The mark is an index floor rather than a flag per item so the
-  // post-turn re-sync, which replaces `app.events` with the same turn at the
-  // same index, keeps the element and the class and the animation does not
-  // replay (the each is keyed by position). Reduced motion turns it off in
-  // the CSS.
-  //
-  // Since backlog 194 (2026-09-25) the motion is `sendMotion.ts`'s: the
-  // floor is the action's `active`, and a turn whose composer recorded a
-  // launch flies in from the box with the accent thread; one with no
-  // launch (the wrap-up, a phone send) keeps the 180 ms rise.
-  let enterFrom = $state(Infinity);
-  let enterKey: string | null = null;
-  let enterLen = 0;
-  // Item 313: how far above the foot the view was just before the log
-  // grew — read before the DOM takes the new turn, so the distance is the
-  // reader's, not the reader's plus the sent bubble's height.
-  let preDistance = 0;
-  let preHeight = 0;
-  let preTop = 0;
-  $effect.pre(() => {
-    void evs.length;
-    untrack(() => {
-      if (!viewport) return;
-      preDistance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
-      preHeight = viewport.clientHeight;
-      preTop = viewport.scrollTop;
-    });
-  });
-  // 313 review: a tall paste had grown the box, so the view read at Send
-  // was shorter and the foot further by the box's growth — out of range
-  // for a Send from half a screen up. The box shrinks back on the frame
-  // after the Send (`afterSend`'s rAF, queued first); read again then, as
-  // the reader's place with the box at rest. This late land skips the
-  // fly-in (the bubble was below the view when `fly` measured it).
-  function recheckSendJump(key: string | null): void {
-    const top = preTop;
-    const d = preDistance;
-    const h = preHeight;
-    requestAnimationFrame(() => {
-      // Not while away (backlog 347): a send from the phone or a queued
-      // message going out moves nothing he is not looking at.
-      if (pinned || presence.away || !viewport || sessionKey !== key || viewport.scrollTop !== top) return;
-      const now = viewport.clientHeight;
-      if (now <= h) return;
-      const r = restDistance(d, h, now);
-      if (!sendJumps(r.distance, r.viewport)) return;
-      pinned = true;
-      jumpDown = false;
-      scrollingSelf = true;
-      viewport.scrollTop = viewport.scrollHeight;
-      requestAnimationFrame(() => (scrollingSelf = false));
-    });
-  }
-  $effect(() => {
-    const key = sessionKey;
-    const len = evs.length;
-    const live = liveNow !== null;
-    // A pane does not play the send's entrance (piece 5): the launch from
-    // the box is the open chat's transcript's to take.
-    if (inPane) return;
-    if (key !== enterKey) {
-      // A new chat's first send mounts this transcript (or moves its key
-      // off "new") with the turn already in it; a launch from the box is
-      // waiting, so that turn flies too (194 fix pass). A plain open or
-      // switch has no fresh launch and loads whole, as before.
-      const fresh = (enterKey === null || enterKey === NEW_SCROLL_KEY) && live && hasLaunch(src.channel);
-      enterKey = key;
-      enterFrom = fresh ? 0 : Infinity;
-      enterLen = len;
-      return;
-    }
-    if (len > enterLen && live) {
-      enterFrom = enterLen;
-      // Item 313: a Send from within one screen of the foot lands at the
-      // bottom and follows the reply; from further up the place is kept.
-      // Re-pinning is enough: the follow-the-bottom effect above, run by
-      // the same `evs.length` change, lands on the foot after this flush's
-      // tick — instantly, as a Send at the foot always has, so the new
-      // bubble is in view when `sendMotion` measures it a frame later and
-      // the fly-in plays (the ⌄'s smooth ride would leave it below the
-      // view then, and `fly` skips a bubble out of view).
-      if (!pinned && sendJumps(preDistance, preHeight)) {
-        pinned = true;
-        jumpDown = false;
-      } else if (!pinned) {
-        recheckSendJump(key);
-      }
-    }
-    enterLen = len;
-  });
-
-  // ---- The reply's completion (nightshift backlog 131, 2026-09-17) ----
-  //
-  // A turn ends in two flushes: `app.live` is cleared at once, and the log
-  // is re-synced after an IPC round trip. Between them the reply was not
-  // in the DOM at all. Measured in the harness with a reader at the
-  // reply's first lines (`scrollTop` 340, the reply 3,000px tall): the
-  // content shrank to the viewport's height, the browser clamped
-  // `scrollTop` to 0, and that clamp raised a scroll event which `onscroll`
-  // read as the user reaching the foot — `pinned` went true again, and
-  // the re-sync then scrolled to the bottom (3080). His "jumps either up
-  // or down": the clamp up, then the pin down.
-  //
-  // So the reply stays drawn: the last live segments are kept as a ghost
-  // — the same component instance, the same array, so nothing re-renders
-  // — until the re-synced events land, and the swap from ghost to record
-  // happens in one flush. Across that swap the reader's place is held by
-  // whatever element sits under the viewport's top edge, found again in
-  // the new DOM by its text (the recorded reply is not the live one's
-  // elements: it gains the model header above and the footer below, and
-  // on Claude Code may be several messages). A pinned reader is left to
-  // the follow-the-bottom effect above, which lands at the foot as before.
-  interface Shown {
-    segments: Segment[];
-    since: number | null;
-  }
-  let ghost = $state<Shown | null>(null);
-  let ghostKey: string | null = null;
-  let ghostTimer = 0;
-  let lastLive: Shown | null = null;
-  const shown = $derived<Shown | null>(
-    liveNow ? { segments: liveNow.segments, since: liveSince } : ghost,
-  );
-
-  function dropGhost(anchored: boolean): void {
-    clearTimeout(ghostTimer);
-    ghostTimer = 0;
-    if (!ghost) return;
-    const hold = anchored && !pinned ? readingPlace() : null;
-    ghost = null;
-    // Item 497: the reply ended here (not a new turn starting over its
-    // ghost, not another chat) — after the hold, the turn-done nudge.
-    if (anchored)
-      void tick().then(() => {
-        if (hold) holdPlace(hold);
-        nudgeDone(inner);
-      });
-  }
-
-  $effect.pre(() => {
-    const live = liveNow;
-    const since = liveSince;
-    untrack(() => {
-      if (live) {
-        lastLive = { segments: live.segments, since };
-        ghostKey = sessionKey;
-        if (ghost) dropGhost(false);
-        return;
-      }
-      if (!lastLive || lastLive.segments.length === 0 || ghostKey !== sessionKey) {
-        lastLive = null;
-        return;
-      }
-      ghost = lastLive;
-      lastLive = null;
-      // The re-sync can fail (its catch keeps the local view); the ghost
-      // must not outlive that. Two seconds is past any IPC wait.
-      ghostTimer = window.setTimeout(() => dropGhost(true), 2000);
-    });
-  });
-
-  // The re-synced log replaces `app.events` whole (a new array, whatever
-  // its length), which is the moment to swap. Before the DOM updates, so
-  // the anchor is measured against the ghost and the swap is one flush.
-  $effect.pre(() => {
-    void evs;
-    void evs.length;
-    const key = sessionKey;
-    untrack(() => {
-      if (!ghost) return;
-      dropGhost(key === ghostKey);
-    });
-  });
-
-  /**
-   * What he is reading: the first element with text inside the live reply
-   * in the top half of the viewport — the reply is what changes shape,
-   * and with its first lines under a half-visible user bubble it is the
-   * lines he holds, not the bubble (measured: the model header pushed
-   * them 24px with the bubble held). None of the reply there: the first
-   * element with text under the top edge, whatever it is. The live reply
-   * is the one `.assistant` not inside a recorded turn. By tag, the start
-   * of its text, and where its top was.
-   */
-  function readingAnchor(): { tag: string; text: string; top: number } | null {
-    if (!viewport) return null;
-    const vp = viewport.getBoundingClientRect();
-    const x = vp.left + vp.width / 2;
-    let first: { tag: string; text: string; top: number } | null = null;
-    for (let dy = 2; dy < vp.height / 2; dy += 12) {
-      const el = document.elementFromPoint(x, vp.top + dy);
-      if (!el || el === viewport || !viewport.contains(el)) continue;
-      const text = (el.textContent ?? "").trim();
-      if (!text) continue;
-      const hit = { tag: el.tagName, text: text.slice(0, 160), top: el.getBoundingClientRect().top };
-      if (el.closest(".assistant") && !el.closest("[data-turn]")) return hit;
-      first ??= hit;
-    }
-    return first;
-  }
-
-  // ~~`holdAnchor`: the nearest same-tag element with the same text start
-  // moved back to where it was; nothing matched, the view left alone~~ —
-  // item 493 (2026-11-02): `holdPlace` below, the match `nearestDelta`
-  // unchanged; nothing matched, the view goes back to where it was, since
-  // "left alone" was left at WebKit's clamp.
-
-  // ---- Item 493: which lines he is reading, found again after the swap ----
-  //
-  // Measured (493 harness, 1440×900): WebKit clamps `scrollTop` the moment
-  // the ghost goes — against the layout before the recorded reply was laid
-  // out, so to the foot of his own question (331) — and only the hold
-  // brings the view back. `readingAnchor` alone missed whenever the element
-  // under the top edge reads differently once recorded: the thinking row
-  // ("thought for 1 s" live, "thought · summary" recorded — a Claude Code
-  // reply read from its first lines, 746 px up) or a word still in the
-  // streaming motion's span (an API reply read mid-reply, 1,860 px up).
-  // So the place is the reply's prose blocks in view, the same text either
-  // side of the swap (`readingPlace.ts`), tried in order, then the old
-  // walk's element; none found, the scroll position from before the swap —
-  // never the clamp.
-  interface Place {
-    holds: Hold[];
-    scrollTop: number;
-  }
-  const isLiveReply = (el: BlockEl) => !!el.closest(".assistant") && !el.closest("[data-turn]");
-  function readingPlace(): Place | null {
-    if (!viewport) return null;
-    const holds = proseHolds(
-      viewport.querySelectorAll<HTMLElement>(PROSE_BLOCKS),
-      viewport.getBoundingClientRect(),
-      isLiveReply,
-    );
-    const walk = readingAnchor();
-    if (walk) holds.push(walk);
-    return { holds, scrollTop: viewport.scrollTop };
-  }
-  function holdPlace(place: Place): void {
-    const vp = viewport;
-    if (!vp) return;
-    const to = settledTop(place.holds, place.scrollTop, vp.scrollTop, (h) =>
-      nearestDelta(h, vp.querySelectorAll<HTMLElement>(h.tag)),
-    );
-    if (to === null) return;
-    scrollingSelf = true;
-    vp.scrollTop = to;
-    requestAnimationFrame(() => (scrollingSelf = false));
-  }
-
-  // ---- The message navigator (nightshift backlog 065) ----
-  //
-  // The strip's model is a projection of the log (`navigator.ts`); what
-  // this owns is the geometry — where each message's anchor sits in the
-  // viewport's scroll space, which one is being read, whether the view
-  // scrolls at all — measured once per frame on scroll and again after
-  // the events change. `data-turn` on each turn is the anchor.
-  // Item 359: the reply still streaming (or its ghost) has a rib too,
-  // anchored on `data-nav-live` — LibreChat's rail lists the row the
-  // moment it mounts and previews "Generating" until it has words.
-  // Item 830: the logged ticks re-derive when the log changes, not on every delta of the reply (the live tick
-  // reads its words, so one derived re-ran the whole log's model per delta: ~5 ms at 1,000 turns).
-  const loggedTicks = $derived(tickModel(evs, liveFlags(evs), displayTexts(evs)));
-  const navTicks = $derived.by(() => {
-    const logged = loggedTicks;
-    if (!shown) return logged;
-    const said = shown.segments.map((s) => (s.kind === "text" ? s.text : "")).join("");
-    return [...logged, liveTick(said)];
-  });
-  let navActive = $state<number | null>(null);
-  let navScrolls = $state(false);
-  // Item 359: shown from three messages whether or not the chat scrolls
-  // (LibreChat's rule); before, only when it scrolled and from four.
-  const showNav = $derived(!compact && navTicks.length >= MIN_TICKS);
-  // The round ⌄ above the composer (item 218): lit when scrolled up past
-  // `JUMP_DOWN_SHOW`, dark at the foot and while its own click is carrying
-  // the view down (`chasing`, cleared at the foot or on any upward input).
-  let jumpDown = $state(false);
-  /** Item 304: a reply still coming here — the ⌄ shows the speaking dots. */
-  const speaking = $derived(
-    inAside ? liveNow !== null : replyGoing(liveNow !== null, app.busy, inPane, app.parked !== null),
-  );
-  let chasing = false;
-  let chaseTimer: ReturnType<typeof setTimeout> | undefined;
-
-  /** Item 799: a chapter's place — its divider, the hand-off's line, or (the start) its first message. */
-  function chapterEl(c: ShownChapter): HTMLElement | null {
-    if (!viewport) return null;
-    const sel = c.kind === "hand_off" ? `[data-hand-off="${c.index}"]` : c.kind === "start" ? anchorSelector(c.anchor) : `[data-chapter="${c.key}"]`;
-    return viewport.querySelector<HTMLElement>(sel);
-  }
-  async function jumpToChapter(c: ShownChapter) {
-    if (!viewport) return;
-    // A chapter above the render window: draw down to it first (item 482).
-    if (items.some((it) => it.index >= c.anchor)) await revealTurn(c.anchor);
-    const vp = viewport;
-    if (!vp || !chapterEl(c)) return;
-    pinned = false;
-    animateScroll(vp, () => {
-      const el = chapterEl(c);
-      if (!el) return null;
-      const top = el.getBoundingClientRect().top - vp.getBoundingClientRect().top + vp.scrollTop;
-      // Below the Contents pill, which sits over the column's top right.
-      return Math.max(0, Math.min(top - JUMP_OFFSET - CONTENTS_CLEAR, vp.scrollHeight - vp.clientHeight));
-    });
-    vp.focus({ preventScroll: true });
-  }
-  // A jump asked from another chat's contents (its hand-off chain), taken
-  // once this chat's log is drawn.
-  $effect(() => {
-    const key = peekChapterJump(chapterScope);
-    if (!key || items.length === 0) return;
-    const c = chapterList.find((x) => x.key === key) ?? chapterList.find((x) => x.kind === "start");
-    takeChapterJump();
-    if (c) setTimeout(() => void jumpToChapter(c), 120);
-  });
-
-  function anchorTop(index: number): number | null {
-    if (!viewport) return null;
-    const el = viewport.querySelector<HTMLElement>(anchorSelector(index));
-    if (!el) return null;
-    return el.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop;
-  }
-
-  function measureNav() {
-    if (!viewport) return;
-    navScrolls = viewport.scrollHeight > viewport.clientHeight + 8;
-    if (chasing && atBottom()) chasing = false;
-    jumpDown = showJumpDown(viewport.scrollTop, viewport.clientHeight, viewport.scrollHeight, chasing);
-    if (navTicks.length < MIN_TICKS) {
-      navActive = null;
-      return;
-    }
-    // A chat that does not scroll is read from its first message (theirs).
-    if (!navScrolls) {
-      navActive = 0;
-      return;
-    }
-    // Item 454: every anchor in one pass. `anchorTop` per tick ran a
-    // selector over the whole transcript for each — quadratic in the
-    // chat's length, ~190 ms per measure at 300 turns, five measures a
-    // switch. The first match in document order, as `querySelector`'s.
-    const found = new Map<string, HTMLElement>();
-    for (const el of viewport.querySelectorAll<HTMLElement>("[data-turn], [data-nav-live]")) {
-      const turn = el.getAttribute("data-turn");
-      if (turn !== null && !found.has(turn)) found.set(turn, el);
-      if (el.hasAttribute("data-nav-live") && !found.has("live")) found.set("live", el);
-    }
-    const base = viewport.getBoundingClientRect().top - viewport.scrollTop;
-    const tops = navTicks.map((t) => {
-      const el = found.get(t.index < 0 ? "live" : String(t.index));
-      return el ? el.getBoundingClientRect().top - base : 0;
-    });
-    navActive = activeTick(tops, viewport.scrollTop, viewport.clientHeight, viewport.scrollHeight);
-  }
-
-  // A resize changes whether the view scrolls and where the third line is.
-  $effect(() => {
-    if (!viewport || typeof ResizeObserver === "undefined") return;
-    const vp = viewport;
-    let height = vp.clientHeight;
-    const ro = new ResizeObserver(() => {
-      // Item 233, shared since 674: a view held at the foot stays there
-      // when its room shrinks or grows (a shorter window, an aside card
-      // given less room by another above the composer).
-      if (vp.clientHeight !== height) {
-        height = vp.clientHeight;
-        if (pinned && !presence.away) {
-          scrollingSelf = true;
-          vp.scrollTop = vp.scrollHeight;
-          requestAnimationFrame(() => (scrollingSelf = false));
-        }
-      }
-      measureNav();
-    });
-    ro.observe(vp);
-    return () => ro.disconnect();
-  });
-
-  /**
-   * Item 592: a call's hover controls sit in the gutter right of the turns'
-   * column, up to 52 px out (`.block-tools.two`). At his zoom the gutter is
-   * the scroller's 20-px padding, so they ran past the edge — and, with
-   * overflow-x then auto, drew a full-width scrollbar over the message box.
-   * The scroller now clips sideways; where the gutter is narrower than the
-   * pair, `narrowGutter` brings them inside the row. Measured, not a
-   * container query: under page zoom WebKit compares a container's size
-   * zoomed (650 px read as over 840 at 1.5, 592 harness).
-   */
-  const GUTTER_FOR_TOOLS = 56;
-  let narrowGutter = $state(false);
-  function measureGutter(): void {
-    if (!viewport || !inner) return;
-    const right = inner.getBoundingClientRect().right - viewport.getBoundingClientRect().left - viewport.clientLeft;
-    narrowGutter = viewport.clientWidth - right < GUTTER_FOR_TOOLS;
-  }
-  $effect(() => {
-    if (!viewport || !inner || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => measureGutter());
-    ro.observe(viewport);
-    ro.observe(inner);
-    measureGutter();
-    return () => ro.disconnect();
-  });
-
-  /** Scroll so the message sits just under the top edge; the view is no
-   *  longer following the reply. Item 359: LibreChat's 400 ms ease-out
-   *  cubic, re-aimed every frame, rather than the browser's smooth scroll;
-   *  `instant` for a drag along the rail. */
-  async function jumpTo(i: number, instant = false) {
-    const t = navTicks[i];
-    if (!t || !viewport) return;
-    // Item 482: a message above the render window is drawn first.
-    if (t.index >= 0 && anchorTop(t.index) === null) await revealTurn(t.index);
-    if (!viewport) return;
-    const top = anchorTop(t.index);
-    if (top === null) return;
-    pinned = false;
-    const vp = viewport;
-    const aim = () => {
-      const now = anchorTop(t.index);
-      if (now === null) return null;
-      return Math.max(0, Math.min(now - JUMP_OFFSET, vp.scrollHeight - vp.clientHeight));
-    };
-    if (instant) {
-      cancelScroll();
-      vp.scrollTop = aim() ?? vp.scrollTop;
-    } else {
-      animateScroll(vp, aim);
-    }
-    // So ⌥↑ / ⌥↓ work from here: the keys are on the viewport, and a click
-    // on the strip would otherwise leave focus on the strip.
-    viewport.focus({ preventScroll: true });
-  }
-  async function toTop(instant = false) {
-    if (!viewport) return;
-    pinned = false;
-    cancelScroll();
-    // Item 482: the top is the chat's first message, not the window's.
-    if (drawFrom > 0) await growTo(0);
-    if (!viewport) return;
-    viewport.scrollTo({ top: 0, behavior: instant ? "instant" : "smooth" });
-    viewport.focus({ preventScroll: true });
-  }
-  /** The ⌄'s click (item 218; it was 065's bottom chevron on the strip):
-   *  to the latest message, re-pinned so a reply still streaming is
-   *  followed from there. */
-  function toBottom() {
-    if (!viewport) return;
-    pinned = true;
-    chasing = true;
-    jumpDown = false;
-    cancelScroll();
-    scrollToLatest(viewport);
-    // A smooth scroll that something else interrupts (a scrollbar grab)
-    // never reaches the foot; the ride is over by then either way.
-    clearTimeout(chaseTimer);
-    chaseTimer = setTimeout(() => {
-      chasing = false;
-      measureNav();
-    }, 1500);
-    viewport.focus({ preventScroll: true });
-  }
-  /** A click on this chat's row in the running list (backlog 309): to
-   *  the running turn at the foot, as the ⌄ does. The window's own
-   *  transcript only (a split pane's draws `chat`); a bump from before
-   *  this transcript existed is not its to answer. */
-  let seenLatest = app.toLatest;
-  $effect(() => {
-    const n = app.toLatest;
-    if (n === seenLatest) return;
-    seenLatest = n;
-    if (isChat) untrack(() => toBottom());
-  });
-
-  // ⌥↑ / ⌥↓ step to the previous / next message. On the viewport rather
-  // than the window: the composer's own ⌥↑ moves the caret by paragraph
-  // and should keep doing so. (`scrollIntent` above also sees ArrowUp and
-  // unpins, which is right — a step up is a step away from the foot.)
-  function viewportKeys(e: KeyboardEvent) {
-    if (!e.altKey || e.metaKey || e.ctrlKey) return;
-    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-    if (navTicks.length === 0) return;
-    e.preventDefault();
-    const next = stepTick(navActive, e.key === "ArrowDown" ? 1 : -1, navTicks.length);
-    if (next !== null) void jumpTo(next);
-  }
-
-  /**
-   * The "Continued from" header (the design's board 5b, backlog 086): a
-   * chat the hand-off card opened carries its parent on its creation line
-   * with `reason: "handoff"`; above its first turn a dashed row names the
-   * earlier chat and HANDOFF.md, and opens the earlier chat on click. The
-   * top bar's own mark stays; this is the transcript's copy of it, where
-   * the board draws it.
-   */
-  const continuedFrom = $derived.by(() => {
-    const session = app.sessions.find((s) => s.id === chatId) ?? null;
-    if (!session?.forked_from || session.forked_from.reason !== "handoff") return null;
-    const line = forkLine(session, app.sessions) ?? "from an earlier chat";
-    return { id: session.forked_from.session, name: line.replace(/^from /, "") };
-  });
-
-  // ---- Ask aside about a highlighted passage (nightshift backlog 107) ----
-  //
-  // Select words in a reply or in one of his messages and a small pill
-  // floats over the selection: *Ask aside*. ~~It opens the aside card
-  // (backlog 081) at the foot as a question box with the passage quoted
-  // above it~~ — since backlog 141 (2026-09-17, blocker 162 answered) it
-  // marks the passage in place and opens the floating card
-  // (`AsideCard.svelte`) right under it, inside this scrolled column, so
-  // the view does not move and the passage is not quoted twice; what he
-  // types is sent with the passage, framed as a
-  // selection (`asideQuote.ts`), through the same backend — off the warm
-  // cache, recorded nowhere. A passage is a selection whose both ends sit
-  // in the same prose block (`.markdown` for a reply, `.user-text` for his
-  // message) of the same live turn: thinking, tool results, a subagent's
-  // text and anything spanning two messages get no pill. Claude Code
-  // engine and an idle chat only, as the composer's own Ask aside is.
-  //
-  // The pill is `position: fixed` at the selection rectangle's top edge,
-  // re-measured on the document's `selectionchange` and on this scroll,
-  // and its mousedown is swallowed so the click does not collapse the
-  // selection it is about. ⌘⇧A (Ctrl+Shift+A elsewhere) is the same click
-  // from the keyboard, inert without a qualifying selection; the chord
-  // was free (no KeyA in `App.svelte`'s tables, no such accelerator in
-  // the native menu — grepped 2026-09-16).
-  const PILL_HEIGHT = 30;
-  let asidePill = $state<{ quote: AsideQuote; top: number; left: number; source: CommentSource } | null>(null);
-  /** Item 754: the pill's *Comment* — the chat's own transcript only (an
-   *  aside card's thread and a pane have none), any engine, mid-turn too. */
-  const PLAN_TURN = -1;
-  // ~~A turn starting, or the engine changing, takes the pill down without
-  // waiting for the next selection change.~~ Since backlog 215
-  // (2026-09-25) the pill also carries *Reply*, which works on any engine
-  // and mid-turn (the composer queues), so the pill stays; ~~only its Ask
-  // aside half needs the Claude Code engine and an idle chat.~~ Since
-  // item 500 (2026-11-03) mid-turn too: since item 404 an aside asked
-  // while the chat's turn runs waits for it ("queued") and then answers,
-  // as the composer's own aside box already allowed. A pane still offers
-  // no pill (piece 5).
-  const canAsk = $derived(onClaudeCode && isChat);
-  const canComment = $derived(isChat && !src.draftKey);
-
-  // Per turn index, the message's 1-based place among the live messages
-  // of its kind — "your 3rd reply" in the framing. Rewound and removed
-  // messages do not count: the CLI's history no longer has them. A reply
-  // is counted as drawn (backlog 121): a run of the model's messages with
-  // nothing between them is one reply to him, so it is one here too.
-  const ordinals = $derived.by(() => {
-    const out: Record<number, number> = {};
-    let user = 0;
-    let assistant = 0;
-    items.forEach((it, i) => {
-      if (it.superseded || it.removed || it.kind === "compaction") return;
-      if (it.kind === "user") out[it.index] = ++user;
-      else out[it.index] = continued[i] ? assistant : ++assistant;
-    });
-    return out;
-  });
-
-  function proseEnd(node: Node | null): { turn: number; prose: Element; role: "assistant" | "user" } | null {
-    if (!node || !viewport) return null;
-    const el = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
-    const prose = el?.closest(".markdown, .user-text") ?? null;
-    if (!prose || !viewport.contains(prose)) return null;
-    // Item 674: an aside card is a transcript inside this one; its prose
-    // is its own transcript's to offer Reply on, never the chat's.
-    if (prose.closest(".transcript") !== viewport) return null;
-    // ~~Item 481: a Classic aside card's thread has its own Reply
-    // (`AsideThread`)~~ — item 674 step 7 (2026-11-12): `AsideThread` mounts
-    // under Classic only, where `TranscriptClassic` draws (it keeps the check).
-    const turnEl = prose.closest<HTMLElement>("[data-turn]");
-    // Item 754: a plan card waiting at the foot (not inside a turn) is a
-    // passage too, for Reply and Comment.
-    if (!turnEl) return prose.closest("[data-plan-text]") ? { turn: PLAN_TURN, prose, role: "assistant" } : null;
-    const turn = Number(turnEl.dataset.turn);
-    if (!Number.isFinite(turn)) return null;
-    return { turn, prose, role: prose.classList.contains("user-text") ? "user" : "assistant" };
-  }
-
-  /** The selection as a passage, or null when it is not one. */
-  function passageOf(
-    sel: Selection | null,
-  ): { quote: AsideQuote; range: Range; turn: number; prose: Element } | null {
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
-    const a = proseEnd(sel.anchorNode);
-    const b = proseEnd(sel.focusNode);
-    if (!samePassage(a, b) || !a) return null;
-    const item = items.find((it) => it.index === a.turn);
-    if (a.turn !== PLAN_TURN && (!item || item.superseded || item.removed || item.kind === "compaction")) return null;
-    // Not `sel.toString()`: a rendered equation reads as its layout, and
-    // the model would get that (his report, 2026-09-17); `selectionText`
-    // quotes each equation as its `$…$` source instead.
-    const text = selectionText(sel.getRangeAt(0));
-    if (!text) return null;
-    return { quote: { text, role: a.role, ordinal: ordinals[a.turn] ?? 1 }, range: sel.getRangeAt(0), turn: a.turn, prose: a.prose };
-  }
-
-  /** The prose blocks of a turn, in document order — a reply has one
-   *  `.markdown` per text segment between its tool calls. */
-  function proseBlocks(turn: number): Element[] {
-    if (!viewport) return [];
-    return Array.from(viewport.querySelectorAll(`[data-turn="${turn}"] .markdown, [data-turn="${turn}"] .user-text`));
-  }
-
-  /** Where the passage is, as the card remembers it (backlog 141): the
-   *  turn, the prose block's index, character offsets into its text, and
-   *  the side the card opens on — chosen once from the room around the
-   *  selection, so a growing answer never flips the card over the text. */
-  function anchorOf(p: { range: Range; turn: number; prose: Element }): AsideAnchor | null {
-    if (!viewport) return null;
-    const block = proseBlocks(p.turn).indexOf(p.prose);
-    if (block < 0) return null;
-    const { start, end } = offsetsOf(p.prose, p.range);
-    if (end <= start) return null;
-    const side = chooseSide(p.range.getBoundingClientRect(), viewport.getBoundingClientRect(), PREFERRED_CARD_HEIGHT);
-    return { turn: p.turn, block, start, end, side };
-  }
-
-  function placePill() {
-    // A pane offers no Ask aside or Reply (piece 5): the click opens it.
-    if (!viewport || !src.reply) {
-      asidePill = null;
-      return;
-    }
-    const p = passageOf(document.getSelection());
-    if (!p) {
-      holdIfIntoBox();
-      asidePill = null;
-      // Item 754: a selection inside one diff offers Comment alone.
-      const d = canComment ? diffPassage(document.getSelection(), viewport) : null;
-      if (d) {
-        const r = d.range.getBoundingClientRect();
-        const vp = viewport.getBoundingClientRect();
-        if ((r.width === 0 && r.height === 0) || r.bottom < vp.top || r.top > vp.bottom) return;
-        const top =
-          r.top - PILL_HEIGHT - 4 >= vp.top
-            ? r.top - PILL_HEIGHT - 4
-            : Math.max(vp.top + 4, Math.min(r.bottom + 4, vp.bottom - PILL_HEIGHT - 4));
-        const left = Math.min(Math.max(r.left + r.width / 2, vp.left + 60), vp.right - 60);
-        asidePill = { quote: { text: d.text, role: "assistant", ordinal: 0 }, top, left, source: "diff" };
-      }
-      return;
-    }
-    const r = p.range.getBoundingClientRect();
-    const vp = viewport.getBoundingClientRect();
-    // No rectangle, or one scrolled wholly out of the viewport: no pill —
-    // it would float over text it is not about.
-    if ((r.width === 0 && r.height === 0) || r.bottom < vp.top || r.top > vp.bottom) {
-      shownPassage = null;
-      asidePill = null;
-      return;
-    }
-    // Item 694: a new passage replaces the one the box holds, and is the
-    // one held if it gives way to the box in turn (a copy of its range:
-    // the selection's own moves with the selection).
-    if (canAsk) dropHeld(chatBoxKey());
-    shownPassage = { ...p, range: p.range.cloneRange() };
-    // Above the selection, or below it when the top is off the viewport
-    // (then no lower than the viewport's foot); centred on it, kept
-    // inside the viewport's width.
-    const above = r.top - PILL_HEIGHT - 4 >= vp.top;
-    const top = above
-      ? r.top - PILL_HEIGHT - 4
-      : Math.max(vp.top + 4, Math.min(r.bottom + 4, vp.bottom - PILL_HEIGHT - 4));
-    // 110: half the pill's width with both of its buttons (backlog 215);
-    // 150 with Comment beside them (item 754).
-    const half = canComment ? 150 : 110;
-    const left = Math.min(Math.max(r.left + r.width / 2, vp.left + half), vp.right - half);
-    const source: CommentSource = p.prose.closest("[data-plan-text]")
-      ? "plan"
-      : p.quote.role === "user"
-        ? "message"
-        : "reply";
-    asidePill = { quote: p.quote, top, left, source };
-  }
-
-  /** Item 694: the passage the pill shows, kept so that when the
-   *  selection gives way because the focus went into this chat's message
-   *  box (a click there, or a key the box takes), the box can hold it —
-   *  its quote and its anchor, read now, while the text is still there —
-   *  and its own Ask aside asks about it, as the pill's would. */
-  let shownPassage: { quote: AsideQuote; range: Range; turn: number; prose: Element } | null = null;
-  /** The open chat's message box, as the composer keys its draft. */
-  function chatBoxKey(): string {
-    return draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread);
-  }
-  function holdIfIntoBox(): void {
-    const last = shownPassage;
-    shownPassage = null;
-    if (!last || !asidePill || !canAsk) return;
-    if (!focusIsMainBox(document.activeElement)) return;
-    holdPassage(chatBoxKey(), last.quote, anchorOf(last));
-  }
-
-  /** The anchor for the selection the pill is over, read at the click —
-   *  the selection is still live then (the pill's mousedown keeps it). */
-  function anchorOfSelection(): AsideAnchor | null {
-    const p = passageOf(document.getSelection());
-    return p ? anchorOf(p) : null;
-  }
-
-  /** ~~A new passage's question would replace an answered thread on the
-   *  card (backlog 137, blocker 201): asked about first, in the dialog's
-   *  shape.~~ Struck 2026-09-23 (backlog 176): several asides are open at
-   *  once, so a new passage opens a new card and replaces nothing — there
-   *  is nothing to confirm. */
-  function askAboutSelection(): void {
-    const pill = asidePill;
-    if (!pill || !canAsk || pill.source === "diff") return;
-    const anchor = anchorOfSelection();
-    document.getSelection()?.removeAllRanges();
-    asidePill = null;
-    // The card opens under the passage (or above the composer); the view
-    // stays where it is and the caret goes to the new card's box
-    // (`AsideLayer` focuses it once placed).
-    draftAside(pill.quote, anchor);
-  }
-
-  /** Reply (backlog 215): the passage to the composer as a quote at its
-   *  caret (`replyQuote.svelte.ts`; the composer inserts it). */
-  /** Comment (item 754): the passage becomes a comment chip over the
-   *  chat's box, its comment line open with the caret in it
-   *  (`passageComments.ts`); the selection goes, the view stays. */
-  function commentOnSelection(): void {
-    const pill = asidePill;
-    if (!pill || !canComment) return;
-    document.getSelection()?.removeAllRanges();
-    asidePill = null;
-    const k = chatBoxKey();
-    const ordinal = pill.source === "plan" ? 0 : pill.quote.ordinal;
-    const id = addComment(k, pill.quote.text, pill.source, ordinal);
-    requestCommentFocus(k, id);
-  }
-
-  function replyToSelection(): void {
-    const pill = asidePill;
-    if (!pill || pill.source === "diff") return;
-    document.getSelection()?.removeAllRanges();
-    asidePill = null;
-    // Into the chat's box, or the aside's own follow-up (item 481).
-    requestReply(pill.quote.text, src.draftKey ?? null);
-  }
-
-  function asideChord(e: KeyboardEvent): void {
-    const primary = isMac ? e.metaKey : e.ctrlKey;
-    if (!isChat || !primary || !e.shiftKey || e.altKey || e.code !== "KeyA") return;
-    if (!asidePill || !canAsk) return;
-    e.preventDefault();
-    askAboutSelection();
-  }
-
-  // ~~`submitAsideDraft`, `asideBoxKeys`, the follow-up box~~ — the
-  // card's own since backlog 141 (`AsideCard.svelte`); the question and
-  // follow-up boxes, Enter, Escape and the Follow up button live there.
-
-  // ---- The floating cards' places and the passages' marks ----
-  //
-  // ~~The card is drawn once, at the column's end~~ — since backlog 176
-  // (2026-09-23) several cards are open at once, and `AsideLayer.svelte`
-  // draws them all, at the column's end as the one card was (`.inner`,
-  // `position: relative`, is their frame): per card, the passage found
-  // again from its anchor and marked, the card placed with `placeCard`,
-  // `spreadCards` keeping one from covering another (blocker 318), the
-  // composer's cards stacked above the composer (blocker 225). What it
-  // needs from here: the viewport, the column, and `proseBlocks`.
-  let inner = $state<HTMLDivElement | null>(null);
+  import { arrive } from "./sendMotion";
+  import { transcriptLogic, type TranscriptLogicProps } from "./transcript/logic.svelte";
+
+  // Item 856: the behaviour lives once, in `transcript/logic.svelte.ts`; this file is the look.
+  const props: TranscriptLogicProps = $props();
+  const T = transcriptLogic(() => props);
 </script>
 
 {#snippet notes(index: number)}
   <!-- Item 674: what an aside says under an exchange — where a stopped
        answer ends, an error in the chat's own error look. -->
-  {#each src.notes?.get(index) ?? [] as n (n.kind)}
+  {#each T.src.notes?.get(index) ?? [] as n (n.kind)}
     {#if n.kind === "error"}<div class="error-banner turn-note">{n.text}</div>{:else}<div class="turn-mark">{n.text}</div>{/if}
   {/each}
 {/snippet}
-<svelte:document onselectionchange={placePill} />
-<svelte:window onkeydown={asideChord} />
-{#if removing}
+<svelte:document onselectionchange={T.placePill} />
+<svelte:window onkeydown={T.asideChord} />
+{#if T.removing}
   <!-- Item 356: Remove asks first, and the undo toast still follows it. -->
-  {@const ask = removeAsk(removing.kind, removing.text, onClaudeCode)}
+  {@const ask = removeAsk(T.removing.kind, T.removing.text, T.onClaudeCode)}
   <ConfirmDialog
     title={ask.title}
     lead={ask.lead}
     facts={ask.facts}
     confirmLabel={ask.confirmLabel}
     onconfirm={() => {
-      const asked = removing;
-      removing = null;
-      if (asked && asked.key === sessionKey) void removeHere(asked.index);
+      const asked = T.removing;
+      T.removing = null;
+      if (asked && asked.key === T.sessionKey) void T.removeHere(asked.index);
     }}
-    onclose={() => (removing = null)}
+    onclose={() => (T.removing = null)}
   />
 {/if}
-{#if dropAsk}
+{#if T.dropAsk}
   <!-- Practices §7 (item 336): a changed edit — words or chips — is not
        dropped on one key or one click elsewhere; Keep editing is the default. -->
   <ConfirmDialog
     title="Discard this edit?"
-    lead={dropAsk.what === "open"
+    lead={T.dropAsk.what === "open"
       ? "Another message's editor is open with changes; opening this one drops them."
       : "The changed text and attachments in the edit box are dropped; the message stays as it was."}
     confirmLabel="Discard edit"
     onconfirm={() => {
-      const run = dropAsk?.run;
-      dropAsk = null;
+      const run = T.dropAsk?.run;
+      T.dropAsk = null;
       run?.();
     }}
     onclose={() => {
-      dropAsk = null;
-      void tick().then(() => (editorLive ? editorLive.focus() : editorEl?.focus({ preventScroll: true })));
+      T.dropAsk = null;
+      void tick().then(() => (T.editorLive ? T.editorLive.focus() : T.editorEl?.focus({ preventScroll: true })));
     }}
   />
 {/if}
@@ -2699,57 +111,57 @@
      a control, and the lint has no role for that. -->
 <!-- Item 621: the dot ground's canvas, placed over the scroller's box by
      `dotField` and painted under it (the scroller is positioned after it). -->
-{#if !compact}<canvas class="dot-field" aria-hidden="true" bind:this={dotCanvas}></canvas>{/if}
+{#if !T.compact}<canvas class="dot-field" aria-hidden="true" bind:this={T.dotCanvas}></canvas>{/if}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="transcript"
-  class:narrow-gutter={narrowGutter}
-  class:compact
-  class:of-aside={inAside}
-  bind:this={viewport}
-  data-drop-chat={src.dropKey}
-  {onscroll}
-  use:scrollIntent
+  class:narrow-gutter={T.narrowGutter}
+  class:compact={T.compact}
+  class:of-aside={T.inAside}
+  bind:this={T.viewport}
+  data-drop-chat={T.src.dropKey}
+  onscroll={T.onscroll}
+  use:T.scrollIntent
   tabindex="-1"
-  onkeydown={viewportKeys}
+  onkeydown={T.viewportKeys}
 >
-  <div class="inner" bind:this={inner}>
-    {@render lead?.()}
-    {#if continuedFrom && drawFrom === 0}
+  <div class="inner" bind:this={T.inner}>
+    {@render T.lead?.()}
+    {#if T.continuedFrom && T.drawFrom === 0}
       <div class="continued">
         <span class="continued-ic"><Icon name="branch" size={14} /></span>
-        <span>Continued from <span class="continued-t">“{continuedFrom.name}”</span> · <span class="mono">HANDOFF.md</span></span>
+        <span>Continued from <span class="continued-t">“{T.continuedFrom.name}”</span> · <span class="mono">HANDOFF.md</span></span>
         <span class="spacer"></span>
-        <button class="continued-open" onclick={() => void openSession(continuedFrom.id)}>open the earlier chat</button>
+        <button class="continued-open" onclick={() => void openSession(T.continuedFrom!.id)}>open the earlier chat</button>
       </div>
     {/if}
-    {#each items as item, i (i)}
-      {#if i >= drawFrom && dividerPlaces.before.has(i)}<ChatDividers dividers={dividerPlaces.before.get(i) ?? []} foldKey={(ix) => turnFold(ix, "hand_off")} />{/if}
-      {#if i >= drawFrom && chapterPlaces.before.has(i)}<ChapterRule chapters={chapterPlaces.before.get(i) ?? []} chat={chapterScope} />{/if}
-      {#if i >= drawFrom && cutPlaces.before.has(i)}<SessionCutNotice cuts={cutPlaces.before.get(i) ?? []} resumed />{/if}
+    {#each T.items as item, i (i)}
+      {#if i >= T.drawFrom && T.dividerPlaces.before.has(i)}<ChatDividers dividers={T.dividerPlaces.before.get(i) ?? []} foldKey={(ix) => T.turnFold(ix, "hand_off")} />{/if}
+      {#if i >= T.drawFrom && T.chapterPlaces.before.has(i)}<ChapterRule chapters={T.chapterPlaces.before.get(i) ?? []} chat={T.chapterScope} />{/if}
+      {#if i >= T.drawFrom && T.cutPlaces.before.has(i)}<SessionCutNotice cuts={T.cutPlaces.before.get(i) ?? []} resumed />{/if}
       <!-- Item 482: only the render window is drawn. -->
-      {#if i < drawFrom}{:else if item.superseded}
-        {#if rewound[i] !== null}
+      {#if i < T.drawFrom}{:else if item.superseded}
+        {#if T.rewound[i] !== null}
           <div
             class="rewound"
             use:tip={"Rewound — not part of the conversation any more. Undo (or ⌘Z) brings it back while nothing newer is on the stack."}
           >
-            {rewound[i] === 1 ? "1 message rewound" : `${rewound[i]} messages rewound`}
+            {T.rewound[i] === 1 ? "1 message rewound" : `${T.rewound[i]} messages rewound`}
           </div>
         {/if}
-      {:else if item.kind === "user" && !item.removed && editing?.index !== item.index && isScanMessage(item.text)}
+      {:else if item.kind === "user" && !item.removed && T.editing?.index !== item.index && isScanMessage(item.text)}
         <!-- Item 763 (H3): the morning scan as a card, its facts folded. -->
         <div class="scan-turn" data-turn={item.index}>
-          <ScanCard text={item.text} at={item.at} foldKey={turnFold(item.index, "scan")} />
+          <ScanCard text={item.text} at={item.at} foldKey={T.turnFold(item.index, "scan")} />
           {@render notes(item.index)}
         </div>
-        {#if item.index === warmNoticeIndex && chatId}<KeepWarmNotice chat={chatId} />{/if}
+        {#if item.index === T.warmNoticeIndex && T.chatId}<KeepWarmNotice chat={T.chatId} />{/if}
       {:else if item.kind === "user"}
         <div
           class="user-turn"
           class:superseded={item.superseded}
           class:removed={item.removed}
-          use:arrive={{ channel: src.channel, active: item.index >= enterFrom, bubble: ".user-bubble", riseWithout: true }}
+          use:arrive={{ channel: T.src.channel, active: item.index >= T.enterFrom, bubble: ".user-bubble", riseWithout: true }}
           data-turn={item.index}
         >
           <div class="user-key">
@@ -2759,11 +171,11 @@
             {#if item.original !== null && !item.removed}
               <button
                 class="edited-mark"
-                class:on={isDiffOpen(item.index)}
+                class:on={T.isDiffOpen(item.index)}
                 type="button"
-                aria-pressed={isDiffOpen(item.index)}
-                use:tip={isDiffOpen(item.index) ? "Edited — show the current text" : "Edited — show the edit as a diff"}
-                onclick={(e) => toggleDiff(item.index, e.currentTarget)}>edited</button
+                aria-pressed={T.isDiffOpen(item.index)}
+                use:tip={T.isDiffOpen(item.index) ? "Edited — show the current text" : "Edited — show the edit as a diff"}
+                onclick={(e) => T.toggleDiff(item.index, e.currentTarget)}>edited</button
               >
             {/if}
             <!-- The time moved to the foot (backlog 123): one place is
@@ -2774,55 +186,55 @@
                  2026-09-27 (backlog 245): under his message, as a reply's
                  figure is under the reply. -->
           </div>
-          {#if editing?.index === item.index}
+          {#if T.editing?.index === item.index}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="editor" data-drop-box="edit" ondragover={editorDragOver} ondrop={editorDrop}>
+            <div class="editor" data-drop-box="edit" ondragover={T.editorDragOver} ondrop={T.editorDrop}>
               <!-- Item 399: the composer's box, drawn as the composer draws
                    it — with the format toggle on, its formatted box; off,
                    the textarea with quote and code lines drawn in a layer
                    behind it (BoxLayer). -->
-              {#if composerFormat.on || editGrid}
+              {#if composerFormat.on || T.editGrid}
                 <div class="edit-live">
                   <LiveBox
-                    bind:handle={editorLive}
+                    bind:handle={T.editorLive}
                     drawing={composerFormat.on ? "all" : "plain"}
-                    value={editing.draft}
+                    value={T.editing.draft}
                     label="Edit this message"
                     onchange={(v) => {
-                      if (editing && !editing.parts) editing = editReduce(editing, { type: "draft", text: v });
+                      if (T.editing && !T.editing.parts) T.editing = editReduce(T.editing, { type: "draft", text: v });
                     }}
-                    oninput={() => (editPlaces[0] = placeOf(editorLive))}
-                    onkeydown={(e) => editorKeys(e, item)}
-                    onpaste={editorPaste}
+                    oninput={() => (T.editPlaces[0] = placeOf(T.editorLive))}
+                    onkeydown={(e) => T.editorKeys(e, item)}
+                    onpaste={T.editorPaste}
                   />
                 </div>
               {:else}
                 <div class="edit-wrap">
-                  {#if layerShown(editing.draft)}
-                    <BoxLayer text={editing.draft} box={editorEl} onrelabel={editRelabel} />
+                  {#if layerShown(T.editing.draft)}
+                    <BoxLayer text={T.editing.draft} box={T.editorEl} onrelabel={T.editRelabel} />
                   {/if}
                   <!-- data-own-undo: its history is editHist's (item 421, fieldUndo.ts). -->
                   <textarea
-                    bind:this={editorEl}
+                    bind:this={T.editorEl}
                     data-own-undo
-                    class:layered={layerShown(editing.draft)}
-                    use:grow
-                    use:trackPlace={(pl) => (editPlaces[0] = pl)}
-                    value={editing.draft}
+                    class:layered={layerShown(T.editing.draft)}
+                    use:T.grow
+                    use:trackPlace={(pl) => (T.editPlaces[0] = pl)}
+                    value={T.editing.draft}
                     oninput={(e) => {
                       const el = e.target as HTMLTextAreaElement;
-                      editHist.input(editKind((e as unknown as InputEvent).inputType ?? ""), editSnap(el));
-                      editing = editReduce(editing, { type: "draft", text: el.value });
-                      autogrow();
+                      T.editHist.input(editKind((e as unknown as InputEvent).inputType ?? ""), T.editSnap(el));
+                      T.editing = editReduce(T.editing, { type: "draft", text: el.value });
+                      T.autogrow();
                     }}
-                    onbeforeinput={editBeforeInput}
-                    oncompositionstart={() => (editComposing = true)}
+                    onbeforeinput={T.editBeforeInput}
+                    oncompositionstart={() => (T.editComposing = true)}
                     oncompositionend={() => {
-                      editComposing = false;
-                      editHist.close();
+                      T.editComposing = false;
+                      T.editHist.close();
                     }}
-                    onkeydown={(e) => editorKeys(e, item)}
-                    onpaste={editorPaste}
+                    onkeydown={(e) => T.editorKeys(e, item)}
+                    onpaste={T.editorPaste}
                     aria-label="Edit this message"
                     autocorrect="off"
                     autocapitalize="off"
@@ -2832,40 +244,40 @@
               {/if}
               <!-- Item 399b: the composer's long-paste offer. -->
               <PasteOfferRow
-                offer={editOffer}
-                undoable={editUndoable()}
-                onconvert={() => void editConvert()}
-                ondismiss={() => (editOffer = null)}
-                onundo={() => editUndoConvert()}
+                offer={T.editOffer}
+                undoable={T.editUndoable()}
+                onconvert={() => void T.editConvert()}
+                ondismiss={() => (T.editOffer = null)}
+                onundo={() => T.editUndoConvert()}
               />
               <!-- Item 336: the turn's attachments as chips, × to remove,
                    Attach (and paste, drop) to add. -->
-              <EditAttachments key={editKey} />
-              <div class="editor-line">{editCacheLine}</div>
+              <EditAttachments key={T.editKey} />
+              <div class="editor-line">{T.editCacheLine}</div>
               <div class="editor-row">
                 <button
                   class="ns-btn small"
-                  disabled={!editButtons(editing, editChips).send || !!src.words?.sendBlocked}
-                  use:tip={src.words
-                    ? (src.words.sendBlocked ?? src.words.sendTip)
+                  disabled={!editButtons(T.editing, T.editChips).send || !!T.src.words?.sendBlocked}
+                  use:tip={T.src.words
+                    ? (T.src.words.sendBlocked ?? T.src.words.sendTip)
                     : "Start a fork from here with this text as its next message; this chat stays as it is"}
-                  onclick={() => void commitSend(item)}
+                  onclick={() => void T.commitSend(item)}
                 >
-                  {src.words?.sendLabel ?? "Send"}
+                  {T.src.words?.sendLabel ?? "Send"}
                 </button>
-                {#if src.chatActions}
+                {#if T.src.chatActions}
                 <button
                   class="ns-btn ghost small"
-                  disabled={!editButtons(editing, editChips).save}
+                  disabled={!editButtons(T.editing, T.editChips).save}
                   use:tip={"Keep this chat, with this message reworded from here on"}
-                  onclick={() => void commitSave()}
+                  onclick={() => void T.commitSave()}
                 >
                   Save
                 </button>
                 {/if}
                 <button
                   class="ns-btn ghost small"
-                  onclick={cancelEdit}
+                  onclick={T.cancelEdit}
                 >
                   Cancel
                 </button>
@@ -2877,16 +289,16 @@
                  attachment is the event's index and its own; the bytes
                  stay in the log. -->
             {@const adoptedMsg = splitAdopted(item.text)}
-            {@const diffShown = isDiffOpen(item.index) && item.original !== null && !item.removed}
+            {@const diffShown = T.isDiffOpen(item.index) && item.original !== null && !item.removed}
             <UserBubble
               images={item.images}
               documents={item.documents}
               text={item.text}
               sending={item.sending ?? []}
-              keep={turnFold(item.index, "bubble")}
+              keep={T.turnFold(item.index, "bubble")}
               custom={diffShown || !!adoptedMsg.carried}
-              plain={handoffIsPlain(item.original, chatId ? (versionPlace(versionsOf(chatId, item.index), chatId)?.n ?? null) : null)}
-              onopenimage={inAside ? undefined : (j, rect, size) => {
+              plain={handoffIsPlain(item.original, T.chatId ? (versionPlace(versionsOf(T.chatId, item.index), T.chatId)?.n ?? null) : null)}
+              onopenimage={T.inAside ? undefined : (j, rect, size) => {
                 if (!app.activeSessionId) return;
                 openAttachment(
                   { kind: "attachment", session: app.activeSessionId, turn: item.index, index: j, media: "image", name: "image" },
@@ -2894,7 +306,7 @@
                   size,
                 );
               }}
-              onopendoc={inAside ? undefined : (j, rect) => {
+              onopendoc={T.inAside ? undefined : (j, rect) => {
                 if (!app.activeSessionId) return;
                 const doc = item.documents[j];
                 if (!doc) return;
@@ -2916,7 +328,7 @@
                 {:else if adoptedMsg.carried}
                   <!-- An adopted agent's run (backlog 157): what this chat
                        was given, folded; his question below it. -->
-                  <details class="adopted-carry" use:keptOpen={{ key: turnFold(item.index, "carried") }}>
+                  <details class="adopted-carry" use:keptOpen={{ key: T.turnFold(item.index, "carried") }}>
                     <summary>Carried from agent “{adoptedMsg.agent ?? "subagent"}” — its task and run, which this chat answers from</summary>
                     <pre>{adoptedMsg.carried}</pre>
                   </details>
@@ -2925,7 +337,7 @@
               {/snippet}
               {#snippet extra()}
                 {#if !item.removed}
-                  {@const council = councilOfTurn(evs, item.index)}
+                  {@const council = councilOfTurn(T.evs, item.index)}
                   {#if council}
                     <!-- The council chip (nightshift backlog 149): this
                          message went to the seats the reply's record names. -->
@@ -2939,7 +351,7 @@
               {/snippet}
             </UserBubble>
             {#if item.original !== null && item.removed}
-              <details class="original" use:keptOpen={{ key: turnFold(item.index, "removed") }}>
+              <details class="original" use:keptOpen={{ key: T.turnFold(item.index, "removed") }}>
                 <summary>what was removed</summary>
                 <div class="original-text">{item.original}</div>
               </details>
@@ -2949,9 +361,9 @@
                was sent, in words, the exact moment on hover. The time is
                always drawn; the tools only when the turn can be acted on. -->
           <div class="turn-foot">
-            {#if chatId && editing?.index !== item.index}
-              {@const vlist = versionsOf(chatId, item.index)}
-              {@const vplace = versionPlace(vlist, chatId)}
+            {#if T.chatId && T.editing?.index !== item.index}
+              {@const vlist = versionsOf(T.chatId, item.index)}
+              {@const vplace = versionPlace(vlist, T.chatId)}
               {#if vlist && vplace}
                 <!-- The versions of this message (item 299): ‹ n/N ›, the
                      original first; an arrow opens that version's chat in
@@ -2959,7 +371,7 @@
                 <span class="versions" role="group" aria-label="Versions of this message">
                   <button
                     class="ver-btn"
-                    disabled={vplace.n <= 1 || inPane}
+                    disabled={vplace.n <= 1 || T.inPane}
                     aria-label="Previous version"
                     use:tip={"Open the previous version of this message"}
                     onclick={() => openVersion(vlist[vplace.n - 2])}>‹</button
@@ -2967,7 +379,7 @@
                   <span class="ver-count">{vplace.n}/{vplace.total}</span>
                   <button
                     class="ver-btn"
-                    disabled={vplace.n >= vplace.total || inPane}
+                    disabled={vplace.n >= vplace.total || T.inPane}
                     aria-label="Next version"
                     use:tip={"Open the next version of this message"}
                     onclick={() => openVersion(vlist[vplace.n])}>›</button
@@ -2975,7 +387,7 @@
                 </span>
               {/if}
             {/if}
-            {#if splitAttachNote(item.text).said && editing?.index !== item.index}
+            {#if splitAttachNote(item.text).said && T.editing?.index !== item.index}
               <!-- Copy his own message (nightshift backlog 181, 2026-09-22):
                    the text exactly as he typed it, never the rendered or
                    diffed face. Shown during a turn and on a superseded or
@@ -2983,21 +395,21 @@
               <span class="turn-tools">
                 <button
                   class="tool-btn"
-                  class:copied={copiedTurn === item.index}
-                  use:tip={copiedTurn === item.index ? "Copied" : "Copy this message"}
-                  aria-label={copiedTurn === item.index ? "Copied" : "Copy this message"}
-                  onclick={() => void copyUserText(item.index, splitAttachNote(item.text).said)}
+                  class:copied={T.copiedTurn === item.index}
+                  use:tip={T.copiedTurn === item.index ? "Copied" : "Copy this message"}
+                  aria-label={T.copiedTurn === item.index ? "Copied" : "Copy this message"}
+                  onclick={() => void T.copyUserText(item.index, splitAttachNote(item.text).said)}
                 >
-                  <Icon name={copiedTurn === item.index ? "check" : "copy"} size={14} />
+                  <Icon name={T.copiedTurn === item.index ? "check" : "copy"} size={14} />
                 </button>
               </span>
             {/if}
-            {#if !item.superseded && !locked && editing?.index !== item.index}
+            {#if !item.superseded && !T.locked && T.editing?.index !== item.index}
               <!-- Offered on both engines since 2026-09-15 (backlog 062): on
                    Claude Code each of these rewrites the CLI's history by copy
                    and the next turn resumes the copy — the title says so.
                    Icons, with the full sentence on hover and for a reader. -->
-              <span class="turn-tools" use:tip={controlsTitle}>
+              <span class="turn-tools" use:tip={T.controlsTitle}>
                 {#if item.removed}
                   <!-- Restore on the placeholder itself (backlog 066): the
                        same restore an undo of the removal runs. -->
@@ -3012,24 +424,24 @@
                 {:else}
                   <button
                     class="tool-btn"
-                    use:tip={src.words?.rewindTip ?? rewindTitle}
+                    use:tip={T.src.words?.rewindTip ?? T.rewindTitle}
                     aria-label="Rewind to here"
-                    onclick={() => void rewindHere(item.index)}
+                    onclick={() => void T.rewindHere(item.index)}
                   >
                     <Icon name="revert" size={14} />
                   </button>
-                  {#if redo && redo.prompt === item.index && src.actions.retry}
+                  {#if T.redo && T.redo.prompt === item.index && T.src.actions.retry}
                     <!-- Item 674: an aside's last question asked again, the
                          chat's Redo by the aside's own action. -->
                     <button
                       class="tool-btn"
-                      use:tip={src.words?.retryTip ?? "Redo"}
+                      use:tip={T.src.words?.retryTip ?? "Redo"}
                       aria-label="Redo the reply to this message"
-                      onclick={() => void src.actions.retry?.(redo.reply)}
+                      onclick={() => void T.src.actions.retry?.(T.redo!.reply)}
                     >
                       <Icon name="refresh" size={14} />
                     </button>
-                  {:else if redo && redo.prompt === item.index && app.activeSessionId && src.chatActions}
+                  {:else if T.redo && T.redo.prompt === item.index && app.activeSessionId && T.src.chatActions}
                     <!-- Redo (item 439): Claude answers this message again,
                          no retyping — the Retry under the reply (item 333),
                          here beside Rewind. The old reply stays a version
@@ -3038,33 +450,33 @@
                       class="tool-btn"
                       use:tip={"Redo: Claude answers this message again, without retyping it. The old reply stays — ‹ › under your message flips between the two."}
                       aria-label="Redo the reply to this message"
-                      onclick={() => void retryReply(redo.reply)}
+                      onclick={() => void retryReply(T.redo!.reply)}
                     >
                       <Icon name="refresh" size={14} />
                     </button>
                   {/if}
-                  {#if item.editable && (src.chatActions || src.actions.askEdited)}
+                  {#if item.editable && (T.src.chatActions || T.src.actions.askEdited)}
                     <button
                       class="tool-btn"
-                      use:tip={src.words?.editTip ?? "Edit this message: Save keeps it here with the new text; Send starts a fork from here."}
+                      use:tip={T.src.words?.editTip ?? "Edit this message: Save keeps it here with the new text; Send starts a fork from here."}
                       aria-label="Edit this message"
-                      onclick={() => beginEdit(item)}
+                      onclick={() => T.beginEdit(item)}
                     >
                       <Icon name="pencil" size={14} />
                     </button>
                   {/if}
                   <!-- A delete look, apart from Edit's pencil (item 356). -->
-                  {#if src.chatActions}
+                  {#if T.src.chatActions}
                   <button
                     class="tool-btn danger"
                     use:tip={removeTip("message")}
                     aria-label="Remove this message from the chat history"
-                    onclick={() => (removing = { index: item.index, kind: "message", text: shownText(item.text), key: sessionKey })}
+                    onclick={() => (T.removing = { index: item.index, kind: "message", text: shownText(item.text), key: T.sessionKey })}
                   >
                     <Icon name="trash" size={14} />
                   </button>
                   {/if}
-                  {#if src.chatActions && app.connection?.engine === "claude-code" && checkpointOwner(userIndexes, app.checkpoint) !== item.index}
+                  {#if T.src.chatActions && app.connection?.engine === "claude-code" && checkpointOwner(T.userIndexes, app.checkpoint) !== item.index}
                     <!-- "Fork from here" (nightshift backlog 104, pass 3):
                          helpers fork from the end of this exchange — this
                          message and its reply — instead of the first one. -->
@@ -3080,7 +492,7 @@
                 {/if}
               </span>
             {/if}
-            {#if isChat && app.checkpoint && checkpointOwner(userIndexes, app.checkpoint) === item.index}
+            {#if T.isChat && app.checkpoint && checkpointOwner(T.userIndexes, app.checkpoint) === item.index}
               <!-- The checkpoint's marker (backlog 104): on the exchange
                    helpers fork from, always drawn, not only on hover. -->
               <span class="checkpoint-mark" use:tip={checkpointLine(app.checkpoint, true)}>
@@ -3089,14 +501,14 @@
               </span>
             {/if}
             <span class="you-k">You</span>
-            {#if editing?.index !== item.index && !item.superseded && !item.removed}
+            {#if T.editing?.index !== item.index && !item.superseded && !item.removed}
               <!-- His message's figure (backlog 245), in the reply footer's
                    mono 11px beside the time: the log's exact figure with
                    its share of the window (backlog 090), or the text's
                    estimate, marked ~, where the log cannot say. -->
-              {@const fig = userFigure(sizes[item.index] ?? null, item.text, windowLimit)}
+              {@const fig = userFigure(T.sizes[item.index] ?? null, item.text, T.windowLimit)}
               {#if fig}
-                {@const share = fig.exact ? shareOf(fig.tokens, windowLimit) : null}
+                {@const share = fig.exact ? shareOf(fig.tokens, T.windowLimit) : null}
                 <span class="turn-size" use:tip={fig.title}>
                   {fig.label}
                   {#if fmtShare(share)}
@@ -3106,16 +518,16 @@
                 </span>
               {/if}
             {/if}
-            {#if item.at}<span class="when" use:tip={exactTime(item.at)}>{relativeTimeLong(item.at, now)}</span>{/if}
+            {#if item.at}<span class="when" use:tip={exactTime(item.at)}>{relativeTimeLong(item.at, T.now)}</span>{/if}
           </div>
           {@render notes(item.index)}
         </div>
         <!-- Keep-warm (backlog 582): under his latest message until a reply
              arrives (item 663 moves it under the reply), while
              the chat's cache is being kept warm; one click switches it off. -->
-        {#if item.index === warmNoticeIndex && chatId}<KeepWarmNotice chat={chatId} />{/if}
+        {#if item.index === T.warmNoticeIndex && T.chatId}<KeepWarmNotice chat={T.chatId} />{/if}
       {:else if item.kind === "compaction"}
-        <details class="compaction" class:superseded={item.superseded} use:keptOpen={{ key: turnFold(item.index, "compaction") }}>
+        <details class="compaction" class:superseded={item.superseded} use:keptOpen={{ key: T.turnFold(item.index, "compaction") }}>
           <summary>conversation compacted — earlier turns replaced by a summary</summary>
           <div class="compaction-body">{item.summary}</div>
         </details>
@@ -3124,28 +536,28 @@
           class="assistant-turn"
           class:superseded={item.superseded}
           class:removed={item.removed}
-          class:run-cont={continued[i]}
+          class:run-cont={T.continued[i]}
           data-turn={item.index}
         >
-          {#if editing?.index === item.index}
+          {#if T.editing?.index === item.index}
             <!-- The reply's text blocks as textareas in order, each tool
                  call between them a fixed marker (backlog 066): the text
                  around a call is edited, the call is not. A block's text
                  deleted entirely removes that block on Save. -->
             <div class="editor">
-              {#each editing.parts ?? [] as part, p (part.block)}
+              {#each T.editing.parts ?? [] as part, p (part.block)}
                 {#if part.kind === "text"}
                   <textarea
-                    bind:this={editorEls[p]}
-                    use:grow
-                    use:trackPlace={(pl) => (editPlaces[p + 1] = pl)}
+                    bind:this={T.editorEls[p]}
+                    use:T.grow
+                    use:trackPlace={(pl) => (T.editPlaces[p + 1] = pl)}
                     value={part.draft}
                     oninput={(e) => {
                       const el = e.target as HTMLTextAreaElement;
-                      editing = editReduce(editing, { type: "draft", text: el.value, block: part.block });
-                      autogrow(el);
+                      T.editing = editReduce(T.editing, { type: "draft", text: el.value, block: part.block });
+                      T.autogrow(el);
                     }}
-                    onkeydown={(e) => editorKeys(e, item)}
+                    onkeydown={(e) => T.editorKeys(e, item)}
                     aria-label="Edit this part of the reply"
                     autocorrect="off"
                     autocapitalize="off"
@@ -3155,58 +567,58 @@
                   <div class="editor-marker" use:tip={"A tool call stays where it is; remove it from its own hover"}>{part.label}</div>
                 {/if}
               {/each}
-              <div class="editor-line">{editCacheLine}</div>
+              <div class="editor-line">{T.editCacheLine}</div>
               <div class="editor-row">
                 <button
                   class="ns-btn small"
-                  disabled={!editButtons(editing).save}
+                  disabled={!editButtons(T.editing).save}
                   use:tip={"Keep this chat, with this reply reworded from here on"}
-                  onclick={() => void commitSave()}
+                  onclick={() => void T.commitSave()}
                 >
                   Save
                 </button>
                 <button
                   class="ns-btn ghost small"
-                  onclick={cancelEdit}
+                  onclick={T.cancelEdit}
                 >
                   Cancel
                 </button>
               </div>
             </div>
           {:else}
-            {@const editable = !item.superseded && !locked && !item.removed}
+            {@const editable = !item.superseded && !T.locked && !item.removed}
             <!-- The reply's own Edit and Remove ride its footer row since
                  backlog 121 (they were a row of their own below); Restore
                  for a removed reply stays a row under the placeholder. -->
             <AssistantMessage
               segs={item.segs}
-              footer={src.bare?.has(item.index) ? { ...item.footer, bare: true } : item.footer}
-              size={sizes[item.index] ?? null}
-              limit={windowLimit}
-              {controlsTitle}
-              onremove={editable && src.chatActions ? (block) => void removeBlock(item.index, block) : null}
-              onrestore={editable && src.chatActions ? (block) => void restoreBlock(item.index, block) : null}
+              footer={T.src.bare?.has(item.index) ? { ...item.footer, bare: true } : item.footer}
+              size={T.sizes[item.index] ?? null}
+              limit={T.windowLimit}
+              controlsTitle={T.controlsTitle}
+              onremove={editable && T.src.chatActions ? (block) => void removeBlock(item.index, block) : null}
+              onrestore={editable && T.src.chatActions ? (block) => void restoreBlock(item.index, block) : null}
               originals={item.originals ?? null}
-              diff={isDiffOpen(item.index)}
-              clock={now}
-              headed={!continued[i]}
-              onedit={editable && item.editable && src.chatActions ? () => beginEdit(item) : null}
-              onremoveturn={editable && src.chatActions
-                ? () => (removing = { index: item.index, kind: "reply", text: textOf(item.segs), key: sessionKey })
+              diff={T.isDiffOpen(item.index)}
+              clock={T.now}
+              headed={!T.continued[i]}
+              onedit={editable && item.editable && T.src.chatActions ? () => T.beginEdit(item) : null}
+              onremoveturn={editable && T.src.chatActions
+                ? () => (T.removing = { index: item.index, kind: "reply", text: T.textOf(item.segs), key: T.sessionKey })
                 : null}
-              planUsage={src.planUse ? (src.planUse.get(item.index) ?? null) : replyUsageView(usageLines.get(item.index))}
-              onretry={editable && turnEnds[i] && src.actions.retry
-                ? () => void src.actions.retry?.(item.index)
-                : editable && turnEnds[i] && app.activeSessionId && src.chatActions
+              planUsage={T.src.planUse ? (T.src.planUse.get(item.index) ?? null) : replyUsageView(T.usageLines.get(item.index))}
+              onretry={editable && T.turnEnds[i] && T.src.actions.retry
+                ? () => void T.src.actions.retry?.(item.index)
+                : editable && T.turnEnds[i] && app.activeSessionId && T.src.chatActions
                   ? () => void retryReply(item.index)
                   : null}
-              {cliSession}
-              folds={turnFolds(item.index)}
-              runFrom={src.runFrom}
-              nextChat={nextChat?.index === item.index ? nextChat : null}
+              cliSession={T.cliSession}
+              folds={T.turnFolds(item.index)}
+              runFrom={T.src.runFrom}
+              nextChat={T.nextChat?.index === item.index ? T.nextChat : null}
             />
             {#if item.original !== null && item.removed}
-              <details class="original" use:keptOpen={{ key: turnFold(item.index, "removed") }}>
+              <details class="original" use:keptOpen={{ key: T.turnFold(item.index, "removed") }}>
                 <summary>what was removed</summary>
                 <div class="original-text">{item.original}</div>
               </details>
@@ -3214,18 +626,18 @@
               <div class="edited-row">
                 <button
                   class="edited-mark"
-                  class:on={isDiffOpen(item.index)}
+                  class:on={T.isDiffOpen(item.index)}
                   type="button"
-                  aria-pressed={isDiffOpen(item.index)}
-                  use:tip={isDiffOpen(item.index) ? "Edited — show the current text" : "Edited — show the edit as a diff"}
-                  onclick={(e) => toggleDiff(item.index, e.currentTarget)}>edited</button
+                  aria-pressed={T.isDiffOpen(item.index)}
+                  use:tip={T.isDiffOpen(item.index) ? "Edited — show the current text" : "Edited — show the edit as a diff"}
+                  onclick={(e) => T.toggleDiff(item.index, e.currentTarget)}>edited</button
                 >
               </div>
             {/if}
           {/if}
           {@render notes(item.index)}
-          {#if !item.superseded && !locked && item.removed}
-            <span class="turn-tools assistant-tools" use:tip={controlsTitle}>
+          {#if !item.superseded && !T.locked && item.removed}
+            <span class="turn-tools assistant-tools" use:tip={T.controlsTitle}>
               <button
                 class="tool-btn"
                 use:tip={"Restore to the context"}
@@ -3237,7 +649,7 @@
             </span>
           {/if}
         </div>
-        {#if item.index === warmNoticeIndex && chatId}<KeepWarmNotice chat={chatId} side="reply" />{/if}
+        {#if item.index === T.warmNoticeIndex && T.chatId}<KeepWarmNotice chat={T.chatId} side="reply" />{/if}
       {/if}
     {/each}
     <!-- The aside (nightshift backlog 081): a side question answered off the
@@ -3262,14 +674,14 @@
     <!-- `shown` is the live turn, or its ghost for the moment between the
          turn's end and the re-synced log (backlog 131), so the reply never
          leaves the DOM under a reader. -->
-    {#if cutPlaces.tail.length > 0}<SessionCutNotice cuts={cutPlaces.tail} resumed={false} />{/if}
-    {#if dividerPlaces.tail.length > 0}<ChatDividers dividers={dividerPlaces.tail} foldKey={(ix) => turnFold(ix, "hand_off")} />{/if}
-    {#if chapterPlaces.tail.length > 0}<ChapterRule chapters={chapterPlaces.tail} chat={chapterScope} />{/if}
-    {#if shown}
+    {#if T.cutPlaces.tail.length > 0}<SessionCutNotice cuts={T.cutPlaces.tail} resumed={false} />{/if}
+    {#if T.dividerPlaces.tail.length > 0}<ChatDividers dividers={T.dividerPlaces.tail} foldKey={(ix) => T.turnFold(ix, "hand_off")} />{/if}
+    {#if T.chapterPlaces.tail.length > 0}<ChapterRule chapters={T.chapterPlaces.tail} chat={T.chapterScope} />{/if}
+    {#if T.shown}
       <!-- Item 359: the live reply's anchor for its rib on the rail. One
            flex item, as the reply alone was; nothing styles it. -->
       <div data-nav-live>
-      {#if shown.segments.length === 0}
+      {#if T.shown.segments.length === 0}
         <!-- Between send and the first streamed event there is nothing to
              render, and a blank row read as "nothing happened" (his words,
              backlog 049). So something moves: the moon rolls a short way
@@ -3277,49 +689,49 @@
              the OS asked for less motion it is three still dots. It says
              nothing about progress, because it can see none. -->
         <!-- Since item 403 the one piece the chat and its asides wait with. -->
-        {#if inAside}
+        {#if T.inAside}
           <!-- An aside's wait says what it waits behind (317, 404). -->
-          <WaitingMoon label="Waiting for the answer">{src.waitNote ?? ""}</WaitingMoon>
+          <WaitingMoon label="Waiting for the answer">{T.src.waitNote ?? ""}</WaitingMoon>
         {:else}
           <WaitingMoon />
         {/if}
       {:else}
         <AssistantMessage
-          segs={shown.segments}
+          segs={T.shown.segments}
           streaming
-          since={shown.since}
-          model={src.liveModel}
-          approvals={approvalsNow}
-          {cliSession}
-          folds={liveFolds(shown.since)}
-          runFrom={src.runFrom}
+          since={T.shown.since}
+          model={T.src.liveModel}
+          approvals={T.approvalsNow}
+          cliSession={T.cliSession}
+          folds={T.liveFolds(T.shown.since)}
+          runFrom={T.src.runFrom}
         />
       {/if}
       </div>
     {/if}
-    {@render afterLive?.()}
+    {@render T.afterLive?.()}
     <!-- Item 522: between his answer to a prompt and the turn showing
          it, a line says the answer was taken (and, past 20 s, how long). -->
-    {#if isChat}<AskHandBack />{/if}
+    {#if T.isChat}<AskHandBack />{/if}
     <!-- Item 465: messages he sent while this turn runs, not yet taken —
          greyed bubbles with Send now / Let it arrive / Edit / Cancel. -->
-    {#if src.queue}<PendingBubbles of={src.queue} />{/if}
-    {#each stranded as req (req.id)}
+    {#if T.src.queue}<PendingBubbles of={T.src.queue} />{/if}
+    {#each T.stranded as req (req.id)}
       <ApprovalPrompt {req} />
     {/each}
     <!-- Item 753: the question the last turn ended on, as a card, until he answers. -->
-    {#if isChat}<TurnAskHost />{/if}
+    {#if T.isChat}<TurnAskHost />{/if}
     <!-- A call held at the 85% stop line for his answer (nightshift
          backlog 189): ~~only in the chat the turn runs in~~ — since 192 in
          the chat on screen whichever it is, naming the running chat when
          that is another (review 2026-09-23 finding 3), while it runs. -->
-    {#if isChat && app.busy && app.budgetSession && app.turnBudget?.pending_since_ms}
+    {#if T.isChat && app.busy && app.budgetSession && app.turnBudget?.pending_since_ms}
       <BudgetStopCard
         session={app.budgetSession}
         elsewhere={app.parked && app.activeSessionId !== app.budgetSession ? runningChatName() : null}
       />
     {/if}
-    {#if isChat && app.error}
+    {#if T.isChat && app.error}
       <div class="error-banner">{app.error}</div>
     {/if}
     <!-- The files the rewound turns wrote (item 259): the next run would
@@ -3329,7 +741,7 @@
          snapshots — Restore puts the ticked ones back as they were before
          the turn (files the turns made move aside, never deleted); a file
          changed since the turn ended is left alone; Undo puts them back. -->
-    {#if isChat && app.rewindRestore && app.rewindRestore.session === app.activeSessionId}
+    {#if T.isChat && app.rewindRestore && app.rewindRestore.session === app.activeSessionId}
       {@const rr = app.rewindRestore}
       <div class="limit-card" role="status">
         <div class="limit-head">
@@ -3342,9 +754,9 @@
               <label class="aside-file">
                 <input
                   type="checkbox"
-                  checked={restoreTicked(f)}
+                  checked={T.restoreTicked(f)}
                   disabled={f.since || rr.busy}
-                  onchange={(e) => (restoreTicks[f.path] = (e.currentTarget as HTMLInputElement).checked)}
+                  onchange={(e) => (T.restoreTicks[f.path] = (e.currentTarget as HTMLInputElement).checked)}
                 />
                 <span class="mono">{f.path}</span>
                 <span class="limit-sub">{f.since ? "changed since the turn — left alone" : HOW_RESTORE[f.how]}{!f.named && !f.since ? " · not by a named tool (a shell command, a helper or another chat)" : ""}</span>
@@ -3354,10 +766,10 @@
           <div class="limit-actions">
             <button
               class="ns-btn accent small"
-              disabled={restoreCount === 0 || rr.busy}
+              disabled={T.restoreCount === 0 || rr.busy}
               use:tip={"Put the ticked files back as they were before the turn; files it made move to ~/.nightloom/rewound. Undo stays offered"}
-              onclick={() => void restoreRewound(restoreTicked)}
-            >Restore {restoreCount === 1 ? "1 file" : `${restoreCount} files`}</button>
+              onclick={() => void restoreRewound(T.restoreTicked)}
+            >Restore {T.restoreCount === 1 ? "1 file" : `${T.restoreCount} files`}</button>
             <button class="ns-btn ghost small" disabled={rr.busy} onclick={keepRewindFiles}>Keep files</button>
           </div>
         {:else}
@@ -3371,7 +783,7 @@
         {/if}
       </div>
     {/if}
-    {#if isChat && app.rewoundWrites && app.rewoundWrites.session === app.activeSessionId}
+    {#if T.isChat && app.rewoundWrites && app.rewoundWrites.session === app.activeSessionId}
       {@const rw = app.rewoundWrites}
       <div class="limit-card" role="status">
         <div class="limit-head">
@@ -3387,21 +799,21 @@
               <label class="aside-file">
                 <input
                   type="checkbox"
-                  checked={asideTicked(f.path, f.how)}
-                  onchange={(e) => (asideTicks[f.path] = (e.currentTarget as HTMLInputElement).checked)}
+                  checked={T.asideTicked(f.path, f.how)}
+                  onchange={(e) => (T.asideTicks[f.path] = (e.currentTarget as HTMLInputElement).checked)}
                 />
                 <span class="mono">{f.path}</span>
-                <span class="limit-sub">{HOW_LABEL[f.how] ?? f.how}</span>
+                <span class="limit-sub">{T.HOW_LABEL[f.how] ?? f.how}</span>
               </label>
             {/each}
           </div>
           <div class="limit-actions">
             <button
               class="ns-btn accent small"
-              disabled={asidePaths.length === 0}
+              disabled={T.asidePaths.length === 0}
               use:tip={"Move the ticked files to a dated folder outside the project (~/.nightloom/rewound); nothing is deleted"}
-              onclick={() => void setAsideRewound(asidePaths)}
-            >Set aside {asidePaths.length === 1 ? "1 file" : `${asidePaths.length} files`}</button>
+              onclick={() => void setAsideRewound(T.asidePaths)}
+            >Set aside {T.asidePaths.length === 1 ? "1 file" : `${T.asidePaths.length} files`}</button>
             <button class="ns-btn ghost small" onclick={keepRewound}>Keep them</button>
           </div>
         {:else}
@@ -3415,7 +827,7 @@
     <!-- Not connected, and why (item 261): a failed connect used to leave
          every chat saying "not connected" with nothing to press but a
          relaunch. One Retry connects again with the rail as it is. -->
-    {#if isChat && !app.connection && app.connectError && !app.connecting}
+    {#if T.isChat && !app.connection && app.connectError && !app.connecting}
       <div class="limit-card" role="status">
         <div class="limit-head">
           <span class="ns-chip mono">not connected</span>
@@ -3431,8 +843,8 @@
          continues the turn then (scheduled if pressed early, never into
          an exhausted window), naming the subagents that died so they are
          resumed rather than relaunched. -->
-    {#if src.limit}
-      {@const L = src.limit}
+    {#if T.src.limit}
+      {@const L = T.src.limit}
       {@const pause = L.pause}
       <div class="limit-card" role="status">
         <div class="limit-head">
@@ -3457,30 +869,30 @@
     <!-- The floating aside cards (backlog 141; several since 176): the
          column's last children, absolute under their passages, stuck
          above the composer when there is none. -->
-    {@render foot?.()}
-    {#if isChat}
-      <AsideLayer {viewport} {inner} {proseBlocks} version={items.length} drawn={turnDrawn} reveal={revealTurn} />
+    {@render T.foot?.()}
+    {#if T.isChat}
+      <AsideLayer viewport={T.viewport} inner={T.inner} proseBlocks={T.proseBlocks} version={T.items.length} drawn={T.turnDrawn} reveal={T.revealTurn} />
     {/if}
   </div>
 </div>
-<ChapterContents chapters={chapterList} chat={chapterScope} {viewport} onjump={jumpToChapter} />
-{#if showNav}
+<ChapterContents chapters={T.chapterList} chat={T.chapterScope} viewport={T.viewport} onjump={T.jumpToChapter} />
+{#if T.showNav}
   <Navigator
-    ticks={navTicks}
-    active={navActive}
-    {viewport}
-    onjump={jumpTo}
-    ontop={toTop}
+    ticks={T.navTicks}
+    active={T.navActive}
+    viewport={T.viewport}
+    onjump={T.jumpTo}
+    ontop={T.toTop}
     onend={(instant) => {
       // The rail's terminus: the foot, re-pinned, as the ⌄ above the
       // composer does; a drag past the rail's end lands there at once.
-      if (instant && viewport) {
+      if (instant && T.viewport) {
         cancelScroll();
-        pinned = true;
-        viewport.scrollTop = viewport.scrollHeight;
+        T.pinned = true;
+        T.viewport.scrollTop = T.viewport.scrollHeight;
         return;
       }
-      toBottom();
+      T.toBottom();
     }}
   />
 {/if}
@@ -3492,13 +904,13 @@
      and settle into it when the reply ends; still dots with less motion. -->
 <button
   class="jump-down"
-  class:shown={jumpDown}
-  class:speaking
-  use:tip={speaking ? "The reply is still coming — jump to it and follow along" : "Jump to the latest message — and follow the reply again"}
-  aria-label={speaking ? "Jump to the latest message; the reply is still coming" : "Jump to the latest message"}
-  aria-hidden={!jumpDown}
-  tabindex={jumpDown ? 0 : -1}
-  onclick={toBottom}
+  class:shown={T.jumpDown}
+  class:speaking={T.speaking}
+  use:tip={T.speaking ? "The reply is still coming — jump to it and follow along" : "Jump to the latest message — and follow the reply again"}
+  aria-label={T.speaking ? "Jump to the latest message; the reply is still coming" : "Jump to the latest message"}
+  aria-hidden={!T.jumpDown}
+  tabindex={T.jumpDown ? 0 : -1}
+  onclick={T.toBottom}
 >
   <span class="jd-dots" aria-hidden="true"><i><b></b></i><i><b></b></i><i><b></b></i></span>
   <!-- A chevron drawn for this button: the shared `chev` spans 6 of its 20
@@ -3510,18 +922,18 @@
 <!-- The Ask aside pill over a selection (backlog 107), with Reply beside
      it since backlog 215. Mousedown is swallowed on both so the click
      keeps the selection it is about. -->
-{#if asidePill && asidePill.source !== "diff"}
+{#if T.asidePill && T.asidePill.source !== "diff"}
   <!-- One outline since item 223 (his ask: "part of the same view"),
        a thin divider between the two; Reply alone when asking aside is
        not offered (`pillParts`). -->
-  <div class="aside-pill" style:top="{asidePill.top}px" style:left="{asidePill.left}px">
-    {#each pillParts(canAsk) as part (part)}
+  <div class="aside-pill" style:top="{T.asidePill.top}px" style:left="{T.asidePill.left}px">
+    {#each pillParts(T.canAsk) as part (part)}
       {#if part === "ask"}
         <button
           class="pill-btn"
           use:tip={"Ask aside about the highlighted passage: a side question on this text, answered from the chat's context, recorded nowhere"}
           onmousedown={(e) => e.preventDefault()}
-          onclick={() => void askAboutSelection()}
+          onclick={() => void T.askAboutSelection()}
         >
           Ask aside <kbd class="aside-key">{isMac ? "⌘⇧A" : "Ctrl+Shift+A"}</kbd>
         </button>
@@ -3532,32 +944,32 @@
           class="pill-btn"
           use:tip={"Reply: quote the highlighted passage in your message, at the cursor, and keep typing after it"}
           onmousedown={(e) => e.preventDefault()}
-          onclick={replyToSelection}
+          onclick={T.replyToSelection}
         >
           Reply
         </button>
       {/if}
     {/each}
-    {#if canComment}
+    {#if T.canComment}
       <span class="pill-div" aria-hidden="true"></span>
       <button
         class="pill-btn"
         use:tip={"Comment: keep this passage as a comment chip over the message box and write what you think of it; Send sends every comment, each passage quoted, as one message"}
         onmousedown={(e) => e.preventDefault()}
-        onclick={commentOnSelection}
+        onclick={T.commentOnSelection}
       >
         Comment
       </button>
     {/if}
   </div>
-{:else if asidePill}
+{:else if T.asidePill}
   <!-- Item 754: over a diff, Comment alone (Ask aside and Reply are for prose). -->
-  <div class="aside-pill" style:top="{asidePill.top}px" style:left="{asidePill.left}px">
+  <div class="aside-pill" style:top="{T.asidePill.top}px" style:left="{T.asidePill.left}px">
     <button
       class="pill-btn"
       use:tip={"Comment: keep these diff lines as a comment chip over the message box and write what you think of them; Send sends every comment as one message"}
       onmousedown={(e) => e.preventDefault()}
-      onclick={commentOnSelection}
+      onclick={T.commentOnSelection}
     >
       Comment
     </button>
