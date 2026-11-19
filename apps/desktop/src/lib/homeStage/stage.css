@@ -98,20 +98,17 @@
 .h9-acts { display: flex; gap: 6px; flex-wrap: wrap; }
 .h9-caret::after { content: ""; display: inline-block; width: 6px; height: 1.05em; margin-left: 1px; vertical-align: -0.18em; background: var(--motion-ink-hi); box-shadow: var(--glow-signal); animation: h9-pulse 0.9s steps(2) infinite; }
 
-/* phone and narrow */
-@container (max-width: 760px) {
-  .h9-grid { grid-template-columns: minmax(0, 1fr); }
-  .h9-wide { display: none !important; }
-}
-@container (max-width: 480px) {
-  .h9-grid { display: flex; flex-direction: column; overflow-y: auto; }
-  .h9-view { inset: 8px; }
-  .h9-wide { display: none !important; }
-  .h9-row { flex-direction: column; }
-  .h9-col, .h9-row, .h9-grid > * { flex: none !important; }
-  .h9-panel { flex: none !important; }
-  .h9-pb { overflow: visible; }
-}
+/* phone and narrow. ~~@container (max-width: 760px / 480px)~~ (845 batch 1, 2026-11-19): WebKit queries a container at
+   its width × the page zoom (fold.ts, item 183), so at 150% a 672 px view never went narrow. Stage.svelte measures the
+   body in CSS px and sets .narrow (view ≤ 760 px) and .tiny (≤ 480 px) instead. */
+.h9-stage.narrow .h9-grid { grid-template-columns: minmax(0, 1fr); }
+.h9-stage.narrow .h9-wide { display: none !important; }
+.h9-stage.tiny .h9-grid { display: flex; flex-direction: column; overflow-y: auto; }
+.h9-stage.tiny .h9-view { inset: 8px; }
+.h9-stage.tiny .h9-row { flex-direction: column; }
+.h9-stage.tiny :is(.h9-col, .h9-row, .h9-grid > *) { flex: none !important; }
+.h9-stage.tiny .h9-panel { flex: none !important; }
+.h9-stage.tiny .h9-pb { overflow: visible; }
 .h9-stage.phone .h9-bar { padding: 8px 12px 4px; }
 .h9-stage.phone .h9-tabs { padding: 4px 12px 0; }
 .h9-stage.phone .h9-doing { font-size: 12.5px; }

@@ -51,7 +51,9 @@ const WORDS: [RegExp, string, string][] = [
 
 /** A tool's name in plain words, with its icon. */
 export function toolWords(name: string): [string, string] {
-  const hit = WORDS.find(([re]) => re.test(name));
+  // Nightloom's own tools reach Claude Code as `mcp__<server>__<tool>`: match the bare name too.
+  const own = name.replace(/^mcp__.*__/, "");
+  const hit = WORDS.find(([re]) => re.test(name) || re.test(own));
   if (hit) return [hit[1], hit[2]];
   const bare = name.replace(/^mcp__[^_]+(?:_[^_]+)*__/, "").replace(/_/g, " ");
   return [`Used ${bare || "a tool"}`, "play"];

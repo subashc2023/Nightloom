@@ -2505,6 +2505,34 @@ export function homeReachSet(connector: string, on: boolean): Promise<HomeReach>
   return invoke("home_reach_set", { connector, on });
 }
 
+/** Item 845: one task on Home's stage, as Home's `update_task` wrote it (`data` is the view's own payload). */
+export interface HomeTask {
+  id: string;
+  view: string;
+  name: string;
+  doing: string;
+  step: number;
+  of: number;
+  state: "live" | "done" | string;
+  needs: number;
+  why: string;
+  data: unknown;
+  started_at: string;
+  updated_at: string;
+}
+/** Item 845: the tasks on Home's stage, oldest first (a file read; no model). */
+export function homeTasks(): Promise<HomeTask[]> {
+  return invoke("home_tasks");
+}
+/** Item 845: one click of his that Home reads at its next look (a "kind B" control), in plain words. */
+export function homeTaskEvent(task: string, view: string, line: string): Promise<null> {
+  return invoke("home_task_event", { task, view, line });
+}
+/** Item 845: his × on a task's tab — the tab goes; the work is not stopped. */
+export function homeTaskClose(id: string): Promise<null> {
+  return invoke("home_task_close", { id });
+}
+
 /** Item 808: Messages, Contacts, Reminders and the Calendar app — status read now, no dialog. */
 export function homeSources(): Promise<HomeSource[]> {
   return invoke("home_sources");

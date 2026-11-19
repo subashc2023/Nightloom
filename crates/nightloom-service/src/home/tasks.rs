@@ -281,7 +281,7 @@ pub fn take_block(config: &Path) -> Option<String> {
     Some(out)
 }
 
-const DESC: &str = "Show what you are working on, on Home's stage — he watches it there. Call it when you start a piece of work that fits a view (timeline: his day and moves you propose; todo: a list you work through; triage: what arrived, sorted into piles; browse: a website task; run: a chain of project work; research: a question, its sources and claims; brief: a page you write for him), whenever the picture changes, and with done: true when it ends. task is the tab's name and identifies the task: use the same words to update it. data is the view's content as JSON, replaced whole each call. The result lists anything he did on the stage since you last looked.";
+const DESC: &str = "Show what you are working on, on Home's stage — he watches it there. Call it when you start a piece of work that fits a view (timeline: his day and moves you propose; todo: a list you work through; triage: what arrived, sorted into piles; browse: a website task; run: a chain of project work; research: a question, its sources and claims; brief: a page you write for him), whenever the picture changes, and with done: true when it ends. task is the tab's name and identifies the task: use the same words to update it. data is the view's content as JSON, replaced whole each call — give every row a short stable id, times as \"14:30\", detail as {label: value}. timeline: {day: \"Tuesday, November 17\", date: \"2026-11-17\", events: [{id, title, start, end, detail}], changes: [{id, kind: move|add|pick, title, start, end, was (a move's old start), slots (a pick's free starts), why, yours (he asked for it), detail}]}. todo: {items: [{id, text, who: home|you, state: open|doing|done, note, steps: [{text, done}], result, detail}]}. triage: {cards: [{id, from, title, source (gmail, messages, …), pile: inbox|needs|handled|later, verdict, reading, question, options, todo, detail}]}. The result lists anything he did on the stage since you last looked.";
 const EVENTS_DESC: &str = "What he did on Home's stage since you last looked (ticked a row, took a task back, skipped a change you proposed), oldest first. Read it before continuing a task he may have touched.";
 
 /// What the server's `initialize` adds when the stage tools are served.
@@ -486,5 +486,23 @@ mod tests {
         close(&c, &t.id, now).unwrap();
         assert!(read(&c, now).is_empty());
         assert!(close(&c, "nope", now).is_err());
+    }
+
+    /// The window's views read these fields (`apps/desktop/src/lib/homeStage/taskData.ts`); the
+    /// description is the only place Home learns them.
+    #[test]
+    fn the_description_names_each_built_views_shape() {
+        for field in [
+            "timeline: {day",
+            "events: [",
+            "changes: [",
+            "kind: move|add|pick",
+            "todo: {items: [",
+            "state: open|doing|done",
+            "triage: {cards: [",
+            "pile: inbox|needs|handled|later",
+        ] {
+            assert!(DESC.contains(field), "{field}");
+        }
     }
 }
