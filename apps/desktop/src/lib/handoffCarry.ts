@@ -640,12 +640,6 @@ export function buildCarry(inp: CarryInput): Carry {
   };
 }
 
-/** Whether a listed message goes to the next chat: his tick, else carried
- *  ones go and fresh ones stay. */
-export function isTicked(m: Pick<HisMessage, "id" | "carried">, ticks: Readonly<Record<string, boolean>>): boolean {
-  return ticks[m.id] ?? m.carried;
-}
-
 /**
  * Item 850: the cap on his words carried to the next chat, the auto
  * hand-off's (`crates/nightloom-service/src/hand_off.rs` `WORDS_CAP_TOKENS`,

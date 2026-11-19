@@ -300,16 +300,6 @@ pub async fn nightshift_items(
     .await
 }
 
-#[tauri::command]
-pub async fn nightshift_item(
-    state: State<'_, AppState>,
-    project_id: String,
-    id: String,
-) -> Result<Item, String> {
-    let root = root_of(&state, &project_id).await?;
-    blocking(move || items::read_item(&root.root, &root.config, &id)).await
-}
-
 /// Rewrite `backlog/order.json`. Refused while a shift is live.
 #[tauri::command]
 pub async fn nightshift_set_order(
@@ -422,16 +412,6 @@ pub async fn nightshift_shifts(
 ) -> Result<Vec<ShiftSummary>, String> {
     let root = root_of(&state, &project_id).await?;
     blocking(move || -> Result<_, String> { Ok(shifts::list_shifts(&root.root)) }).await
-}
-
-#[tauri::command]
-pub async fn nightshift_shift(
-    state: State<'_, AppState>,
-    project_id: String,
-    shift_id: String,
-) -> Result<ShiftSummary, String> {
-    let root = root_of(&state, &project_id).await?;
-    blocking(move || shifts::read_shift(&root.root, &shift_id)).await
 }
 
 /// The last `max_bytes` of a shift's `run.log` (default 64 KiB).
@@ -553,50 +533,6 @@ pub async fn nightshift_read_file(
 ) -> Result<String, String> {
     let root = root_of(&state, &project_id).await?;
     blocking(move || mornings::read_file(&root.root, &path)).await
-}
-
-/// The last `limit` rows (default 200) of `state/spend.jsonl` or
-/// `state/adherence.jsonl`, by `stream` = `spend` | `adherence`.
-#[tauri::command]
-pub async fn nightshift_stream(
-    state: State<'_, AppState>,
-    project_id: String,
-    stream: String,
-    limit: Option<usize>,
-) -> Result<Vec<serde_json::Value>, String> {
-    let rel = match stream.as_str() {
-        "spend" => "state/spend.jsonl",
-        "adherence" => "state/adherence.jsonl",
-        "limits" => "state/limit-observations.jsonl",
-        other => {
-            return Err(format!(
-                "unknown stream {other:?}; spend, adherence or limits"
-            ));
-        }
-    };
-    let root = root_of(&state, &project_id).await?;
-    blocking(move || mornings::jsonl_tail(&root.root, rel, limit.unwrap_or(200))).await
-}
-
-// ---- schedule ----
-
-#[tauri::command]
-pub async fn nightshift_schedule(
-    state: State<'_, AppState>,
-    project_id: String,
-) -> Result<mornings::Schedules, String> {
-    let root = root_of(&state, &project_id).await?;
-    blocking(move || mornings::read_schedules(&root.root)).await
-}
-
-#[tauri::command]
-pub async fn nightshift_set_schedule(
-    state: State<'_, AppState>,
-    project_id: String,
-    schedules: mornings::Schedules,
-) -> Result<mornings::Schedules, String> {
-    let root = root_of(&state, &project_id).await?;
-    blocking(move || mornings::write_schedules(&root.root, &schedules)).await
 }
 
 // ---- git ----

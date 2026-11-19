@@ -1070,15 +1070,6 @@ export interface ForkedFrom {
   reason?: string;
 }
 
-/** A session that matched a search. Flattened on the Rust side, so it is a
- *  `SessionMeta` with the two extra fields rather than a wrapper. */
-export interface SessionHit extends SessionMeta {
-  /** How many messages contain the query. */
-  hits: number;
-  /** Text around the first one, prefixed with who said it. */
-  excerpt: string;
-}
-
 // ---- search everywhere (nightshift backlog 117, with 106's second half) ----
 // Mirrors `store/search.rs`: the panel's answer, per message grouped by
 // chat, and per line grouped by note.
@@ -2206,24 +2197,6 @@ export interface NoteEntry {
   is_dir: boolean;
   size: number;
   modified: string;
-}
-
-/** One entry of `schedule.json` (§7). */
-export interface Schedule {
-  id: string;
-  enabled: boolean;
-  days: string[];
-  start: string;
-  until: string | null;
-  max_units: number | null;
-  budget_usd: number | null;
-  /** `"global-order"` or a list of ids; kept as `unknown` since the two
-   *  shapes share nothing. */
-  items: unknown;
-}
-
-export interface Schedules {
-  schedules: Schedule[];
 }
 
 /** What a revert would discard, or did discard, of one shift. */
