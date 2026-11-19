@@ -158,6 +158,7 @@ async fn convert_to_pdf_as(
     }
     let _one = CONVERT_LOCK.lock().await;
     let base = std::env::temp_dir();
+    sweep_stale_convert_dirs(&base, STALE_CONVERT_DIR);
     let dir = base.join(format!("nightloom-convert-{}", uuid::Uuid::new_v4()));
     let out = dir.join("out");
     std::fs::create_dir_all(&out).map_err(|e| format!("temp folder: {e}"))?;
@@ -208,6 +209,38 @@ async fn convert_to_pdf_as(
                     format!(": {}", err.lines().last().unwrap_or(err))
                 }
             ))
+        }
+    }
+}
+
+/// A conversion folder older than this was left by a run that never got
+/// to remove it — the app quit mid-conversion, where `RemoveOnDrop` does
+/// not run (868 review: a long deck now converts for minutes, and its copy
+/// is megabytes). Far past the longest conversion (10 min), so another
+/// instance's live folder is never taken.
+const STALE_CONVERT_DIR: Duration = Duration::from_secs(60 * 60);
+
+/// Remove `nightloom-convert-*` folders under `base` older than `age`.
+fn sweep_stale_convert_dirs(base: &Path, age: Duration) {
+    let Ok(rd) = std::fs::read_dir(base) else {
+        return;
+    };
+    for e in rd.flatten() {
+        if !e
+            .file_name()
+            .to_string_lossy()
+            .starts_with("nightloom-convert-")
+        {
+            continue;
+        }
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|d| d > age);
+        if old {
+            let _ = std::fs::remove_dir_all(e.path());
         }
     }
 }
@@ -2165,6 +2198,33 @@ printf '%%PDF-1.4\n%s' "$body" > "$out/input.pdf""#,
             .collect();
         assert_eq!(counts.iter().sum::<usize>(), 2, "{counts:?}");
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// 868 review: a conversion folder left by a quit mid-conversion is
+    /// removed by the next conversion once it is old; a fresh one stays.
+    #[test]
+    fn stale_conversion_folders_are_swept_and_fresh_ones_kept() {
+        let base = scratch("sweep");
+        let old = base.join("nightloom-convert-old");
+        let fresh = base.join("nightloom-convert-fresh");
+        let other = base.join("someone-else");
+        for d in [&old, &fresh, &other] {
+            std::fs::create_dir_all(d.join("out")).unwrap();
+        }
+        let past = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+        std::fs::File::open(&old)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        std::fs::File::open(&other)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        sweep_stale_convert_dirs(&base, STALE_CONVERT_DIR);
+        assert!(!old.exists());
+        assert!(fresh.exists());
+        assert!(other.exists());
+        let _ = std::fs::remove_dir_all(base);
     }
 
     /// 868 review: the shrink-then-split ends within its budget (4 × the
