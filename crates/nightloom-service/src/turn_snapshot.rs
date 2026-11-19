@@ -545,6 +545,65 @@ fn slow() -> std::sync::MutexGuard<'static, BTreeSet<PathBuf>> {
     SLOW.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// How long a turn's snapshots are kept. A rewind further back has no
+/// file restore; the snapshots' objects become his `git gc`'s to drop.
+pub const KEEP: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// Drop the repository's turn snapshots (every chat's) older than `keep`.
+/// How many it dropped.
+pub fn prune(root: &Path, keep: Duration) -> usize {
+    let until = deadline(Duration::from_secs(600));
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(keep)
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs());
+    let list = git(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(committerdate:unix)",
+            REFS,
+        ],
+        &[],
+        None,
+        until,
+    )
+    .unwrap_or_default();
+    let old: Vec<&str> = list
+        .lines()
+        .filter_map(|l| l.rsplit_once(' '))
+        .filter(|(_, t)| t.parse::<u64>().is_ok_and(|t| t < cutoff))
+        .map(|(r, _)| r)
+        .collect();
+    if old.is_empty() {
+        return 0;
+    }
+    let input: String = old.iter().map(|r| format!("delete {r}\n")).collect();
+    git(
+        root,
+        &["update-ref", "--stdin"],
+        &[],
+        Some(input.as_bytes()),
+        until,
+    )
+    .map_or(0, |_| old.len())
+}
+
+/// The folders pruned this run, and when: at most once a day each.
+static PRUNED: std::sync::Mutex<std::collections::BTreeMap<PathBuf, Instant>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn prune_due(workspace: &Path) -> bool {
+    let mut m = PRUNED.lock().unwrap_or_else(|p| p.into_inner());
+    let due = m
+        .get(workspace)
+        .is_none_or(|t| t.elapsed() > Duration::from_secs(24 * 60 * 60));
+    if due {
+        m.insert(workspace.to_path_buf(), Instant::now());
+    }
+    due
+}
+
 /// Snapshot a turn's edge off the async runtime. `Some(sentence)` when the
 /// turn should be told it was skipped (once per slow folder per run).
 pub async fn snapshot_edge(
@@ -560,6 +619,16 @@ pub async fn snapshot_edge(
     let r = tokio::task::spawn_blocking(move || snapshot_turn(&ws, &chat, index, edge))
         .await
         .ok()?;
+    if r.is_ok() && edge == Edge::Start && prune_due(&workspace) {
+        // Off the turn's path, and never killed: a ref deletion cut short
+        // could leave a lock on his refs.
+        std::thread::spawn(move || {
+            if let Some(root) = repo_root(&workspace) {
+                prune(&root, KEEP);
+            }
+        });
+        return None;
+    }
     match r {
         Err(Skip::Slow) => {
             slow().insert(workspace);
@@ -753,6 +822,31 @@ mod tests {
         );
         assert_eq!(r, Err(Skip::Slow));
         assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn snapshots_older_than_a_month_are_pruned() {
+        let d = repo("prune");
+        snapshot_turn(&d, "c", 2, Edge::Start).unwrap();
+        // One from two months ago, as its commit date says.
+        let tree = out(&d, &["write-tree"]);
+        let o = Command::new("git")
+            .arg("-C")
+            .arg(&d)
+            .args(["commit-tree", tree.trim(), "-m", "old"])
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .env("GIT_COMMITTER_DATE", "@1000000000 +0000")
+            .output()
+            .unwrap();
+        let old = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        sh(&d, &["update-ref", &ref_name("other", 1, Edge::End), &old]);
+        assert_eq!(prune(&d, KEEP), 1);
+        let refs = out(&d, &["for-each-ref", "--format=%(refname)", REFS]);
+        assert_eq!(refs.trim(), ref_name("c", 2, Edge::Start));
         let _ = std::fs::remove_dir_all(&d);
     }
 
