@@ -8,7 +8,7 @@
   import { renderStreamingParts } from "./streamBlocks";
   // Item 820: pictures and video the reply names, drawn under its text.
   import ReplyMedia from "./ReplyMedia.svelte";
-  import { mediaCandidates } from "./replyMedia";
+  import { replyMediaInline, stripMedia } from "./replyMediaInline";
   // Item 770: a page a reply wrote, drawn where its block stands.
   import { replyPages } from "./replyPages";
   import { liveHtml } from "./liveHtml";
@@ -468,10 +468,10 @@
       {:else}
         <!-- Item 452: patched in place (liveHtml), not replaced whole per
              streamed delta, so a selection in its written part survives. -->
-        <div class="markdown" use:replyPages={{ copy: (t) => void copyText(t) }} use:askSettled use:liveHtml={T.streaming ? renderStreamingParts(g.seg.text) : renderReply(g.seg.text)} use:memoryRefs={{ hits: T.memHits, text: g.seg.text }} use:codeCopy={T.runBlocks(g.seg.text)} use:handoffGo={T.nextChat}></div>
+        <div class="markdown" use:replyPages={{ copy: (t) => void copyText(t) }} use:replyMediaInline={{ chat: app.activeSessionId, roots: T.roots, label: (c) => displayPath(c.path, T.roots), onopen: (p, e) => void T.openFile(p, e) }} use:askSettled use:liveHtml={T.streaming ? renderStreamingParts(g.seg.text) : renderReply(g.seg.text)} use:memoryRefs={{ hits: T.memHits, text: g.seg.text }} use:codeCopy={T.runBlocks(g.seg.text)} use:handoffGo={T.nextChat}></div>
         {#if !T.streaming}
           <!-- Item 820: a picture or a video this text names, right under it. -->
-          <ReplyMedia items={mediaCandidates(g.seg.text, T.roots)} chat={app.activeSessionId} label={(c) => displayPath(c.path, T.roots)} onopen={(p, e) => void T.openFile(p, e)} />
+          <ReplyMedia items={stripMedia(g.seg.text, T.roots)} chat={app.activeSessionId} label={(c) => displayPath(c.path, T.roots)} onopen={(p, e) => void T.openFile(p, e)} />
         {/if}
       {/if}
     {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}

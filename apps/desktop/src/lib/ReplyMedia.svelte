@@ -19,8 +19,11 @@
     chat,
     label = (c: MediaCandidate) => c.written,
     onopen,
+    inline = false,
   }: {
     items: MediaCandidate[];
+    /** Item 875: drawn where the reply placed it (one picture, inside the text), not in the strip under it. */
+    inline?: boolean;
     chat: string | null;
     label?: (c: MediaCandidate) => string;
     /** Open the file as a tab (the Mac); absent on the phone. */
@@ -52,7 +55,7 @@
 <svelte:window onkeydown={onkey} />
 
 {#if shown.length > 0}
-  <div class="rm-strip" data-reply-media>
+  <div class="rm-strip" class:inline data-reply-media={inline ? "inline" : "strip"}>
     {#each shown as { c, s } (c.path)}
       <figure class="rm-item" class:svg={/\.svg$/i.test(c.path)}>
         {#if s.status === "loading"}
@@ -114,6 +117,10 @@
     align-items: flex-start;
     gap: 10px;
     margin: 6px 0 10px;
+  }
+  /* Item 875: in place, inside the reply's paragraph. */
+  .rm-strip.inline {
+    margin: 6px 0;
   }
   .rm-item {
     margin: 0;

@@ -93,7 +93,8 @@
   import MathText from "../lib/MathText.svelte";
   // Item 820: pictures and video a reply names, under its text.
   import ReplyMedia from "../lib/ReplyMedia.svelte";
-  import { mediaCandidates, mediaKindOf } from "../lib/replyMedia";
+  import { mediaKindOf } from "../lib/replyMedia";
+  import { replyMediaInline, stripMedia } from "../lib/replyMediaInline";
   import { setMediaLoader } from "../lib/replyMediaStore.svelte";
   import AskQuestions from "../lib/AskQuestions.svelte";
   // Wave 8B F2 (item 300): replies in order, code blocks, the keyboard.
@@ -3403,8 +3404,8 @@
               {:else if s.part.removed}
                 <div class="part-gone" use:press={() => openMenu(r, s.part)}>[text removed]</div>
               {:else if s.part.text}
-                <div class="md" use:press={() => openMenu(r, s.part)} use:codeBlocks={copy} use:replyPages={{ copy }}>{@html renderMarkdown(s.part.text, { breaks: true, localImagesAsText: true })}</div>
-                {#if canMedia}<ReplyMedia items={mediaCandidates(s.part.text, [])} chat={chatId} />{/if}
+                <div class="md" use:press={() => openMenu(r, s.part)} use:codeBlocks={copy} use:replyPages={{ copy }} use:replyMediaInline={{ chat: chatId, off: !canMedia }}>{@html renderMarkdown(s.part.text, { breaks: true, localImagesAsText: true })}</div>
+                {#if canMedia}<ReplyMedia items={stripMedia(s.part.text, [])} chat={chatId} />{/if}
               {/if}
             {/each}
             {@render sentChips(sentOf(r.tools))}
@@ -3435,7 +3436,7 @@
                still arriving is held until it closes, a table row until it is whole. -->
           {#each liveSegments(live) as s, k (k)}
             {#if s.kind === "tools"}{@render toolBox(s.tools, `live${k}`, true)}
-            {:else}<div class="md" use:codeBlocks={copy}>{@html k === liveSegments(live).length - 1 ? renderStreamingMarkdown(s.text, { breaks: true, localImagesAsText: true }) : renderMarkdown(s.text, { breaks: true, localImagesAsText: true })}</div>{/if}
+            {:else}<div class="md" use:codeBlocks={copy} use:replyMediaInline={{ chat: chatId, off: !canMedia }}>{@html k === liveSegments(live).length - 1 ? renderStreamingMarkdown(s.text, { breaks: true, localImagesAsText: true }) : renderMarkdown(s.text, { breaks: true, localImagesAsText: true })}</div>{/if}
           {/each}
           {@render sentChips(sentOf(live.tools))}
           {#if live.retry}

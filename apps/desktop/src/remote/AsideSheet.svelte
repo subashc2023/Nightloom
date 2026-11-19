@@ -16,7 +16,7 @@
   import MathText from "../lib/MathText.svelte";
   // Item 820: pictures an aside's answer names, as under a chat's reply.
   import ReplyMedia from "../lib/ReplyMedia.svelte";
-  import { mediaCandidates } from "../lib/replyMedia";
+  import { replyMediaInline, stripMedia } from "../lib/replyMediaInline";
   // Item 770: a page an answer wrote, drawn where its block stands (asides mirror the chat).
   import { replyPages } from "../lib/replyPages";
   import { COPIED_MS, copyIconSvg } from "../lib/copyIcon";
@@ -91,8 +91,8 @@
     <div class="as-card">
       <div class="as-q"><MathText text={aside.question} /></div>
       {#if aside.answer}
-        <div class="as-md" use:replyPages={asking ? { off: true } : { copy: oncopy }}>{@html renderMarkdown(aside.answer, { localImagesAsText: true })}</div>
-        {#if media && !asking}<ReplyMedia items={mediaCandidates(aside.answer, [])} {chat} />{/if}
+        <div class="as-md" use:replyPages={asking ? { off: true } : { copy: oncopy }} use:replyMediaInline={{ chat, off: !media }}>{@html renderMarkdown(aside.answer, { localImagesAsText: true })}</div>
+        {#if media && !asking}<ReplyMedia items={stripMedia(aside.answer, [])} {chat} />{/if}
       {:else if asking}
         <span class="as-thinking"><i></i><i></i><i></i></span>
       {/if}
@@ -135,8 +135,8 @@
         <details>
           <summary><MathText text={p.question} /></summary>
           <small class="as-thread">{p.thread}</small>
-          <div class="as-md" use:replyPages={{ copy: oncopy }}>{@html renderMarkdown(p.answer, { localImagesAsText: true })}</div>
-          {#if media}<ReplyMedia items={mediaCandidates(p.answer, [])} {chat} />{/if}
+          <div class="as-md" use:replyPages={{ copy: oncopy }} use:replyMediaInline={{ chat, off: !media }}>{@html renderMarkdown(p.answer, { localImagesAsText: true })}</div>
+          {#if media}<ReplyMedia items={stripMedia(p.answer, [])} {chat} />{/if}
         </details>
       {/each}
     </div>

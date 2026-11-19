@@ -32,6 +32,8 @@ function extra(n: Node): boolean {
   if (n.tagName === "BUTTON" && n.classList.contains("handoff-min")) return true;
   // Item 770: the card mounted inside a reply page's placeholder (replyPages.ts).
   if (n.tagName === "DIV" && n.classList.contains("md-page-mount")) return true;
+  // Item 875: a picture or video mounted inside a markdown image's placeholder (replyMediaInline.ts).
+  if (n.tagName === "SPAN" && n.classList.contains("md-media-mount")) return true;
   // Item 821: the drawing put first inside a diagram block's placeholder (diagrams.ts).
   if (n.tagName === "DIV" && n.classList.contains("md-diagram-mount")) return true;
   // Item 798: the table mounted inside an evidence block's placeholder (evidenceTables.ts), and its error line.

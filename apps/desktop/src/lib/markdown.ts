@@ -11,7 +11,7 @@ import { isRunFence, markRunFence } from "./shellRun";
 import "katex/dist/katex.min.css";
 // Item 837: a formula keeps its case and spacing under any parent (desktop and phone both load this file).
 import "./mathBase.css";
-import { isLocalTarget } from "./replyMedia";
+import { isLocalTarget, mediaKindOf } from "./replyMedia";
 import { replyPage } from "./replyPage";
 import { diagramBlock } from "./diagramBlock";
 import { evidenceBlock } from "./evidenceBlock";
@@ -63,12 +63,57 @@ const escapeHtml = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;")
 export const localImageAsText = {
   renderer: {
     image(token: Tokens.Image) {
-      if (!isLocalTarget(token.href)) return false;
+      const local = token.href.startsWith("file://") || isLocalTarget(token.href);
+      if (!local) return false;
       const name = token.href.slice(token.href.lastIndexOf("/") + 1);
-      return `<em class="md-local-img">${escapeHtml(token.text || name)}</em>`;
+      const alt = `<em class="md-local-img">${escapeHtml(token.text || name)}</em>`;
+      // Item 875: a picture or a video is drawn where the reply put it —
+      // `replyMediaInline.ts` mounts it in this placeholder, read through the
+      // same rules as 820's strip. The alt text stays inside, shown wherever
+      // nothing mounts (a quote, a surface without the action).
+      if (!mediaKindOf(localMediaTarget(token.href))) return alt;
+      return `<span class="${MEDIA_CLASS}" data-media-src="${encodeURIComponent(token.href)}" data-media-alt="${encodeURIComponent(token.text)}">${alt}</span>`;
     },
   },
 };
+
+/** Item 875: the placeholder a local picture or video leaves in a reply's HTML. */
+export const MEDIA_CLASS = "md-media";
+
+/** A markdown image's target as a path: percent-decoded, `file://` dropped (as 820's `mediaCandidates` reads it). */
+export function localMediaTarget(href: string): string {
+  let w = href.trim();
+  try {
+    w = decodeURI(w);
+  } catch {
+    // A target that is not valid percent-encoding stays as written.
+  }
+  return w.replace(/^file:\/\//, "");
+}
+
+const inlineCache = new Map<string, string[]>();
+/**
+ * Item 875: the local pictures and videos a reply draws in place — every
+ * markdown image marked parses (so one inside code, or a half-typed one,
+ * is not), as paths, in order. The strip under the reply leaves these out.
+ */
+export function inlineMediaTargets(src: string): string[] {
+  const hit = inlineCache.get(src);
+  if (hit) return hit;
+  const out: string[] = [];
+  if (src.includes("![")) {
+    replyMarked.walkTokens(replyMarked.lexer(src), (t) => {
+      if (t.type !== "image") return;
+      const href = (t as Tokens.Image).href;
+      if (!(href.startsWith("file://") || isLocalTarget(href))) return;
+      const path = localMediaTarget(href);
+      if (mediaKindOf(path)) out.push(path);
+    });
+  }
+  if (inlineCache.size > 200) inlineCache.delete(inlineCache.keys().next().value!);
+  inlineCache.set(src, out);
+  return out;
+}
 
 /** The phone's replies (item 820): `renderMarkdown`'s, with a local image as its alt text. */
 const phoneMarked = new Marked();
