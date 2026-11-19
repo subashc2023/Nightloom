@@ -108,6 +108,7 @@
   import DisableDialog from "./DisableDialog.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import { tabPlace } from "./tabPlace";
+  import { dragScroll } from "./dragScroll";
 
   // Delete confirms in a dialog and moves the log to a trash folder
   // (review round 1, 2026-09-13; memory never-lose-work). It replaced a ×
@@ -1290,7 +1291,7 @@
       </p>
     {:else}
       <!-- Item 495: the chat list's scroll survives Notes and back, per project. -->
-      <div class="session-list" use:tabPlace={`chat-list:${app.project?.id ?? "unfiled"}`}>
+      <div class="session-list" use:tabPlace={`chat-list:${app.project?.id ?? "unfiled"}`} use:dragScroll>
         {#if groups.length > 0}
           <!-- Item 534: a ruled capital heading with its count (Filament IV). -->
           <div class="ns-cap section-cap" role="heading" aria-level="3">Threads<b class="cap-n">{groups.length}</b></div>
@@ -1551,7 +1552,7 @@
   {:else if app.leftTab === "notes"}
     <NotesPanel />
   {:else}
-    <div class="ns-scroll" use:tabPlace={`nightshift-side:${app.project?.id ?? "none"}`}>
+    <div class="ns-scroll" use:tabPlace={`nightshift-side:${app.project?.id ?? "none"}`} use:dragScroll>
       {#if !app.project}
         <p class="hint">Open a project to use Nightshift — the page shows the project in the top-left chip.</p>
         <div class="ns-card open-card">

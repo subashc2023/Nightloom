@@ -1,6 +1,7 @@
 <script lang="ts">
   import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
+  import { dragScroll } from "./dragScroll";
   import {
     activateTab,
     app,
@@ -393,6 +394,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions a11y_interactive_supports_focus -->
 <div
   class="tab-strip"
+  use:dragScroll={{ axis: "x" }}
   class:focused
   role="tablist"
   tabindex="-1"

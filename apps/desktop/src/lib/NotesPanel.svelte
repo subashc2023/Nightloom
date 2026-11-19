@@ -22,6 +22,7 @@
   import * as api from "./api";
   import { onMount, tick, untrack } from "svelte";
   import { tabPlace } from "./tabPlace";
+  import { dragScroll } from "./dragScroll";
   import { viewGet, viewSet } from "./viewState";
   import { projectFilesChanged, refreshNotes } from "./state.svelte";
   import { carriesFiles } from "./dropLook";
@@ -1121,7 +1122,7 @@
 {/snippet}
 
 <!-- Item 495: its scroll comes back with it, per project (tabPlace's store). -->
-<div class="panel" bind:this={panelEl} use:tabPlace={`notes-panel:${app.project?.id ?? "unfiled"}`}>
+<div class="panel" bind:this={panelEl} use:tabPlace={`notes-panel:${app.project?.id ?? "unfiled"}`} use:dragScroll>
   <!-- Item 415: narrows both sections as he types; the pinned rows stay. -->
   <div class="find-bar">
     <input autocorrect="off" autocapitalize="off" spellcheck="false"
