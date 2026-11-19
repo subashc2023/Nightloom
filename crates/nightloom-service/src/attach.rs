@@ -1657,6 +1657,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(d);
     }
 
+    #[cfg(unix)]
     fn count_convert_dirs() -> usize {
         std::fs::read_dir(std::env::temp_dir())
             .map(|r| {

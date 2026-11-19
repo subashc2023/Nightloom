@@ -122,6 +122,8 @@ pub async fn compile(file: &Path, out: &Path, bin: &Path, timeout: Duration) -> 
         Ok(c) => c,
         Err(e) => return failed(format!("Could not start {}: {e}", engine.display())),
     };
+    // Read only to stop a Unix process group on a timeout.
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let pid = child.id();
     let ran = tokio::time::timeout(timeout, child.wait_with_output()).await;
     let output = match ran {

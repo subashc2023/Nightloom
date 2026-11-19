@@ -244,5 +244,7 @@ fn in_applications(s: &str) -> bool {
         && parts.next() == Some("Applications")
 }
 
-#[cfg(test)]
+// Unix only: its runs use `serve::tests::stand_in`, a `#!/bin/sh` stand-in
+// for `claude` (that module is `cfg(all(test, unix))` for the same reason).
+#[cfg(all(test, unix))]
 mod tests;

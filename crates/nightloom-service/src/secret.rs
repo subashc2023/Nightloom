@@ -1150,6 +1150,8 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+// Unix only: every test here runs a `#!/bin/sh` stand-in made executable
+// with a Unix mode, which Windows can neither mark nor run.
+#[cfg(all(test, unix))]
 #[path = "secret_766_tests.rs"]
 mod e2e_tests;
