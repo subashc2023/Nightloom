@@ -348,6 +348,12 @@ pub fn hold(
         }),
     );
     let mut seen = false;
+    // The cap on the monotonic clock as well (review, 2026-11-19): a wall
+    // clock set back mid-hold must not stretch it past `hold_max_ms`.
+    let started = std::time::Instant::now();
+    let budget = std::time::Duration::from_millis(
+        u64::try_from((deadline_ms - now_ms).clamp(0, hold_max_ms)).unwrap_or(0),
+    );
     loop {
         let t = chrono::Utc::now().timestamp_millis();
         // Another follower may have seen it first.
@@ -363,7 +369,7 @@ pub fn hold(
             seen = true;
             break;
         }
-        if t >= deadline_ms {
+        if t >= deadline_ms || started.elapsed() >= budget {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(poll_ms));
