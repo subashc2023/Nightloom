@@ -1,4 +1,5 @@
 // Moved out of state.svelte.ts by item 641 (pure move; state.svelte.ts re-exports every name it exported).
+import { hashText } from "../noteDraftStore";
 import { viewRenameKeys } from "../viewState";
 import * as api from "../api";
 import { UNFILED } from "../drafts.svelte";
@@ -473,20 +474,31 @@ export function mirrorDraft(key: string, text: string, saved: string): void {
   if (text !== saved) {
     app.noteDrafts[key] = text;
     // Item 870: what the file read when this draft was typed.
-    if (app.noteDraftBases) app.noteDraftBases[key] = { draft: text, base: saved };
+    // Item 871: as hashes, so the pair can be kept on disk with the draft.
+    if (app.noteDraftBases) setDraftBase(key, text, saved);
   } else {
     delete app.noteDrafts[key];
     if (app.noteDraftBases) delete app.noteDraftBases[key];
   }
 }
 
+/** Item 870/871: record that `draft` (now `key`'s draft) was typed
+ *  against the file text `base`. */
+export function setDraftBase(key: string, draft: string, base: string): void {
+  app.noteDraftBases[key] = { draft: hashText(draft), base: hashText(base) };
+}
+
 /**
- * Item 870: the file text a draft was typed against, or null when unknown
- * (a draft from elsewhere — a proposal, a restore — or after a relaunch).
+ * Item 870/871: whether the file text `content` differs from the text
+ * `key`'s draft was typed against — true or false, or null when unknown (a
+ * draft from elsewhere: a proposal, a restore of an older entry). Kept
+ * across a relaunch with the draft (`noteDraftStore.ts`).
  */
-export function draftBase(key: string): string | null {
+export function baseDiffers(key: string, content: string): boolean | null {
   const b = app.noteDraftBases?.[key];
-  return b && app.noteDrafts[key] === b.draft ? b.base : null;
+  const draft = app.noteDrafts[key];
+  if (!b || draft === undefined || hashText(draft) !== b.draft) return null;
+  return hashText(content) !== b.base;
 }
 
 /**

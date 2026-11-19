@@ -55,7 +55,7 @@
   } from "./notesFollow";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { acceptBlocked, bothText, conflictMessage, outsideChange, undoTake } from "./noteConflict";
-  import { draftBase, setAsideDraft } from "./state/notes.svelte";
+  import { baseDiffers, setAsideDraft, setDraftBase } from "./state/notes.svelte";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -452,8 +452,8 @@
       text = draft !== undefined && draft !== content ? draft : content;
       // Item 870: the draft was typed against other text than the file
       // now holds — it changed outside Nightloom while the note was shut.
-      const base = draft !== undefined ? draftBase(key) : null;
-      if (text !== content && base !== null && base !== content) theirs = content;
+      // Item 871: also for a draft restored after a relaunch.
+      if (text !== content && draft !== undefined && baseDiffers(key, content) === true) theirs = content;
       // Opened from a memory hit (backlog 296): the cursor on its line,
       // set before the editor mounts on the new buffer.
       const at = app.noteAt;
@@ -563,7 +563,7 @@
           // Another note is open: his text waits as this note's draft.
           const held = app.noteDrafts[key];
           app.noteDrafts[key] = held === undefined ? mine : bothText(mine, held);
-          app.noteDraftBases[key] = { draft: app.noteDrafts[key], base: before };
+          setDraftBase(key, app.noteDrafts[key], before);
         }
       },
     });

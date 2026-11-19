@@ -46,17 +46,18 @@ describe("870: a note changed outside while he has unsaved edits", () => {
 });
 
 import { app, mirrorDraft } from "./state.svelte";
-import { draftBase } from "./state/notes.svelte";
+import { baseDiffers } from "./state/notes.svelte";
 
 describe("870: a draft remembers the file text it was typed against", () => {
   it("trusted while the draft is the same, forgotten once saved or replaced", () => {
     mirrorDraft("k:870", "mine", "base");
-    expect(draftBase("k:870")).toBe("base");
+    expect(baseDiffers("k:870", "base")).toBe(false);
+    expect(baseDiffers("k:870", "changed outside")).toBe(true);
     // A draft written by another path (a proposal, a restore): unknown.
     app.noteDrafts["k:870"] = "other";
-    expect(draftBase("k:870")).toBe(null);
+    expect(baseDiffers("k:870", "changed outside")).toBe(null);
     mirrorDraft("k:870", "same", "same");
     expect(app.noteDrafts["k:870"]).toBeUndefined();
-    expect(draftBase("k:870")).toBe(null);
+    expect(baseDiffers("k:870", "x")).toBe(null);
   });
 });
