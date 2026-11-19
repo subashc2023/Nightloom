@@ -1498,7 +1498,6 @@ mod tests {
 
     #[test]
     fn a_carry_links_every_helper_once_and_leaves_the_source() {
-        use std::os::unix::fs::MetadataExt;
         let sid = "11111111-1111-4111-8111-111111111111";
         let (root, _, _, folder) = with_helpers(sid);
         let file = folder.join(format!("{sid}.jsonl"));
@@ -1507,17 +1506,22 @@ mod tests {
             helpers_of(&folder, "copy-1"),
             vec!["agent-a1.jsonl", "agent-a1.meta.json"]
         );
-        // One transcript on disk: a hard link, not a second copy.
-        let a =
-            std::fs::metadata(folder.join(sid).join(SUBAGENTS_DIR).join("agent-a1.jsonl")).unwrap();
-        let b = std::fs::metadata(
-            folder
-                .join("copy-1")
-                .join(SUBAGENTS_DIR)
-                .join("agent-a1.jsonl"),
-        )
-        .unwrap();
-        assert_eq!(a.ino(), b.ino());
+        // One transcript on disk: a hard link, not a second copy (the inode
+        // is Unix's; stable Rust has no Windows file index to compare).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let a = std::fs::metadata(folder.join(sid).join(SUBAGENTS_DIR).join("agent-a1.jsonl"))
+                .unwrap();
+            let b = std::fs::metadata(
+                folder
+                    .join("copy-1")
+                    .join(SUBAGENTS_DIR)
+                    .join("agent-a1.jsonl"),
+            )
+            .unwrap();
+            assert_eq!(a.ino(), b.ino());
+        }
         // Again: nothing new to carry; a file the copy already has is kept.
         assert_eq!(carry_subagents(&file, "copy-1"), 0);
         assert_eq!(helpers_of(&folder, sid).len(), 2, "the source is untouched");

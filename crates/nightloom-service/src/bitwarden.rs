@@ -1260,6 +1260,8 @@ pub fn answer_by_rule_full(
     (held, dropped, None)
 }
 
-#[cfg(test)]
+// Unix only: every test here runs a `#!/bin/sh` stand-in made executable
+// with a Unix mode, which Windows can neither mark nor run.
+#[cfg(all(test, unix))]
 #[path = "bitwarden_766b_tests.rs"]
 mod tests;

@@ -11,9 +11,11 @@
 # that a commit cannot regress on its own.
 name: CI
 
+# `ci-check`: the parent pushes nightshift there to run CI on demand (item 864);
+# nightshift itself joins only after a week of green (blocker 1858) — a red run emails him.
 on:
   push:
-    branches: [main]
+    branches: [main, ci-check]
   pull_request:
 
 env:
@@ -48,10 +50,20 @@ jobs:
       - name: cargo fmt
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check
+      # Each check's output is kept so a red run can be read without a
+      # login: the last step turns the failing lines into annotations
+      # (scripts/ci-failure-annotations.sh). `shell: bash` runs with
+      # pipefail, so `tee` never hides a failure.
       - name: cargo clippy
-        run: cargo clippy --workspace --exclude nightloom-desktop --all-targets
+        shell: bash
+        run: cargo clippy --workspace --exclude nightloom-desktop --all-targets 2>&1 | tee "$RUNNER_TEMP/clippy.log"
       - name: cargo test
-        run: cargo test --workspace --exclude nightloom-desktop
+        shell: bash
+        run: cargo test --workspace --exclude nightloom-desktop 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: failure annotations
+        if: failure()
+        shell: bash
+        run: bash scripts/ci-failure-annotations.sh "$RUNNER_TEMP/clippy.log" "$RUNNER_TEMP/test.log"
 
   # The desktop app is its own job because it is the one crate with a build
   # that is not just Rust: `generate_context!` reads `apps/desktop/dist`, which
@@ -92,4 +104,9 @@ jobs:
         run: npm run build
         working-directory: apps/desktop
       - name: cargo clippy
-        run: cargo clippy -p nightloom-desktop --all-targets
+        shell: bash
+        run: cargo clippy -p nightloom-desktop --all-targets 2>&1 | tee "$RUNNER_TEMP/desktop-clippy.log"
+      - name: failure annotations
+        if: failure()
+        shell: bash
+        run: bash scripts/ci-failure-annotations.sh "$RUNNER_TEMP/desktop-clippy.log"

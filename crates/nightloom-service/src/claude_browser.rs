@@ -35,6 +35,12 @@
 //! the permission hook refuses every Playwright call in words
 //! (`own_browser::HELD_BY_USER`). The hold ends with the browser.
 
+// The helper is reached over a Unix socket and its process group is
+// signalled, so starting, serving and stopping a browser are `cfg(unix)`;
+// on Windows `Browsers` is the stub the app still constructs, and the
+// launch plumbing below is unused there.
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

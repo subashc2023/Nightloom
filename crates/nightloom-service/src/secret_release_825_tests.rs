@@ -56,11 +56,15 @@ fn a_held_value_is_not_in_the_file_the_model_is_told_of() {
     // The note holds paths and words only.
     let n = std::fs::read_to_string(d.join("ask").join(crate::secret::HELD_FILE)).unwrap();
     assert!(!n.contains(FAKE), "{n}");
-    use std::os::unix::fs::PermissionsExt as _;
-    assert_eq!(
-        std::fs::metadata(&note.held).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    // The 0600 mode is a Unix permission; Windows has none to check.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            std::fs::metadata(&note.held).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
     let _ = std::fs::remove_dir_all(d);
 }
 

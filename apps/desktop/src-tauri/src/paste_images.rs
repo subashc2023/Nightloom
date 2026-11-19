@@ -294,6 +294,7 @@ async fn fetch(
 }
 
 /// The image the web archive holds for `url`, if it holds it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn find_in_webarchive(archive: &[u8], url: &str) -> Option<PastedImage> {
     let v = plist::Value::from_reader(std::io::Cursor::new(archive)).ok()?;
     let subs = v.as_dictionary()?.get("WebSubresources")?.as_array()?;

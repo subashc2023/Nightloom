@@ -528,7 +528,7 @@ impl Terminals {
     /// The open shells' ids, for the tests. (~~and for a window that
     /// reloads (dev)~~ — 2026-11-11, item 622b: the `terminal_list` command
     /// that served the window was removed; no window called it.)
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn ids(&self) -> Vec<u32> {
         let mut ids: Vec<u32> = self
             .shells
