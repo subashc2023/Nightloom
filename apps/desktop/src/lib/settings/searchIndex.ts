@@ -111,7 +111,7 @@ export const CARDS: SettingEntry[] = [
   { pane: "council", section: "Mode", help: "answer: a research dump; each seat answers its questions with sources. disproof: an idea; each seat searches for what already exists and what contradicts it and returns a hits table with a where-I-looked list — no seat and no chair scores novelty or says \"new\"; that judgement stays yours. When every seat cites at least half of the same sources, the next council turn on that chat assigns each seat an area from the chair's Gaps section." },
   { pane: "council", section: "Recent council turns", terms: "council turns history" },
   { pane: "home", section: "Brief", help: "What Home should always know — what you want each morning, what to leave out. Your draft is kept until you save or discard it." },
-  { pane: "home", section: "What Home can reach", help: "Your connectors, one row per account. Home only reads them: it cannot send, change or delete anything through them." },
+  { pane: "home", section: "What Home can reach", help: "Your connectors, one row per account. Home reads them; a label, draft or calendar event it proposes changes only when you tap Allow on that one change, and it cannot send or delete anything through them." },
   { pane: "home", section: "Morning scan", help: "The scan is one of your jobs: change its time from the Jobs list on the phone page." },
   { pane: "home", section: "Home's jobs", help: "Run now runs one at once. Past Home's spend guard it asks first." },
   { pane: "projects", section: "Folder", terms: "projects folder path location" },

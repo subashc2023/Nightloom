@@ -155,11 +155,20 @@ pub fn parse(input: &Value) -> Result<Change, String> {
         return Err("title is one line.".into());
     }
     let list = text_of(input, "list", LIST_MAX)?;
+    // What he taps Allow on is what is written: no character that draws
+    // the card's text other than it is (review, item 872).
+    unseen(&title, "title", false)?;
+    if let Some(l) = &list {
+        unseen(l, "list", false)?;
+    }
     let due = match text_of(input, "due", 40)? {
         Some(d) => Some(Due::parse(&d)?),
         None => None,
     };
     let notes = text_of(input, "notes", NOTES_MAX)?;
+    if let Some(n) = &notes {
+        unseen(n, "notes", true)?;
+    }
     if action == Action::Complete && (due.is_some() || notes.is_some()) {
         return Err(
             "complete takes only title and list: it marks the reminder done and changes nothing else."
@@ -173,6 +182,36 @@ pub fn parse(input: &Value) -> Result<Change, String> {
         due,
         notes,
     })
+}
+
+/// A character that is drawn as nothing, or that reorders or hides the
+/// text around it: control characters (in `notes`, a line break or a tab
+/// is fine), the bidirectional embeddings, overrides and isolates, and
+/// the zero-width space and direction marks (the joiners stay: emoji and
+/// scripts need them). On the card such a title would read as one
+/// thing and be written as another, so the call is refused in words.
+fn unseen(text: &str, key: &str, lines: bool) -> Result<(), String> {
+    let bad = text.chars().find(|&c| {
+        (c.is_control() && !(lines && matches!(c, '\n' | '\r' | '\t')))
+            || matches!(c,
+                '\u{00AD}'
+                | '\u{061C}'
+                | '\u{180E}'
+                | '\u{200B}'
+                | '\u{200E}'
+                | '\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2069}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}')
+    });
+    match bad {
+        Some(c) => Err(format!(
+            "{key} holds an invisible or reordering character (U+{:04X}); write it in plain characters. Nothing was changed.",
+            c as u32
+        )),
+        None => Ok(()),
+    }
 }
 
 fn same(a: &str, b: &str) -> bool {
@@ -370,15 +409,36 @@ impl Tool for UpdateReminders {
 }
 
 /// Hand `change` to the Mac app over its socket and read what it did.
+///
+/// Review (item 872): a socket that never took the change and one that
+/// took it and then said nothing are told apart — after the first nothing
+/// was changed; after the second the change may have landed, so a retry
+/// (one more card, one more tap) could add the same reminder twice.
 #[cfg(unix)]
 async fn send(socket: &Path, change: Change) -> Result<String, String> {
-    let reply = crate::preview::request(socket, &crate::preview::Request::Reminder { change })
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let mut stream = tokio::net::UnixStream::connect(socket).await.map_err(|e| {
+        format!("The Mac app is not reachable ({e}); it may have quit. Nothing was changed in Reminders.")
+    })?;
+    let mut line = serde_json::to_string(&crate::preview::Request::Reminder { change })
+        .map_err(|e| format!("{e}. Nothing was changed in Reminders."))?;
+    line.push('\n');
+    stream.write_all(line.as_bytes()).await.map_err(|e| {
+        format!("The change did not reach the Mac app ({e}). Check Reminders before trying again: it may have landed.")
+    })?;
+    let lost = |why: String| {
+        format!(
+            "The Mac app took the change and then did not answer ({why}). Check Reminders before trying again: it may have landed."
+        )
+    };
+    let reply = BufReader::new(stream)
+        .lines()
+        .next_line()
         .await
-        .map_err(|e| {
-            format!(
-                "The Mac app did not answer ({e}). Nothing is known to have changed in Reminders."
-            )
-        })?;
+        .map_err(|e| lost(e.to_string()))?
+        .ok_or_else(|| lost("it closed the socket".into()))?;
+    let reply: crate::preview::Reply =
+        serde_json::from_str(&reply).map_err(|e| lost(e.to_string()))?;
     match (reply.ok, reply.text, reply.error) {
         (true, Some(text), _) => Ok(text),
         (_, _, Some(e)) => Err(e),
@@ -465,6 +525,12 @@ mod tests {
             "2026-11-20 at 12:05 AM"
         );
         assert_eq!(Due::parse("2026-11-20").unwrap().words(), "2026-11-20");
+        // Notes keep their lines; a title keeps its accents and emoji.
+        let n = parse(&json!({
+            "action": "add", "title": "Café 👨\u{200D}👩\u{200D}👧 ünd", "notes": "one\ntwo\tthree"
+        }))
+        .unwrap();
+        assert_eq!(n.notes.as_deref(), Some("one\ntwo\tthree"));
         // The socket carries it whole.
         let wire = serde_json::to_string(&c).unwrap();
         assert_eq!(serde_json::from_str::<Change>(&wire).unwrap(), c);
@@ -481,6 +547,12 @@ mod tests {
             json!({ "action": "add", "title": "x", "list": 3 }),
             json!({ "action": "complete", "title": "x", "due": "2026-11-20" }),
             json!({ "action": "complete", "title": "x", "notes": "n" }),
+            // Review: what the card draws is what is written.
+            json!({ "action": "add", "title": "Pay \u{202E}tner" }),
+            json!({ "action": "add", "title": "Pay\u{200B}rent" }),
+            json!({ "action": "add", "title": "Pay\u{0007}rent" }),
+            json!({ "action": "add", "title": "x", "list": "Work\u{2066}" }),
+            json!({ "action": "add", "title": "x", "notes": "a\u{202D}b" }),
         ] {
             assert!(parse(&bad).is_err(), "{bad}");
         }
@@ -601,6 +673,44 @@ mod tests {
         let config = scratch("no-writer");
         sources::grant(&config, Source::Reminders).unwrap();
         assert!(apply(&config, Some(&ReadOnly), &add("x")).is_err());
+    }
+
+    /// Review (item 872): a socket that is not there means nothing was
+    /// changed; one that takes the change and closes without a word means
+    /// it may have landed — never "nothing changed" — so a retry is not
+    /// taken as safe. And the app's answer is passed on as it said it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_lost_answer_is_never_read_as_nothing_changed() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let dir = PathBuf::from(format!("/tmp/nl-rem-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gone = send(&dir.join("none.sock"), add("x")).await.unwrap_err();
+        assert!(gone.contains("Nothing was changed"), "{gone}");
+
+        let sock = dir.join("s.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let server = tokio::spawn(async move {
+            for answer in [None, Some(r#"{"ok":true,"text":"Added."}"#)] {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let mut lines = BufReader::new(read).lines();
+                let got = lines.next_line().await.unwrap().unwrap();
+                assert!(got.contains(r#""op":"reminder""#), "{got}");
+                if let Some(a) = answer {
+                    write.write_all(format!("{a}\n").as_bytes()).await.unwrap();
+                }
+            }
+        });
+        let lost = send(&sock, add("x")).await.unwrap_err();
+        assert!(
+            lost.contains("may have landed") && !lost.contains("Nothing was changed"),
+            "{lost}"
+        );
+        assert_eq!(send(&sock, add("x")).await.unwrap(), "Added.");
+        server.await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// With no socket and no stores in this process the tool says where
