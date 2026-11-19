@@ -226,10 +226,59 @@ export function pickTarget<R, B, C>(
 /** The card he last pressed on (a pointerdown anywhere else clears it). */
 let pressedCard: Element | null = null;
 
+/** Where he last pressed (item 853, fix 2): the card, else the pane
+ *  (`section.pane`), else null (the sidebar, the title bar, the rail). */
+let pressedRegion: Element | null = null;
+
+/** A press is under way: the focus it moves (or the ancestor it lands on)
+ *  is its own, not a move away from it. */
+let pressing = false;
+
+/**
+ * Whether the focus was left behind by his last press (item 853, fix 2 —
+ * his "typing while in an aside if im not focused on the bar doesnt do
+ * shit", and the same in the main chat). A press that WebKit gives no
+ * focus — the card's head and grip (their mousedown starts a move and is
+ * prevented), a button (never focused on the Mac) — leaves the focus where
+ * it was: the chat's transcript, a tab, the other box. The box meant is the
+ * pressed region's, so that old focus is stale and reads as nothing
+ * focused. Pure: `pressed` the region pressed (null: none, or outside any
+ * pane or card), `region` the target box's region (`composerTarget`).
+ */
+export function isStaleFocus(
+  pressed: { contains(el: unknown): boolean } | null,
+  region: unknown,
+  active: unknown,
+  isRoot: boolean,
+): boolean {
+  if (!pressed || isRoot || !active) return false;
+  return pressed === region && !pressed.contains(active);
+}
+
 /** The window's pointerdown (capture), wired with the keys. */
 export function noteCardPress(e: Event): void {
   const t = e.target as Element | null;
-  pressedCard = t && typeof t.closest === "function" ? t.closest(ASIDE_SELECTOR) : null;
+  const ok = !!t && typeof t.closest === "function";
+  pressedCard = ok ? t.closest(ASIDE_SELECTOR) : null;
+  pressedRegion = ok ? (pressedCard ?? t.closest("section.pane")) : null;
+  pressing = true;
+  setTimeout(() => (pressing = false), 0);
+}
+
+/** The window's focusin (capture): a focus that moves out of the pressed
+ *  region by itself — Tab, a field that takes it — ends the press's claim;
+ *  the press's own focus move (pressing) and ours into its box do not. */
+export function noteFocusMove(e: Event): void {
+  if (pressing || !pressedRegion) return;
+  const t = e.target as Node | null;
+  if (t && pressedRegion.contains(t)) return;
+  pressedRegion = null;
+  pressedCard = null;
+}
+
+/** The pressed region, for `pasteToCompose.ts`. */
+export function pressedRegionNow(): Element | null {
+  return pressedRegion && pressedRegion.isConnected ? pressedRegion : null;
 }
 
 /** The box meant, from the document (item 853; `pickTarget` decides). */
@@ -292,10 +341,11 @@ export function typeToComposeKeydown(
   const doc = document;
   const found = composerTarget(doc);
   const active = doc.activeElement as (HTMLElement & FocusEl) | null;
+  const isRoot = active === doc.body || active === doc.documentElement;
   const ctx: ComposeContext = {
     composer: found !== null && found.inPane,
     blocked: !!doc.querySelector(TYPE_BLOCKERS),
-    focus: focusKindOf(active, active === doc.body || active === doc.documentElement, found?.region ?? null),
+    focus: isStaleFocus(pressedRegionNow(), found?.region ?? null, active, isRoot) ? "none" : focusKindOf(active, isRoot, found?.region ?? null),
   };
   if (!found) return;
   if (enter) {

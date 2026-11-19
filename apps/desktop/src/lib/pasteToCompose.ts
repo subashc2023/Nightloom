@@ -40,7 +40,7 @@
  */
 import { isEditable } from "./composerCaret";
 import { isPasteAsAttachmentKey } from "./pasteAttach";
-import { ASIDE_SELECTOR, TYPE_BLOCKERS, composerTarget, type FocusEl } from "./typeToCompose";
+import { ASIDE_SELECTOR, TYPE_BLOCKERS, composerTarget, isStaleFocus, pressedRegionNow, type FocusEl } from "./typeToCompose";
 
 /** Which paste a key asks for. */
 export type PasteKind = "plain" | "attach";
@@ -123,7 +123,10 @@ function target(): PasteHandler | null {
   const ctx: PasteContext = {
     composer: found !== null && found.inPane,
     blocked: !!doc.querySelector(TYPE_BLOCKERS),
-    focus: pasteFocusOf(active, active === doc.body || active === doc.documentElement, found?.card ?? null),
+    // Item 853 fix 2: a focus his last press left behind is no field of his.
+    focus: isStaleFocus(pressedRegionNow(), found?.region ?? null, active, active === doc.body || active === doc.documentElement)
+      ? "outside"
+      : pasteFocusOf(active, active === doc.body || active === doc.documentElement, found?.card ?? null),
   };
   if (!found || !pastesToComposer(ctx)) return null;
   return handlers.get(found.root) ?? null;
