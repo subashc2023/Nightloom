@@ -88,7 +88,12 @@ fn git(
     until: Instant,
 ) -> Result<String, Skip> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(dir).args(args);
+    // A throwaway index copied from a split one would write a new
+    // `sharedindex.*` into his `.git` (and may expire old ones): never.
+    cmd.arg("-C")
+        .arg(dir)
+        .args(["-c", "core.splitIndex=false"])
+        .args(args);
     // Never a prompt, a pager, an editor or a lock on his index.
     cmd.env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -695,6 +700,27 @@ mod tests {
         assert!(msg.contains("big: huge.bin"), "{msg}");
         let tree = out(&d, &["ls-tree", "-r", "--name-only", &c]);
         assert!(!tree.contains("huge.bin"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_split_index_gets_no_new_shared_index_from_a_snapshot() {
+        let d = repo("split");
+        sh(&d, &["config", "core.splitIndex", "true"]);
+        sh(&d, &["update-index", "--split-index"]);
+        let shared = || {
+            std::fs::read_dir(d.join(".git"))
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("sharedindex."))
+                .count()
+        };
+        let before = shared();
+        assert!(before >= 1);
+        std::fs::write(d.join("kept.txt"), "v2\n").unwrap();
+        std::fs::write(d.join("new.txt"), "new\n").unwrap();
+        snapshot_turn(&d, "c", 1, Edge::Start).unwrap();
+        assert_eq!(shared(), before);
         let _ = std::fs::remove_dir_all(&d);
     }
 
