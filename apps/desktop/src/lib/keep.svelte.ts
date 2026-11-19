@@ -105,7 +105,14 @@ export async function keepInto(
   name: string,
   mediaType: string,
   data: string,
-  opts: { source?: string; toast: (text: string) => void; ask: (rel: string, both: string) => Promise<ClashAnswer> },
+  opts: {
+    source?: string;
+    toast: (text: string) => void;
+    ask: (rel: string, both: string) => Promise<ClashAnswer>;
+    /** Item 855: where a failure's words go instead of `toast` (a drop's
+     *  pending row, which turns into an error row). */
+    fail?: (why: string) => void;
+  },
 ): Promise<boolean> {
   try {
     let l = await keepInFolder(name, mediaType, data, folder, "ask", opts.source);
@@ -134,7 +141,7 @@ export async function keepInto(
     noticeKept(l.rel);
     return true;
   } catch (e) {
-    opts.toast(`Could not keep ${name}: ${String(e)}`);
+    (opts.fail ?? opts.toast)(`Could not keep ${name}: ${String(e)}`);
     return false;
   }
 }
