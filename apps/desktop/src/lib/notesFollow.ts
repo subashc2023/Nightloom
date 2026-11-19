@@ -50,6 +50,20 @@ export function watchWhenMoved(ask: () => Promise<unknown>): (key: string) => vo
   };
 }
 
+/**
+ * Whether the open note's file is still there, after a `notes-changed`:
+ * false when the read says it vanished, true when it read, null when it
+ * failed for another reason (say nothing then).
+ */
+export async function stillThere(read: () => Promise<unknown>): Promise<boolean | null> {
+  try {
+    await read();
+    return true;
+  } catch (e) {
+    return noteVanished(String(e)) ? false : null;
+  }
+}
+
 /** Whether a read failed because the file is no longer there. */
 export function noteVanished(error: string): boolean {
   return /\(os error 2\)|No such file or directory|cannot find the (file|path)/i.test(error);

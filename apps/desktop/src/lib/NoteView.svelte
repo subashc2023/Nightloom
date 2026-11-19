@@ -45,7 +45,8 @@
   import { isHtmlPath } from "./htmlPage";
   import { splitExt, whoFoldKey } from "./noteHead";
   import { exactTime, relativeTime } from "./time";
-  import { noteVanished, vanishedMessage } from "./notesFollow";
+  import { coalesced, noteVanished, stillThere, vanishedMessage } from "./notesFollow";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -346,6 +347,38 @@
     caret = lineOffset(text, at.line);
     app.noteAt = null;
     jump += 1;
+  });
+
+  /**
+   * Item 869: a note already open whose file is deleted or moved outside
+   * Nightloom. The folder watch's `notes-changed` re-checks the open file
+   * (one read, coalesced); gone shows the banner and Close, and the buffer —
+   * his unsaved edits included — stays, so Save puts the file back.
+   */
+  $effect(() => {
+    const target = open;
+    if (!target || (target.scope !== "project" && target.scope !== "knowledge")) return;
+    let alive = true;
+    let stop: UnlistenFn | null = null;
+    const check = coalesced(async () => {
+      const isMedia = untrack(() => media) !== null;
+      const there = await stillThere(() =>
+        isMedia ? api.readNoteMedia(target.scope, target.name) : api.readNote(target.scope, target.name),
+      );
+      if (!alive || open?.scope !== target.scope || open?.name !== target.name) return;
+      if (there === false) gone = true;
+      else if (there === true && error === null) gone = false;
+    });
+    listen("notes-changed", () => void check())
+      .then((s) => {
+        if (alive) stop = s;
+        else s();
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      stop?.();
+    };
   });
 
   async function load(target: { scope: NoteScope; name: string } | null) {
@@ -1035,7 +1068,8 @@
     <hr />
   </div>
   {#if gone && !error}
-    <p class="err gone">{vanishedMessage(open?.name ?? "", true)}</p>
+    <p class="err gone">{vanishedMessage(open?.name ?? "", dirty)}</p>
+    <button class="ghost gone-close" onclick={() => closeNote()}>Close</button>
   {/if}
   {#if error}
     <p class="err">{error}</p>

@@ -1,7 +1,7 @@
 // Item 869: the Notes list follows its folders when they change outside
 // Nightloom, and a note whose file vanished says so plainly.
 import { describe, expect, it, vi } from "vitest";
-import { coalesced, noteVanished, vanishedMessage, watchWhenMoved } from "./notesFollow";
+import { coalesced, noteVanished, stillThere, vanishedMessage, watchWhenMoved } from "./notesFollow";
 
 describe("869: following the notes folders", () => {
   it("a burst of changes is at most one re-read now and one after", async () => {
@@ -61,6 +61,14 @@ describe("869: following the notes folders", () => {
     ).toBe(true);
     expect(noteVanished("cannot read a.md: Permission denied (os error 13)")).toBe(false);
     expect(noteVanished("stream did not contain valid UTF-8")).toBe(false);
+  });
+
+  it("an open note's file deleted outside reads as gone; there or unreadable does not", async () => {
+    const gone = () =>
+      Promise.reject("cannot read files/lectures/ICS51-MIPS-Architecture (1).txt: No such file or directory (os error 2)");
+    expect(await stillThere(gone)).toBe(false);
+    expect(await stillThere(() => Promise.resolve("text"))).toBe(true);
+    expect(await stillThere(() => Promise.reject("Permission denied (os error 13)"))).toBe(null);
   });
 
   it("the message names the file and never the os error", () => {
