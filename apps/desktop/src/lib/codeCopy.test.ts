@@ -1,4 +1,7 @@
-import msgSrc from "./AssistantMessage.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+import msgSrcRaw from "./AssistantMessage.svelte?raw";
+const msgSrc = asOneFile(msgSrcRaw, assistantMessageLogicRaw);
 import { describe, expect, it } from "vitest";
 import { marked } from "marked";
 import { addRunButtons, codeCopy } from "./codeCopy";

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import type { Snippet } from "svelte";
   import { tip } from "./tip";
   import { badgeOf } from "./attachKinds";
   import { decodeText, pastedLabel } from "./pasteAttach";
@@ -9,129 +8,32 @@
   import MathText from "./MathText.svelte";
   import { languageOf, segments } from "./codeHighlight";
   import KeepButton from "./KeepButton.svelte";
-  import { imageName, keepKey, splitAttachNote } from "./keep";
-  import { extOf } from "./attachKinds";
-  import { keptGet, keptSet } from "./keptFolds.svelte";
+  import { imageName, keepKey } from "./keep";
   import RanCard from "./RanCard.svelte";
   import AsideNoteChip from "./AsideNoteChip.svelte";
-  import { parseRan } from "./shellRun";
   import HandoffBubbleCard from "./HandoffBubbleCard.svelte";
-  import { parseHandoffMessage } from "./handoffBubble";
+  import { userBubbleLogic, type UserBubbleLogicProps } from "./userBubble/logic.svelte";
 
-  /**
-   * His message's bubble (nightshift backlog 283, 2026-10-02): the chat's
-   * user turn — its images, its files (a text one unfolds in place, item
-   * 284), his words with the `> ` quotes he placed drawn as quotes (215) —
-   * moved out of `Transcript.svelte` so an aside's questions are drawn by
-   * the same piece, and a change to how the chat draws his message reaches
-   * the asides with no second edit. The class names are the transcript's
-   * (`.user-bubble`, `.user-text` …): the selection pill and the find bar
-   * look for them.
-   *
-   * The transcript passes `custom` with a `body` snippet where it draws
-   * the words its own way (an edit's diff, an adopted agent's run); `extra`
-   * is drawn under the words (the council chip).
-   */
-  interface Img {
-    media_type: string;
-    data: string;
-  }
-  interface Doc {
-    media_type: string;
-    name: string;
-    data: string;
-  }
-  let {
-    images = [],
-    documents = [],
-    text = "",
-    custom = false,
-    body,
-    extra,
-    onopenimage = null,
-    onopendoc = null,
-    keep = null,
-    sending = [],
-    plain = false,
-  }: {
-    images?: readonly Img[];
-    documents?: readonly Doc[];
-    text?: string;
-    /** Draw `body` instead of the words. */
-    custom?: boolean;
-    body?: Snippet;
-    extra?: Snippet;
-    /** A click on a thumbnail: its index, the button's rect, the image's
-     *  decoded size. Null: the thumbnail is a picture, not a button. */
-    onopenimage?: ((j: number, rect: DOMRect, size: { width: number; height: number } | null) => void) | null;
-    /** A click on a file chip: its index and rect. Null: a plain chip. */
-    onopendoc?: ((j: number, rect: DOMRect) => void) | null;
-    /** Where a text attachment's fold is kept past a chat switch (item 495
-     *  part 2: the chat + turn); null, the bubble's own. */
-    keep?: string | null;
-    /** Item 515: the names of files for Claude Code this message carries
-     *  while the backend saves them — the optimistic message has no note
-     *  yet, and without these a file-only send drew an empty pill. */
-    sending?: readonly string[];
-    /** Item 706: a wrap-up he edited — his plain message, not the hand-off card. */
-    plain?: boolean;
-  } = $props();
-  /** Item 515: the note the CLI reads (`[Attached a file — saved for you
-   *  …]`) is drawn as cards, never as his words; the text stays as sent. */
-  const split = $derived(splitAttachNote(text));
-  const said = $derived(split.said);
-  const ran = $derived(parseRan(said));
-  /** Item 706: the wrap-up Nightloom sent, drawn as its hand-off card until he edits it. */
-  const handoff = $derived(plain || ran ? null : parseHandoffMessage(said));
-
-  let localOpen = $state<Record<number, boolean>>({});
-  /** A text attachment unfolded (284), kept under `keep` when there is one. */
-  const textOpen = $derived.by<Record<number, boolean>>(() => {
-    if (keep === null) return localOpen;
-    const out: Record<number, boolean> = {};
-    documents.forEach((_, j) => {
-      if (keptGet(`${keep}|text:${j}`, false)) out[j] = true;
-    });
-    return out;
-  });
-  function flipText(j: number): void {
-    if (keep === null) localOpen[j] = !localOpen[j];
-    else keptSet(`${keep}|text:${j}`, !textOpen[j], false);
-  }
-  /** A document with bytes to show: a text one unfolds (284). */
-  const isText = (d: Doc) => d.media_type.startsWith("text/") && d.data !== "";
-  /** Files the Claude Code engine saved for this message (item 277), by
-   *  the paths the note names: each a card (515), with Keep (306) where
-   *  the chat can keep. */
-  const saved = $derived(split.files);
-  /** A sending file the note does not name yet. */
-  const pendingNames = $derived(sending.filter((n) => !saved.some((f) => f.name === n)));
-  /** A file's kind in words: `HTML file`, `PDF`. */
-  function kindOf(name: string, mediaType = ""): string {
-    if (mediaType === "application/pdf" || extOf(name) === "pdf") return "PDF";
-    if (mediaType.startsWith("text/")) return "Text";
-    const ext = extOf(name).slice(0, 8).toUpperCase();
-    return ext && ext !== name.toUpperCase() ? `${ext} file` : "File";
-  }
-  /** A card's badge: the chip's own (`badgeOf`). */
-  const fileBadge = (name: string) => extOf(name).slice(0, 5).toUpperCase() || "FILE";
+  // Item 856: the behaviour lives once, in `userBubble/logic.svelte.ts`; this file is the look.
+  const props: UserBubbleLogicProps = $props();
+  const T = userBubbleLogic(() => props);
 </script>
 
 <div class="user-bubble">
   <!-- A click on an attachment opens it in front (nightshift backlog 145):
        the floating tab zooms up from the thumbnail's rect, so the rect and
        the image's decoded size go with the click. -->
-  {#if images.length > 0}
+  {#if T.images.length > 0}
     <div class="user-images">
-      {#each images as img, j (j)}
+      {#each T.images as img, j (j)}
         <div class="user-image-col">
-        {#if onopenimage}
+        {#if T.onopenimage}
           <button
             class="user-image-btn"
             use:tip={"Open in front"}
             onclick={(e) => {
               const el = e.currentTarget.querySelector("img");
-              onopenimage?.(
+              T.onopenimage?.(
                 j,
                 e.currentTarget.getBoundingClientRect(),
                 el && el.naturalWidth > 0 ? { width: el.naturalWidth, height: el.naturalHeight } : null,
@@ -155,20 +57,20 @@
       {/each}
     </div>
   {/if}
-  {#if documents.length > 0 || saved.length > 0 || pendingNames.length > 0}
+  {#if T.documents.length > 0 || T.saved.length > 0 || T.pendingNames.length > 0}
     <!-- Item 515: each file he sent is a card in the hand-off card's
          language (the accent edge on the well): its kind, its name, Keep,
          and a quiet line saying what became of it. -->
     <div class="attach-cards">
-      {#each documents as doc, j (j)}
+      {#each T.documents as doc, j (j)}
         <div class="attach-card" data-attach="document">
           <div class="attach-head">
             <span class="attach-badge mono">{badgeOf({ kind: "document", ...doc })}</span>
-            {#if onopendoc}
+            {#if T.onopendoc}
               <button
                 class="attach-name"
                 use:tip={`${doc.name} — open in front`}
-                onclick={(e) => onopendoc?.(j, e.currentTarget.getBoundingClientRect())}>{doc.name}</button
+                onclick={(e) => T.onopendoc?.(j, e.currentTarget.getBoundingClientRect())}>{doc.name}</button
               >
             {:else}
               <span class="attach-name" use:tip={doc.media_type || doc.name}>{doc.name}</span>
@@ -178,26 +80,26 @@
             {/if}
           </div>
           <div class="attach-line">
-            {kindOf(doc.name, doc.media_type)} · {doc.data ? (isText(doc) ? "sent with this message as text" : "sent with this message") : "attached"}
-            {#if isText(doc)}
+            {T.kindOf(doc.name, doc.media_type)} · {doc.data ? (T.isText(doc) ? "sent with this message as text" : "sent with this message") : "attached"}
+            {#if T.isText(doc)}
               <button
                 class="user-file-toggle"
-                aria-expanded={!!textOpen[j]}
-                use:tip={textOpen[j] ? "Fold the text away" : "Show the text here"}
-                onclick={() => flipText(j)}
-                >{textOpen[j] ? "▾ hide" : `▸ ${pastedLabel(decodeText(doc.data))}`}</button
+                aria-expanded={!!T.textOpen[j]}
+                use:tip={T.textOpen[j] ? "Fold the text away" : "Show the text here"}
+                onclick={() => T.flipText(j)}
+                >{T.textOpen[j] ? "▾ hide" : `▸ ${pastedLabel(decodeText(doc.data))}`}</button
               >
             {/if}
           </div>
-          {#if textOpen[j] && isText(doc)}
+          {#if T.textOpen[j] && T.isText(doc)}
             <pre class="user-file-text">{decodeText(doc.data)}</pre>
           {/if}
         </div>
       {/each}
-      {#each saved as f (f.path)}
+      {#each T.saved as f (f.path)}
         <div class="attach-card" data-attach="saved" use:tip={f.path}>
           <div class="attach-head">
-            <span class="attach-badge mono">{fileBadge(f.name)}</span>
+            <span class="attach-badge mono">{T.fileBadge(f.name)}</span>
             <span class="attach-name">{f.name}</span>
             <KeepButton
               keyStr={`path|${f.path}`}
@@ -207,44 +109,44 @@
             />
           </div>
           <div class="attach-line">
-            {#if f.pages}PDF · {f.pages} pages · saved for Claude to read the pages it needs with its tools{:else}{kindOf(f.name)} · saved for Claude to open with its tools{/if}
+            {#if f.pages}PDF · {f.pages} pages · saved for Claude to read the pages it needs with its tools{:else}{T.kindOf(f.name)} · saved for Claude to open with its tools{/if}
           </div>
         </div>
       {/each}
-      {#each pendingNames as name (name)}
+      {#each T.pendingNames as name (name)}
         <div class="attach-card sending" data-attach="sending">
           <div class="attach-head">
-            <span class="attach-badge mono">{fileBadge(name)}</span>
+            <span class="attach-badge mono">{T.fileBadge(name)}</span>
             <span class="attach-name">{name}</span>
           </div>
-          <div class="attach-line">{kindOf(name)} · saving for Claude to open with its tools…</div>
+          <div class="attach-line">{T.kindOf(name)} · saving for Claude to open with its tools…</div>
         </div>
       {/each}
     </div>
   {/if}
-  {#if custom && body}
-    {@render body()}
-  {:else if ran}
+  {#if T.custom && T.body}
+    {@render T.body()}
+  {:else if T.ran}
     <!-- Item 503: the output of a block he ran, folded; not a wall of his. -->
-    <RanCard {ran} {keep} />
-  {:else if handoff}
+    <RanCard ran={T.ran} keep={T.keep} />
+  {:else if T.handoff}
     <!-- Item 706: a wrap-up, folded on his side; an edit makes it his words again. -->
-    <HandoffBubbleCard {handoff} {keep} classic />
-  {:else if said}
+    <HandoffBubbleCard handoff={T.handoff} keep={T.keep} classic />
+  {:else if T.said}
     <!-- `> ` lines are quotes he placed with Reply (backlog 215), drawn as
          quotes where they sit in his words. -->
     <!-- Item 315: a ``` fenced block is drawn as code, coloured, its
          language on a label; the rest of his words stay plain text. -->
     <!-- Item 837: the maths in his words is typeset (`MathText`, the box's
          own reading of `$…$`, `$$…$$`, `\(…\)`, `\[…\]` and bare LaTeX). -->
-    <div class="user-text">{#each splitFences(said) as part, p (p)}{#if part.kind === "code"}<div class="user-code"><span class="user-code-lang mono">{languageOf(part.info)?.label ?? (part.info || "code")}</span><pre><code>{#each segments(part.code, part.info) as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre></div>{:else}{#each splitQuotes(part.text) as seg, k (k)}{#if seg.kind === "quote" && quoteNeedsRender(seg.text)}<blockquote class="user-quote markdown rendered">{@html renderReply(seg.text)}</blockquote>{:else if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}<MathText text={seg.text} />{/if}{/each}{/if}{/each}</div>
+    <div class="user-text">{#each splitFences(T.said) as part, p (p)}{#if part.kind === "code"}<div class="user-code"><span class="user-code-lang mono">{languageOf(part.info)?.label ?? (part.info || "code")}</span><pre><code>{#each segments(part.code, part.info) as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre></div>{:else}{#each splitQuotes(part.text) as seg, k (k)}{#if seg.kind === "quote" && quoteNeedsRender(seg.text)}<blockquote class="user-quote markdown rendered">{@html renderReply(seg.text)}</blockquote>{:else if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}<MathText text={seg.text} />{/if}{/each}{/if}{/each}</div>
   {/if}
-  {#if split.aside}
+  {#if T.split.aside}
     <!-- Item 775: what his asides changed, told to the main chat with
          this message — a chip, never his words. -->
-    <AsideNoteChip rows={split.aside} {keep} />
+    <AsideNoteChip rows={T.split.aside} keep={T.keep} />
   {/if}
-  {@render extra?.()}
+  {@render T.extra?.()}
 </div>
 
 <style>

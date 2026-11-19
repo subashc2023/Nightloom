@@ -2,19 +2,13 @@
   import { tip } from "./tip";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
-  import type { Segment } from "./state.svelte";
-  import { gapLead, gapPhase, liveFor } from "./liveContext";
-  import { shortTokens } from "./contextDial";
-  import { liveContextOf, stepMarksOf } from "./liveContext.svelte";
-  import type { ApprovalRequest, Usage } from "./types";
   // Item 626: while streaming, the unfinished tail renders as it will once finished (streamingTail); item 830: by blocks.
   import { renderReply } from "./markdown";
   import { askSettled } from "./askSettled";
   import { renderStreamingParts } from "./streamBlocks";
   import { liveHtml } from "./liveHtml";
-  import { codeCopy, type RunBlocks } from "./codeCopy";
-  import { handoffGo, type NextChat } from "./handoffButton";
-  import { runBlock, type RunFrom } from "./shellRun.svelte";
+  import { codeCopy } from "./codeCopy";
+  import { handoffGo } from "./handoffButton";
   import { openAgentTab } from "./terminal.svelte";
   import { isShellCall } from "./agentCommands";
   import CouncilBlocks from "./CouncilBlocks.svelte";
@@ -24,68 +18,26 @@
   import { wordDiff } from "./textdiff";
   import { exactTime, relativeTimeLong } from "./time";
   import { compactJson } from "./toolinput";
-  import {
-    flipOverride,
-    resolveOpen,
-    segmentIds,
-    toolInputSummary,
-    toolResultSummary,
-    toolSummary,
-    transcript,
-    type BlockKind,
-    type Override,
-  } from "./transcriptPrefs.svelte";
-  import {
-    HIDDEN_THINKING_TITLE,
-    activitySummary,
-    groupSegments,
-    modelOmitsThinking,
-    resolveFolded,
-    shortToolName,
-    thinkingHidden,
-    waitingLabel,
-  } from "./activity";
-  import type { IconName } from "./icons";
-  import { fmtShare, fmtTokens, shareOf, sizeTitle, type TurnSize } from "./tokens";
-  import {
-    artifactLinks,
-    displayPath,
-    extOf,
-    fmtSize,
-    noteForPath,
-    pathCandidates,
-    type ArtifactLink,
-  } from "./cards";
-  import * as api from "./api";
-  import {
-    addToast,
-    app,
-    endContentDrag,
-    openContent,
-    startContentDrag,
-    type SubagentRow,
-  } from "./state.svelte";
-  import { agentCallContent, agentRowLine, isAgentCall } from "./subagentRows";
+  import { toolInputSummary, toolResultSummary, toolSummary, transcript } from "./transcriptPrefs.svelte";
+  import { HIDDEN_THINKING_TITLE, activitySummary, shortToolName, thinkingHidden } from "./activity";
+  import { fmtShare, fmtTokens, shareOf, sizeTitle } from "./tokens";
+  import { displayPath, extOf, fmtSize } from "./cards";
+  import { app, endContentDrag, openContent } from "./state.svelte";
+  import { agentRowLine, isAgentCall } from "./subagentRows";
   // Item 718: a helper row says whether it is a new helper or a continued one.
   import { helperMark } from "./helperMark";
-  import type { TabContent } from "./tabs";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import AskAnswered from "./AskAnswered.svelte";
   import Icon from "./Icon.svelte";
   import CopyButton from "./CopyButton.svelte";
   import ListenButton from "./ListenButton.svelte";
   import { here as listenHere } from "./listenHere";
-  import { textId } from "./listen";
-  import { COPIED_MS } from "./copyIcon";
   import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
   import { removeTip } from "./removeAsk";
   import MemoryHits from "./MemoryHits.svelte";
-  import { hitsOfCalls } from "./memoryHits";
-  import { isDragMove, sentExt, sentFilesOfCalls, type SentFile } from "./sentFiles";
+  import { sentExt } from "./sentFiles";
   import { memoryRefs, openMemoryEdit } from "./memoryOpen";
-  import { memoryEditOf, type MemoryEdit } from "./memoryEdits";
-  import type { ReplyUsageView } from "./replyUsage";
-  import { footerStopNote, hasUsage, isSignedOut, isStandIn } from "./replyFooter";
+  import { footerStopNote, hasUsage, isSignedOut } from "./replyFooter";
   import EditDiffView from "./EditDiffView.svelte";
   import { editDiffOf } from "./editDiff";
   import ToolImagesView from "./ToolImagesView.svelte";
@@ -93,728 +45,36 @@
   import SignedOutNotice from "./SignedOutNotice.svelte";
   import StillRunningLine from "./StillRunningLine.svelte";
   import { errorWeight, retriedAfter, softLine } from "./errorWeight";
-  import { waitingOn } from "./stillRunning";
   import MidTurnBubble from "./MidTurnBubble.svelte";
   import RetryLine from "./RetryLine.svelte";
   // The streaming motion (backlog 342, his pick of 338: "Loom + fade-in").
-  import { Births, needleIn, needleOut, replyMotion } from "./replyMotion";
+  import { needleIn, needleOut, replyMotion } from "./replyMotion";
   // The thinking block's arrival (backlog 389): a live thinking row's first
   // appearance is thrown in along the send flight's path, not spawned.
-  import { FRESH_MS, thinkingArrival, type ArrivalParams } from "./thinkingArrival";
-  import { stepRamp, type RampParams } from "./stepRamp";
-  // Item 564 (Filament IV stage 5): the turn trace's clock and the stream speed.
-  import { untrack } from "svelte";
+  import { thinkingArrival } from "./thinkingArrival";
+  import { stepRamp } from "./stepRamp";
   // Item 589: the running step's motion, a variant per kind of step.
-  import { HELPER_WINDOW, stepMotion, toolKind, type StepKind, type StepMotion } from "./stepMotion.svelte";
-  import { SpeedMeter, barOf, fmtSecs, sparkPoints, stepKeys, traceBook, type TraceRecord } from "./turnTiming";
+  import { HELPER_WINDOW, stepMotion, toolKind, type StepKind } from "./stepMotion.svelte";
+  import type { Segment } from "./state.svelte";
+  import { fmtSecs } from "./turnTiming";
   // Item 495 part 2: the folds kept past a chat switch.
-  import { decodeOverride, encodeOverride, foldKey, keptGet, keptOpen, keptSet, type FoldScope } from "./keptFolds.svelte";
+  import { keptOpen } from "./keptFolds.svelte";
   // Item 820: pictures and video the reply names, drawn under its text.
   import ReplyMedia from "./ReplyMedia.svelte";
   import { mediaCandidates } from "./replyMedia";
   // Item 770: a page a reply wrote, drawn where its block stands.
   import { replyPages } from "./replyPages";
-  import "./replyMediaMac";
+  import { assistantMessageLogic, type AssistantMessageLogicProps } from "./assistantMessage/logic.svelte";
 
-  interface Footer {
-    model: string;
-    usage: Usage;
-    stop_reason: string | null;
-    cost?: number;
-    /** When the reply was recorded — its completion (backlog 123). */
-    at?: string;
-    /** No figure to show (backlog 283: an aside's answer read back from
-     *  the store keeps its words, not its tokens): Copy and the time only. */
-    bare?: boolean;
-  }
-
-  /** The turn's text segments, for Copy — thinking and tool traffic are not
-   *  what anyone means by "copy the reply". */
-  function textOf(): string {
-    return segs
-      .filter((s) => s.kind === "text")
-      .map((s) => s.text)
-      .join("\n\n");
-  }
-  /** Item 801: where Listen keeps this reply's place — its words' own id,
-   *  so the same reply keeps its place in the chat and in an aside. */
-  const listenId = $derived(textId(textOf()));
-  let copied = $state(false);
-  async function copy(): Promise<void> {
-    try {
-      await copyText(textOf());
-      copied = true;
-      setTimeout(() => (copied = false), COPIED_MS);
-    } catch {
-      // The webview refused the clipboard; nothing to show but the button.
-    }
-  }
-  // The footer says what the reply itself is (backlog 090): its output,
-  // and what its tool calls brought back when any did. It used to sum
-  // `input + output`, which on both engines is the whole prompt plus the
-  // reply — the gauge's figure, near enough, and neither the message nor
-  // the total. The prompt's size is still in the title.
-  function fmtOut(u: Usage, size: TurnSize | null): string {
-    const out = `${u.output_tokens.toLocaleString()} out`;
-    return size?.results ? `${out} · ${fmtTokens(size.results)} from tools` : out;
-  }
-  function footerTitle(f: Footer, size: TurnSize | null): string {
-    const base = `${f.usage.input_tokens.toLocaleString()} in (the whole prompt, cached or not) / ${f.usage.output_tokens.toLocaleString()} out${f.stop_reason ? ` · ${f.stop_reason}` : ""}`;
-    return size ? `${sizeTitle(size, "assistant", limit)}. ${base}` : base;
-  }
-  function fmtCost(c: number | undefined): string {
-    if (c == null) return "";
-    return c > 0 && c < 0.01 ? ` · $${c.toFixed(4)}` : ` · $${c.toFixed(2)}`;
-  }
-  /**
-   * The footer's figure (the design's board 1, 2026-09-16): what the turn
-   * added to the window — the reply and what its tools brought back, the
-   * same number the bar beside it is a share of — with the reply's own
-   * `N out` in the title. Without a size to show, the output count as
-   * before.
-   */
-  function fmtFigure(u: Usage, size: TurnSize | null): string {
-    // With its unit: beside the foot's time (backlog 123) a bare "760"
-    // and "18 minutes ago" read as one run of numbers (his report).
-    return size ? `${fmtTokens(size.tokens)} tokens` : fmtOut(u, null);
-  }
-
-  /**
-   * The row's icon by the call's name (board 1): the CLI's tools by name,
-   * an MCP tool by its prefix, Nightloom's own engine's snake_case tools by
-   * what they do; null for anything else, which keeps the ⚒ glyph.
-   */
-  function toolIcon(name: string): IconName | null {
-    if (name.startsWith("mcp__")) return "mcp";
-    const n = name.toLowerCase();
-    if (n === "agent" || n === "task") return "agent";
-    if (n.startsWith("read") || n === "notebookread" || n === "read_chat") return "read";
-    if (n.startsWith("grep") || n.startsWith("glob") || n.includes("search")) return "grep";
-    if (n.startsWith("edit") || n.startsWith("write") || n === "multiedit" || n === "notebookedit") return "edit";
-    if (n === "bash") return "term";
-    if (n.includes("fetch")) return "ext";
-    return null;
-  }
-
-  /**
-   * The thinking row's words, three states (boards 1 and 6, backlog 097):
-   * `thought for 6 s` once done with a clock; `thought · summary` when the
-   * text is the summary the API engine asked for — a model that omits its
-   * thinking returned something, so it is that; `thought` for a recorded
-   * block with no clock; `thinking` while it streams.
-   */
-  function thoughtLabel(seg: { done: boolean; ms?: number }): string {
-    if (!seg.done) return "thinking";
-    if (summarised) return "thought · summary";
-    if (seg.ms == null) return "thought";
-    const sec = Math.max(1, Math.round(seg.ms / 1000));
-    return sec < 60 ? `thought for ${sec} s` : `thought for ${Math.floor(sec / 60)} min ${sec % 60} s`;
-  }
-  /** A thinking row's size column (item 564): how long it took — the
-   *  window's own clock, else the stream's `ms` — or `…` while it runs. */
-  function thinkSize(i: number, seg: Segment): string {
-    const ms = stepMs(i) ?? (seg.kind === "thinking" ? (seg.ms ?? null) : null);
-    if (seg.kind === "thinking" && !seg.done) return ms !== null ? fmtSecs(ms) : "…";
-    return ms !== null ? fmtSecs(ms) : "";
-  }
-  /** The summary's first line, for the row's argument column. */
-  function firstLine(text: string): string {
-    return text.trim().split(/\n/, 1)[0] ?? "";
-  }
-
-  let {
-    segs,
-    footer = null,
-    streaming = false,
-    since = null,
-    model = null,
-    size = null,
-    limit = null,
-    approvals = [],
-    onremove = null,
-    onrestore = null,
-    controlsTitle = "",
-    originals = null,
-    diff = false,
-    clock = Date.now(),
-    headed = true,
-    onedit = null,
-    onremoveturn = null,
-    planUsage = null,
-    onretry = null,
-    cliSession = null,
-    folds = null,
-    runFrom = null,
-    nextChat = null,
-    motion = null,
-  }: {
-    segs: Segment[];
-    footer?: Footer | null;
-    streaming?: boolean;
-    /** When the live turn was sent (ms since epoch), for the `working · 41 s`
-     *  row (backlog 096); absent, the count starts when this mounts. */
-    since?: number | null;
-    /** The model answering a live turn (item 525), for the header while no
-     *  footer says; null draws the header without one. */
-    model?: string | null;
-    /** What this reply added to the context (backlog 090), null when the
-     *  log cannot say; `limit` is the model's window for the share. */
-    size?: TurnSize | null;
-    limit?: number | null;
-    /** Calls in these segments still waiting on the user's decision. */
-    approvals?: ApprovalRequest[];
-    /** Remove one block of a recorded reply — a tool call with its
-     *  result, from the hover on the call (nightshift backlog 066). Given
-     *  only when the reply can be edited: recorded, live, not removed, no
-     *  turn running. */
-    onremove?: ((block: number) => void) | null;
-    /** Restore a removed block from its placeholder. Same terms. */
-    onrestore?: ((block: number) => void) | null;
-    /** What hovering the controls says on this engine. */
-    controlsTitle?: string;
-    /** Per segment, a text block's words before its edit (nightshift
-     *  backlog 105) — `null` where the block was not edited, `""` for one
-     *  the edit appended; absent on a reply never edited. */
-    originals?: (string | null)[] | null;
-    /** Draw each edited block as a diff over its current text rather than
-     *  as the rendered text: the transcript's `edited` mark toggles it. */
-    diff?: boolean;
-    /** The transcript's clock (ms since epoch), ticking while the chat is
-     *  open, so the footer's `37 minutes ago` keeps up (backlog 123). */
-    clock?: number;
-    /** Draw the model header. False for a reply that continues the one
-     *  before it (nightshift backlog 121): same model, nothing between —
-     *  one header for the run, the blocks back to back. */
-    headed?: boolean;
-    /** Edit this reply in place, from the pencil in the footer row (the
-     *  transcript's `beginEdit`); null when the reply cannot be edited. */
-    onedit?: (() => void) | null;
-    /** This reply's share of the plan's five-hour window and week (item
-     *  323), on the turn's last reply; null when no readings say. */
-    planUsage?: ReplyUsageView | null;
-    /** Remove this whole reply from the context, from the footer row;
-     *  null when the turn cannot be acted on. */
-    onremoveturn?: (() => void) | null;
-    /** Run this reply's prompt again in a fork from it (item 333), on a
-     *  turn's last reply; null where Retry is not offered. */
-    onretry?: (() => void) | null;
-    /** The chat's Claude Code session id, where a tool result's images are
-     *  read from (backlog 434); null draws none. */
-    cliSession?: string | null;
-    /** Where this reply's folds are kept (item 495 part 2): its chat and
-     *  turn, so a thinking block, tool call, block, subagent group or diff
-     *  he opened or closed is drawn so again after a chat switch. Null:
-     *  this component's own, as before (gone with the message). */
-    folds?: FoldScope | null;
-    /** The chat, and the aside, this reply was drawn in (item 503): a shell
-     *  block's Run and a shell call's way to Agent commands go by it. Null: a
-     *  surface with no terminal to send to. */
-    runFrom?: RunFrom | null;
-    /** Item 506: this is the chat's latest reply and it holds a next-chat
-     *  prompt; only the main transcript passes it. */
-    nextChat?: NextChat | null;
-    /** Item 610: the running step's motion for this reply's trace; null
-     *  follows the setting (Settings → Animations). Settings' previews pass
-     *  one each. */
-    motion?: StepMotion | null;
-  } = $props();
-
-  function runBlocks(text: string): RunBlocks | null {
-    // `runFrom` is read at the click: this element may be drawing another chat by then.
-    return runFrom ? { text, streaming, onRun: (command) => runFrom && void runBlock(command, runFrom) } : null;
-  }
-
-  // Per-block clicks, keyed by the block's stable id (`segmentIds`) rather
-  // than its index, and consulted before the streaming rule and the two
-  // transcript-wide toggles (`resolveOpen`, nightshift backlog 052): a click
-  // on a block always wins over its default. The map is this component's,
-  // so it lives as long as the message on screen does. An activity block's
-  // fold line (backlog 096) keeps its click here too, under `block:<id>`.
-  // ~~The map is this component's, so it lives as long as the message on
-  // screen does~~ — since item 495 part 2 (2026-11-02) a reply with `folds`
-  // reads and writes them in `keptFolds` (session only), so a chat switch,
-  // or the live reply giving way to the recorded one, keeps every click;
-  // `local` is the map for a reply with nowhere to keep them.
-  let local = $state<Record<string, Override>>({});
-  const ids = $derived(segmentIds(segs));
-  // The reply as the transcript draws it: runs of thinking and tool calls
-  // as one activity block each, everything else on its own (backlog 096).
-  const groups = $derived(groupSegments(segs, ids));
-  const overrides = $derived.by<Record<string, Override>>(() => {
-    const scope = folds;
-    if (!scope) return local;
-    const out: Record<string, Override> = {};
-    const keys = [...ids.filter(Boolean), ...groups.flatMap((g) => (g.kind === "activity" ? [g.key] : []))];
-    for (const id of keys) {
-      const o = decodeOverride(keptGet(foldKey(scope, id), ""));
-      if (o) out[id] = o;
-    }
-    return out;
-  });
-  function setOverride(id: string, o: Override): void {
-    if (folds) keptSet(foldKey(folds, id), encodeOverride(o), "");
-    else local[id] = o;
-  }
-  /** Item 700: whether a soft error's box is open (folded by default),
-   *  read by its own key — `overrides` holds the rows' and blocks' only. */
-  function softOpen(key: string): boolean {
-    const o = folds ? decodeOverride(keptGet(foldKey(folds, key), "")) : local[key];
-    return o?.open === true;
-  }
-  /** A native fold's kept key (a subagent group, a removed block), or null. */
-  function detailsKey(id: string): string | null {
-    return folds ? foldKey(folds, id) : null;
-  }
-  // Nightloom's own stand-in for a turn with no reply (backlog 407): drawn
-  // as its notice under a "Nightloom" header, never as the model's prose.
-  const standIn = $derived(
-    segs.length === 1 && segs[0].kind === "text" && isStandIn([segs[0].text], footer?.stop_reason),
-  );
-
-  function kindOf(seg: Segment): BlockKind {
-    return seg.kind === "thinking" ? "thinking" : "tool";
-  }
-  function doneOf(seg: Segment): boolean {
-    if (seg.kind === "thinking") return seg.done;
-    if (seg.kind === "tool") return seg.call.result !== null;
-    return true;
-  }
-  function isOpen(i: number, seg: Segment): boolean {
-    return resolveOpen(kindOf(seg), ids[i], streaming, doneOf(seg), overrides, transcript);
-  }
-  function toggle(i: number, seg: Segment): void {
-    setOverride(ids[i], flipOverride(
-      kindOf(seg),
-      ids[i],
-      streaming,
-      doneOf(seg),
-      overrides,
-      transcript,
-    ));
-  }
-  function isFolded(key: string): boolean {
-    return resolveFolded(key, streaming, overrides, transcript);
-  }
-  function toggleFold(key: string): void {
-    setOverride(key, { open: isFolded(key), rev: transcript.rev.tool });
-  }
-
-  // Toggled on pointerdown, not click. While a reply streams the transcript
-  // stays pinned to its foot and every delta pushes the pill up the page,
-  // so between the press and the release the pointer is over something
-  // else and no `click` reaches the button — which is what "clicking a
-  // thinking tag mid-reply does nothing" looks like (backlog 052). The
-  // press is a single instant and cannot be split. `click` is kept for the
-  // keyboard, where `detail` is 0; a pointer's click has already been
-  // handled at its press.
-  function press(e: PointerEvent, i: number, seg: Segment): void {
-    if (e.button !== 0) return;
-    toggle(i, seg);
-  }
-  function keyClick(e: MouseEvent, i: number, seg: Segment): void {
-    if (e.detail === 0) toggle(i, seg);
-  }
-  // The Agent call's row as a drag source (nightshift backlog 160): the
-  // transcript on screen is the open chat's, so its id names the tab.
-  function agentTabOf(call: { id: string; name: string; input: unknown }) {
-    if (!isAgentCall(call.name) || !app.activeSessionId) return null;
-    return agentCallContent(app.activeSessionId, call);
-  }
-  function rowOf(id: string): SubagentRow | null {
-    return app.subagents.find((r) => r.tool_use_id === id) ?? null;
-  }
-  /** Item 616: a helper's context so far (its latest round's request and
-   *  response, the CLI's `total_tokens`), or null when it is not a helper
-   *  or nothing has been reported yet — then its bar stays today's. */
-  function helperContext(call: { id: string; name: string }): number | null {
-    if (!isAgentCall(call.name)) return null;
-    const r = rowOf(call.id);
-    return r && r.tokens > 0 ? r.tokens : null;
-  }
-  /** The press already flipped the row (the toggle is on pointerdown, for
-   *  the streaming reason above); a press that turns into a drag was not a
-   *  click, so the flip is undone as the drag starts. */
-  function dragAgent(e: DragEvent, i: number, seg: Segment, content: TabContent): void {
-    toggle(i, seg);
-    startContentDrag(e, content);
-  }
-
-  function pressFold(e: PointerEvent, key: string): void {
-    if (e.button !== 0) return;
-    toggleFold(key);
-  }
-  function keyFold(e: MouseEvent, key: string): void {
-    if (e.detail === 0) toggleFold(key);
-  }
-
-  // The moon stays for the whole live turn (backlog 096): the waiting row
-  // of backlog 049 covers send-to-first-token, and from the first token on
-  // this message's last row is the moon with `working · 41 s`, counted
-  // from when the turn was sent. Inside the last activity block when the
-  // reply's last segment is in one, else a row of its own under the text.
-  // Gone the moment `streaming` drops.
-  let now = $state(Date.now());
-  const startedAt = Date.now();
-  $effect(() => {
-    if (!streaming) return;
-    now = Date.now();
-    // His ask 2026-11-11: a running step's time counts in tenths ("7.0 s"
-    // stood still for a second at a time), so the live clock ticks every 0.1 s.
-    const t = setInterval(() => (now = Date.now()), 100);
-    return () => clearInterval(t);
-  });
-  // Item 700: the main reply has ended and the turn waits only on its
-  // background agents — the line says so (`waiting on 2 agents · 2 min 58 s`)
-  // and a light runs round the trace block's edge until the turn moves.
-  const waitAgents = $derived(streaming ? waitingOn(segs, app.subagents) : null);
-  // Item 829: the gap between steps says what the model is doing — reading
-  // the chat before its first word, or writing a call the trace shows only
-  // once it is whole (`gapPhase`).
-  const phase = $derived.by(() => {
-    if (!streaming) return null;
-    const sent = since ?? startedAt;
-    return gapPhase(liveFor(liveContextOf(app.activeSessionId), sent), { sentAt: sent, ...stepMarksOf(app.activeSessionId) });
-  });
-  const working = $derived(waitingLabel(waitAgents, now - (since ?? startedAt), gapLead(phase, shortTokens)));
-
-  // ---- The turn trace (item 564, Filament IV stage 5) ----------------------
-  // Each step (a thinking block, a call) is a numbered row with a status mark
-  // and a bar: where in the turn it started and how long it ran. The times
-  // are the window's own (`traceBook`, turnTiming.ts): stamped while the turn
-  // streams and kept for the session, so the recorded reply that replaces the
-  // live one keeps its bars; a reply read back after a relaunch has none.
-  const stepKey = $derived(stepKeys(segs));
-  // Each step's number in the reply, 1-based, in the order it happened.
-  const stepNo = $derived.by(() => {
-    const out: number[] = [];
-    let n = 0;
-    stepKey.forEach((k, i) => (out[i] = k === null ? 0 : ++n));
-    return out;
-  });
-  let traceRev = $state(0);
-  let liveRec: TraceRecord | null = null;
-  let firstLook = true;
-  // What the effect reads so it runs again on every change that matters: a
-  // step's arrival, its end, a delta of words or thinking.
-  function shape(): string {
-    return segs
-      .map((s) =>
-        s.kind === "tool"
-          ? `t${s.call.result || s.call.denied ? 1 : 0}`
-          : s.kind === "thinking"
-            ? `k${s.done ? 1 : 0}${s.text.length}`
-            : s.kind === "text"
-              ? `x${s.text.length}`
-              : s.kind[0],
-      )
-      .join(",");
-  }
-  $effect(() => {
-    if (!streaming) return;
-    void shape();
-    const at = Date.now();
-    liveRec ??= traceBook.find(segs) ?? { t0: since ?? at, t1: null, steps: {}, tps: null };
-    // A reply first seen well into its turn (a chat opened mid-turn): steps
-    // already done then have no honest start and draw no bar.
-    const fresh = firstLook && segs.length > 0 && at - (since ?? at) > 2000;
-    firstLook = false;
-    traceBook.observe(liveRec, segs, at, fresh);
-    // Untracked: the effect must not depend on the counter it bumps.
-    untrack(() => traceRev++);
-  });
-  // The turn ended under this reply: steps still open end with it.
-  $effect(() => {
-    if (streaming || !liveRec) return;
-    traceBook.close(liveRec);
-    untrack(() => traceRev++);
-  });
-  const traceRec = $derived.by<TraceRecord | null>(() => {
-    void traceRev;
-    if (streaming) return liveRec;
-    const r = liveRec ?? traceBook.find(segs);
-    return r;
-  });
-  /** The turn's span so far: to now while live, to its end once done. */
-  function traceEnd(r: TraceRecord): number {
-    return streaming ? now : (r.t1 ?? r.seen ?? now);
-  }
-  function barFor(i: number): { left: number; width: number } | null {
-    void traceRev;
-    const r = traceRec;
-    const k = stepKey[i];
-    if (!r || !k) return null;
-    return barOf(r.steps[k], r.t0, traceEnd(r));
-  }
-  /** A step's own time, for its title and a thinking row's size column. */
-  function stepMs(i: number): number | null {
-    void traceRev;
-    const r = traceRec;
-    const k = stepKey[i];
-    const st = r && k ? r.steps[k] : undefined;
-    if (!st) return null;
-    // A step stamped since the last tick reads from the clock, not below zero.
-    return (st.end ?? Math.max(now, Date.now())) - st.start;
-  }
-  function barTitle(i: number): string {
-    const r = traceRec;
-    const k = stepKey[i];
-    const st = r && k ? r.steps[k] : undefined;
-    if (!r || !st) return "";
-    const ran = fmtSecs((st.end ?? now) - st.start);
-    return `Started ${fmtSecs(st.start - r.t0)} into the turn; ${st.end === null ? "running for" : "took"} ${ran}`;
-  }
-  /** Any step in this block has a time: else its bar column is left out. */
-  function timed(rows: readonly { i: number }[]): boolean {
-    void traceRev;
-    const r = traceRec;
-    return !!r && rows.some(({ i }) => !!stepKey[i] && !!r.steps[stepKey[i]!]);
-  }
-  /** The trace's foot: how many steps, how long the turn has run. */
-  function traceFoot(rows: readonly { i: number }[]): { steps: string; elapsed: string | null } {
-    const n = rows.length;
-    const r = traceRec;
-    return {
-      steps: `${n} step${n === 1 ? "" : "s"}`,
-      elapsed: r ? fmtSecs(traceEnd(r) - r.t0) : null,
-    };
-  }
-
-  // ---- Stream speed (item 564): "~38 tok/s" in the header while live -------
-  // Estimated from the characters streamed (turnTiming.ts says why), sampled
-  // once a second; the sparkline is the last 24 seconds.
-  const meter = new SpeedMeter();
-  let speed = $state<number | null>(null);
-  let spark = $state("");
-  function streamedChars(): number {
-    let n = 0;
-    for (const s of segs) if (s.kind === "text" || s.kind === "thinking") n += s.text.length;
-    return n;
-  }
-  $effect(() => {
-    if (!streaming) return;
-    // Untracked: a delta must not restart the once-a-second clock.
-    untrack(() => meter.sample(streamedChars()));
-    const t = setInterval(() => {
-      meter.sample(streamedChars());
-      speed = meter.rate();
-      spark = sparkPoints(meter.samples, 64, 14);
-      if (liveRec && speed !== null) liveRec.tps = speed;
-    }, 1000);
-    return () => clearInterval(t);
-  });
-  const SPEED_TITLE =
-    "Stream speed, estimated: the characters the reply has streamed, at about four to a token, over the seconds it was streaming. Thinking the model keeps to itself is not counted.";
-  // The header (item 525, Filament IV): who is answering, and while the turn
-  // is live "Replying m:ss" in the signal colour. A Claude model reads
-  // "Claude" and its family and version ("Opus 5.5"); any other model reads
-  // as its own id.
-  const who = $derived.by(() => {
-    if (standIn) return { name: "Nightloom", model: "" };
-    const m = footer?.model ?? model ?? "";
-    const x = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(m);
-    if (x) return { name: "Claude", model: `${x[1][0].toUpperCase()}${x[1].slice(1)} ${x[2]}.${x[3]}` };
-    return m.startsWith("claude") || !m ? { name: "Claude", model: m.replace(/^claude-?/, "") } : { name: m, model: "" };
-  });
-  const replyClock = $derived.by(() => {
-    const t = Math.max(0, Math.floor((now - (since ?? startedAt)) / 1000));
-    return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
-  });
-  // Rows born live (first seen after this message's first render, mid-turn)
-  // get the needle and the weft (backlog 342); a reply drawn again keeps its
-  // finished rows still.
-  const births = new Births();
-  $effect(() => {
-    births.settled = true;
-  });
-  // Item 667: a running step's motion eases in over its first 5 s
-  // (stepRamp.ts). Fresh = it began in view: a thinking block by its own
-  // clock (as its arrival, 389); a call born mid-turn under this reply, or
-  // in the first moments of a turn just sent. A step already under way when
-  // the chat opened runs at today's pace from the start.
-  function rampThink(i: number, at: number | undefined, live: boolean): RampParams {
-    const fresh = at !== undefined ? Date.now() - at < FRESH_MS : Date.now() - (since ?? startedAt) < 2000;
-    return { key: at !== undefined ? `think:${at}` : `think:${since ?? startedAt}:${ids[i]}`, fresh, live };
-  }
-  function rampTool(id: string, born: boolean, live: boolean): RampParams {
-    return { key: `tool:${id}`, fresh: born || Date.now() - (since ?? startedAt) < 2000, live };
-  }
-  const summarised = $derived(!!footer && modelOmitsThinking(footer.model));
-  // The block the moon rides is the last one, whether or not text follows
-  // it (board 1 draws the moon as the block's last row with the reply's
-  // words under it); with no block yet it sits under the text alone.
-  const lastGroup = $derived([...groups].reverse().find((g) => g.kind === "activity"));
-  const moonInBlock = $derived(streaming && !!lastGroup);
-  // A block whose first row is a live thinking is that thinking's arrival
-  // (backlog 389): the whole block — its box, fold line and row — comes in.
-  function blockArrival(rows: readonly { seg: Segment }[]): ArrivalParams {
-    const s = rows[0]?.seg;
-    return s?.kind === "thinking" ? { at: s.at, live: streaming && !s.done } : { live: false };
-  }
-  const moonAlone = $derived(streaming && segs.length > 0 && !moonInBlock);
-
-  // The cards under the reply (backlog 078): an artifact the model published
-  // and a file it wrote, read out of the reply's text once it has stopped
-  // streaming — a path half-typed mid-stream is not a file yet. The links
-  // are a pure function of the text; the files are whatever the backend
-  // finds on disk among the candidates, so a path the model made up stays
-  // text. Run once per finished reply: a recorded reply's text never changes.
-  interface FileCard {
-    path: string;
-    label: string;
-    size: number;
-  }
-  const roots = $derived(
-    [app.connection?.workspace, app.project?.root].filter((r): r is string => !!r),
-  );
-  const replyText = $derived(textOf());
-  // `memory_where` hits (backlog 296): every place the turn's calls found,
-  // drawn under the reply as links with Strike, and the reply's own
-  // `path:line` references linked to them. Once the reply has stopped.
-  const memGroups = $derived(
-    streaming ? [] : hitsOfCalls(segs.flatMap((s) => (s.kind === "tool" ? [s.call] : []))),
-  );
-  const memHits = $derived(memGroups.flatMap((g) => g.hits));
-  // Files the reply sent (backlog 343): every `send_file` result in the
-  // turn, as a chip under the reply — from the recorded results, so a
-  // reload draws them again; live too, as soon as a call answers.
-  const sent = $derived(sentFilesOfCalls(segs.flatMap((s) => (s.kind === "tool" ? [s.call] : []))));
-  async function openSent(f: SentFile): Promise<void> {
-    try {
-      await api.openFile(f.path);
-    } catch (e) {
-      addToast(`Could not open: ${String(e)}`);
-    }
-  }
-  async function saveSent(f: SentFile): Promise<void> {
-    try {
-      const to = await api.saveSentFile(f.path);
-      if (to) addToast(`Saved ${f.name}`);
-    } catch (e) {
-      addToast(`Could not save: ${String(e)}`);
-    }
-  }
-  // The drag out: the page sees the press and the move, the backend starts
-  // a native file drag (the webview cannot hand AppKit a file itself).
-  let pressed: { x: number; y: number; f: SentFile } | null = null;
-  function sentDown(e: PointerEvent, f: SentFile): void {
-    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
-    pressed = { x: e.clientX, y: e.clientY, f };
-  }
-  function sentMove(e: PointerEvent): void {
-    if (!pressed || (e.buttons & 1) === 0) {
-      pressed = null;
-      return;
-    }
-    if (!isDragMove(pressed, { x: e.clientX, y: e.clientY })) return;
-    const f = pressed.f;
-    pressed = null;
-    void api.dragSentFile(f.path).catch((err) => addToast(`Could not drag the file: ${String(err)}`));
-  }
-  // Memory edits (backlog 305), per activity block: the API engine's
-  // relative paths resolve against the chat's workspace.
-  function memEditsOf(rows: { seg: Segment }[]): MemoryEdit[] {
-    const ws = app.connection?.workspace ?? app.project?.root ?? null;
-    const out: MemoryEdit[] = [];
-    for (const { seg } of rows) {
-      if (seg.kind !== "tool") continue;
-      const ed = memoryEditOf(seg.call, ws);
-      if (ed) out.push(ed);
-    }
-    return out;
-  }
-  const links = $derived<ArtifactLink[]>(streaming ? [] : artifactLinks(replyText));
-  let files = $state<FileCard[]>([]);
-  let checked = "";
-  $effect(() => {
-    if (streaming) return;
-    const text = replyText;
-    const bases = roots;
-    const key = `${bases.join("\0")}\0${text}`;
-    if (key === checked) return;
-    checked = key;
-    const candidates = pathCandidates(text, bases);
-    if (candidates.length === 0) {
-      files = [];
-      return;
-    }
-    let stale = false;
-    void api
-      .namedFiles(candidates.map((c) => c.path))
-      .then((found) => {
-        if (stale) return;
-        // A memory file the hits below already link is not a second card.
-        const mem = new Set(memHits.map((h) => h.path));
-        files = found.flatMap((f) =>
-          f && !mem.has(f.path) ? [{ path: f.path, label: displayPath(f.path, bases), size: f.size }] : [],
-        );
-      })
-      .catch(() => {
-        // The backend could not look; nothing to draw, nothing to say.
-        if (!stale) files = [];
-      });
-    return () => {
-      stale = true;
-    };
-  });
-  async function openLink(url: string): Promise<void> {
-    try {
-      await api.openUrl(url);
-    } catch (e) {
-      addToast(`Could not open the link: ${String(e)}`);
-    }
-  }
-  /**
-   * The card's Open (nightshift backlog 161): the file as a tab inside
-   * Nightloom — a note under the notes folder or the vault in the note view
-   * itself, anything else read-only in a file tab. The backend reads it
-   * first: a refusal (outside the chat's folders and not written by its
-   * tools) is a toast in its words and no tab; a kind the tab cannot draw
-   * goes to its own application, as Open always did. ⌘-click (Ctrl-click
-   * elsewhere) keeps the system's opener — blocker 205's refusals still
-   * apply there.
-   */
-  async function openFile(path: string, e?: MouseEvent): Promise<void> {
-    if (e && (e.metaKey || e.ctrlKey)) {
-      await openWithApp(path);
-      return;
-    }
-    const note = noteForPath(path, { project: app.project?.notes_dir, knowledge: app.knowledge?.dir });
-    if (note) {
-      await openContent({ kind: "note", ...note });
-      return;
-    }
-    const chat = app.activeSessionId;
-    try {
-      const f = await api.readFileTab(path, chat);
-      if (f.kind === "other") {
-        await openWithApp(path);
-        return;
-      }
-      await openContent(chat ? { kind: "file", path, session: chat } : { kind: "file", path });
-    } catch (err) {
-      addToast(String(err));
-    }
-  }
-  async function openWithApp(path: string): Promise<void> {
-    try {
-      await api.openFile(path);
-    } catch (e) {
-      addToast(`Could not open: ${String(e)}`);
-    }
-  }
-  async function revealFile(path: string): Promise<void> {
-    try {
-      await api.revealFile(path);
-    } catch (e) {
-      addToast(`Could not reveal: ${String(e)}`);
-    }
-  }
+  // Item 856: the behaviour lives once, in `assistantMessage/logic.svelte.ts`; this file is the look.
+  const props: AssistantMessageLogicProps = $props();
+  const T = assistantMessageLogic(() => props);
 </script>
 
 <!-- Item 564: a trace row's number and status mark (done ✓, running ■,
      error ✕, denied ⊘), as in the mockup: no tool icon, the name says it. -->
 {#snippet stepHead(i: number, st: "done" | "running" | "error" | "soft" | "denied", kind: StepKind | null = null)}
-  <span class="no" aria-hidden="true">{String(stepNo[i]).padStart(2, "0")}</span>
+  <span class="no" aria-hidden="true">{String(T.stepNo[i]).padStart(2, "0")}</span>
   <!-- Item 616: a running step's mark under Combo and Reticle is a small
        live instrument per kind (.st-ico); Sweep keeps the ■ (.st-sq). -->
   <span class="st st-{st}" aria-label={st}>{#if st === "done"}✓{:else if st === "running"}<span class="st-sq">■</span>{#if kind}<span class="st-ico k-{kind}" aria-hidden="true">{@render markIcon(kind)}</span>{/if}{:else if st === "error"}✕{:else if st === "soft"}↻{:else}⊘{/if}</span>
@@ -844,16 +104,16 @@
      open state is kept with the row's (the overrides, by the call's id). -->
 {#snippet softBox(id: string, content: string, retried: boolean)}
   {@const key = `soft:${id}`}
-  {@const boxOpen = softOpen(key)}
+  {@const boxOpen = T.softOpen(key)}
   <button class="tool-result soft soft-line" class:open={boxOpen} aria-expanded={boxOpen}
     use:tip={boxOpen ? "Fold the notice to one line" : "Show the notice whole"}
-    onclick={() => setOverride(key, { open: !boxOpen, rev: transcript.rev.tool })}
+    onclick={() => T.setOverride(key, { open: !boxOpen, rev: transcript.rev.tool })}
     >{#if boxOpen}<span class="soft-full">{content}</span>{:else}<span class="soft-sum">{softLine(content, retried)}</span>{/if}</button>
 {/snippet}
 <!-- Item 564: the step's bar — its place in the turn — on a hairline track. -->
 {#snippet stepBar(i: number, st: "done" | "running" | "error" | "soft", ctx: number | null = null)}
-  {@const b = barFor(i)}
-  <span class="tbar" class:has-ctx={ctx !== null} use:tip={barTitle(i)}>
+  {@const b = T.barFor(i)}
+  <span class="tbar" class:has-ctx={ctx !== null} use:tip={T.barTitle(i)}>
     {#if b}<i class="tbar-{st}" style:left="{b.left * 100}%" style:width="{b.width * 100}%"></i>{/if}
     {#if ctx !== null}
       <!-- Item 616 (Combo): a running helper's bar is its context out of
@@ -894,22 +154,22 @@
     .filter((c) => c.kind === "text")
     .reduce((n, c) => n + (c.kind === "text" ? c.text.split(/\s+/).filter(Boolean).length : 0), 0)}
   <!-- Kept by the spawning call's id (item 495 part 2). -->
-  <details class="sub" use:keptOpen={{ key: detailsKey(`tool:${parent}:sub`) }}>
+  <details class="sub" use:keptOpen={{ key: T.detailsKey(`tool:${parent}:sub`) }}>
     <summary class="sub-line">
       <span class="ico">▸</span>
       <span class="name">subagent</span>
       <span class="arg">
         <!-- Keyed on the counts so a change flashes accent under a live row (backlog 342). -->
-        {#key `${calls}:${words}`}<span class="rm-count">{#if names}{names}{calls > 4 ? ", …" : ""}{" · "}{/if}{#if calls}{calls} call{calls === 1 ? "" : "s"}{/if}{#if calls && words}{" · "}{/if}{#if words}{words} words{streaming ? " so far" : ""}{/if}</span>{/key}
+        {#key `${calls}:${words}`}<span class="rm-count">{#if names}{names}{calls > 4 ? ", …" : ""}{" · "}{/if}{#if calls}{calls} call{calls === 1 ? "" : "s"}{/if}{#if calls && words}{" · "}{/if}{#if words}{words} words{T.streaming ? " so far" : ""}{/if}</span>{/key}
       </span>
     </summary>
     <div class="sub-body">
       {#each children as c, k (k)}
         {#if c.kind === "tool"}
-          {@const icon = toolIcon(c.call.name)}
+          {@const icon = T.toolIcon(c.call.name)}
           {@const childDiff = editDiffOf(c.call.name, c.call.input)}
           {@const childShell = toolKind(c.call.name) === "shell"}
-          {@const childRun = childShell && streaming && !c.call.result && !c.call.denied}
+          {@const childRun = childShell && T.streaming && !c.call.result && !c.call.denied}
           {@const childRem = childShell && !childRun && passingEnded(c.call.id)}
           <div class="arow static" class:error={!c.call.denied && errorWeight(c.call.result) === "hard"}
             class:soft={!c.call.denied && errorWeight(c.call.result) === "soft"} class:sub-pass={childRun || childRem}>
@@ -918,16 +178,16 @@
             <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
             <span class="name" use:tip={c.call.name}>{shortToolName(c.call.name)}</span>
             <span class="arg">{toolInputSummary(c.call.input)}</span>
-            <span class="size">{toolResultSummary(c.call, streaming)}</span>
+            <span class="size">{toolResultSummary(c.call, T.streaming)}</span>
           </div>
           {#if childDiff}
             <!-- A subagent's edit as a diff too (backlog 433). -->
-            <EditDiffView diff={childDiff} denied={!!c.call.denied} keep={detailsKey(`tool:${c.call.id}:diff`)} />
+            <EditDiffView diff={childDiff} denied={!!c.call.denied} keep={T.detailsKey(`tool:${c.call.id}:diff`)} />
           {/if}
           {#if !c.call.denied && namesImage(c.call.result?.content)}
             <!-- A subagent's screenshot too (item 476): read from its own
                  file under the session's subagents/ folder. -->
-            <ToolImagesView session={cliSession} id={c.call.id} name={shortToolName(c.call.name)} />
+            <ToolImagesView session={T.cliSession} id={c.call.id} name={shortToolName(c.call.name)} />
           {/if}
           {#if c.call.children?.length}
             {@render subagent(c.call.children, c.call.id)}
@@ -955,43 +215,43 @@
 {/snippet}
 
 
-<div class="assistant" use:replyMotion={streaming}>
-  {#if headed && (footer || streaming)}
-    <div class="who" class:live={streaming} use:tip={footer && !standIn ? footer.model : undefined}>
+<div class="assistant" use:replyMotion={T.streaming}>
+  {#if T.headed && (T.footer || T.streaming)}
+    <div class="who" class:live={T.streaming} use:tip={T.footer && !T.standIn ? T.footer.model : undefined}>
       <span class="who-ring" aria-hidden="true"></span>
-      <b>{who.name}</b>
-      {#if who.model}<span class="who-model">{who.model}</span>{/if}
-      {#if streaming}<span aria-hidden="true">·</span><span class="who-live">Replying <span class="who-clock">{replyClock}</span></span>{/if}
-      {#if streaming && speed !== null}
+      <b>{T.who.name}</b>
+      {#if T.who.model}<span class="who-model">{T.who.model}</span>{/if}
+      {#if T.streaming}<span aria-hidden="true">·</span><span class="who-live">Replying <span class="who-clock">{T.replyClock}</span></span>{/if}
+      {#if T.streaming && T.speed !== null}
         <!-- Item 564: the stream speed, redrawn once a second. -->
-        <span class="who-speed" use:tip={SPEED_TITLE}>
-          {#if spark}<svg class="who-spark" width="64" height="14" viewBox="0 0 64 14" aria-hidden="true"><polyline points={spark} /></svg>{/if}
-          <span class="who-tps">~{Math.round(speed)} tok/s</span>
+        <span class="who-speed" use:tip={T.SPEED_TITLE}>
+          {#if T.spark}<svg class="who-spark" width="64" height="14" viewBox="0 0 64 14" aria-hidden="true"><polyline points={T.spark} /></svg>{/if}
+          <span class="who-tps">~{Math.round(T.speed)} tok/s</span>
         </span>
       {/if}
     </div>
   {/if}
-  {#each groups as g (g.kind === "activity" ? g.key : `one:${g.i}`)}
+  {#each T.groups as g (g.kind === "activity" ? g.key : `one:${g.i}`)}
     {#if g.kind === "activity"}
-      {@const folded = isFolded(g.key)}
-      {@const last = moonInBlock && g === lastGroup}
+      {@const folded = T.isFolded(g.key)}
+      {@const last = T.moonInBlock && g === T.lastGroup}
       <!-- One block for the run: a left rule, accent while the turn is
            live; a summary line that folds and unfolds the rows; the rows
            on one grid — icon · name · argument · size (backlog 096). -->
-      {@const isTimed = timed(g.rows)}
-      {@const foot = traceFoot(g.rows)}
+      {@const isTimed = T.timed(g.rows)}
+      {@const foot = T.traceFoot(g.rows)}
       <!-- Item 564 (Filament IV stage 5): the block is the turn's trace —
            numbered steps, a status mark, a bar for each step's place in the
            turn, and a foot that says how many steps and how long, with the
            fold. Bars only where the window timed the steps (this session). -->
-      <div class="activity trace" class:live={streaming} class:timed={isTimed} class:waiting={last && waitAgents !== null} data-motion={motion ?? stepMotion.value} use:thinkingArrival={blockArrival(g.rows)}>
-        {#if last && waitAgents !== null}
+      <div class="activity trace" class:live={T.streaming} class:timed={isTimed} class:waiting={last && T.waitAgents !== null} data-motion={T.motion ?? stepMotion.value} use:thinkingArrival={T.blockArrival(g.rows)}>
+        {#if last && T.waitAgents !== null}
           <!-- Item 700: the trace's edge light, round the whole block, while the
                turn waits on its agents (Combo's light on a running row, 616). -->
           <svg class="wait-edge" aria-hidden="true"><rect class="e-tail" width="100%" height="100%" rx="8" pathLength="100" /><rect class="e-head" width="100%" height="100%" rx="8" pathLength="100" /></svg>
         {/if}
         {#if !folded}
-          {#each g.rows as { seg, i } (ids[i] || i)}
+          {#each g.rows as { seg, i } (T.ids[i] || i)}
             {#if seg.kind === "thinking"}
               {#if thinkingHidden(seg)}
                 <!-- The model thought and returned nothing of it (backlog
@@ -1003,54 +263,54 @@
                   <span class="name">Thought</span>
                   <span class="arg">hidden by the model</span>
                   {@render stepBar(i, "done")}
-                  <span class="size">{thinkSize(i, seg)}</span>
+                  <span class="size">{T.thinkSize(i, seg)}</span>
                 </div>
               {:else if !seg.done && seg.text.trim() === ""}
                 <!-- Begun, nothing arrived yet: under way, not yet a button.
                      A thinking later in a block arrives on its own row (389). -->
                 <div
                   class="arow static thinking"
-                  class:mo-run={streaming}
+                  class:mo-run={T.streaming}
                   data-kind="think"
-                  use:thinkingArrival={{ at: seg.at, live: streaming && g.rows[0].i !== i }}
-                  use:stepRamp={rampThink(i, seg.at, streaming)}
+                  use:thinkingArrival={{ at: seg.at, live: T.streaming && g.rows[0].i !== i }}
+                  use:stepRamp={T.rampThink(i, seg.at, T.streaming)}
                 >
-                  {#if streaming}{@render stepLive("think", true)}{/if}
+                  {#if T.streaming}{@render stepLive("think", true)}{/if}
                   {@render stepHead(i, "running", "think")}
                   <span class="name">Thinking</span>
                   <span class="arg"></span>
                   {@render stepBar(i, "running")}
-                  <span class="size">{thinkSize(i, seg)}</span>
+                  <span class="size">{T.thinkSize(i, seg)}</span>
                 </div>
               {:else}
-                {@const summary = summarised && seg.done}
-                {@const bornT = births.of(ids[i] || `think:${i}`, streaming, seg.done)}
+                {@const summary = T.summarised && seg.done}
+                {@const bornT = T.births.of(T.ids[i] || `think:${i}`, T.streaming, seg.done)}
                 <!-- The needle (backlog 342): a live block's margin thread is
                      accent with a glowing needle at its newest line; on done
                      the thread retracts and the icon turns once. -->
-                <div class="row-wrap" class:rm-live={streaming && !seg.done} class:rm-thought={bornT && seg.done}
-                  class:mo-run={streaming && !seg.done} data-kind="think"
-                  use:thinkingArrival={{ at: seg.at, live: streaming && !seg.done && g.rows[0].i !== i }}
-                  use:stepRamp={rampThink(i, seg.at, streaming && !seg.done)}>
-                  {#if streaming && !seg.done}{@render stepLive("think", true)}{/if}
+                <div class="row-wrap" class:rm-live={T.streaming && !seg.done} class:rm-thought={bornT && seg.done}
+                  class:mo-run={T.streaming && !seg.done} data-kind="think"
+                  use:thinkingArrival={{ at: seg.at, live: T.streaming && !seg.done && g.rows[0].i !== i }}
+                  use:stepRamp={T.rampThink(i, seg.at, T.streaming && !seg.done)}>
+                  {#if T.streaming && !seg.done}{@render stepLive("think", true)}{/if}
                   <button
                     class="arow thinking"
-                    aria-expanded={isOpen(i, seg)}
-                    use:tip={isOpen(i, seg) ? "Hide the thinking" : "Show the thinking"}
-                    onpointerdown={(e) => press(e, i, seg)}
-                    onclick={(e) => keyClick(e, i, seg)}
+                    aria-expanded={T.isOpen(i, seg)}
+                    use:tip={T.isOpen(i, seg) ? "Hide the thinking" : "Show the thinking"}
+                    onpointerdown={(e) => T.press(e, i, seg)}
+                    onclick={(e) => T.keyClick(e, i, seg)}
                   >
                     {@render stepHead(i, seg.done ? "done" : "running", "think")}
-                    <span class="name" use:tip={thoughtLabel(seg)}>{seg.done ? "Thought" : "Thinking"}</span>
-                    <span class="arg" class:summary>{firstLine(seg.text)}</span>
+                    <span class="name" use:tip={T.thoughtLabel(seg)}>{seg.done ? "Thought" : "Thinking"}</span>
+                    <span class="arg" class:summary>{T.firstLine(seg.text)}</span>
                     {@render stepBar(i, seg.done ? "done" : "running")}
-                    <span class="size">{thinkSize(i, seg)} <span class="open-mark">{isOpen(i, seg) ? "▾" : "▸"}</span></span>
+                    <span class="size">{T.thinkSize(i, seg)} <span class="open-mark">{T.isOpen(i, seg) ? "▾" : "▸"}</span></span>
                   </button>
-                  {#if isOpen(i, seg)}
+                  {#if T.isOpen(i, seg)}
                     <div
                       class="thinking-text"
-                      in:needleIn|global={{ on: births.settled }}
-                      out:needleOut={{ on: births.settled }}
+                      in:needleIn|global={{ on: T.births.settled }}
+                      out:needleOut={{ on: T.births.settled }}
                     >{seg.text}</div>
                   {/if}
                 </div>
@@ -1061,26 +321,26 @@
                 <span class="name">Thought</span>
                 <span class="arg">redacted</span>
                 {@render stepBar(i, "done")}
-                <span class="size">{thinkSize(i, seg)}</span>
+                <span class="size">{T.thinkSize(i, seg)}</span>
               </div>
             {:else if seg.kind === "tool"}
-              {@const open = isOpen(i, seg)}
+              {@const open = T.isOpen(i, seg)}
               <!-- Item 700: an error's weight — soft (amber) for the harness's
                    "not run, redo it" notice, hard (red) for a real failure. -->
               {@const weight = seg.call.denied ? null : errorWeight(seg.call.result)}
               {@const soft = weight === "soft"}
               {@const bad = weight === "hard" || !!seg.call.denied}
-              {@const agentTab = agentTabOf(seg.call)}
-              {@const agentRow = agentTab ? rowOf(seg.call.id) : null}
-              {@const running = streaming && !seg.call.result && !seg.call.denied}
-              {@const bornW = births.of(ids[i] || `tool:${i}`, streaming, !running)}
+              {@const agentTab = T.agentTabOf(seg.call)}
+              {@const agentRow = agentTab ? T.rowOf(seg.call.id) : null}
+              {@const running = T.streaming && !seg.call.result && !seg.call.denied}
+              {@const bornW = T.births.of(T.ids[i] || `tool:${i}`, T.streaming, !running)}
               {@const editDiff = editDiffOf(seg.call.name, seg.call.input)}
-              {@const hm = helperMark(seg.call, app.subagents, app.activeSessionId, streaming)}
+              {@const hm = helperMark(seg.call, app.subagents, app.activeSessionId, T.streaming)}
               {@const kind = toolKind(seg.call.name)}
               {@const remnant = !running && kind === "shell" && passingEnded(seg.call.id)}
               <div class="row-wrap tool" class:running class:rm-born={bornW} class:rm-finished={bornW && !running}
                 class:mo-run={running} class:bash-rem={remnant} data-kind={kind}
-                use:stepRamp={rampTool(seg.call.id, bornW, running)}>
+                use:stepRamp={T.rampTool(seg.call.id, bornW, running)}>
                 {#if running}{@render stepLive(kind, false)}{/if}
                 <!-- Item 633: the command's real output passing behind the row. -->
                 {#if running && kind === "shell"}<BashPassing id={seg.call.id} input={seg.call.input} />{/if}
@@ -1104,10 +364,10 @@
                       ? "Collapse to one line"
                       : "Expand this call"}
                   draggable={agentTab ? "true" : undefined}
-                  ondragstart={agentTab ? (e) => dragAgent(e, i, seg, agentTab) : undefined}
+                  ondragstart={agentTab ? (e) => T.dragAgent(e, i, seg, agentTab) : undefined}
                   ondragend={agentTab ? () => endContentDrag() : undefined}
-                  onpointerdown={(e) => press(e, i, seg)}
-                  onclick={(e) => keyClick(e, i, seg)}
+                  onpointerdown={(e) => T.press(e, i, seg)}
+                  onclick={(e) => T.keyClick(e, i, seg)}
                 >
                   {@render stepHead(i, running ? "running" : seg.call.denied ? "denied" : bad ? "error" : soft ? "soft" : "done", kind)}
                   <span class="name" use:tip={seg.call.name}>{shortToolName(seg.call.name)}</span>
@@ -1116,12 +376,12 @@
                         >{#if hm.kind === "continued"}<span class="hm-g" aria-hidden="true">↻</span>{/if}{hm.label}</span
                       >{/if}{toolInputSummary(seg.call.input)}</span
                   >
-                  {@render stepBar(i, running ? "running" : bad ? "error" : soft ? "soft" : "done", running ? helperContext(seg.call) : null)}
-                  <span class="size" use:tip={agentRow ? `${seg.call.name} call · ${toolResultSummary(seg.call, streaming)}` : undefined}
-                    >{agentRow ? agentRowLine(agentRow) : running && stepMs(i) !== null ? `running ${fmtSecs(stepMs(i)!)}` : toolResultSummary(seg.call, streaming)}</span
+                  {@render stepBar(i, running ? "running" : bad ? "error" : soft ? "soft" : "done", running ? T.helperContext(seg.call) : null)}
+                  <span class="size" use:tip={agentRow ? `${seg.call.name} call · ${toolResultSummary(seg.call, T.streaming)}` : undefined}
+                    >{agentRow ? agentRowLine(agentRow) : running && T.stepMs(i) !== null ? `running ${fmtSecs(T.stepMs(i)!)}` : toolResultSummary(seg.call, T.streaming)}</span
                   >
                 </button>
-                {#if bornW && streaming}
+                {#if bornW && T.streaming}
                   <!-- The weft (backlog 342): an accent thread draws across the
                        row as it appears, a bright shuttle runs along it while
                        the call runs, and on finish it fills and fades. -->
@@ -1133,11 +393,11 @@
                 <!-- A file edit as a diff (backlog 433), drawn whether the row is
                      open or not: the change is what the row is about. -->
                 {#if editDiff}
-                  <EditDiffView diff={editDiff} denied={!!seg.call.denied} keep={detailsKey(`tool:${seg.call.id}:diff`)} />
+                  <EditDiffView diff={editDiff} denied={!!seg.call.denied} keep={T.detailsKey(`tool:${seg.call.id}:diff`)} />
                 {/if}
                 <!-- What a screenshot showed the model (backlog 434). -->
                 {#if !seg.call.denied && namesImage(seg.call.result?.content)}
-                  <ToolImagesView session={cliSession} id={seg.call.id} name={shortToolName(seg.call.name)} />
+                  <ToolImagesView session={T.cliSession} id={seg.call.id} name={shortToolName(seg.call.name)} />
                 {/if}
                 {#if open}
                   <!-- The full call: its whole input (an edit's is the diff
@@ -1155,7 +415,7 @@
                         : "."}
                     </div>
                   {:else if soft}
-                    {@render softBox(seg.call.id, seg.call.result!.content, retriedAfter(segs, i))}
+                    {@render softBox(seg.call.id, seg.call.result!.content, retriedAfter(T.segs, i))}
                   {:else if seg.call.result}
                     <pre
                       class="tool-result"
@@ -1165,12 +425,12 @@
                 <!-- Outside the collapse: a call parked at the gate needs its prompt
                      on screen whatever the toggle says, or the turn waits on a
                      decision nobody can see. -->
-                {#each approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
+                {#each T.approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
                   <ApprovalPrompt {req} />
                 {/each}
                 <!-- 354: what he answered, under the question once it is no longer waiting. -->
-                {#if seg.call.name === "AskUserQuestion" && !approvals.some((a) => a.id === seg.call.id)}
-                  <AskAnswered call={seg.call} ended={!streaming} />
+                {#if seg.call.name === "AskUserQuestion" && !T.approvals.some((a) => a.id === seg.call.id)}
+                  <AskAnswered call={seg.call} ended={!T.streaming} />
                 {/if}
                 <!-- The subagent this call spawned (backlog 075): one indented
                      row that opens to the child's turn — its calls, thinking and
@@ -1183,11 +443,11 @@
                 {/if}
                 <!-- The hover on the call itself (backlog 066): the call and its
                      result leave the context together, the log keeps both. -->
-                {#if (onremove && seg.block != null) || agentTab || (isShellCall(seg.call.name) && runFrom?.chat)}
+                {#if (T.onremove && seg.block != null) || agentTab || (isShellCall(seg.call.name) && T.runFrom?.chat)}
                   <span
                     class="block-tools"
-                    class:two={(!!agentTab || isShellCall(seg.call.name)) && !!onremove && seg.block != null}
-                    use:tip={onremove && seg.block != null ? controlsTitle : ""}
+                    class:two={(!!agentTab || isShellCall(seg.call.name)) && !!T.onremove && seg.block != null}
+                    use:tip={T.onremove && seg.block != null ? T.controlsTitle : ""}
                   >
                     {#if agentTab}
                       <!-- *Open as tab* (backlog 160): the drag's click. -->
@@ -1200,23 +460,23 @@
                         <Icon name="ext" size={12} />
                       </button>
                     {/if}
-                    {#if isShellCall(seg.call.name) && runFrom?.chat}
+                    {#if isShellCall(seg.call.name) && T.runFrom?.chat}
                       <!-- Item 503: this chat's commands as a view-only terminal. -->
                       <button
                         class="tool-btn"
                         use:tip={"Show this chat's commands in the terminal"}
                         aria-label="Show this chat's commands in the terminal"
-                        onclick={() => runFrom?.chat && openAgentTab(runFrom.chat)}
+                        onclick={() => T.runFrom?.chat && openAgentTab(T.runFrom.chat)}
                       >
                         <Icon name="term" size={12} />
                       </button>
                     {/if}
-                    {#if onremove && seg.block != null}
+                    {#if T.onremove && seg.block != null}
                       <button
                         class="tool-btn"
                         use:tip={"Remove this tool call and its result from the context. Both stay in the log; Restore is on the placeholder."}
                         aria-label="Remove this tool call and its result from the context"
-                        onclick={() => onremove?.(seg.block!)}
+                        onclick={() => T.onremove?.(seg.block!)}
                       >
                         <Icon name="minus" size={12} />
                       </button>
@@ -1230,20 +490,20 @@
           <!-- A parked prompt still shows through a folded block. -->
           {#each g.rows as { seg, i } (i)}
             {#if seg.kind === "tool"}
-              {#each approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
+              {#each T.approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
                 <ApprovalPrompt {req} />
               {/each}
-              {#if seg.call.name === "AskUserQuestion" && !approvals.some((a) => a.id === seg.call.id)}
-                <AskAnswered call={seg.call} ended={!streaming} />
+              {#if seg.call.name === "AskUserQuestion" && !T.approvals.some((a) => a.id === seg.call.id)}
+                <AskAnswered call={seg.call} ended={!T.streaming} />
               {/if}
             {/if}
           {/each}
         {/if}
         {#if last}
-          <div class="working" class:waiting={waitAgents !== null} role="status" aria-label={working}>
+          <div class="working" class:waiting={T.waitAgents !== null} role="status" aria-label={T.working}>
             <span class="roll" aria-hidden="true"><Icon name="moon" size={20} /></span>
             <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-            <span class="working-text">{working}</span>
+            <span class="working-text">{T.working}</span>
             <!-- Item 589: three points scanning after the clock, the trace's
                  running light carried down to the working line. -->
             <span class="scan" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -1253,11 +513,11 @@
           class="fold trace-foot"
           aria-expanded={!folded}
           use:tip={folded ? "Show the steps" : "Fold to one line"}
-          onpointerdown={(e) => pressFold(e, g.key)}
-          onclick={(e) => keyFold(e, g.key)}
+          onpointerdown={(e) => T.pressFold(e, g.key)}
+          onclick={(e) => T.keyFold(e, g.key)}
         >
           <span class="fold-text">
-            <span class="foot-k">Trace</span> {foot.steps}{#if foot.elapsed}<span class="foot-gap"></span><span class="foot-k">elapsed</span> {foot.elapsed}{/if}{#if folded}<span class="foot-gap"></span>{activitySummary(g.rows, streaming)}{:else if isTimed}<span class="foot-gap"></span><span class="foot-note">the bar is each step's place in the turn</span>{/if}{#if !streaming && traceRec?.tps}<span class="foot-gap"></span><span use:tip={SPEED_TITLE}>~{Math.round(traceRec.tps)} tok/s</span>{/if}
+            <span class="foot-k">Trace</span> {foot.steps}{#if foot.elapsed}<span class="foot-gap"></span><span class="foot-k">elapsed</span> {foot.elapsed}{/if}{#if folded}<span class="foot-gap"></span>{activitySummary(g.rows, T.streaming)}{:else if isTimed}<span class="foot-gap"></span><span class="foot-note">the bar is each step's place in the turn</span>{/if}{#if !T.streaming && T.traceRec?.tps}<span class="foot-gap"></span><span use:tip={T.SPEED_TITLE}>~{Math.round(T.traceRec.tps)} tok/s</span>{/if}
           </span>
           <span class="foot-fold">{folded ? "Expand" : "Collapse"} <span class="caret">{folded ? "▾" : "▴"}</span></span>
         </button>
@@ -1266,7 +526,7 @@
            memory note, AGENTS.md or thread file an edit in it wrote, outside
            the fold so a folded block still says so; it opens the note at
            the change. Read from the calls, so a reload draws it again. -->
-      {#each memEditsOf(g.rows) as ed, k (k)}
+      {#each T.memEditsOf(g.rows) as ed, k (k)}
         <button
           class="mem-edit"
           use:tip={`${ed.path} — open at the change`}
@@ -1276,10 +536,10 @@
           <span>{ed.verb} <span class="mem-edit-name">{ed.label}</span></span>
         </button>
       {/each}
-    {:else if g.seg.kind === "text" && standIn && isSignedOut(footer?.stop_reason)}
+    {:else if g.seg.kind === "text" && T.standIn && isSignedOut(T.footer?.stop_reason)}
       <!-- Signed out (backlog 409): says so, with Sign in. -->
-      <SignedOutNotice reason={footer?.stop_reason} />
-    {:else if g.seg.kind === "text" && standIn}
+      <SignedOutNotice reason={T.footer?.stop_reason} />
+    {:else if g.seg.kind === "text" && T.standIn}
       <div class="notice nl-own">{g.seg.text}</div>
     {:else if g.seg.kind === "text"}
       {@const councilSeat = parseCouncilSeat(g.seg.text)}
@@ -1287,9 +547,9 @@
       {#if councilSeat || councilRecord}
         <!-- The council's blocks (nightshift backlog 149): a seat's answer
              folded under its map line, the record as the sources table. -->
-        <CouncilBlocks seat={councilSeat} record={councilRecord} keep={detailsKey(`council:${g.i}`)} />
-      {:else if diff && originals?.[g.i] != null}
-        {@const before = originals[g.i]!}
+        <CouncilBlocks seat={councilSeat} record={councilRecord} keep={T.detailsKey(`council:${g.i}`)} />
+      {:else if T.diff && T.originals?.[g.i] != null}
+        {@const before = T.originals[g.i]!}
         <!-- The edit as a diff over the markdown source (backlog 105): the
              source is what he edited, and a mark inside rendered HTML would
              have to cross links and code spans. The transcript's face. -->
@@ -1299,11 +559,11 @@
       {:else}
         <!-- Item 452: patched in place (liveHtml), not replaced whole per
              streamed delta, so a selection in its written part survives. -->
-        <div class="markdown" use:replyPages={{ copy: (t) => void copyText(t) }} use:askSettled use:liveHtml={streaming ? renderStreamingParts(g.seg.text) : renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)} use:handoffGo={nextChat}></div>
-        {#if !streaming}
+        <div class="markdown" use:replyPages={{ copy: (t) => void copyText(t) }} use:askSettled use:liveHtml={T.streaming ? renderStreamingParts(g.seg.text) : renderReply(g.seg.text)} use:memoryRefs={{ hits: T.memHits, text: g.seg.text }} use:codeCopy={T.runBlocks(g.seg.text)} use:handoffGo={T.nextChat}></div>
+        {#if !T.streaming}
           <!-- Item 820: a picture or a video this text names, right under it
                (once the reply has stopped: a half-typed path is not a file). -->
-          <ReplyMedia items={mediaCandidates(g.seg.text, roots)} chat={app.activeSessionId} label={(c) => displayPath(c.path, roots)} onopen={(p, e) => void openFile(p, e)} />
+          <ReplyMedia items={mediaCandidates(g.seg.text, T.roots)} chat={app.activeSessionId} label={(c) => displayPath(c.path, T.roots)} onopen={(p, e) => void T.openFile(p, e)} />
         {/if}
       {/if}
     {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}
@@ -1311,7 +571,7 @@
       <!-- A removed block's placeholder, greyed, the original a click
            away, Restore beside it (backlog 066). -->
       <div class="removed-block">
-        <details class="removed-original" use:keptOpen={{ key: detailsKey(`removed:${seg.block}`) }}>
+        <details class="removed-original" use:keptOpen={{ key: T.detailsKey(`removed:${seg.block}`) }}>
           <summary>
             <span class="removed-label">
               {seg.kind === "removed_tool" ? REMOVED_TOOL_PLACEHOLDER : REMOVED_TEXT_PLACEHOLDER}
@@ -1328,12 +588,12 @@
             <div class="removed-body">{seg.text}</div>
           {/if}
         </details>
-        {#if onrestore}
+        {#if T.onrestore}
           <button
             class="tool-btn"
             use:tip={"Restore to the context"}
             aria-label="Restore to the context"
-            onclick={() => onrestore?.(seg.block)}
+            onclick={() => T.onrestore?.(seg.block)}
           >
             <Icon name="refresh" size={12} />
           </button>
@@ -1352,27 +612,27 @@
       <RetryLine seg={g.seg} />
     {/if}
   {/each}
-  {#if moonAlone}
-    <div class="working" class:waiting={waitAgents !== null} role="status" aria-label={working}>
+  {#if T.moonAlone}
+    <div class="working" class:waiting={T.waitAgents !== null} role="status" aria-label={T.working}>
       <span class="roll" aria-hidden="true"><Icon name="moon" size={28} /></span>
       <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-      <span class="working-text">{working}</span>
+      <span class="working-text">{T.working}</span>
     </div>
   {/if}
-  {#if sent.length > 0}
+  {#if T.sent.length > 0}
     <!-- Files the reply sent (backlog 343): the attachment chip — badge,
          name, caption, size, Open, Save, Reveal; dragged, the file itself
          goes where it is dropped. -->
     <div class="cards sent-files">
-      {#each sent as f (f.id)}
+      {#each T.sent as f (f.id)}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="card file sent"
           draggable="false"
           use:tip={"Drag out to drop the file anywhere"}
-          onpointerdown={(e) => sentDown(e, f)}
-          onpointermove={sentMove}
-          onpointerup={() => (pressed = null)}
+          onpointerdown={(e) => T.sentDown(e, f)}
+          onpointermove={T.sentMove}
+          onpointerup={() => (T.pressed = null)}
         >
           <span class="card-ext">{sentExt(f.name)}</span>
           <span class="card-text">
@@ -1380,51 +640,51 @@
             {#if f.caption}<span class="card-sub">{f.caption}</span>{/if}
           </span>
           <span class="card-size">{fmtSize(f.size)}</span>
-          <button class="ns-btn ghost small" use:tip={"Open with its application"} onclick={() => void openSent(f)}>Open</button>
-          <button class="ns-btn ghost small" use:tip={"Save a copy where you choose"} onclick={() => void saveSent(f)}>Save</button>
-          <button class="ns-btn ghost small" use:tip={"Show in the Finder"} onclick={() => void revealFile(f.path)}>Reveal</button>
+          <button class="ns-btn ghost small" use:tip={"Open with its application"} onclick={() => void T.openSent(f)}>Open</button>
+          <button class="ns-btn ghost small" use:tip={"Save a copy where you choose"} onclick={() => void T.saveSent(f)}>Save</button>
+          <button class="ns-btn ghost small" use:tip={"Show in the Finder"} onclick={() => void T.revealFile(f.path)}>Reveal</button>
         </div>
       {/each}
     </div>
   {/if}
-  {#if !streaming && (links.length > 0 || files.length > 0)}
+  {#if !T.streaming && (T.links.length > 0 || T.files.length > 0)}
     <!-- Under the reply text, not inline in it (backlog 078): an artifact
          result as a link card, a file the reply names as the attachment
          card — extension badge, path, size, Open, Reveal. -->
     <div class="cards">
-      {#each links as l (l.url)}
+      {#each T.links as l (l.url)}
         <div class="card link" use:tip={l.url}>
           <span class="card-ico"><Icon name="link" size={14} /></span>
           <span class="card-text">
             <span class="card-title">{l.title}</span>
             <span class="card-sub">{l.url.replace(/^https?:\/\//, "")}</span>
           </span>
-          <button class="ns-btn ghost small" use:tip={"Open in the browser"} onclick={() => void openLink(l.url)}>Open <Icon name="ext" size={11} /></button>
+          <button class="ns-btn ghost small" use:tip={"Open in the browser"} onclick={() => void T.openLink(l.url)}>Open <Icon name="ext" size={11} /></button>
         </div>
       {/each}
-      {#each files as f (f.path)}
+      {#each T.files as f (f.path)}
         <div class="card file" use:tip={f.path}>
           <span class="card-ext">{extOf(f.path)}</span>
           <span class="card-text">
             <span class="card-title mono">{f.label}</span>
           </span>
           <span class="card-size">{fmtSize(f.size)}</span>
-          <button class="ns-btn ghost small" use:tip={"Open as a tab here — ⌘-click opens it with its application"} onclick={(e) => void openFile(f.path, e)}>Open</button>
-          <button class="ns-btn ghost small" use:tip={"Show in the file manager"} onclick={() => void revealFile(f.path)}>Reveal</button>
+          <button class="ns-btn ghost small" use:tip={"Open as a tab here — ⌘-click opens it with its application"} onclick={(e) => void T.openFile(f.path, e)}>Open</button>
+          <button class="ns-btn ghost small" use:tip={"Show in the file manager"} onclick={() => void T.revealFile(f.path)}>Reveal</button>
         </div>
       {/each}
     </div>
   {/if}
-  {#if memGroups.length > 0}
-    <MemoryHits groups={memGroups} />
+  {#if T.memGroups.length > 0}
+    <MemoryHits groups={T.memGroups} />
   {/if}
-  {#if footer && !streaming}
-    {@const share = size ? shareOf(size.tokens, limit) : null}
+  {#if T.footer && !T.streaming}
+    {@const share = T.size ? shareOf(T.size.tokens, T.limit) : null}
     <div class="footer">
-      <CopyButton {copied} label="Copy this reply" onclick={() => void copy()} />
+      <CopyButton copied={T.copied} label="Copy this reply" onclick={() => void T.copy()} />
       <!-- Item 801: this reply read aloud, or its Brief. -->
-      <ListenButton kind="reply" id={listenId} text={textOf} source={listenHere} />
-      {#if onretry}
+      <ListenButton kind="reply" id={T.listenId} text={T.textOf} source={listenHere} />
+      {#if T.onretry}
         <!-- Retry (item 333): the prompt again, in a fork from it; this
              reply stays where it is, a version (‹ ›) away. -->
         <!-- Item 439: called Redo, with Claude's circular arrow, as the
@@ -1433,64 +693,64 @@
           class="ns-btn ghost small redo"
           use:tip={"Redo: Claude answers your message again, without retyping it. This reply stays — ‹ › under your message flips between the two."}
           aria-label="Redo this reply"
-          onclick={() => onretry?.()}
+          onclick={() => T.onretry?.()}
         >
           <Icon name="refresh" size={12} /> Redo
         </button>
       {/if}
-      {#if !footer.bare && (size || hasUsage(footer.usage))}
+      {#if !T.footer.bare && (T.size || hasUsage(T.footer.usage))}
         <!-- No figure without usage (backlog 332): a reply cut off before
              its result has none, and "0 out" under its words was wrong. -->
-        <span class="meta" use:tip={footerTitle(footer, size)}>{fmtFigure(footer.usage, size)}{fmtCost(footer.cost)}</span>
+        <span class="meta" use:tip={T.footerTitle(T.footer, T.size)}>{T.fmtFigure(T.footer.usage, T.size)}{T.fmtCost(T.footer.cost)}</span>
       {/if}
-      {#if planUsage}
+      {#if T.planUsage}
         <!-- The turn's share of the plan (item 323): the five-hour window
              and the week, measured or ≈ estimated; hover says how. -->
-        <span class="meta plan" use:tip={planUsage.title}>{planUsage.text}</span>
+        <span class="meta plan" use:tip={T.planUsage.title}>{T.planUsage.text}</span>
       {/if}
-      {#if footerStopNote(footer.stop_reason, standIn)}
+      {#if footerStopNote(T.footer.stop_reason, T.standIn)}
         <!-- Why the reply stopped (backlog 202): the API error the CLI
              ended it with, as the log recorded it — or that its stream
              ended before the reply did (backlog 332). -->
-        <span class="meta stopped">{footerStopNote(footer.stop_reason, standIn)}</span>
+        <span class="meta stopped">{footerStopNote(T.footer.stop_reason, T.standIn)}</span>
       {/if}
       {#if fmtShare(share)}
         <!-- The reply's share of the window (backlog 090), the gauge's bar
              scaled to it, once the reply is worth a bar. -->
-        <span class="meta share" use:tip={size ? sizeTitle(size, "assistant", limit) : ""}>
+        <span class="meta share" use:tip={T.size ? sizeTitle(T.size, "assistant", T.limit) : ""}>
           <span class="share-bar" aria-hidden="true"><span class="share-fill" style:width="{(share ?? 0) * 100}%"></span></span>
           {fmtShare(share)}
         </span>
       {/if}
-      {#if footer.at}
+      {#if T.footer.at}
         <!-- When the reply landed (backlog 123): in words, the exact
              moment on hover, as Claude Code's footer does. -->
-        <span class="meta when" use:tip={exactTime(footer.at)}>{relativeTimeLong(footer.at, clock)}</span>
+        <span class="meta when" use:tip={exactTime(T.footer.at)}>{relativeTimeLong(T.footer.at, T.clock)}</span>
       {/if}
-      {#if onedit || onremoveturn}
+      {#if T.onedit || T.onremoveturn}
         <!-- The turn's own controls on the same row (backlog 121): they
              were a row of their own under the footer, three rows per
              message in a run of one-call replies. Hidden until the reply
              is hovered, as the transcript's tool rows are. -->
-        <span class="footer-tools" use:tip={controlsTitle}>
-          {#if onedit}
+        <span class="footer-tools" use:tip={T.controlsTitle}>
+          {#if T.onedit}
             <button
               class="tool-btn"
               use:tip={"Edit this reply in place; the original stays in the log"}
               aria-label="Edit this reply"
-              onclick={() => onedit?.()}
+              onclick={() => T.onedit?.()}
             >
               <Icon name="pencil" size={14} />
             </button>
           {/if}
-          {#if onremoveturn}
+          {#if T.onremoveturn}
             <!-- A delete look, apart from Edit's pencil (item 356); the
                  transcript asks before it removes. -->
             <button
               class="tool-btn danger"
               use:tip={removeTip("reply")}
               aria-label="Remove this reply from the chat history"
-              onclick={() => onremoveturn?.()}
+              onclick={() => T.onremoveturn?.()}
             >
               <Icon name="trash" size={14} />
             </button>

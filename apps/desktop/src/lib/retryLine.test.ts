@@ -9,7 +9,10 @@ import {
   type RetryEvent,
   type RetrySegment,
 } from "./retryLine";
-import messageSrc from "./AssistantMessage.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+import messageSrcRaw from "./AssistantMessage.svelte?raw";
+const messageSrc = asOneFile(messageSrcRaw, assistantMessageLogicRaw);
 import stateSrc from "./state.svelte.ts?raw";
 
 /**

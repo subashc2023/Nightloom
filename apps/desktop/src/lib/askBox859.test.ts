@@ -2,8 +2,11 @@ import transcriptSrcRaw from "./Transcript.svelte?raw";
 import classicSrcRaw from "./TranscriptClassic.svelte?raw";
 import asideSrc from "./AsideTranscript.svelte?raw";
 import answeredSrc from "./AskAnswered.svelte?raw";
-import msgSrc from "./AssistantMessage.svelte?raw";
-import msgClassicSrc from "./AssistantMessageClassic.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import msgSrcRaw from "./AssistantMessage.svelte?raw";
+const msgSrc = asOneFile(msgSrcRaw, assistantMessageLogicRaw);
+import msgClassicSrcRaw from "./AssistantMessageClassic.svelte?raw";
+const msgClassicSrc = asOneFile(msgClassicSrcRaw, assistantMessageLogicRaw);
 import { describe, expect, it } from "vitest";
 import {
   ASK_ANSWER_EVENT,

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import transcriptSrcRaw from "./Transcript.svelte?raw";
-import messageSrc from "./AssistantMessage.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import messageSrcRaw from "./AssistantMessage.svelte?raw";
+const messageSrc = asOneFile(messageSrcRaw, assistantMessageLogicRaw);
 import { removeAsk, removeSnippet, removeTip } from "./removeAsk";
 import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
 import { asOneFile } from "../test/oneFile";

@@ -9,8 +9,12 @@ import { commandsOf, commandsText } from "./agentCommands";
 import { waitingOn, type StillRunningSegment } from "./stillRunning";
 import { app, applyTurnEvent } from "./state.svelte";
 import type { SessionEvent, SubagentStatus, TurnEvent } from "./types";
-import jarvisSrc from "./AssistantMessage.svelte?raw";
-import classicSrc from "./AssistantMessageClassic.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+import jarvisSrcRaw from "./AssistantMessage.svelte?raw";
+const jarvisSrc = asOneFile(jarvisSrcRaw, assistantMessageLogicRaw);
+import classicSrcRaw from "./AssistantMessageClassic.svelte?raw";
+const classicSrc = asOneFile(classicSrcRaw, assistantMessageLogicRaw);
 import subViewSrc from "./SubagentView.svelte?raw";
 
 /**

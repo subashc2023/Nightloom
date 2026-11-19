@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { decodeOverride, encodeOverride, foldKey, keptGet, keptOpen, keptSet } from "./keptFolds.svelte";
 import { VIEW_STATE_KEY, resetViewState, viewGet } from "./viewState";
-import messageSrc from "./AssistantMessage.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import messageSrcRaw from "./AssistantMessage.svelte?raw";
+const messageSrc = asOneFile(messageSrcRaw, assistantMessageLogicRaw);
 import transcriptSrcRaw from "./Transcript.svelte?raw";
 import subagentSrc from "./SubagentView.svelte?raw";
 import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";

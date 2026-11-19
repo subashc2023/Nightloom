@@ -2,8 +2,12 @@
 // reply says so on its row, through the passing-text store the backend's
 // `tool_output` feeds (one line while held, none once it goes).
 import { describe, expect, it } from "vitest";
-import messageSrc from "./AssistantMessage.svelte?raw";
-import classicSrc from "./AssistantMessageClassic.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+import messageSrcRaw from "./AssistantMessage.svelte?raw";
+const messageSrc = asOneFile(messageSrcRaw, assistantMessageLogicRaw);
+import classicSrcRaw from "./AssistantMessageClassic.svelte?raw";
+const classicSrc = asOneFile(classicSrcRaw, assistantMessageLogicRaw);
 import { passingEvent, passingLines } from "./bashOutput.svelte";
 
 const isShell = (n: string) => n === "Bash";

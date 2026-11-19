@@ -2,7 +2,10 @@
 // real motion (replyMotion), its look pinned per card; the demo's marks stay AssistantMessage's.
 import { describe, expect, it } from "vitest";
 import demoSrc from "./ReplyLookDemo.svelte?raw";
-import messageSrc from "./AssistantMessage.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+import messageSrcRaw from "./AssistantMessage.svelte?raw";
+const messageSrc = asOneFile(messageSrcRaw, assistantMessageLogicRaw);
 import motionSrc from "./replyMotion.ts?raw";
 import settingsSrc from "./SettingsModal.svelte?raw";
 

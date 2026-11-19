@@ -2,8 +2,12 @@
 // showing but its tail, the mask's geometry, the setting, and the wiring of the theme's motion colour. The DOM side
 // (the mask on screen, the shuttle on the edge, frame cost) is measured in WebKit (notes/runner-design/617-report-2026-11-11.md).
 import { describe, expect, it } from "vitest";
-import am from "./AssistantMessage.svelte?raw";
-import amc from "./AssistantMessageClassic.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+import amRaw from "./AssistantMessage.svelte?raw";
+const am = asOneFile(amRaw, assistantMessageLogicRaw);
+import amcRaw from "./AssistantMessageClassic.svelte?raw";
+const amc = asOneFile(amcRaw, assistantMessageLogicRaw);
 import {
   currentReplyLook,
   LINE_BURST_CHARS,

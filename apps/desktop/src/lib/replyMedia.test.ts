@@ -5,8 +5,12 @@ import { localImageAsText } from "./markdown";
 import mdSrc from "./markdown.ts?raw";
 import { _resetMedia, mediaState, type Loaded } from "./replyMediaStore.svelte";
 import stripSrc from "./ReplyMedia.svelte?raw";
-import macSrc from "./AssistantMessage.svelte?raw";
-import classicSrc from "./AssistantMessageClassic.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+import macSrcRaw from "./AssistantMessage.svelte?raw";
+const macSrc = asOneFile(macSrcRaw, assistantMessageLogicRaw);
+import classicSrcRaw from "./AssistantMessageClassic.svelte?raw";
+const classicSrc = asOneFile(classicSrcRaw, assistantMessageLogicRaw);
 import phoneSrc from "../remote/Remote.svelte?raw";
 import asideSrc from "../remote/AsideSheet.svelte?raw";
 

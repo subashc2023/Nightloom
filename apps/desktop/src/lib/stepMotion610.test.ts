@@ -2,7 +2,10 @@
 // choice previewing the real trace with its own motion.
 import { describe, expect, it } from "vitest";
 import settingsSrc from "./SettingsModal.svelte?raw";
-import messageSrc from "./AssistantMessage.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+import messageSrcRaw from "./AssistantMessage.svelte?raw";
+const messageSrc = asOneFile(messageSrcRaw, assistantMessageLogicRaw);
 import previewSrc from "./StepMotionPreview.svelte?raw";
 
 describe("the Thinking motion in Settings → Animations", () => {
