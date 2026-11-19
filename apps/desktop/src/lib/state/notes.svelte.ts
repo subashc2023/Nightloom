@@ -352,6 +352,12 @@ function parkOlderDraft(scope: NoteScope, name: string, text: string): void {
   void sendDraftsToTrash(scope, [{ key, at: name, text }]);
 }
 
+/** Item 870: his edits set aside by Take theirs, kept in the notes trash
+ *  as an unsaved draft (the scopes with a trash: project notes, the vault). */
+export function setAsideDraft(scope: NoteScope, name: string, text: string): void {
+  parkOlderDraft(scope, name, text);
+}
+
 async function sendDraftsToTrash(scope: NoteScope, entries: { key: string; at: string; text: string }[]): Promise<void> {
   if (entries.length === 0) return;
   let written: string[];

@@ -54,8 +54,8 @@
     type NotesChanged,
   } from "./notesFollow";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { bothText, conflictMessage, outsideChange } from "./noteConflict";
-  import { draftBase } from "./state/notes.svelte";
+  import { acceptBlocked, bothText, conflictMessage, outsideChange, undoTake } from "./noteConflict";
+  import { draftBase, setAsideDraft } from "./state/notes.svelte";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -95,6 +95,9 @@
    *  had unsaved edits. While set, Save waits for his pick: Keep mine,
    *  Take theirs or Show both. Neither text is dropped until then. */
   let theirs = $state<string | null>(null);
+  /** Item 870: Take theirs on a one-file scope (AGENTS.md, memory, model
+   *  or Chat instructions) — no trash to keep his edits in — asks first. */
+  let confirmTake = $state(false);
   /** A note that is not text (backlog 307): drawn, never edited. */
   let media = $state<api.FileTabData | null>(null);
   /**
@@ -425,6 +428,7 @@
     error = null;
     gone = false;
     theirs = null;
+    confirmTake = false;
     media = null;
     backlinks = [];
     images.clear();
@@ -521,14 +525,48 @@
     void commit(true);
   }
 
-  /** Take theirs: the outside version; his edits go, by his pick. */
-  function takeTheirs() {
+  /**
+   * Take theirs: the outside version, by his pick. Revert has no confirm,
+   * so neither does this — but nothing of his is lost: an Undo toast gives
+   * his text back, and in the notes and the vault his edits also go to the
+   * notes trash as an unsaved draft. The one-file scopes have no trash, so
+   * there it asks first (`confirmTake`), and Undo still follows.
+   */
+  function takeTheirs(confirmed = false) {
     const t = theirs;
-    if (t === null) return;
+    const target = open;
+    const key = bufferKey;
+    if (t === null || !target || !key) return;
+    const trashable = target.scope === "project" || target.scope === "knowledge";
+    if (!trashable && !confirmed) {
+      confirmTake = true;
+      return;
+    }
+    confirmTake = false;
+    const mine = text;
+    const before = saved;
     theirs = null;
     saved = t;
     text = t;
-    if (bufferKey) unstageProposal(bufferKey);
+    unstageProposal(key);
+    if (trashable) setAsideDraft(target.scope, target.name, mine);
+    const base = target.name.split("/").pop() || target.name;
+    addToast(`Took the outside version of ${base}; your edits are set aside`, {
+      label: "Undo",
+      run: () => {
+        if (bufferKey === key) {
+          const r = undoTake({ mine, before, theirs: t, now: text });
+          saved = r.saved;
+          text = r.text;
+          theirs = r.theirs;
+        } else {
+          // Another note is open: his text waits as this note's draft.
+          const held = app.noteDrafts[key];
+          app.noteDrafts[key] = held === undefined ? mine : bothText(mine, held);
+          app.noteDraftBases[key] = { draft: app.noteDrafts[key], base: before };
+        }
+      },
+    });
   }
 
   /** Show both: one buffer with his lines and the file's, marked; the file
@@ -638,6 +676,19 @@
     const target = open;
     if (!r || !target || accepting || proposed === saved) return;
     const next = proposed;
+    // Item 870: Accept writes the file too — never over an outside change
+    // since the editor loaded it. The editor follows the file (the choice
+    // shows when he has unsaved edits) and the card stays to look again.
+    try {
+      const disk = await api.readNote(target.scope, target.name);
+      if (acceptBlocked({ disk, saved, next })) {
+        followDisk(disk);
+        addToast(`Not accepted: ${target.name.split("/").pop()} changed outside Nightloom; look at the proposal again`);
+        return;
+      }
+    } catch {
+      // Unreadable: the write says what is wrong, as before.
+    }
     const hadDraft = dirty;
     const heldKey = bufferKey;
     accepting = true;
@@ -1189,7 +1240,7 @@
       <p class="conflict-msg">{conflictMessage(open?.name ?? "")}</p>
       <div class="conflict-picks">
         <button class="ghost" use:tip={"Save your text over the outside version"} onclick={keepMine}>Keep mine</button>
-        <button class="ghost revert" use:tip={"Use the outside version; your unsaved edits are dropped"} onclick={takeTheirs}
+        <button class="ghost revert" use:tip={"Use the outside version; your unsaved edits are dropped"} onclick={() => takeTheirs()}
           >Take theirs</button
         >
         <button class="ghost" use:tip={"Both texts in the editor, marked, to edit and save"} onclick={showBoth}>Show both</button>
@@ -1365,6 +1416,17 @@
   {/if}
   </div>
 </div>
+
+{#if confirmTake && theirs !== null}
+  <ConfirmDialog
+    title="Take the outside version?"
+    lead="Your unsaved edits to this file are replaced by the version changed outside Nightloom. Undo on the next notice gives them back."
+    facts={[["file", open?.name ?? ""]]}
+    confirmLabel="Take theirs"
+    onconfirm={() => takeTheirs(true)}
+    onclose={() => (confirmTake = false)}
+  />
+{/if}
 
 {#if confirmDismiss && reviewing}
   <ConfirmDialog

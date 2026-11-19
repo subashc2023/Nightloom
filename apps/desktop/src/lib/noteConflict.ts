@@ -64,3 +64,31 @@ export function conflictMessage(name: string): string {
   const base = name.split("/").pop() || name;
   return `${base} changed outside Nightloom while you had unsaved edits. Save will not write over it until you choose.`;
 }
+
+/**
+ * Undo of Take theirs (Revert has no confirm, so Take theirs has an Undo,
+ * and nothing of his is lost): with nothing typed since, the note is as it
+ * was before the pick — his text, the old baseline, the choice showing
+ * again. Typed since: both his set-aside text and what he typed, in one
+ * buffer, against the outside version as saved.
+ */
+export function undoTake(s: { mine: string; before: string; theirs: string; now: string }): {
+  text: string;
+  saved: string;
+  theirs: string | null;
+} {
+  if (s.now === s.theirs) return { text: s.mine, saved: s.before, theirs: s.theirs };
+  return { text: bothText(s.mine, s.now), saved: s.theirs, theirs: null };
+}
+
+/** Accept on a proposal writes only over the file as the editor loaded
+ *  it (or one that already reads as the proposal). */
+export function acceptBlocked(s: { disk: string; saved: string; next: string }): boolean {
+  return s.disk !== s.saved && s.disk !== s.next;
+}
+
+/** Undo of a prompt edit writes only over the file as the edit left it, or
+ *  as he saved it since — never over an outside change. */
+export function undoEditBlocked(s: { disk: string; after: string; current: string }): boolean {
+  return s.disk !== s.after && s.disk !== s.current;
+}
