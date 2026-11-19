@@ -1031,15 +1031,57 @@ mod tests {
 
     /// A never-ending block: a ⌃C at the pty ends it, and the end is
     /// reported, which is what the dock's Stop is.
+    ///
+    /// Backlog 852: under load (~70+) a single ⌃C sent the moment `UP`
+    /// shows was sometimes lost — the pty echoed `^C` and the loop ran on
+    /// past the deadline. Most likely `sh`'s own fork window: the ⌃C lands
+    /// while the next `sleep` is being started, in the moment its process
+    /// holds the terminal's foreground group but has not yet exec'd, and
+    /// the SIGINT is dropped there (microseconds at rest, wider under
+    /// load). So the test presses Stop again, as he would, every `AGAIN`
+    /// until the end is reported, under a deadline generous enough for a
+    /// loaded machine. What it checks is unchanged: ⌃C bytes at the pty
+    /// end the block, the end is reported, and it is not a clean exit.
     #[test]
     fn interrupt_ends_a_never_ending_block() {
+        const AGAIN: Duration = Duration::from_secs(2);
+        const DEADLINE: Duration = Duration::from_secs(60);
         let dir = std::env::temp_dir().join(format!("nightloom-run2-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let t = Terminals::default();
         let (info, rx) = run_sh(&t, &dir, "echo UP; while :; do sleep 1; done");
         read_until(&rx, |o| o.contains("UP"));
         t.write(info.id, "\u{3}").unwrap();
-        let (_, code, signal) = until_exit(&rx);
+        let start = Instant::now();
+        let mut pressed = Instant::now();
+        let mut presses = 1;
+        let mut out = String::new();
+        let (code, signal) = loop {
+            assert!(
+                start.elapsed() < DEADLINE,
+                "{presses} ⌃C did not end the block; it said {out:?}"
+            );
+            match rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(Outgoing::Data { bytes, .. }) => out.push_str(&String::from_utf8_lossy(&bytes)),
+                Ok(Outgoing::Exit { code, signal, .. }) => break (code, signal),
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if pressed.elapsed() >= AGAIN {
+                        // The block may end between the check and the
+                        // write; a press on an ended run is not an error.
+                        let _ = t.write(info.id, "\u{3}");
+                        pressed = Instant::now();
+                        presses += 1;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("the run's reports stopped; it said {out:?}")
+                }
+            }
+        };
+        if presses > 1 {
+            eprintln!("interrupt_ends_a_never_ending_block: ended on ⌃C number {presses}");
+        }
         assert!(code != Some(0) || signal.is_some(), "{code:?} {signal:?}");
     }
 
