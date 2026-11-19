@@ -101,7 +101,3 @@ function listenForTyping(on: boolean): void {
     window.removeEventListener("pointerdown", noteCardPress, true);
   }
 }
-
-export function chatBoxCount(): number {
-  return chatBoxes;
-}
