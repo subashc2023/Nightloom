@@ -27,7 +27,7 @@
   const needs = $derived(needsNow().filter((r) => r.state !== "working"));
   const since = $derived(homeDone());
   const handled = $derived<FeedRow[]>((since.length ? since : home.rows.slice(-12)).slice().reverse());
-  const checked = $derived(home.reach?.checked_at ? `checked ${dateLabel(home.reach.checked_at).toLowerCase()} ${clock(home.reach.checked_at)}` : "not checked yet");
+  const checked = $derived(home.reach?.checked_at ? `checked ${clock(home.reach.checked_at)}` : "not checked yet");
   async function check() {
     await Promise.all([checkReach(), refreshSources()]);
   }
@@ -73,7 +73,7 @@
           {#if needs.length === 0}<Loading label="Nothing needs you — Home is watching" lines={2} />{/if}
         </div>
       </Panel>
-      <Panel title="Handled" sub={since.length ? `${since.length} since you looked · click a line` : "latest · click a line"}>
+      <Panel title="Handled" sub={since.length ? `${since.length} since you looked` : "latest"}>
         {#snippet tools()}{#if since.length}<Btn small icon="check" disabled={home.marking} onclick={() => void markHomeSeen()}>Mark all seen</Btn>{/if}{/snippet}
         {#each handled as f (f.at + f.line)}
           {@const k = "f" + f.at + f.line}

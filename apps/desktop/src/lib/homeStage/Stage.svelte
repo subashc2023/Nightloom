@@ -5,7 +5,7 @@
   // app's own transcript inside the stage's frame (Home's own chat screen). The message box is the app's Composer,
   // under the stage, never remounted by a view switch. A send lands in the reply strip; the stage does not move.
   // Tab clicks, the strip's Open chat and Close are kind A (view-only).
-  import type { Snippet } from "svelte";
+  import { untrack, type Snippet } from "svelte";
   import "./stage.css";
   import Icon from "../Icon.svelte";
   import { tip } from "../tip";
@@ -37,11 +37,14 @@
 
   // A new send opens the strip again (he closed it on an older message).
   $effect(() => {
-    if (last && last.at !== stage.stripFor && stage.strip === "closed") stage.strip = "open";
+    const at = last?.at;
+    untrack(() => {
+      if (at && at !== stage.stripFor && stage.strip === "closed") stage.strip = "open";
+    });
   });
   $effect(() => {
     JSON.stringify(stage);
-    keep();
+    untrack(keep);
   });
   // Home's own data, read when the stage opens and every minute while it shows (files and one status call; no model).
   $effect(() => {
@@ -50,8 +53,11 @@
       void refreshRoutes();
       void refreshSources();
     };
-    read();
-    void refreshReach();
+    // Untracked: the refreshes read and write their own flags (home.loading); tracked, this effect would re-run forever.
+    untrack(() => {
+      read();
+      void refreshReach();
+    });
     const t = setInterval(read, 60_000);
     return () => clearInterval(t);
   });
