@@ -173,6 +173,7 @@ import { bgTurns, backgroundTurnOf, backgroundName, whereItRuns, openRunningChat
 import { stillRunningAsked, injectIntoTurn, nudgeInjects, openChatKey, takeQueuedFor, injectLater, retryInjects, handWhy, handKey, handReason, RETRY_HAND_MS, replyToPending, turnOwnsKey, takeQueued, sendNowRow, slipRow, sendNowPlan, stopSend, stopSendFor, takeStopSend, frontQueued, stopAndSendRow, sendNowAny, type HandReason, type SendNowPlan } from "./state/queue.svelte";
 import { peekNew, viewMark, sameView, adoptOpen, settleTurnView, openSession, compactSession, deleteSession, moveSession, remoteSend, remoteNewChat } from "./state/sessions.svelte";
 import { loadLastProject, saveLastProject, loadDreamPrefs, loadPalette, loadLayout, viewport, loadReadPages, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY, type Palette, type DreamPrefs, type Layout } from "./state/prefs.svelte";
+import { nextModel } from "./nextChatModel.svelte";
 import { runMenuCommand, menuInterceptors, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits } from "./state/menu.svelte";
 import { rewindTo, setAsideRewound, keepRewound } from "./state/rewind.svelte";
 import { addToast, TOAST_MS, ACTION_TOAST_MS, dismissToast, runToastAction } from "./state/toasts.svelte";
@@ -1480,6 +1481,16 @@ async function openContinuation(from: string | null, prompted: boolean): Promise
   if (thread && prompted) void takeThreadHandoff(thread, res.session);
   // The chat just left is finished as far as memory is concerned (item 278).
   maybeHandoffPass();
+  // Item 705: the new chat on the *Next chat* pick; "" (this chat's) keeps the
+  // model it was opened on. A failed switch is a toast, never a lost continuation.
+  const pick = nextModel(from);
+  if (pick && app.draft.engine === "claude-code" && app.draft.agentModel !== pick) {
+    try {
+      await switchModel(pick);
+    } catch (e) {
+      addToast(`The next chat stayed on this chat's model: ${String(e)}`);
+    }
+  }
   return res.session;
 }
 

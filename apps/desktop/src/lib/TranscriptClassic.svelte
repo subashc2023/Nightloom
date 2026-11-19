@@ -53,6 +53,7 @@
   import { asideReads } from "./state.svelte";
   import { coldUsdFor } from "./cacheRates.svelte";
   import { cardLog, continuableReply, continuedFromReply, nextChatMessage, type NextChat } from "./handoffButton";
+  import { nextModelLabel, nextModelRows, setNextModel } from "./nextChatModel.svelte";
   import { cancelReview, reviewOf, runReview } from "./chatReview.svelte";
   import { openPathAsTab } from "./forYou.svelte";
   import { carryFor } from "./handoffCarryFor";
@@ -627,6 +628,11 @@
             cancel: () => void cancelReview(from, reply.index),
           }
         : null,
+      // Item 705: the *Next chat* pick, the hand-off card's value; Claude Code only.
+      model:
+        app.connection?.engine === "claude-code"
+          ? { ...nextModelLabel(from), rows: nextModelRows(from), pick: (id: string) => setNextModel(from, id) }
+          : null,
     };
   });
 

@@ -671,6 +671,97 @@ button {
   color: var(--warn, var(--accent-ink));
 }
 
+/* Item 705 (option A, Console): the *Next chat* pick on the next-chat card,
+   before Review and Continue (handoffButton.ts `syncModel`), and its menu on
+   the shared HUD glass. */
+.markdown .handoff-go .handoff-model {
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.markdown .handoff-go .handoff-model ~ .handoff-review,
+.markdown .handoff-go .handoff-model ~ .handoff-review-cancel,
+.markdown .handoff-go .handoff-model ~ .handoff-continue {
+  margin-left: 0;
+}
+.markdown .handoff-go .handoff-model-k {
+  font: 500 10px var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.markdown .handoff-go .handoff-model-note {
+  font: 11px var(--mono);
+  color: var(--dim);
+}
+.markdown .handoff-go .handoff-model-note[hidden] {
+  display: none;
+}
+.markdown .handoff-go .handoff-model-chev {
+  color: var(--dim);
+  font-size: 10px;
+}
+.handoff-model-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 260px;
+  max-width: 380px;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--line2);
+  font-family: var(--sans);
+}
+.handoff-model-menu .hud-head {
+  padding: 4px 6px 6px;
+}
+.handoff-model-menu .handoff-model-row {
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  gap: 2px 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.handoff-model-menu .handoff-model-mark {
+  color: var(--accent-ink, var(--accent));
+  font-size: 11px;
+}
+.handoff-model-menu .handoff-model-detail {
+  grid-column: 2;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+:where(:root:not([data-layout="classic"])) .handoff-model-menu {
+  border-radius: var(--r2);
+  background: color-mix(in srgb, var(--raised) 97%, var(--term));
+}
+:where(:root:not([data-layout="classic"])) .markdown .handoff-go .handoff-model {
+  background: var(--well);
+  border: 1px solid var(--line2);
+  color: var(--ink);
+}
+:where([data-layout="classic"]) .handoff-model-menu {
+  border-radius: 8px;
+  background: var(--sheet);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+:where([data-layout="classic"]) .handoff-model-menu .handoff-model-row:hover,
+:where([data-layout="classic"]) .handoff-model-menu .handoff-model-row:focus-visible {
+  background: var(--paper);
+  outline: none;
+}
+
 /* Item 747: above the button, what the hand-off carries besides the prompt
    (handoffButton.ts `carryBlock`): the goal field, his messages the hand-off
    does not quote (tickable), the list built from the tool calls, the section
@@ -2178,3 +2269,4 @@ button,
   font-size: 0.88em;
   color: var(--dim);
 }
+
