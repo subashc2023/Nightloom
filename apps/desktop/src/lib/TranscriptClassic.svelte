@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { HOW_RESTORE, tickedAtFirst, type RestoreFile } from "./rewindRestore";
   import { fitToText } from "./boxGrow";
   // Item 703: where a turn's end cut running agents.
   import SessionCutNotice from "./SessionCutNotice.svelte";
@@ -40,6 +41,9 @@
     runningChatName,
     setAsideRewound,
     keepRewound,
+    restoreRewound,
+    keepRewindFiles,
+    undoRestore,
     loadPaneLog,
     paneChat,
     tabOpening,
@@ -732,6 +736,15 @@
     (app.rewoundWrites?.files ?? []).filter((f) => asideTicked(f.path, f.how)).map((f) => f.path),
   );
   const HOW_LABEL: Record<string, string> = { created: "created", edited: "edited", shell: "shell, a guess" };
+  // Item 765: the restore card's ticks — every file not changed since
+  // starts ticked; one changed since cannot be ticked.
+  let restoreTicks = $state<Record<string, boolean>>({});
+  $effect(() => {
+    void app.rewindRestore;
+    restoreTicks = {};
+  });
+  const restoreTicked = (f: RestoreFile): boolean => !f.since && (restoreTicks[f.path] ?? tickedAtFirst(f));
+  const restoreCount = $derived((app.rewindRestore?.files ?? []).filter(restoreTicked).length);
   let editorEl = $state<HTMLTextAreaElement | null>(null);
   // Item 399: with the composer's format toggle on (item 276), a user
   // turn's editor is the composer's formatted box (`LiveBox`), as the
@@ -3143,6 +3156,52 @@
     <!-- The files the rewound turns wrote (item 259): the next run would
          read them as real. Ticked ones move to a dated folder outside the
          project, never deleted; Keep leaves them all. -->
+    <!-- Item 765: the rewound turns' files from their hidden git
+         snapshots — Restore puts the ticked ones back as they were before
+         the turn (files the turns made move aside, never deleted); a file
+         changed since the turn ended is left alone; Undo puts them back. -->
+    {#if !inPane && app.rewindRestore && app.rewindRestore.session === app.activeSessionId}
+      {@const rr = app.rewindRestore}
+      <div class="limit-card" role="status">
+        <div class="limit-head">
+          <span class="ns-chip mono">rewound turns changed {rr.files.length === 1 ? "1 file" : `${rr.files.length} files`}</span>
+          <span class="limit-sub">restore them to before the turn, or keep them as they are</span>
+        </div>
+        {#if rr.done === null}
+          <div class="aside-files">
+            {#each rr.files as f (f.path)}
+              <label class="aside-file">
+                <input
+                  type="checkbox"
+                  checked={restoreTicked(f)}
+                  disabled={f.since || rr.busy}
+                  onchange={(e) => (restoreTicks[f.path] = (e.currentTarget as HTMLInputElement).checked)}
+                />
+                <span class="mono">{f.path}</span>
+                <span class="limit-sub">{f.since ? "changed since the turn — left alone" : HOW_RESTORE[f.how]}{!f.named && !f.since ? " · not by a named tool (a shell command, a helper or another chat)" : ""}</span>
+              </label>
+            {/each}
+          </div>
+          <div class="limit-actions">
+            <button
+              class="ns-btn accent small"
+              disabled={restoreCount === 0 || rr.busy}
+              use:tip={"Put the ticked files back as they were before the turn; files it made move to ~/.nightloom/rewound. Undo stays offered"}
+              onclick={() => void restoreRewound(restoreTicked)}
+            >Restore {restoreCount === 1 ? "1 file" : `${restoreCount} files`}</button>
+            <button class="ns-btn ghost small" disabled={rr.busy} onclick={keepRewindFiles}>Keep files</button>
+          </div>
+        {:else}
+          <div class="limit-text">{rr.done}</div>
+          <div class="limit-actions">
+            {#if rr.undo}
+              <button class="ns-btn ghost small" disabled={rr.busy} use:tip={"Put the files back as they were just before the restore; anything changed since stays"} onclick={() => void undoRestore()}>Undo restore</button>
+            {/if}
+            <button class="ns-btn ghost small" disabled={rr.busy} onclick={keepRewindFiles}>Done</button>
+          </div>
+        {/if}
+      </div>
+    {/if}
     {#if !inPane && app.rewoundWrites && app.rewoundWrites.session === app.activeSessionId}
       {@const rw = app.rewoundWrites}
       <div class="limit-card" role="status">
@@ -3150,6 +3209,9 @@
           <span class="ns-chip mono">rewound turn wrote {rw.files.length === 1 ? "1 file" : `${rw.files.length} files`}</span>
           <span class="limit-sub">still on disk — the next run reads them as real</span>
         </div>
+        {#if rw.note}
+          <div class="limit-sub">{rw.note}</div>
+        {/if}
         {#if rw.done === null}
           <div class="aside-files">
             {#each rw.files as f (f.path)}

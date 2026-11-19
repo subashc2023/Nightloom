@@ -65,6 +65,7 @@ export const TRANSCRIPT_FEATURES: Record<string, Where> = {
   "approval prompts, answer hand-back": mainOnly("an aside runs without prompts"),
   "budget stop card": mainOnly("the 85% hold is on the chat's turn"),
   "rewound-writes card": mainOnly("an aside writes nothing"),
+  "rewind restore-files card (item 765)": mainOnly("an aside's exchanges have no turn snapshots; its rewind is the window's own"),
   "subagent groups, council chip, next-chat hand-off": mainOnly("chat-turn features"),
   "tool-result images, attachments opened as tabs": mainOnly("no session file to read them from"),
   "keep-warm notice": mainOnly("the chat's cache; the aside rides it"),
@@ -118,7 +119,8 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
 export const KIND_GUARDS = {
   // 17 since the merge of nightshift d5e4063b into dk-needs-you: each side added one chat-only guard
   // (TurnAskHost, SessionCutNotice), both classified above.
-  isChat: 17,
+  // 18 since item 765: the rewind restore-files card, classified above.
+  isChat: 18,
   inPane: 8,
   // 8 since item 799: the chapters' scope (an aside keys its renames by its fold name).
   inAside: 8,

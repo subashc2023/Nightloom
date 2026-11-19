@@ -1657,6 +1657,8 @@ fn main() {
             commands::edits::rewind,
             commands::edits::unrewind,
             commands::edits::set_aside_files,
+            commands::edits::rewind_files,
+            commands::edits::restore_rewound_files,
             commands::edits::edit_message,
             commands::edits::remove_message,
             commands::edits::restore_message,

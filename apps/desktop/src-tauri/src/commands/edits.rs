@@ -76,6 +76,107 @@ pub(crate) async fn set_aside_files(
     .await
 }
 
+/// What Rewind's "restore files too" would put back (item 765): the files
+/// the rewound turns changed, read off the chat's hidden snapshots
+/// (`nightloom_service::turn_snapshot`), each marked when it changed again since. `to` is
+/// the rewound message's log index; `workspace` the chat's folder.
+#[tauri::command]
+pub(crate) async fn rewind_files(
+    workspace: String,
+    chat: String,
+    to: usize,
+) -> Result<nightloom_service::turn_snapshot::Plan, String> {
+    blocking(move || -> Result<_, String> {
+        Ok(nightloom_service::turn_snapshot::plan(
+            Path::new(workspace.trim()),
+            &chat,
+            to,
+        ))
+    })
+    .await
+}
+
+/// What a restore did (item 765).
+#[derive(Serialize)]
+pub(crate) struct Restored {
+    /// Written back as they were (relative to the repository's top).
+    restored: Vec<String>,
+    /// Files the turns made, moved aside rather than deleted (item 259's
+    /// folder), and the files that could not be touched, with why.
+    aside: set_aside::SetAside,
+    skipped: Vec<set_aside::Skipped>,
+    /// The folder after the restore, for its undo's guard.
+    after: Option<String>,
+}
+
+/// Put the rewound turns' files back (item 765): each of `paths` as it is
+/// in commit `from`; each of `added` (made by the turns, absent in `from`)
+/// moved aside, never deleted. A path that changed since commit `guard`
+/// — by him, or another chat — is left alone. The undo of a restore is the
+/// same call with the plan's "now" as `from` and the restore's `after` as
+/// `guard`. Nothing touches his index, HEAD or branches.
+#[tauri::command]
+pub(crate) async fn restore_rewound_files(
+    chat: Option<String>,
+    root: String,
+    from: String,
+    guard: String,
+    paths: Vec<String>,
+    added: Vec<String>,
+) -> Result<Restored, String> {
+    let aside_root = project::config_dir()
+        .ok_or("no config folder to set the files aside in")?
+        .join("rewound");
+    let short: String = chat.unwrap_or_default().chars().take(8).collect();
+    let mut stamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
+    if !short.is_empty() {
+        stamp = format!("{stamp}-{short}");
+    }
+    blocking(move || -> Result<_, String> {
+        let root = PathBuf::from(root);
+        let since = nightloom_service::turn_snapshot::changed_since(&root, &guard)
+            .ok_or("could not read the folder as it is now; nothing was changed")?;
+        let mut skipped = Vec::new();
+        let mut keep = |p: &String| {
+            if since.contains(p) {
+                skipped.push(set_aside::Skipped {
+                    path: p.clone(),
+                    why: "changed since the turn ended — left alone".into(),
+                });
+                false
+            } else {
+                true
+            }
+        };
+        let write: Vec<String> = paths.into_iter().filter(|p| keep(p)).collect();
+        let mut added: Vec<String> = added.into_iter().filter(|p| keep(p)).collect();
+        // What `from` does not hold is moved aside, not written (an undo
+        // of a restore that brought a deleted file back).
+        let held = nightloom_service::turn_snapshot::present_in(&root, &from, &write);
+        let (write, gone): (Vec<String>, Vec<String>) =
+            write.into_iter().partition(|p| held.contains(p));
+        added.extend(gone);
+        let failed = nightloom_service::turn_snapshot::checkout(&root, &from, &write);
+        let restored = write
+            .into_iter()
+            .filter(|p| !failed.iter().any(|(f, _)| f == p))
+            .collect();
+        skipped.extend(
+            failed
+                .into_iter()
+                .map(|(path, why)| set_aside::Skipped { path, why }),
+        );
+        let aside = set_aside::set_aside(&aside_root, &stamp, Some(&root), &added);
+        Ok(Restored {
+            restored,
+            aside,
+            skipped,
+            after: nightloom_service::turn_snapshot::now(&root),
+        })
+    })
+    .await
+}
+
 /// Lift the rewind recorded at log index `of` — the undo of a rewind
 /// (nightshift backlog 064, 2026-09-15) — returning the transcript the way
 /// [`rewind`] does and for the same reason.
