@@ -324,6 +324,8 @@
    * while the box's Ask aside is offered: the chat's box, the Claude Code
    * engine, a chat with a turn in it.
    */
+  // The line under the box when there is no connection (items 230, 873): the failure only; "connecting…" is the top bar's.
+  const connectHint = $derived(app.connection ? null : composerConnectHint({ connected: false, connecting: app.connecting, launchConnectSettled: launchState.connectSettled }));
   const held = $derived(!aside && app.connection?.engine === "claude-code" && app.events.length > 0 ? heldFor(key) : null);
   // Never carried to another chat: switching chat (or the box going) drops it.
   $effect(() => {
@@ -4589,16 +4591,11 @@
       {@render cacheChips()}
     </div>
   {/if}
-  {#if !app.connection}
-    <!-- "connecting…" while the launch connect runs, as the top bar says;
-         the failure wording only once it is true (item 230). -->
-    <div class="hint">
-      {composerConnectHint({
-        connected: false,
-        connecting: app.connecting,
-        launchConnectSettled: launchState.connectSettled,
-      })}
-    </div>
+  {#if connectHint}
+    <!-- ~~"connecting…" while the launch connect runs, as the top bar says~~
+         — item 873: the top bar says it alone; the failure wording only once
+         it is true (item 230). -->
+    <div class="hint">{connectHint}</div>
   {:else if dragDepth > 0}
     <div class="hint">drop images or PDFs to attach</div>
   {:else if !aside && handoff.noStartPromptChat !== null && handoff.noStartPromptChat === app.activeSessionId && !text}
