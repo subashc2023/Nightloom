@@ -109,6 +109,10 @@
 .h9-stage.tiny :is(.h9-col, .h9-row, .h9-grid > *) { flex: none !important; }
 .h9-stage.tiny .h9-panel { flex: none !important; }
 .h9-stage.tiny .h9-pb { overflow: visible; }
+/* A tiny stage's panel header wraps instead of cutting (845 batch 4: Timeline's date and Changes' hint were cut on a
+   375 px phone): the subtitle wraps in its own words and drops under the title only when it cannot fit beside it. */
+.h9-stage.tiny .h9-ph { flex-wrap: wrap; row-gap: 2px; }
+.h9-stage.tiny .h9-ph-sub { flex: 1 1 auto; white-space: normal; overflow: visible; text-overflow: clip; text-align: right; }
 .h9-stage.phone .h9-bar { padding: 8px 12px 4px; }
 .h9-stage.phone .h9-tabs { padding: 4px 12px 0; }
 .h9-stage.phone .h9-doing { font-size: 12.5px; }

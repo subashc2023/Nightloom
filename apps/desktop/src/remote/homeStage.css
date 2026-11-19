@@ -41,6 +41,9 @@
 .h9-stage.phone .ns-cap { display: flex; align-items: center; gap: 8px; font: 500 10px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink2); }
 .h9-stage.phone .ns-cap::after { content: ""; flex: 1; height: 1px; background: var(--line2); }
 .h9-stage.phone .ns-mono { font-family: var(--mono); }
+/* The app's icons are stroked paths (src/app.css .ns-ico); without this rule the phone filled them, so several drew as
+   small solid squares (845 batch 4). */
+.h9-stage.phone .ns-ico { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .h9-stage.phone .ns-pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; letter-spacing: 0.01em; white-space: nowrap; line-height: 1.5; }
 .h9-stage.phone .ns-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .h9-stage.phone .ns-pill.done { background: var(--done-soft); color: var(--done); }
@@ -63,7 +66,7 @@
 .h9-stage.phone .h9-tabs { padding: 4px 2px 0; }
 .h9-stage.phone .h9-tab { height: 34px; }
 .h9-stage.phone .h9-body { flex: none; }
-.h9-stage.phone .h9-view { position: relative; inset: auto; margin: 10px 0 4px; }
+.h9-stage.phone .h9-view { position: relative; inset: auto; margin: 10px 3px 4px; } /* 3 px: the lock-on corners sit 3 px outside a panel */
 .h9-stage.phone .h9-grid { height: auto; overflow: visible; }
 .h9-stage.phone .h9-pb { overflow: visible; }
 .h9-stage.phone .h9-pb.flush { overflow: visible; }

@@ -63,7 +63,7 @@
         <div class="w-live"><BrowserView {session} /></div>
       {:else}
         <div class="w-chrome">
-          <span class="w-url"><Icon name="lock" size={11} /><span>{b.url || "no page yet"}</span></span>
+          <span class="w-url"><Icon name="lock" size={11} /><span data-ellipsis title={b.url || undefined}>{b.url || "no page yet"}</span></span>
           <span class="ns-pill {task.state === 'live' ? 'live' : 'done'}"><span class="dot"></span>{task.state === "live" ? "Home" : "done"}</span>
         </div>
         <div class="w-page">

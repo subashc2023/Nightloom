@@ -186,6 +186,9 @@
   :global(.h9-stage.narrow) .g-piles { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(190px, 1fr); overflow: hidden auto; padding: 4px; scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
   /* A tiny stage (the phone, 845 batch 3): one pile under another, each as tall as its cards; the page scrolls. */
   :global(.h9-stage.tiny) .g-piles { grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto; overflow: visible; }
+  /* …and each pile's panel is the pile's full width: the tiny stage sets every panel `flex: none`, which in this row
+     sized it to its own text — the Inbox panel took half the width and Needs you ran 111 px off a 375 px phone. */
+  :global(.h9-stage.tiny) .g-pile { flex-direction: column; }
 
   .g-gm { margin: 4px 0 2px; align-items: center; }
 </style>

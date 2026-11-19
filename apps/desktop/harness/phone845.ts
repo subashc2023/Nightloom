@@ -142,12 +142,38 @@ async function run() {
   const bad: string[] = [];
   for (const el of st?.querySelectorAll<HTMLElement>("*") ?? []) {
     if (el instanceof SVGElement) continue;
+    if (el.hasAttribute("data-ellipsis")) continue; // cut on purpose (a URL), its whole text in its title
     const dx = el.scrollWidth - el.clientWidth;
     if (dx > 1 && /(hidden|clip|auto|scroll)/.test(getComputedStyle(el).overflowX) && !/h9-tabs|h9-doing|b-counts|b-count|t-track|t-scroll/.test(el.className)) bad.push(`${el.className.split(" ")[0]} +${dx}`);
   }
   const wide = Math.max(document.documentElement.scrollWidth, document.querySelector<HTMLElement>(".home")?.scrollWidth ?? 0) - innerWidth;
+  // Every box, not only the page (845 batch 4: a Needs-you pile ran off a 375 px phone while the page measured
+  // sideways=0 — an ancestor clipped it). A box counts as out when it reaches past the stage's own edges, unless it
+  // sits inside a sideways scroller of its own (the tab row, Timeline's track), which the cut check above covers.
+  const out: string[] = [];
+  const sr = st?.getBoundingClientRect();
+  if (st && sr) {
+    const scrolls = (n: Element) => /(auto|scroll)/.test(getComputedStyle(n).overflowX);
+    for (const el of st.querySelectorAll<Element>("*")) {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      let a = el.parentElement;
+      let inScroller = false;
+      while (a && a !== st) {
+        if (scrolls(a)) {
+          inScroller = true;
+          break;
+        }
+        a = a.parentElement;
+      }
+      if (inScroller) continue;
+      const over = Math.max(r.right - sr.right, sr.left - r.left);
+      if (over > 1) out.push(`${(el.getAttribute("class") ?? el.tagName).split(" ")[0]} +${Math.round(over)}`);
+    }
+  }
+  const piles = [...document.querySelectorAll<HTMLElement>(".g-pile")].map((p) => Math.round(p.getBoundingClientRect().width)).join("/");
   (window as unknown as { __capset: (m: string) => void }).__capset(
-    `845p s=${s}${away ? " away" : ""} tokens=${(window as unknown as { __tokens: number }).__tokens} stage=${st ? `${Math.round(st.getBoundingClientRect().width)}w ${st.className.replace(/svelte-\S+/g, "").replace(/\s+/g, " ").trim()}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} on=${document.querySelector(".h9-tab.on .tn")?.textContent ?? "-"} sections=${document.querySelectorAll("[data-home-section]").length} tell=${document.querySelector("[data-home-tell]") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""} sideways=${wide}${restart} vw${innerWidth}`,
+    `845p s=${s}${away ? " away" : ""} tokens=${(window as unknown as { __tokens: number }).__tokens} stage=${st ? `${Math.round(st.getBoundingClientRect().width)}w ${st.className.replace(/svelte-\S+/g, "").replace(/\s+/g, " ").trim()}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} on=${document.querySelector(".h9-tab.on .tn")?.textContent ?? "-"} sections=${document.querySelectorAll("[data-home-section]").length} tell=${document.querySelector("[data-home-tell]") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""} sideways=${wide} out=${out.length}${out.length ? ` (${out.slice(0, 4).join(", ")})` : ""}${piles ? ` piles=${piles}` : ""}${restart} vw${innerWidth}`,
   );
 }
 // The page is folded into one file with this script in <head>: wait for the body.

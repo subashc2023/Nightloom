@@ -71,7 +71,7 @@
     {#if brief && brief.sections.length}
       <div class="b-counts">
         {#each brief.sections as s, i (s.key)}
-          <button class="b-count" class:on={isOpen(s.key, i)} onclick={() => toggle(s.key, i)}><b class="h9-num">{s.lines || "·"}</b><span>{s.title}</span></button>
+          <button class="b-count" class:on={isOpen(s.key, i)} onclick={() => toggle(s.key, i)}><b class="h9-num">{s.lines || "·"}</b><span data-ellipsis title={s.title}>{s.title}</span></button>
         {/each}
       </div>
     {/if}
