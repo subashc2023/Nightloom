@@ -464,6 +464,12 @@ mod tests {
     fn a_name_with_a_newline_or_a_direction_override_is_refused() {
         let (root, store) = setup("names");
         for name in ["a\nb.pdf", "report\u{202e}fdp.exe", "tab\t.txt"] {
+            // Windows cannot name a file with a newline or a tab at all
+            // (error 123), so there no such file can reach send_file; the
+            // direction override, which it can hold, is still checked.
+            if cfg!(windows) && name.contains(['\n', '\t']) {
+                continue;
+            }
             std::fs::write(root.join(name), b"x").unwrap();
             let err = deliver(&root, &store, name, None).unwrap_err();
             assert!(err.contains("plain name"), "{name:?}: {err}");
