@@ -1973,6 +1973,9 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
     cliError: res?.is_error === true,
     limit: !!res?.limit,
     stopped: t.stopped === true,
+    // Item 874: its record is gone by now — a chat Home's routes ran in
+    // another project is that project's, not the open one's.
+    ...(b ? { home: { id: b.project ?? null, name: b.projectName ?? null } } : {}),
   });
   addToast(backgroundEndToast(name, failed));
   for (const n of turnNotices(res?.notices ?? [], t.stopped === true)) addToast(n);

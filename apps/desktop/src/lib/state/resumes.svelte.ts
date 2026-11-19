@@ -11,6 +11,7 @@ import { askedResume, dueResumes, extractContinue, limitResumeTime, nextResumeAt
 import { liveHost } from "../browse";
 import type { AgentTurnResult, SessionEvent, Usage } from "../types";
 import { chatHome } from "./asides.svelte";
+import { chatHomeOf } from "../chatHomeOf";
 import { type Segment, app, sendUntyped, refreshSessions, continueWithPrompt, backgroundName, chatRuns, sendInChat, addToast, turnWasStopped } from "../state.svelte";
 
 /**
@@ -112,10 +113,13 @@ export function liveText(segs: readonly Segment[]): string {
 
 /** Where chat `id` lives, as far as this launch knows. */
 export function homeFor(id: string | null): { id: string | null; name: string | null } {
-  const known = id ? chatHome.get(id) : undefined;
-  return id === app.activeSessionId || !known
-    ? { id: app.project?.id ?? null, name: app.project?.name ?? null }
-    : { id: known.project, name: known.name };
+  // Item 874: an off-screen turn's record names its project first.
+  return chatHomeOf(id, {
+    active: app.activeSessionId,
+    open: { id: app.project?.id ?? null, name: app.project?.name ?? null },
+    record: id ? app.background[id] : null,
+    known: id ? chatHome.get(id) : null,
+  });
 }
 
 /**
@@ -424,6 +428,9 @@ export function notifyEnd(t: {
   limit?: boolean;
   /** He stopped the turn (739 review L5): no push to the phone. */
   stopped?: boolean;
+  /** Where the chat lives when the caller knows (874: an off-screen turn's
+   *  record, gone before this runs); else `homeFor`. */
+  home?: { id: string | null; name: string | null };
 }): void {
   const sent = [...t.events].reverse().find((e) => e.event === "user_message");
   const since = sent?.event === "user_message" ? Date.parse(sent.at) : NaN;
@@ -439,6 +446,6 @@ export function notifyEnd(t: {
     elapsedMs: Number.isNaN(since) ? null : Date.now() - since,
     error: t.error,
     handoffFill: wrapUp ? handoff.fill : null,
-    phone: { chat: t.ranIn, project: homeFor(t.ranIn).id, limit: t.limit === true, cliError: t.cliError, stopped: t.stopped === true },
+    phone: { chat: t.ranIn, project: (t.home ?? homeFor(t.ranIn)).id, limit: t.limit === true, cliError: t.cliError, stopped: t.stopped === true },
   });
 }
