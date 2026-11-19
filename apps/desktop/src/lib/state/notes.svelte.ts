@@ -464,8 +464,23 @@ export function reviewProposal(scope: ProposalScope, id?: string): void {
  * what makes a loaded proposal a draft and not a save.
  */
 export function mirrorDraft(key: string, text: string, saved: string): void {
-  if (text !== saved) app.noteDrafts[key] = text;
-  else delete app.noteDrafts[key];
+  if (text !== saved) {
+    app.noteDrafts[key] = text;
+    // Item 870: what the file read when this draft was typed.
+    if (app.noteDraftBases) app.noteDraftBases[key] = { draft: text, base: saved };
+  } else {
+    delete app.noteDrafts[key];
+    if (app.noteDraftBases) delete app.noteDraftBases[key];
+  }
+}
+
+/**
+ * Item 870: the file text a draft was typed against, or null when unknown
+ * (a draft from elsewhere — a proposal, a restore — or after a relaunch).
+ */
+export function draftBase(key: string): string | null {
+  const b = app.noteDraftBases?.[key];
+  return b && app.noteDrafts[key] === b.draft ? b.base : null;
 }
 
 /**

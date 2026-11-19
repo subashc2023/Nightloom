@@ -586,6 +586,14 @@ export const app = $state({
    */
   noteDrafts: {} as Record<string, string>,
   /**
+   * Item 870: the file text each editor draft was typed against, with the
+   * draft it belongs to (trusted only while that draft is still the one in
+   * `noteDrafts`). Reopening a note whose file changed outside Nightloom
+   * since then asks Keep mine / Take theirs / Show both instead of letting
+   * Save write over the outside version. In memory, like the drafts' base.
+   */
+  noteDraftBases: {} as Record<string, { draft: string; base: string }>,
+  /**
    * The dream's pending proposals for the two always-loaded files, per
    * scope, newest first — the badge on each pinned row. Re-listed with the
    * notes after every turn and every dream. The pass never writes either

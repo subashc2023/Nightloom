@@ -54,6 +54,8 @@
     type NotesChanged,
   } from "./notesFollow";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { bothText, conflictMessage, outsideChange } from "./noteConflict";
+  import { draftBase } from "./state/notes.svelte";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -89,6 +91,10 @@
    *  unsaved edits the buffer holds them (Save puts the file back); without,
    *  a plain message and Close — never the os error string. */
   let gone = $state(false);
+  /** Item 870: the file's text when it changed outside Nightloom while he
+   *  had unsaved edits. While set, Save waits for his pick: Keep mine,
+   *  Take theirs or Show both. Neither text is dropped until then. */
+  let theirs = $state<string | null>(null);
   /** A note that is not text (backlog 307): drawn, never edited. */
   let media = $state<api.FileTabData | null>(null);
   /**
@@ -369,10 +375,19 @@
     let stop: UnlistenFn | null = null;
     const check = coalesced(async () => {
       const isMedia = untrack(() => media) !== null;
-      const there = await stillThere(() =>
-        isMedia ? api.readNoteMedia(target.scope, target.name) : api.readNote(target.scope, target.name),
-      );
+      let disk: string | null = null;
+      const there = await stillThere(async () => {
+        if (isMedia) return api.readNoteMedia(target.scope, target.name);
+        disk = await api.readNote(target.scope, target.name);
+        return disk;
+      });
       if (!alive || open?.scope !== target.scope || open?.name !== target.name) return;
+      // Item 870: the file's text moved under the editor. Not while a
+      // prompt edit is landing (Nightloom's own writes, taken at the end).
+      if (disk !== null && untrack(() => !gone && !streaming && bufferKey !== null)) {
+        followDisk(disk);
+        return;
+      }
       if (there === false) gone = true;
       else if (there === true && untrack(() => gone)) {
         // Review of 869: the file came back (an editor's save by rename, a
@@ -381,8 +396,11 @@
         // message showing — the note is read again, so the editor shows
         // the file as it now is and a later Save cannot write the old text
         // over what came back.
-        if (untrack(() => dirty)) gone = false;
-        else void load(target);
+        if (untrack(() => dirty)) {
+          gone = false;
+          // Item 870: back with other text than his baseline — ask.
+          if (disk !== null) followDisk(disk);
+        } else void load(target);
       }
     });
     listen<NotesChanged>("notes-changed", (e) => {
@@ -406,6 +424,7 @@
     saved = "";
     error = null;
     gone = false;
+    theirs = null;
     media = null;
     backlinks = [];
     images.clear();
@@ -427,6 +446,10 @@
       // saved baseline, so the ● and the Revert button say what differs.
       const draft = app.noteDrafts[key];
       text = draft !== undefined && draft !== content ? draft : content;
+      // Item 870: the draft was typed against other text than the file
+      // now holds — it changed outside Nightloom while the note was shut.
+      const base = draft !== undefined ? draftBase(key) : null;
+      if (text !== content && base !== null && base !== content) theirs = content;
       // Opened from a memory hit (backlog 296): the cursor on its line,
       // set before the editor mounts on the new buffer.
       const at = app.noteAt;
@@ -473,10 +496,86 @@
     }
   }
 
-  async function commit() {
+  /**
+   * Item 870: what the file on disk now reads means for the buffer — the
+   * outside text taken when he has nothing unsaved, his own save adopted,
+   * and with unsaved edits a pick he must make before any Save.
+   */
+  function followDisk(disk: string) {
+    const what = outsideChange({ disk, saved, text });
+    if (what === "adopt") {
+      saved = disk;
+      theirs = null;
+    } else if (what === "reload") {
+      saved = disk;
+      text = disk;
+      theirs = null;
+    } else if (what === "conflict") theirs = disk;
+  }
+
+  /** Keep mine: his text is saved over the outside version, by his pick. */
+  function keepMine() {
+    if (theirs === null) return;
+    saved = theirs;
+    theirs = null;
+    void commit(true);
+  }
+
+  /** Take theirs: the outside version; his edits go, by his pick. */
+  function takeTheirs() {
+    const t = theirs;
+    if (t === null) return;
+    theirs = null;
+    saved = t;
+    text = t;
+    if (bufferKey) unstageProposal(bufferKey);
+  }
+
+  /** Show both: one buffer with his lines and the file's, marked; the file
+   *  is the saved baseline, so Save writes what he makes of them. */
+  function showBoth() {
+    const t = theirs;
+    if (t === null) return;
+    theirs = null;
+    const both = bothText(text, t);
+    saved = t;
+    text = both;
+  }
+
+  /**
+   * Item 870: before a Save, the file as it reads now. Changed outside
+   * since the editor loaded it, and not to his text: no write — the pick
+   * shows instead. A vanished file is written back (item 869); a read that
+   * fails otherwise leaves the write to say what is wrong.
+   */
+  async function outsideBeforeSave(target: { scope: NoteScope; name: string }, pending: string): Promise<boolean> {
+    let disk: string;
+    try {
+      disk = await api.readNote(target.scope, target.name);
+    } catch {
+      return false;
+    }
+    if (open?.scope !== target.scope || open?.name !== target.name) return true;
+    const what = outsideChange({ disk, saved, text: pending });
+    if (what === "adopt") {
+      saved = disk;
+      return true;
+    }
+    if (what === "conflict") {
+      theirs = disk;
+      addToast(`Not saved: ${conflictMessage(target.name)}`);
+      return true;
+    }
+    return false;
+  }
+
+  async function commit(force = false) {
     const target = open;
     if (!target || !dirty) return;
     const pending = text;
+    // Item 870: never over an outside change without his pick. Every Save
+    // in the editor comes here — ⌘S, the pill's Save, Save-and-back.
+    if (!force && (theirs !== null || (await outsideBeforeSave(target, pending)))) return;
     if (await saveNote(target.scope, target.name, pending)) {
       saved = pending;
       addToast(`Saved ${target.name}`);
@@ -1085,6 +1184,18 @@
     </div>
     <hr />
   </div>
+  {#if theirs !== null && !error && !media}
+    <div class="conflict" role="group" aria-label="Changed outside Nightloom">
+      <p class="conflict-msg">{conflictMessage(open?.name ?? "")}</p>
+      <div class="conflict-picks">
+        <button class="ghost" use:tip={"Save your text over the outside version"} onclick={keepMine}>Keep mine</button>
+        <button class="ghost revert" use:tip={"Use the outside version; your unsaved edits are dropped"} onclick={takeTheirs}
+          >Take theirs</button
+        >
+        <button class="ghost" use:tip={"Both texts in the editor, marked, to edit and save"} onclick={showBoth}>Show both</button>
+      </div>
+    </div>
+  {/if}
   {#if gone && !error}
     <p class="err gone">{vanishedMessage(open?.name ?? "", dirty)}</p>
     <button class="ghost gone-close" onclick={() => closeNote()}>Close</button>
@@ -1882,6 +1993,28 @@
   .err.quiet {
     color: var(--dim);
   }
+  /* Item 870: the pick when the file changed outside under unsaved edits. */
+  .conflict {
+    margin: 0.75rem 1.2rem 0;
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--panel);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+  }
+  .conflict-msg {
+    margin: 0;
+    flex: 1 1 18rem;
+    color: var(--text);
+    font-size: 0.82rem;
+  }
+  .conflict-picks {
+    display: flex;
+    gap: 0.4rem;
+  }
   .links {
     flex-shrink: 0;
     border-top: 1px solid var(--border);
@@ -2083,6 +2216,14 @@
   :global(:where(:root:not([data-layout="classic"]))) .ghost {
     background: var(--well);
     border-color: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .conflict {
+    background: var(--sheet);
+    border-color: var(--line);
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .conflict-msg {
+    font-size: 12.5px;
   }
   :global(:where(:root:not([data-layout="classic"]))) .ghost.revert {
     border-color: color-mix(in srgb, var(--failed) 55%, var(--line2));
