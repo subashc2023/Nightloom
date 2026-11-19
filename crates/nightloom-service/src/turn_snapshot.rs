@@ -114,15 +114,20 @@ fn git(
     let mut child = cmd.spawn().map_err(|_| Skip::NotGit)?;
     let mut out_pipe = child.stdout.take().expect("piped");
     let mut err_pipe = child.stderr.take().expect("piped");
-    let out_t = std::thread::spawn(move || {
+    // The pipes are read on threads that report by channel, so the
+    // deadline also covers a helper git started (a filter, a hook, a
+    // daemon) that keeps them open after git itself has exited.
+    let (tx, rx) = std::sync::mpsc::channel::<(bool, Vec<u8>)>();
+    let tx_err = tx.clone();
+    std::thread::spawn(move || {
         let mut b = Vec::new();
         let _ = out_pipe.read_to_end(&mut b);
-        b
+        let _ = tx.send((true, b));
     });
-    let err_t = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut b = Vec::new();
         let _ = err_pipe.read_to_end(&mut b);
-        b
+        let _ = tx_err.send((false, b));
     });
     if let (Some(bytes), Some(mut pipe)) = (stdin, child.stdin.take()) {
         let bytes = bytes.to_vec();
@@ -142,8 +147,19 @@ fn git(
             Err(e) => return Err(Skip::Failed(e.to_string())),
         }
     };
-    let out = out_t.join().unwrap_or_default();
-    let err = err_t.join().unwrap_or_default();
+    let (mut out, mut err) = (None, None);
+    while out.is_none() || err.is_none() {
+        // A little grace past the deadline for pipes already at their end.
+        let left = until
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(100));
+        match rx.recv_timeout(left) {
+            Ok((true, b)) => out = Some(b),
+            Ok((false, b)) => err = Some(b),
+            Err(_) => return Err(Skip::Slow),
+        }
+    }
+    let (out, err) = (out.unwrap_or_default(), err.unwrap_or_default());
     if status.success() {
         Ok(String::from_utf8_lossy(&out).into_owned())
     } else {
@@ -721,6 +737,22 @@ mod tests {
         std::fs::write(d.join("new.txt"), "new\n").unwrap();
         snapshot_turn(&d, "c", 1, Edge::Start).unwrap();
         assert_eq!(shared(), before);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_helper_holding_gits_pipes_open_cannot_outlast_the_deadline() {
+        let d = repo("hold");
+        let t = Instant::now();
+        let r = git(
+            &d,
+            &["-c", "alias.hold=!sleep 4 & true", "hold"],
+            &[],
+            None,
+            t + Duration::from_millis(500),
+        );
+        assert_eq!(r, Err(Skip::Slow));
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
         let _ = std::fs::remove_dir_all(&d);
     }
 
