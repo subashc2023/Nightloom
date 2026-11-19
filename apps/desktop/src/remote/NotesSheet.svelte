@@ -328,6 +328,10 @@
   });
 </script>
 
+{#snippet unsavedCue()}
+  <span class="ns-unsaved" role="img" aria-label="Unsaved changes" title="Unsaved changes"></span>
+{/snippet}
+
 {#if view.v === "list"}
   <div class="ns-head">
     <span class="ns-title">Notes</span>
@@ -343,7 +347,7 @@
       {#each FIXED as f (f.scope)}
         <button onclick={() => openFixed(f.scope)}>
           <span class="ns-grow">
-            <span class="ns-name">{f.label}</span>
+            <span class="ns-namerow"><span class="ns-name">{f.label}</span>{#if mark(f.scope, FIXED_NOTES[f.scope]!)}{@render unsavedCue()}{/if}</span>
             <small>{mark(f.scope, FIXED_NOTES[f.scope]!)}{f.sub}</small>
           </span>
         </button>
@@ -356,7 +360,7 @@
         {#each list as n (n.name)}
           <button onclick={() => openNote(scope, n.name)}>
             <span class="ns-grow">
-              <span class="ns-name">{noteTitle(n.name)}</span>
+              <span class="ns-namerow"><span class="ns-name">{noteTitle(n.name)}</span>{#if mark(scope, n.name)}{@render unsavedCue()}{/if}</span>
               <small>
                 {mark(scope, n.name)}{shortWhen(n.modified)}{n.summary && n.summary !== noteTitle(n.name) ? ` · ${n.summary}` : ""}
               </small>
@@ -550,6 +554,26 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
+  }
+  /* Item 867: a kept draft is edits not yet saved to the Mac — the desktop's
+     hollow amber ring beside the name, beside the words that say so. */
+  .ns-namerow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .ns-unsaved {
+    box-sizing: border-box;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    border: 1.5px solid var(--accent);
+    flex-shrink: 0;
+  }
+  /* Lit under Jarvis, as on the desktop; plain under Classic. */
+  :global(:where(:root:not([data-layout="classic"]))) .ns-unsaved {
+    box-shadow: 0 0 6px var(--accent);
   }
   .ns-name {
     overflow: hidden;

@@ -12,6 +12,7 @@
     renameSession,
     splitTab,
   } from "./state.svelte";
+  import { UNSAVED_TIP } from "./unsavedCue";
   import { renamedTo, selectAllOnMount } from "./renameField";
   import { hasBoxDraft, newDraftKey } from "./drafts.svelte";
   import * as tabs from "./tabs";
@@ -451,7 +452,14 @@
       {:else if running(t)}
         <span class="dot run" use:tip={"A turn is running"}></span>
       {/if}
-      {#if draft(t)}<span class="mark" role="img" aria-label="has a draft" use:tip={"has a draft"}></span>{/if}
+      <!-- Item 867: on a note's tab the ring says its edits are not on disk yet. -->
+      {#if draft(t)}{@const words = t.content.kind === "note" ? UNSAVED_TIP : "has a draft"}<span
+          class="mark"
+          class:unsaved={t.content.kind === "note"}
+          role="img"
+          aria-label={words}
+          use:tip={words}
+        ></span>{/if}
       <button
         class="close"
         use:tip={`Close tab (${isMac ? '⌘W' : 'Ctrl+W'})`}

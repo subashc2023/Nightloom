@@ -13,6 +13,7 @@
     renameSession,
     splitTab,
   } from "./state.svelte";
+  import { UNSAVED_TIP } from "./unsavedCue";
   import { renamedTo, selectAllOnMount } from "./renameField";
   import { hasBoxDraft, newDraftKey } from "./drafts.svelte";
   import * as tabs from "./tabs";
@@ -473,7 +474,14 @@
         {#if f}<span class="fork" role="img" aria-label={f.tip} use:tip={f.tip}>{FORK_GLYPH}</span>{/if}
         <span class="name">{title(t)}</span>
       {/if}
-      {#if draft(t)}<span class="mark" role="img" aria-label="has a draft" use:tip={"has a draft"}></span>{/if}
+      <!-- Item 867: on a note's tab the ring says its edits are not on disk yet. -->
+      {#if draft(t)}{@const words = t.content.kind === "note" ? UNSAVED_TIP : "has a draft"}<span
+          class="mark"
+          class:unsaved={t.content.kind === "note"}
+          role="img"
+          aria-label={words}
+          use:tip={words}
+        ></span>{/if}
       <button
         class="close"
         use:tip={`Close tab (${isMac ? '⌘W' : 'Ctrl+W'})`}
@@ -687,6 +695,13 @@
     border-radius: 50%;
     border: 1.5px solid var(--accent);
     flex-shrink: 0;
+  }
+  /* Item 867: a note tab's ring (unsaved edits) is lit in his amber; Calm's
+     --glow-accent is none. */
+  .mark.unsaved {
+    width: 7px;
+    height: 7px;
+    box-shadow: var(--glow-accent, none);
   }
   .close {
     display: inline-flex;
