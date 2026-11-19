@@ -1,0 +1,29 @@
+<!doctype html>
+<!-- Item 832: Settings (where "Build N" shows, at the foot of its nav) over a stubbed backend, for bin/snap.
+     ?classic=1 for the Classic layout; Jarvis otherwise. Serve with VITE_NIGHTLOOM_BUILD=<n> to see a number. Not shipped. -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Build number — 832</title>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      window.__TAURI_INTERNALS__ = {
+        invoke: () => Promise.resolve(null),
+        transformCallback: () => 0,
+        unregisterCallback: () => {},
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    </script>
+    <style>body { margin: 0; } #root { position: fixed; inset: 0; display: grid; place-items: center; }</style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap" style="position:fixed;left:0;bottom:0;font:11px ui-monospace,monospace;color:#f88"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent = "rejection: " + e.reason));
+    </script>
+    <script type="module" src="./build832.ts"></script>
+  </body>
+</html>

@@ -10,6 +10,7 @@
  */
 import type { AppliedNotice, BuildStamp, CliStatus, DreamCommit, FlatAlarm, MemoryCommit, NightshiftRow, ProjectRef, ProposalNotice } from "./types";
 import { cliNoticeDetail, cliNoticeId, cliNoticeTitle, offersUpdate } from "./cliUpdate";
+import { buildLabel } from "./buildNumber";
 
 // ---- the daily switch ----
 
@@ -304,7 +305,8 @@ export function buildNotices(s: NoticeSources): Notice[] {
     out.push({
       kind: "release",
       id: `release:${s.stamp.exe_modified}`,
-      title: `A release was installed (${s.stamp.version})`,
+      // Item 832: the build number the roll baked in ("dev" without one), not the crate version.
+      title: `A release was installed (${buildLabel()})`,
       detail: `built ${s.stamp.exe_modified.slice(0, 16).replace("T", " ")}`,
       at: s.stamp.exe_modified,
       project: null,

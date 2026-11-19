@@ -109,7 +109,8 @@ describe("the notices", () => {
     expect(n[2].title).toBe("A dream changed 2 notes in the vault");
     expect(n[3].id).toBe("morning:p1:2026-09-16.md");
     expect(n[4].id).toBe("blocker:p1:2");
-    expect(n[5].title).toBe("A release was installed (0.1.0)");
+    // Item 832: the build number, "dev" under the test runner (no VITE_NIGHTLOOM_BUILD).
+    expect(n[5].title).toBe("A release was installed (dev)");
     expect(countsOf(n)).toEqual({ canary: 0, proposal: 2, dream: 1, memory: 0, morning: 1, blocker: 1, release: 1, cli: 0 });
   });
 

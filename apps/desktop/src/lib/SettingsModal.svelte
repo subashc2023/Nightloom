@@ -15,6 +15,7 @@
 
 <script lang="ts">
   import { tip } from "./tip";
+  import { buildLabel } from "./buildNumber";
   import { hourLabel } from "./nightshiftFace";
   import { setLinkPref, web as webTabs } from "./webtabs.svelte";
   import { STOP_SHAPES } from "./stopButton";
@@ -1935,7 +1936,8 @@
     </button>
     {/if}
     <div class="nav-spacer"></div>
-    <div class="nav-foot">Esc or click outside to close</div>
+    <!-- Item 832: which release build is running ("dev" for a dev build). -->
+    <div class="nav-foot"><div>{buildLabel()}</div>Esc or click outside to close</div>
   </nav>
 
   {#if selected === "appearance"}
