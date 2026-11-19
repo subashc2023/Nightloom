@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import settingsSrc from "./SettingsModal.svelte?raw";
+import searchIndexSrc from "./settings/searchIndex.ts?raw";
 import { canAsk, isRead, sourceButton, sourceStatusWords, sourcesSummary, type HomeSource } from "./homeSources";
 
 const row = (id: HomeSource["id"], status: HomeSource["status"], on = true): HomeSource => ({
@@ -53,12 +54,11 @@ describe("Home's sources on this Mac (item 808)", () => {
 // labels, drafts and events) on his tap, so no Settings line may still
 // promise that it only reads.
 describe("Settings' Home words match what Home can change (item 872)", () => {
-  const read = (f: string) => readFileSync(new URL(f, import.meta.url), "utf8");
   it("never says Home only reads where it can change on a tap", () => {
-    for (const text of [read("./SettingsModal.svelte"), read("./settings/searchIndex.ts")]) {
+    for (const text of [settingsSrc, searchIndexSrc]) {
       expect(text).not.toContain("it never adds, changes or sends");
       expect(text).not.toContain("it cannot send, change or delete anything");
     }
-    expect(read("./SettingsModal.svelte")).toContain("it adds a reminder or marks one done when you tap Allow on that one change");
+    expect(settingsSrc).toContain("it adds a reminder or marks one done when you tap Allow on that one change");
   });
 });
