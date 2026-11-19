@@ -632,7 +632,7 @@
             {req.kind === "remember"
               ? "This chat is read-only, so Claude asks before it adds to your memory."
               : req.kind === "home_write"
-                ? "Home changes your mail or calendar only on your tap — this one change, once. The next one asks again."
+                ? "Home changes your mail, calendar or reminders only on your tap — this one change, once. The next one asks again."
                 : "This chat is read-only, and this connector action's name does not say whether it only reads or also changes something."}
           </div>
         </div>

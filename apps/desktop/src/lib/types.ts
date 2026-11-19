@@ -1254,7 +1254,7 @@ export interface ApprovalRequest {
    *  action that is not a plain read: Allow once / Allow always / Deny,
    *  where always adds it to what read-only chats may run; `remember` — a
    *  proposal to add to his memory; `home_write` (item 845) — one of Home's
-   *  mail or calendar changes: Allow once / Deny, never always. Absent: the
+   *  mail, calendar or Reminders changes (item 872): Allow once / Deny, never always. Absent: the
    *  ordinary card. */
   kind?: "connector" | "remember" | "home_write";
   /** Set aside earlier in this reply and back for its answer (743, 783). */

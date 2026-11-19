@@ -494,6 +494,13 @@ pub struct AgentSpec {
     /// on a card, one call at a time, instead of being refused. Set only by
     /// `home::reach::apply`; off everywhere else.
     pub home_gated_writes: bool,
+    /// A chat of Home's project, in whatever position (item 872; set by
+    /// `home::reach::mark`). Home's own writer — its Reminders tool
+    /// ([`connector_writes::HOME_OWN_WRITER_MATCHER`]) — asks him only on
+    /// the read-only chat's card; were Home's chat ever not held
+    /// read-only, the tool is refused outright rather than run unasked or
+    /// offered a standing allow.
+    pub home_chat: bool,
     /// With [`Self::claude_ai_connectors`] on, the connectors he unticked,
     /// by the init event's server name (`claude.ai Google Drive`): each a
     /// server-level `--disallowedTools` rule. Ignored while off.
@@ -925,6 +932,7 @@ impl AgentSpec {
             fork_mode: true,
             claude_ai_connectors: false,
             home_gated_writes: false,
+            home_chat: false,
             claude_ai_blocked: Vec::new(),
             browser: false,
             playwright: None,
@@ -1657,6 +1665,34 @@ impl AgentSpec {
                             "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
                         })),
                     }
+                }
+            }
+        }
+        // Home's own writer outside the read-only hold (item 872): the
+        // read-only chat's entries above gate or refuse it; anywhere else
+        // in Home's project nothing would, so it is refused here — by
+        // `echo`, so no program has to be found for the refusal to work.
+        if self.home_chat && !self.refuses_mcp_writers() {
+            let reply = serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": connector_writes::HOME_OWN_WRITER_UNHELD,
+                }
+            })
+            .to_string();
+            let hooks = settings
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(hooks) = hooks {
+                let pre = hooks
+                    .entry("PreToolUse")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(pre) = pre {
+                    pre.push(serde_json::json!({
+                        "matcher": connector_writes::HOME_OWN_WRITER_MATCHER,
+                        "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
+                    }));
                 }
             }
         }
@@ -5335,6 +5371,77 @@ mod tests {
     }
 
     /// The `PreToolUse` entries of a spec's one `--settings` JSON.
+    /// Item 872: Home's own Reminders writer is asked about only on the
+    /// read-only chat's card. A chat of Home's that is not held read-only
+    /// refuses it by its own entry, in every position; a held one adds
+    /// nothing (its read-only entries gate or refuse it); no other
+    /// project's chat changes at all.
+    #[test]
+    fn homes_reminders_writer_is_refused_where_homes_chat_is_not_held_read_only() {
+        let tool = "mcp__nightloom__update_reminders";
+        let own = |s: &AgentSpec| -> Vec<serde_json::Value> {
+            pre_entries(s)
+                .into_iter()
+                .filter(|e| e["matcher"] == connector_writes::HOME_OWN_WRITER_MATCHER)
+                .collect()
+        };
+        let mut bypass = spec();
+        bypass.permission_mode = Some("bypassPermissions".into());
+        for (name, mut s) in [
+            ("bypass", bypass),
+            ("auto", asking(AskMode::Auto)),
+            ("ask", asking(AskMode::Ask)),
+            ("plan", asking(AskMode::Plan)),
+        ] {
+            assert!(own(&s).is_empty(), "{name}: not Home's chat");
+            s.home_chat = true;
+            let entries = own(&s);
+            assert_eq!(entries.len(), 1, "{name}");
+            let command = entries[0]["hooks"][0]["command"].as_str().unwrap();
+            assert!(command.starts_with("echo "), "{name}: {command}");
+            assert!(
+                command.contains("\"permissionDecision\":\"deny\""),
+                "{name}"
+            );
+            assert_eq!(entries[0]["matcher"], format!("^{tool}$"), "{name}");
+        }
+        let reply = connector_writes::HOME_OWN_WRITER_UNHELD;
+        assert!(
+            !reply.contains(['&', '|', '<', '>', '^', '%', '\'']),
+            "{reply}"
+        );
+        // Held read-only: the hold's own entries decide it, and one of
+        // them names the tool — the asking entry with a card to show, the
+        // refusal without.
+        let mut held = asking(AskMode::Ask);
+        held.chat_policy = true;
+        held.home_chat = true;
+        held.home_gated_writes = true;
+        assert!(own(&held).is_empty());
+        let pre = pre_entries(&held);
+        assert!(
+            pre.iter()
+                .any(|e| e["matcher"] == connector_writes::HOME_GATED_MATCHER),
+            "{pre:?}"
+        );
+        let mut no_card = spec();
+        no_card.chat_policy = true;
+        no_card.home_chat = true;
+        no_card.home_gated_writes = true;
+        assert!(own(&no_card).is_empty());
+        let pre = pre_entries(&no_card);
+        assert!(
+            pre.iter()
+                .any(|e| e["matcher"] == connector_writes::MATCHER),
+            "{pre:?}"
+        );
+        assert!(
+            !pre.iter()
+                .any(|e| e["matcher"] == connector_writes::HOME_GATED_MATCHER),
+            "{pre:?}"
+        );
+    }
+
     fn pre_entries(s: &AgentSpec) -> Vec<serde_json::Value> {
         let a = s.args("hi");
         let Some(i) = a.iter().position(|x| x == "--settings") else {

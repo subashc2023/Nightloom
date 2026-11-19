@@ -34,10 +34,12 @@ macro_rules! read_verbs {
 
 /// Nightloom's own server's writes (`mcp_server.rs`): the note organisers
 /// (item 472) and the note editor's rename (item 460). The preview is the
-/// policy's own entry ([`super::PREVIEW_TOOL_MATCHER`]).
+/// policy's own entry ([`super::PREVIEW_TOOL_MATCHER`]). And Home's
+/// Reminders writer (item 872), which only Home's read-only chat asks
+/// about ([`HOME_GATED_MATCHER`]) and every other refuses.
 macro_rules! nightloom_writes {
     () => {
-        "move_notes|make_note_folder|rename_note"
+        "move_notes|make_note_folder|rename_note|update_reminders"
     };
 }
 
@@ -123,27 +125,54 @@ macro_rules! home_gated_server {
     };
 }
 
+/// Nightloom's own gated writer (item 872): Home's Reminders tool
+/// ([`crate::home::reminders::TOOL`]), asked about on the same card.
+macro_rules! home_gated_own {
+    () => {
+        "nightloom__update_reminders"
+    };
+}
+
+/// What follows `mcp__` in a gated writer's name: a gated tool on a Gmail
+/// or Calendar server, or Nightloom's own Reminders writer.
+macro_rules! home_gated_body {
+    () => {
+        concat!(
+            "(?:",
+            home_gated_server!(),
+            "(?:",
+            home_gated_tools!(),
+            ")|",
+            home_gated_own!(),
+            ")$"
+        )
+    };
+}
+
 /// The gated writers' asking entry's matcher, served only in Home's
 /// read-only chat (`AgentSpec::home_gated_writes`).
-pub const HOME_GATED_MATCHER: &str = concat!(
-    "^mcp__",
-    home_gated_server!(),
-    "(?:",
-    home_gated_tools!(),
-    ")$"
-);
+pub const HOME_GATED_MATCHER: &str = concat!("^mcp__", home_gated_body!());
 
 /// [`KNOWN_WRITES_MATCHER`] less the gated writers, for Home's read-only
 /// chat — one call never meets the refusal and the card both.
 pub const KNOWN_WRITES_MATCHER_HOME: &str = concat!(
     "^mcp__(?!",
-    home_gated_server!(),
-    "(?:",
-    home_gated_tools!(),
-    ")$)(?:",
+    home_gated_body!(),
+    ")(?:",
     known_write_body!(),
     ".*)"
 );
+
+/// Nightloom's own gated writer, as the CLI names it after `mcp__`.
+pub const HOME_GATED_OWN: &str = home_gated_own!();
+
+/// Nightloom's own gated writer, whole — the refusal's matcher where a
+/// chat of Home's is not held read-only (`AgentSpec::home_chat`).
+pub const HOME_OWN_WRITER_MATCHER: &str = concat!("^mcp__", home_gated_own!(), "$");
+
+/// What the model reads there. No `'` (single-quoted for the shell) and
+/// none of `cmd`'s `&|<>^%`.
+pub const HOME_OWN_WRITER_UNHELD: &str = "Reminders was not changed: Home changes it only from its read-only chat, where each change waits for his tap on a card. This chat is not held read-only, so no card can ask.";
 
 /// The gated tools, as words.
 pub const HOME_GATED_TOOLS: &str = home_gated_tools!();
@@ -154,6 +183,9 @@ pub fn home_gated(name: &str) -> bool {
     let Some(rest) = name.strip_prefix("mcp__") else {
         return false;
     };
+    if rest == HOME_GATED_OWN {
+        return true;
+    }
     let Some(i) = rest.find("__") else {
         return false;
     };
@@ -479,6 +511,9 @@ pub const TABLE: &[(&str, &str, Class)] = {
         ("Nightloom", "mcp__nightloom__move_notes", W),
         ("Nightloom", "mcp__nightloom__make_note_folder", W),
         ("Nightloom", "mcp__nightloom__rename_note", W),
+        // Home's Reminders writer (item 872): refused everywhere but Home's
+        // read-only chat, which asks about it on a card.
+        ("Nightloom", "mcp__nightloom__update_reminders", W),
         ("Nightloom", "mcp__nightloom__search_chats", R),
         ("Nightloom", "mcp__nightloom__read_chat", R),
         ("Nightloom", "mcp__nightloom__remember", R),
@@ -613,6 +648,8 @@ mod tests {
             "mcp__claude_ai_Gmail__label_messages_everywhere",
             "mcp__claude_ai_Drive__create_event",
             "mcp__nightloom__move_notes",
+            "mcp__nightloom__update_reminders_too",
+            "mcp__nightloom__update_task",
         ];
         names.extend(extra);
         for n in &names {
@@ -625,6 +662,13 @@ mod tests {
             }
         }
         assert!(home_gated("mcp__claude_ai_Gmail__label_message"));
+        // Item 872: Nightloom's own Reminders writer, and nothing else of
+        // Nightloom's.
+        assert!(home_gated("mcp__nightloom__update_reminders"));
+        assert!(!home_gated("mcp__nightloom__update_reminders_too"));
+        assert!(!home_gated("mcp__nightloom__update_task"));
+        assert!(!home_gated("mcp__other__nightloom__update_reminders"));
+        assert!(!home_gated("mcp__nightloom__move_notes"));
         assert!(home_gated("mcp__claude_ai_Google_Calendar__update_event"));
         assert!(!home_gated("mcp__claude_ai_Gmail__send_message"));
         assert!(!home_gated(
@@ -663,7 +707,7 @@ mod tests {
             gated_seen += usize::from(gated);
         }
         assert!(
-            gated_seen >= 9,
+            gated_seen >= 10,
             "the table's Gmail and Calendar writers: {gated_seen}"
         );
     }

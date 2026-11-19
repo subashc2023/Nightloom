@@ -221,6 +221,14 @@ impl Window {
 pub trait MacStores: Send + Sync {
     fn access(&self, source: Source) -> Access;
     fn read(&self, source: Source, window: &Window) -> Result<Found, String>;
+    /// Make one change to Reminders (item 872: [`super::reminders`]) and
+    /// say what was changed. Called only through
+    /// [`super::reminders::apply`], which has checked that Reminders is
+    /// allowed, granted for Home and on; never asks macOS for anything. A
+    /// reader that only reads refuses.
+    fn change_reminder(&self, _change: &super::reminders::Change) -> Result<String, String> {
+        Err("This host reads Reminders and cannot change it. Nothing was changed.".into())
+    }
 }
 
 static STORES: OnceLock<Arc<dyn MacStores>> = OnceLock::new();

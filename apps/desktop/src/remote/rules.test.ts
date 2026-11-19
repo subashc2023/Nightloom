@@ -80,5 +80,7 @@ describe("783: shared rules and read-only allowances", () => {
     expect(words783("mcp__claude_ai_Gmail__send_message")).toBe("Gmail · send message");
     expect(words783("mcp__claude_ai_Google_Drive__share_file")).toBe("Google Drive · share file");
     expect(words783("Bash")).toBe("Bash");
+    // Item 872: Nightloom's own gated tool reads as its words alone.
+    expect(words783("mcp__nightloom__update_reminders")).toBe("update reminders");
   });
 });

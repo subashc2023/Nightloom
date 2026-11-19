@@ -3582,7 +3582,7 @@
               <p class="card-note">This chat is read-only, so Claude asks before it adds to your memory.</p>
             {:else if req.kind === "home_write"}
               <div class="card-head" data-card-kind="home_write">Let Home <b>{connectorWords(req.name)}</b>?</div>
-              <p class="card-note">Home changes your mail or calendar only on your tap — this one change, once. The next one asks again.</p>
+              <p class="card-note">Home changes your mail, calendar or reminders only on your tap — this one change, once. The next one asks again.</p>
             {:else if req.kind === "connector"}
               <div class="card-head" data-card-kind="connector">Let <b>{connectorWords(req.name)}</b> run?</div>
               <p class="card-note">This chat is read-only, and this connector action's name does not say whether it only reads or also changes something.</p>
