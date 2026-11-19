@@ -42,10 +42,12 @@
     tick?: number;
     /** Watching is in focus: Home's own sections show under the tabs. */
     watching?: boolean;
+    /** The view in focus and its task's name, for the header on his Tell Home message (846 §7 step 3). */
+    where?: { view: string; task: string };
     onopen: (chat: string, project: string | null) => void;
     onnote: (text: string) => void;
   }
-  let { client, home, scan, needs, fil, tick: bump = 0, watching = $bindable(true), onopen, onnote }: Props = $props();
+  let { client, home, scan, needs, fil, tick: bump = 0, watching = $bindable(true), where = $bindable({ view: "watch", task: "" }), onopen, onnote }: Props = $props();
 
   // The views ask this page for what they need (set before any view draws).
   setStageHost(phoneStageHost({ client: () => client, home: () => home, scan: () => scan, open: (c, p) => onopen(c, p), note: (t) => onnote(t) }));
@@ -65,6 +67,7 @@
   const doing = $derived(focusTask ? (focusTask.state === "live" ? focusTask.doing || def(focusTask.view as ViewId).doing : `Done — ${focusTask.name}`) : def(focus.view).doing);
   $effect(() => {
     watching = focus.view === "watch";
+    where = { view: focus.view, task: focusTask?.name ?? "" };
   });
   $effect(() => {
     JSON.stringify(stage);

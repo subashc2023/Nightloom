@@ -1038,6 +1038,11 @@ export class Client {
     await this.call("/home/tasks/event", { method: "POST", body: JSON.stringify({ task, view, line }) });
   }
 
+  /** Item 845 (846 §7 step 3): the phone's view in focus, sent just before his Tell Home message. The Mac only. */
+  async homeStageFocus(view: string, task: string): Promise<void> {
+    await this.call("/home/tasks/focus", { method: "POST", body: JSON.stringify({ view, task }) });
+  }
+
   /** Item 845: his × on a task's tab — the tab goes; the work is not stopped. The Mac only. */
   async homeTaskClose(id: string): Promise<void> {
     await this.call(`/home/tasks/${encodeURIComponent(id)}/close`, { method: "POST" });

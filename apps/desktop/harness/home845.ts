@@ -78,6 +78,7 @@ const notes: string[] = [];
     case "home_tasks": return homeTasks;
     case "home_task_event": told.push(String((a as { line?: string })?.line ?? "")); return null;
     case "home_task_close": return null;
+    case "home_stage_focus": return null;
     default: return null;
   }
 };

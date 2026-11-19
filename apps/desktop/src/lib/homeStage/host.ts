@@ -39,6 +39,14 @@ export interface StageHost {
   taskEvent(task: string, view: string, line: string): Promise<unknown>;
   /** His × on a task's tab: the tab goes, the work is not stopped. */
   taskClose(id: string): Promise<unknown>;
+  /** The view in focus, for the header on his next message to Home (846 §7 step 3). Best-effort. */
+  focus(view: string, task: string): Promise<unknown>;
+  /**
+   * The short turn (846 §2, blocker 2143): send `text` into Home's chat now, as a message of his. When it cannot go
+   * (no Home chat here, a turn running, no engine, the host not answering) `fallback` runs — the click is then kept
+   * for Home's next look instead. Never both.
+   */
+  nudge(text: string, fallback: () => void): void;
   /** The names of Home's notes (so a kept page never takes one of his). */
   noteNames(): Promise<string[]>;
   /** Write a new note in Home's notes. */
@@ -63,6 +71,8 @@ const none: StageHost = {
   homeTasks: async () => [],
   taskEvent: async () => null,
   taskClose: async () => null,
+  focus: async () => null,
+  nudge: (_text, fallback) => fallback(),
   noteNames: async () => [],
   saveNote: async () => {
     throw new Error("Notes are not reachable here");

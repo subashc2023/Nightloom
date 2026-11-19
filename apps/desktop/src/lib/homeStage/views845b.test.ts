@@ -92,7 +92,7 @@ describe("watch", () => {
     expect(rows[0].detail).toContainEqual(["Checked", "9:05 AM, on its own"]);
   });
   it("each source row has its own Check now", () => {
-    expect(watchSrc).toContain("checkSource(s.id)");
+    expect(watchSrc).toContain("checkOne(s.id)");
     expect(watchSrc).toContain("Check all");
   });
 });

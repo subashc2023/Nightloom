@@ -401,6 +401,10 @@ pub(crate) async fn send_agent(
     // The chat's preview ended since the model last heard (item 445): it
     // is told now, on the wire, rather than by failing tool calls.
     let wire_note = preview::with_ended_note(&app, ask_dir.as_deref(), wire_note);
+    // Item 845 (846 §2, §7 steps 2–3): a message to Home carries the view
+    // he typed from and what he did on the stage since Home last looked,
+    // on the wire only (the transcript shows his words as he typed them).
+    let wire_note = home_wire_note(&state, turn_project.as_deref(), wire_note).await;
     // The cache-miss check (item 727): this request's prefix print, and
     // how many replies the log held before it, for the check at its end.
     let miss_before = nightloom_service::cache_miss::assistant_count(session);
@@ -1091,4 +1095,33 @@ pub(crate) fn approve_call(
     };
     state.gate.resolve(&id, decision);
     Ok(())
+}
+
+/// [`nightloom_service::home::tasks::wire_note`] after `note`, for a turn
+/// in Home's project; `note` unchanged for any other.
+async fn home_wire_note(
+    state: &State<'_, AppState>,
+    turn_project: Option<&str>,
+    note: Option<String>,
+) -> Option<String> {
+    let Some(project) = turn_project else {
+        return note;
+    };
+    let is_home = state
+        .workspaces
+        .lock()
+        .await
+        .registry
+        .find_by_source(nightloom_service::home::SOURCE)
+        .is_some_and(|p| p.id == project);
+    let Some(config) = nightloom_service::project::config_dir().filter(|_| is_home) else {
+        return note;
+    };
+    match (
+        note,
+        nightloom_service::home::tasks::wire_note(&config, chrono::Utc::now()),
+    ) {
+        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
+        (a, b) => a.or(b),
+    }
 }

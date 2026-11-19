@@ -43,6 +43,28 @@ export async function tell(task: HomeTask, line: string): Promise<void> {
   }
 }
 
+/** The first words of a short turn's message — `NUDGE_PREFIX` in `home/tasks.rs`. */
+export const NUDGE_PREFIX = "On the stage just now: ";
+
+/**
+ * The four controls that start a short Home turn (846 §2, blocker 2143's default: at once, those four only) — Stop,
+ * Take back, Hand to Home, Check now. The line goes into Home's chat as one message so Home reacts within seconds;
+ * when that cannot go, it is kept for Home's next look (`tell`) instead — never both, never neither.
+ */
+export function nudge(task: { name: string; view: string }, line: string): void {
+  let kept = false;
+  const keep = () => {
+    if (kept) return;
+    kept = true;
+    void tell(task as HomeTask, line);
+  };
+  try {
+    stageHost.now.nudge(NUDGE_PREFIX + line, keep);
+  } catch {
+    keep();
+  }
+}
+
 /** His × on a task's tab: the tab goes; Home's work is not stopped. */
 export async function closeTask(id: string): Promise<void> {
   try {

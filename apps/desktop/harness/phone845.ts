@@ -64,6 +64,7 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     told.push(String(JSON.parse(String(init?.body ?? "{}")).line ?? ""));
     return json({ ok: true });
   }
+  if (p === "/home/tasks/focus" && method === "POST") return away ? refuse() : json({ ok: true });
   const close = /^\/home\/tasks\/([^/]+)\/close$/.exec(p);
   if (close && method === "POST") {
     if (away) return refuse();

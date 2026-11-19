@@ -57,6 +57,22 @@ export function phoneStageHost(d: PhoneStageDeps): StageHost {
         throw e;
       }
     },
+    focus: (view, task) => d.client().homeStageFocus(view, task),
+    nudge: (text, fallback) => {
+      // The short turn into Home's chat (846 §2, blocker 2143); a turn running there takes it as a queued message.
+      // No Home chat yet, or the Mac not answering: the click is kept for Home's next look instead.
+      const { chat, project } = d.home();
+      if (!chat) return fallback();
+      d.client()
+        .send(chat, text, { project })
+        .then(
+          (st) => d.note(st === "queued" ? "Told Home — it reads it when the running turn ends" : "Told Home"),
+          (e) => {
+            d.note(clickNotSent(e));
+            fallback();
+          },
+        );
+    },
     noteNames: async () => {
       const p = d.home().project;
       return p ? (await d.client().notes("project", p).catch(() => [])).map((n) => n.name) : [];

@@ -397,12 +397,16 @@
   function typedTell() {
     saveDraft(tellKey, tell);
   }
+  // The phone's view in focus (its stage's tab), told to the Mac just before a Tell Home message so Home reads where
+  // he typed from (846 §7 step 3). Best-effort: an older Mac or the away server sends the words without it.
+  let stageWhere = $state({ view: "watch", task: "" });
   async function sendTell() {
     const text = tell.trim();
     if (!text || tellBusy) return;
     const target = homeTarget(home);
     tellBusy = true;
     try {
+      await client.homeStageFocus(stageWhere.view, stageWhere.task).catch(() => {});
       if (target && "chat" in target) {
         if (await sendInto(target.chat, home.project, text)) {
           tell = afterSend(tell, text);
@@ -506,7 +510,7 @@
 
   <!-- Item 845: Home's stage — the bar, the tab row (Watching, the brief, Home's tasks, Chat); a task's tab draws its
        view here in place of Home's own sections. Tell Home stays under every tab. -->
-  <HomeStage {client} {home} {scan} needs={needs.length + cards.length} {fil} tick={bump} bind:watching onopen={(c, p) => onopen(c, p)} {onnote} />
+  <HomeStage {client} {home} {scan} needs={needs.length + cards.length} {fil} tick={bump} bind:watching bind:where={stageWhere} onopen={(c, p) => onopen(c, p)} {onnote} />
 
   {#if watching}
   <!-- 1. Needs you -->

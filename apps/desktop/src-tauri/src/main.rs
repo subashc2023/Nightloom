@@ -1865,6 +1865,7 @@ fn main() {
             home::home_tasks,
             home::home_task_event,
             home::home_task_close,
+            home::home_stage_focus,
             mac_sources::home_sources,
             mac_sources::home_source_allow,
             mac_sources::home_source_set,

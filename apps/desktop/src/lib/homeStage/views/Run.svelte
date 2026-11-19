@@ -12,7 +12,7 @@
   import Detail from "../Detail.svelte";
   import Loading from "../Loading.svelte";
   import { bag } from "../stageState.svelte";
-  import { tell, type HomeTask } from "../tasks.svelte";
+  import { tell, nudge, type HomeTask } from "../tasks.svelte";
   import { stageHost } from "../host";
   import { runOf, type RunStep, type Rows } from "../taskData";
 
@@ -24,10 +24,12 @@
   const liveStep = $derived(r.steps.find((s) => s.state === "live"));
   const at = $derived(r.steps.filter((s) => s.state !== "wait").length);
   const ended = $derived(task.state !== "live");
-  const sub = $derived(ended ? (r.steps.some((s) => s.state === "failed") ? "ended with a failed step" : "finished") : ui.stop ? "stopping after this step — Home reads it at its next look" : r.steps.length ? `step ${Math.max(1, at)} of ${r.steps.length}` : "starting");
+  const sub = $derived(ended ? (r.steps.some((s) => s.state === "failed") ? "ended with a failed step" : "finished") : ui.stop ? "stopping after this step — Home was told" : r.steps.length ? `step ${Math.max(1, at)} of ${r.steps.length}` : "starting");
   function stop() {
     ui.stop = !ui.stop;
-    void tell(task, ui.stop ? `you asked to stop after the step in hand${liveStep ? ` (${liveStep.name})` : ""} — start nothing after it` : "you took back the stop — carry on");
+    // Stop is one of the four that start a short Home turn (846 §2, blocker 2143); its Undo is told at the next look.
+    if (ui.stop) nudge(task, `you asked to stop after the step in hand${liveStep ? ` (${liveStep.name})` : ""} — start nothing after it`);
+    else void tell(task, "you took back the stop — carry on");
   }
   const pct = (s: RunStep) => (s.progress === null ? "" : `${Math.round(s.progress * 100)}%`);
   const stepRows = (s: RunStep): Rows => [["Step", s.name], ...s.detail, ["Now", s.state === "wait" ? "Not started" : s.state === "live" ? `Running${pct(s) ? ` — ${pct(s)}` : ""}` : s.state === "failed" ? `Failed${s.out ? ` — ${s.out}` : ""}` : s.out || "Done"]];

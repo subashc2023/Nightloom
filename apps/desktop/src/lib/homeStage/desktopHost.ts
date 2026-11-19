@@ -3,8 +3,8 @@
  * Stage.svelte sets it; the phone's page never imports this file.
  */
 import * as api from "../api";
-import { app, addToast, openRun } from "../state.svelte";
-import { home } from "../home.svelte";
+import { app, addToast, openRun, sendInChat, chatRuns } from "../state.svelte";
+import { home, homeProject } from "../home.svelte";
 import { isScanMessage } from "../home";
 import { phase, readStatus, startBrowsers } from "../claudeBrowser.svelte";
 import ClaudeBrowserView from "../ClaudeBrowserView.svelte";
@@ -20,6 +20,15 @@ export const desktopHost: StageHost = {
   homeTasks: () => api.homeTasks(),
   taskEvent: (task, view, line) => api.homeTaskEvent(task, view, line),
   taskClose: (id) => api.homeTaskClose(id),
+  focus: (view, task) => api.homeStageFocus(view, task),
+  nudge: (text, fallback) => {
+    // Home's chat on screen (the stage only draws in Home's project), idle, with an engine: the short turn runs
+    // there as a typed one would (`sendInChat`); anything else keeps the click for Home's next look.
+    const chat = app.activeSessionId;
+    const p = homeProject();
+    if (!chat || !p || (app.project?.id ?? null) !== p.id || !app.connection || app.busy || chatRuns(chat)) return fallback();
+    sendInChat(chat, { id: p.id, name: p.name }, text, [], () => fallback());
+  },
   noteNames: async () => (await api.listNotes("project").catch(() => [])).map((n) => n.name),
   saveNote: (name, text) => api.saveNote("project", name, text),
   openChat: (chat, project) => void openRun({ session: chat, project, onScreen: false }),

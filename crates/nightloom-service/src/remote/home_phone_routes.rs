@@ -44,6 +44,7 @@ pub(super) fn router() -> Router<Arc<Shared>> {
         .route("/home/tasks", get(tasks))
         .route("/home/tasks/event", post(task_event))
         .route("/home/tasks/{id}/close", post(task_close))
+        .route("/home/tasks/focus", post(task_focus))
 }
 
 /// The most feed rows the phone is sent.
@@ -232,6 +233,29 @@ async fn task_event(State(shared): State<Arc<Shared>>, Json(ev): Json<TaskEvent>
     };
     answer(
         home::tasks::record(&config, &ev.task, &ev.view, &ev.line, chrono::Utc::now())
+            .map(|()| serde_json::json!({ "ok": true })),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskFocus {
+    view: String,
+    #[serde(default)]
+    task: String,
+}
+
+/// `POST /home/tasks/focus`: the phone's view in focus, sent just before
+/// his Tell Home message, for the header Home reads with it (846 §7 step 3).
+async fn task_focus(State(shared): State<Arc<Shared>>, Json(f): Json<TaskFocus>) -> Response {
+    if let Err(r) = mac_only(&shared) {
+        return *r;
+    }
+    let config = match config(&shared) {
+        Ok(c) => c,
+        Err(r) => return *r,
+    };
+    answer(
+        home::tasks::set_focus(&config, &f.view, &f.task, chrono::Utc::now())
             .map(|()| serde_json::json!({ "ok": true })),
     )
 }

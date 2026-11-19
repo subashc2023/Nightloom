@@ -30,7 +30,7 @@
   import { step, secondOf, type FocusKept } from "./focus";
   import { lastExchange, type Ev } from "./steps";
   import { tabsFor, focusOf, type Tab } from "./tabs";
-  import { setStageHost } from "./host";
+  import { setStageHost, stageHost } from "./host";
   import { desktopHost } from "./desktopHost";
 
   // The views ask the window for what they need (the phone's Home page sets its own host).
@@ -98,6 +98,13 @@
   });
   const last = $derived(lastExchange(app.events as unknown as Ev[], isScanMessage));
   const focusTask = $derived(taskOf(focus.id));
+  // 846 §7 step 3: the view in focus is written down (a small file, no model) so his next message to Home carries
+  // where he was — the header rides on the wire only. Every change of focus, his or the stage's.
+  $effect(() => {
+    const v = focus.view;
+    const t = focusTask?.name ?? "";
+    untrack(() => void stageHost.now.focus(v, t).catch(() => {}));
+  });
   const doing = $derived(focusTask ? (focusTask.state === "live" ? focusTask.doing || def(focusTask.view as ViewId).doing : `Done — ${focusTask.name}`) : focus.view === "brief" ? (brief?.writing ? "Writing your morning brief" : def("brief").doing) : app.busy && focus.view !== "chat" ? "Working on what you sent" : def(focus.view).doing);
   const chips: Record<string, HTMLElement> = $state({});
   // The view's width in CSS px (the body less the view's 14 px insets) — what .narrow and .tiny are set from, since

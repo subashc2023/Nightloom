@@ -21,6 +21,7 @@
   import Loading from "../Loading.svelte";
   import { bag } from "../stageState.svelte";
   import { sourceRows } from "../watch";
+  import { nudge } from "../tasks.svelte";
 
   const ui = bag("watch", { open: null as string | null });
   const toggle = (id: string) => (ui.open = ui.open === id ? null : id);
@@ -30,6 +31,13 @@
   const since = $derived(homeDone());
   const handled = $derived<FeedRow[]>((since.length ? since : home.rows.slice(-12)).slice().reverse());
   const checked = $derived(home.reach?.checked_at ? `checked ${clock(home.reach.checked_at)}` : "not checked yet");
+  // Check now on one source is one of the four that start a short Home turn (846 §2, blocker 2143): the check itself
+  // is code (no model); once it is back, Home is told what it found and may act on it.
+  async function checkOne(id: string) {
+    await checkSource(id);
+    const s = sources.find((x) => x.id === id);
+    if (s) nudge({ name: "Watching", view: "watch" }, `you checked ${s.name} now — ${s.state}`);
+  }
   async function check() {
     await Promise.all([checkReach(), refreshSources()]);
   }
@@ -50,10 +58,10 @@
               <span class="w-name">{s.name}</span>
               <span class="w-res" class:hot={s.hot} class:h9-caret={busy}>{busy ? "checking" : s.state}</span>
             </span>
-            <span class="w-chk"><Btn small icon="refresh" disabled={busy} label="Check {s.name} now" tip={s.id.startsWith("c:") ? `Check ${s.name} now\nAsks Claude Code about it alone; no model request` : `Check ${s.name} now\nReads its macOS permission again; never asks`} onclick={() => void checkSource(s.id)} /></span>
+            <span class="w-chk"><Btn small icon="refresh" disabled={busy} label="Check {s.name} now" tip={s.id.startsWith("c:") ? `Check ${s.name} now\nAsks Claude Code about it alone; no model request` : `Check ${s.name} now\nReads its macOS permission again; never asks`} onclick={() => void checkOne(s.id)} /></span>
             <span class="h9-chev">▸</span>
           </div>
-          {#if ui.open === s.id}<Detail rows={s.detail}><Btn small icon="refresh" disabled={busy} onclick={() => void checkSource(s.id)}>{checkingOne[s.id] ? "Checking…" : "Check now"}</Btn></Detail>{/if}
+          {#if ui.open === s.id}<Detail rows={s.detail}><Btn small icon="refresh" disabled={busy} onclick={() => void checkOne(s.id)}>{checkingOne[s.id] ? "Checking…" : "Check now"}</Btn></Detail>{/if}
         {/each}
         {#if sources.length === 0}<Loading label={home.reach === null ? "Reading what Home can reach" : "No sources yet — connect one in Settings → Home"} lines={2} />{/if}
       </Panel>

@@ -224,6 +224,19 @@ pub(crate) fn home_task_event(task: String, view: String, line: String) -> Resul
     home::tasks::record(&config, &task, &view, &line, chrono::Utc::now())
 }
 
+/// Item 845 (846 §7 step 3): the view in focus on the stage, for the
+/// header on his next message to Home.
+#[tauri::command]
+pub(crate) fn home_stage_focus(view: String, task: Option<String>) -> Result<(), String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    home::tasks::set_focus(
+        &config,
+        &view,
+        task.as_deref().unwrap_or(""),
+        chrono::Utc::now(),
+    )
+}
+
 /// Item 845: his × on a task's tab. The work is not stopped by this.
 #[tauri::command]
 pub(crate) fn home_task_close(id: String) -> Result<(), String> {

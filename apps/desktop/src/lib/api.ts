@@ -2532,6 +2532,10 @@ export function homeTasks(): Promise<HomeTask[]> {
 export function homeTaskEvent(task: string, view: string, line: string): Promise<null> {
   return invoke("home_task_event", { task, view, line });
 }
+/** Item 845 (846 §7 step 3): the view in focus on the stage, for the header on his next message to Home. */
+export function homeStageFocus(view: string, task: string): Promise<null> {
+  return invoke("home_stage_focus", { view, task });
+}
 /** Item 845: his × on a task's tab — the tab goes; the work is not stopped. */
 export function homeTaskClose(id: string): Promise<null> {
   return invoke("home_task_close", { id });

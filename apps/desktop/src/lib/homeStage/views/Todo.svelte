@@ -14,7 +14,7 @@
   import Detail from "../Detail.svelte";
   import Loading from "../Loading.svelte";
   import { bag } from "../stageState.svelte";
-  import { tell, type HomeTask } from "../tasks.svelte";
+  import { tell, nudge, type HomeTask } from "../tasks.svelte";
   import { todoOf, type TodoItem, type Rows } from "../taskData";
 
   let { task }: { task: HomeTask } = $props();
@@ -41,12 +41,13 @@
   function hand(i: TodoItem) {
     ui.handed[i.id] = true;
     delete ui.back[i.id];
-    void tell(task, `you handed “${i.text}” to Home to do`);
+    // Hand to Home and Take back start a short Home turn (846 §2, blocker 2143).
+    nudge(task, `you handed “${i.text}” to Home to do`);
   }
   function takeBack(i: TodoItem) {
     if (ui.handed[i.id]) delete ui.handed[i.id];
     else ui.back[i.id] = true;
-    void tell(task, `you took “${i.text}” back — leave it to you`);
+    nudge(task, `you took “${i.text}” back — leave it to you`);
   }
   const rowsOf = (i: TodoItem): Rows => (i.detail.length ? i.detail : [["Who", i.who === "you" ? "Yours to do" : "Home does it"], ...(i.note ? ([["Note", i.note]] as Rows) : []), ...(i.result ? ([["Result", i.result]] as Rows) : [])]);
 </script>
