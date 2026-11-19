@@ -57,7 +57,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 const { app } = await import("./state.svelte");
 const store = await import("./state.svelte");
 const { initTerminalEvents, term } = await import("./terminal.svelte");
-const { runBlock, sendSoFar, stopRun, STOP_GRACE_MS } = await import("./shellRun.svelte");
+const { runBlock, sendSoFar, stopRun, STOP_GRACE_MS, STOP_RESEND_MS } = await import("./shellRun.svelte");
 const { enqueueMessage, readDraft, drafts, requeueFront, shiftQueue } = await import("./drafts.svelte");
 const { parseRan } = await import("./shellRun");
 
@@ -154,6 +154,30 @@ describe("503 harness: a never-ending command", () => {
     expect(queued("a")[0]).toMatchObject({ status: "stopped by you", output: "up" });
     expect(term.shells.some((s) => s.id === row!.id)).toBe(true);
     expect(h.closed).toEqual([]);
+  });
+  it("Stop resends ⌃C once if the block runs on, and not once it has ended (861)", async () => {
+    vi.useFakeTimers();
+    try {
+      const row = await runBlock("while :; do sleep 1; done", { chat: "a" });
+      await stopRun(row!.id);
+      expect(h.written).toEqual([[row!.id, "\u0003"]]);
+      await vi.advanceTimersByTimeAsync(STOP_RESEND_MS + 10);
+      expect(h.written).toEqual([[row!.id, "\u0003"], [row!.id, "\u0003"]]);
+      expect(h.closed).toEqual([]);
+      exit(row!.id, 130);
+      await vi.advanceTimersByTimeAsync(STOP_GRACE_MS + 10);
+      expect(h.written).toHaveLength(2);
+      expect(h.closed).toEqual([]);
+      expect(queued("a")[0]).toMatchObject({ status: "stopped by you" });
+      // A block that ends on the first ⌃C gets no second one.
+      const two = await runBlock("sleep 9", { chat: "a" });
+      await stopRun(two!.id);
+      exit(two!.id, 130);
+      await vi.advanceTimersByTimeAsync(STOP_GRACE_MS + 10);
+      expect(h.written.filter(([id]) => id === two!.id)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("a program that ignores ⌃C is killed past the grace, once, and still sent", async () => {
     vi.useFakeTimers();
