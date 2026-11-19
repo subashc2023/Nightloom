@@ -9,7 +9,9 @@
   import { recordedAnswers } from "./askAnswers.svelte";
   import { tip } from "./tip";
 
-  let { call }: { call: ToolCallView } = $props();
+  import { closedAskReason, closedPickText, sendAskAnswer } from "./askSettled";
+  // Item 859: `ended` — the reply this call is in is not streaming (its turn is over, or it is from the log).
+  let { call, ended = false }: { call: ToolCallView; ended?: boolean } = $props();
 
   const questions = $derived.by<AskQuestion[]>(() => {
     const q = (call.input as { questions?: unknown } | null)?.questions;
@@ -24,9 +26,37 @@
     if (mine && mine.length) return mine;
     return answeredRows(questions, answersFromResult(call.result?.content));
   });
+  // Item 859: closed without his answer — the card says so and why, and its options still send.
+  const waiting = $derived(app.pendingApprovals.some((a) => a.id === call.id));
+  const closed = $derived(questions.length ? closedAskReason(call, rows.length > 0, waiting, ended) : null);
+  let sent = $state(false);
+  let card = $state<HTMLDivElement | null>(null);
+  function pick(q: AskQuestion, label: string) {
+    if (sent || !card) return;
+    const answer = closedPickText(q.header || "Answer", label, questions.length > 1);
+    if (sendAskAnswer(card, { answer, ask: { question: q.question, options: q.options.map((o) => o.label) } })) sent = true;
+  }
 </script>
 
-{#if rows.length}
+{#if closed}
+  <div class="aa aa-closed" role="group" aria-label="a question that closed without your answer" bind:this={card}>
+    <div class="aa-head">
+      <span class="aa-chip aa-chip-closed">Closed — not answered</span>
+      <span class="aa-sub">{questions.length === 1 ? "1 question" : `${questions.length} questions`}</span>
+    </div>
+    {#each questions as q, i (i)}
+      <div class="aa-q">
+        <div class="aa-qt">{q.question}</div>
+        <div class="aa-opts">
+          {#each q.options as o (o.label)}
+            <button type="button" class="aa-pick" disabled={sent} onclick={() => pick(q, o.label)}>{o.label}</button>
+          {/each}
+        </div>
+      </div>
+    {/each}
+    <div class="aa-why">{closed} {sent ? "Your pick was sent." : "Pick one to send it as your next message."}</div>
+  </div>
+{:else if rows.length}
   <div class="aa" role="group" aria-label="your answers">
     <div class="aa-head">
       <span class="aa-chip"
@@ -65,6 +95,50 @@
     border-radius: 12px;
     overflow: hidden;
     max-width: 100%;
+    /* Item 859: settled cards are 851's filled look — no dot ground through them. */
+    background: var(--raised);
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.16),
+      0 8px 22px -12px rgba(0, 0, 0, 0.45);
+  }
+  .aa-chip-closed {
+    background: var(--well);
+    color: var(--dim);
+  }
+  .aa-q {
+    padding: 8px 12px 2px;
+    font-family: var(--sans);
+    font-size: 13px;
+  }
+  .aa-qt {
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .aa-opts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .aa-pick {
+    font: inherit;
+    font-size: 12.5px;
+    padding: 3px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--accent-ink);
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    cursor: pointer;
+  }
+  .aa-pick:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .aa-why {
+    padding: 8px 12px 10px;
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--dim);
   }
   .aa-head {
     display: flex;

@@ -2090,3 +2090,79 @@ button,
   font-size: 0.92em;
   overflow-wrap: anywhere;
 }
+/* Item 859 (his words: "there's no way to answer anything", and of the box
+   above the live card, "what was the point of this shit appearing twice"):
+   the box is never a dead end (askSettled.ts). While the question card is
+   drawn for it (`live`), the box is hidden — the question shows once, as the
+   card. Unanswered with no card (`open`: an aside; `closed`: the chat went
+   on past it) it is 851's filled card, its options buttons that send the
+   pick as his next message, and a line under them that says which. */
+.nl-ask[data-state="live"] {
+  display: none;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) {
+  background: var(--raised);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.16),
+    0 8px 22px -12px rgba(0, 0, 0, 0.45);
+  padding: 12px 16px;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-h::after {
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.nl-ask[data-state="open"] .nl-ask-h::after {
+  content: "Waiting on you";
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.nl-ask[data-state="closed"] .nl-ask-h::after {
+  content: "Closed — not answered";
+  background: var(--well);
+  color: var(--dim);
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o {
+  list-style: none;
+  padding-left: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li {
+  margin: 0;
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-ink);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-size: 0.95em;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:hover {
+  filter: brightness(1.15);
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+.nl-ask[data-sending] .nl-ask-o > li {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.nl-ask[data-note]::after {
+  content: attr(data-note);
+  display: block;
+  margin-top: 8px;
+  font-size: 0.88em;
+  color: var(--dim);
+}

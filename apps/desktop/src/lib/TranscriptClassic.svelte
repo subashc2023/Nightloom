@@ -194,6 +194,8 @@
   import { openAttachment } from "./attachments.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import TurnAskHost from "./TurnAskHost.svelte";
+  import { ASK_ANSWER_EVENT, type AskAnswerDetail } from "./askSettled";
+  import { answerAsk as answerTurnAsk, hereTarget as askTarget } from "./needsBoard.svelte";
   import AskHandBack from "./AskHandBack.svelte";
   import BudgetStopCard from "./BudgetStopCard.svelte";
   import { afterWrapTurn, wrapAsk } from "./budgetWrap.svelte";
@@ -1414,6 +1416,22 @@
   });
 
   let viewport = $state<HTMLDivElement | null>(null);
+  // Item 859: an option clicked on a reply's question box (or a closed question card) sends it — to
+  // the open chat: its next message and an answered blocker, as the card sends; a pane takes none (a click there opens the chat).
+  $effect(() => {
+    const v = viewport;
+    if (!v) return;
+    const take = (e: Event) => {
+      const d = (e as CustomEvent<AskAnswerDetail>).detail;
+      if (!d?.answer || e.defaultPrevented) return;
+      if (!inPane) {
+        e.preventDefault();
+        void answerTurnAsk(askTarget(), d.ask, d.answer);
+      }
+    };
+    v.addEventListener(ASK_ANSWER_EVENT, take);
+    return () => v.removeEventListener(ASK_ANSWER_EVENT, take);
+  });
   // Pin to bottom until the user scrolls up; re-pin when they reach the
   // bottom again. Deliberately not $state: changes to it should not
   // re-trigger the effect.
