@@ -1029,6 +1029,13 @@ async fn cors(req: Request, next: Next) -> Response {
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
         HeaderValue::from_static("*"),
     );
+    // A page on the other host reads these answer headers too (item 820's
+    // media type, item 801's Brief words); a browser hides from a page any
+    // answer header it is not told it may read.
+    resp.headers_mut().insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("x-media-type, x-brief-words"),
+    );
     resp
 }
 
@@ -1478,12 +1485,6 @@ struct MediaRequest {
     path: String,
 }
 
-/// Item 820: a picture or a video a reply names, for the phone's strip
-/// under the reply. Always bytes as `application/octet-stream`, an
-/// attachment, `nosniff` and a sandbox policy — the type the page builds
-/// its blob with rides in `x-media-type` — so the URL opened on its own
-/// renders nothing and runs nothing (an SVG among them); the page draws
-/// it through `<img>` or `<video>`, which never runs a script.
 #[derive(Deserialize)]
 struct ListenRequest {
     text: String,
@@ -1544,6 +1545,12 @@ async fn listen(State(shared): State<Arc<Shared>>, Json(req): Json<ListenRequest
     }
 }
 
+/// Item 820: a picture or a video a reply names, for the phone's strip
+/// under the reply. Always bytes as `application/octet-stream`, an
+/// attachment, `nosniff` and a sandbox policy — the type the page builds
+/// its blob with rides in `x-media-type` — so the URL opened on its own
+/// renders nothing and runs nothing (an SVG among them); the page draws
+/// it through `<img>` or `<video>`, which never runs a script.
 async fn reply_media(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,

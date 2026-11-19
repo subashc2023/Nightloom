@@ -9,7 +9,7 @@
    * for the session, so closing and opening again resumes without waiting.
    */
   import { onDestroy } from "svelte";
-  import { clock, failWords, listenKey, loadPlace, loadRate, nextSpeed, savePlace, saveRate, speedWords } from "./listen";
+  import { clock, failWords, listenKey, loadPlace, loadRate, nextSpeed, savePlace, saveRate, speedWords, textId } from "./listen";
   import { audioFor, type Made } from "./listen.svelte";
   import { tip } from "./tip";
 
@@ -45,6 +45,8 @@
   let rate = $state(loadRate(store()));
   let showWords = $state(false);
   const key = $derived(listenKey(kind, id, brief));
+  /** Which press is current; `close` moves it on so a late answer is dropped. */
+  let ask = 0;
 
   async function start(asBrief: boolean) {
     brief = asBrief;
@@ -56,12 +58,19 @@
     }
     phase = "making";
     why = "";
+    // Review 2026-11-18: × while it is being made closes it for good — a
+    // later answer must not reopen the player (`ask` moves on at close).
+    const mine = ++ask;
     try {
       const k = listenKey(kind, id, asBrief);
-      got = await audioFor(k, () => make(words, asBrief));
-      if (k !== key) return;
+      // The audio is cached by the words too, so a note edited since (or a
+      // morning page rewritten) is read as it is now, not as it was.
+      const made = await audioFor(`${k}#${textId(words)}`, () => make(words, asBrief));
+      if (mine !== ask || k !== key) return;
+      got = made;
       phase = "ready";
     } catch (e) {
+      if (mine !== ask) return;
       phase = "failed";
       why = failWords(e);
     }
@@ -103,6 +112,7 @@
     if (audio && Number.isFinite(v)) audio.currentTime = v;
   }
   function close() {
+    ask++;
     keep();
     audio?.pause();
     phase = "idle";

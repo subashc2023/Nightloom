@@ -175,6 +175,57 @@ mod tests {
         assert!(read_aloud(&v, "   \n").await.is_err());
     }
 
+    /// The real voice (review 2026-11-18): `LISTEN_IN` (a text file) read
+    /// aloud by the host's Piper under `~/.nightloom/voice/`, the WAV saved
+    /// to `LISTEN_OUT`; prints when the first sentence came back (Piper's
+    /// cold start), when the whole file was ready (the route's first byte:
+    /// it answers only once the file is made) and the audio's length. Run
+    /// by hand: `LISTEN_IN=… LISTEN_OUT=… cargo test -p nightloom-service
+    /// --lib real_piper -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore = "needs the host's Piper voice (bin/voice-setup.sh)"]
+    async fn real_piper_reads_a_file_aloud() {
+        struct Timed {
+            inner: std::sync::Arc<crate::voice::Engine>,
+            t0: std::time::Instant,
+            first: Mutex<Option<std::time::Duration>>,
+        }
+        #[async_trait::async_trait]
+        impl Speak for Timed {
+            async fn speak(&self, text: &str) -> Result<Vec<u8>, String> {
+                let out = self.inner.speak(text).await;
+                self.first
+                    .lock()
+                    .unwrap()
+                    .get_or_insert_with(|| self.t0.elapsed());
+                out
+            }
+        }
+        let input = std::env::var("LISTEN_IN").expect("LISTEN_IN");
+        let output = std::env::var("LISTEN_OUT").expect("LISTEN_OUT");
+        let text = std::fs::read_to_string(&input).unwrap();
+        let engine = crate::voice::Engine::find().expect("no voice set up");
+        let v = Timed {
+            inner: engine.clone(),
+            t0: std::time::Instant::now(),
+            first: Mutex::new(None),
+        };
+        let wav_bytes = read_aloud(&v, &text).await.unwrap();
+        let whole = v.t0.elapsed();
+        engine.stop().await;
+        let (rate, pcm) = wav::decode(&wav_bytes).unwrap();
+        std::fs::write(&output, &wav_bytes).unwrap();
+        println!(
+            "LISTEN {input}: {} chars, {} sentences, first sentence {:.2}s, whole file {:.2}s, audio {:.1}s at {rate} Hz, {} bytes",
+            text.chars().count(),
+            sentences(&text).len(),
+            v.first.lock().unwrap().unwrap().as_secs_f64(),
+            whole.as_secs_f64(),
+            pcm.len() as f64 / rate as f64,
+            wav_bytes.len()
+        );
+    }
+
     #[test]
     fn the_brief_asks_for_under_two_minutes_and_what_was_left_out() {
         let m = brief_message("Some reply.");
