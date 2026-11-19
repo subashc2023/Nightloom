@@ -116,6 +116,16 @@ export function titleBarLogic(props: () => TitleBarLogicProps) {
     else void win.setTitle(label ? `${label} — Nightloom` : "Nightloom");
   });
 
+  /*
+   * Resizing is not here, and the first draft had eight edge grips calling
+   * `startResizeDragging`. `tauri-runtime-wry`'s `undecorated_resizing`
+   * already does it — a `TAURI_DRAG_RESIZE_BORDERS` child window on Windows
+   * (visible in the live window's child list) and a GTK button-press handler
+   * on the webview for Linux, both hit-testing a five-pixel inset and both
+   * checking resizable-and-not-maximized. The grips reimplemented that, with
+   * the same inset, over the top of it.
+   */
+
   return {
     get focused() {
       return focused;

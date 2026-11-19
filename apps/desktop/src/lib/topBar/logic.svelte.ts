@@ -609,6 +609,10 @@ export function topBarLogic(props: () => TopBarLogicProps) {
     refold();
   });
 
+  // ~~The two transcript toggles' key caps, the thinking-cost note (066)
+  // and `thinkingDead` (097)~~ — with the toggles, in `Composer.svelte`'s
+  // bottom row since backlog 112.
+
   return {
     get GAUGE_WIDTH() {
       return GAUGE_WIDTH;

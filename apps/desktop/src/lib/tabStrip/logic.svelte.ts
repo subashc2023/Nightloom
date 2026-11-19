@@ -21,6 +21,29 @@ export type TabStripLogicProps = { pane: Pane };
 
 
 export function tabStripLogic(props: () => TabStripLogicProps) {
+  /**
+   * One pane's strip of tabs (nightshift backlog 099, boards 9a and 9d):
+   * a glyph for the kind, the title, a pulsing dot while the chat's turn
+   * runs, the needs-you dot when it waits on him, ~~✎~~ a hollow accent
+   * ring for a draft (backlog 221, blocker 480's mark A), × on
+   * hover. ~~`+` opens a new chat in a new tab (⌘T).~~ Since nightshift
+   * backlog 140 (2026-09-17) `+` opens a chooser under the strip
+   * (`TabChooser.svelte`) — New chat and its kinds, a new note, the
+   * notes, Nightshift, the graph, the projects — and the new tab is what
+   * he picks; ⌘T stays the one-key new chat. The active tab is the
+   * sheet; the focused pane's active tab carries the accent rule on top,
+   * so with two panes one strip says which the keys act on.
+   *
+   * Tabs drag: within the strip to reorder, onto the other pane's strip
+   * to move, onto a pane's half to split — the halves are `App.svelte`'s
+   * drop zones; this strip owns the reorder and the move. The drag carries
+   * the tab's id under its own type, so a file or text dropped here is
+   * nothing to it. Content from outside (backlog 140 pass 2: a sidebar
+   * chat row, a note row, the Nightshift and Graph buttons, a project
+   * row, the aside card) drops here as a new tab at the slot; the
+   * terminal dock's strip (backlog 113's 12b) drops here to move the dock
+   * under this pane.
+   */
   const pane = $derived(props().pane);
   const focused = $derived(app.tabs.focused === pane.id);
   const live = $derived(tabs.liveTab(app.tabs, app.activeSessionId));
