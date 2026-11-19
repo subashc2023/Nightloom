@@ -22,6 +22,8 @@
   import { hhmm, mdSections, plain, sameMorning } from "./nightshift";
   import Grip from "./Grip.svelte";
   import Icon from "./Icon.svelte";
+  import ListenButton from "./ListenButton.svelte";
+  import { makeHere } from "./listenHere";
 
   const project = $derived(app.nightshift.selected);
   const page = $derived(app.nightshift.morning);
@@ -128,6 +130,8 @@
           <span class="ns-pill grey">read{#if entry?.modified}{" · "}written {hhmm(entry.modified)}{/if}</span>
         {/if}
         <span class="spacer"></span>
+        <!-- Item 801: the page read aloud, or its Brief. -->
+        <ListenButton kind="morning" id="{project ?? ''}:{page.name}" text={() => page?.text ?? ""} make={makeHere} />
         <button class="ns-btn ghost small" onclick={openInNotes}>Open in Notes</button>
         {#if unread}
           <button class="ns-btn ghost small" onclick={() => markMorningRead(page.name)}>Mark read</button>

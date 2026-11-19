@@ -316,6 +316,13 @@ pub trait Host: Send + Sync + 'static {
     fn voice(&self) -> Option<Arc<crate::voice::Engine>> {
         None
     }
+    /// Item 801: `text` rewritten for the ear in under two minutes, naming
+    /// what was left out (`crate::voice::listen::brief_message`). A host
+    /// with no Claude Code turn to run says so.
+    async fn brief(&self, text: &str) -> Result<String, String> {
+        let _ = text;
+        Err(NOT_AVAILABLE.into())
+    }
     /// The away server's sync home, when this host is one (`serve`): the
     /// `/api/sync/*` routes ([`sync_routes`], item 268 step 3). `None` —
     /// the desktop — serves none of them.
@@ -905,6 +912,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/capture", post(capture))
         // A file a reply sent (nightshift backlog 343): the chip's tap.
         .route("/sent-files/{id}/{name}", get(sent_file))
+        .route("/listen", post(listen))
         .merge(nightshift_routes::router())
         .merge(feedback_routes::router())
         // Item 808: Home's sources on this Mac (status, and ask the Mac).
@@ -1020,6 +1028,13 @@ async fn cors(req: Request, next: Next) -> Response {
     resp.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
         HeaderValue::from_static("*"),
+    );
+    // A page on the other host reads these answer headers too (item 820's
+    // media type, item 801's Brief words); a browser hides from a page any
+    // answer header it is not told it may read.
+    resp.headers_mut().insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("x-media-type, x-brief-words"),
     );
     resp
 }
@@ -1468,6 +1483,66 @@ async fn act(
 #[derive(Deserialize)]
 struct MediaRequest {
     path: String,
+}
+
+#[derive(Deserialize)]
+struct ListenRequest {
+    text: String,
+    #[serde(default)]
+    brief: bool,
+}
+
+/// Item 801: `text` read aloud by this host's Piper voice as one WAV file
+/// (the phone plays it in an `<audio>`, which keeps playing with the screen
+/// locked); `brief` first rewrites it for the ear. The Brief's words ride
+/// in `x-brief-words` (percent-encoded) for the page to show.
+async fn listen(State(shared): State<Arc<Shared>>, Json(req): Json<ListenRequest>) -> Response {
+    let Some(engine) = shared.host.voice() else {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            "this host has no voice — run bin/voice-setup.sh on it".to_string(),
+        )
+            .into_response();
+    };
+    let text = if req.brief {
+        match shared.host.brief(&req.text).await {
+            Ok(t) => t,
+            Err(e) if e == NOT_AVAILABLE => {
+                return (
+                    StatusCode::NOT_IMPLEMENTED,
+                    "Brief is not available on this host".to_string(),
+                )
+                    .into_response();
+            }
+            Err(e) => return refused(e),
+        }
+    } else {
+        req.text
+    };
+    match crate::voice::listen::read_aloud(&*engine, &text).await {
+        Ok(wav) => {
+            let mut resp = wav.into_response();
+            let h = resp.headers_mut();
+            h.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/wav"));
+            if req.brief {
+                let enc: String = text
+                    .bytes()
+                    .map(|b| {
+                        if b.is_ascii_alphanumeric() || b" -_.~".contains(&b) {
+                            (b as char).to_string()
+                        } else {
+                            format!("%{b:02X}")
+                        }
+                    })
+                    .collect();
+                if let Ok(v) = HeaderValue::from_str(&enc) {
+                    h.insert(header::HeaderName::from_static("x-brief-words"), v);
+                }
+            }
+            resp
+        }
+        Err(e) => refused(e),
+    }
 }
 
 /// Item 820: a picture or a video a reply names, for the phone's strip

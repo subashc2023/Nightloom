@@ -164,6 +164,9 @@ const STARTED_LATE: &str =
 /// The voice programs (two whisper servers and Piper, ~700 MB between
 /// them) stop after this long unused; the next socket starts them again.
 const VOICE_IDLE: Duration = Duration::from_secs(600);
+/// Item 801: a Brief is one short Haiku turn; give it a generous minute
+/// and a half.
+const BRIEF_WAIT: Duration = Duration::from_secs(90);
 
 impl DesktopHost {
     fn new(app: AppHandle) -> Arc<Self> {
@@ -791,6 +794,21 @@ impl Host for DesktopHost {
             Err(e) if e == STARTED_LATE => Ok(Handed::Sent),
             Err(e) => Err(e),
         }
+    }
+
+    /// Item 801: the phone's Brief, run by the window (`remote-brief`), which
+    /// knows the agent binary and safe mode it runs every turn with.
+    async fn brief(&self, text: &str) -> Result<String, String> {
+        let v = self
+            .call(
+                "remote-brief",
+                serde_json::json!({ "text": text }),
+                BRIEF_WAIT,
+            )
+            .await?;
+        v.as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "the window answered the Brief with no words".to_string())
     }
 
     fn voice(&self) -> Option<Arc<nightloom_service::voice::Engine>> {
@@ -1690,6 +1708,11 @@ impl Remote {
             let app = app.clone();
             tauri::async_runtime::spawn(keep_listening(app));
         }
+    }
+
+    /// Item 801: the host's voice engine, for the window's Listen.
+    pub(crate) fn voice_engine(&self) -> Option<Arc<nightloom_service::voice::Engine>> {
+        self.host.voice()
     }
 
     fn persist(&self) {
