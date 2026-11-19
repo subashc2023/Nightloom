@@ -913,6 +913,7 @@ fn router(shared: Arc<Shared>) -> Router {
         // A file a reply sent (nightshift backlog 343): the chip's tap.
         .route("/sent-files/{id}/{name}", get(sent_file))
         .route("/listen", post(listen))
+        .route("/listen/brief", post(listen_brief))
         .merge(nightshift_routes::router())
         .merge(feedback_routes::router())
         // Item 808: Home's sources on this Mac (status, and ask the Mac).
@@ -1030,11 +1031,11 @@ async fn cors(req: Request, next: Next) -> Response {
         HeaderValue::from_static("*"),
     );
     // A page on the other host reads these answer headers too (item 820's
-    // media type, item 801's Brief words); a browser hides from a page any
+    // media type, item 801's Brief words, item 862's part count); a browser hides from a page any
     // answer header it is not told it may read.
     resp.headers_mut().insert(
         header::ACCESS_CONTROL_EXPOSE_HEADERS,
-        HeaderValue::from_static("x-media-type, x-brief-words"),
+        HeaderValue::from_static("x-media-type, x-brief-words, x-listen-parts"),
     );
     resp
 }
@@ -1490,6 +1491,33 @@ struct ListenRequest {
     text: String,
     #[serde(default)]
     brief: bool,
+    /// Item 862: one part of the reading ([`crate::voice::listen::plan`]),
+    /// for a player that starts on the first while the rest are made; the
+    /// count rides in `x-listen-parts`. Absent: the whole file, as before.
+    #[serde(default)]
+    part: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct BriefRequest {
+    text: String,
+}
+
+/// Item 862: the Brief's words alone, `{"words": …}`, so the page can then
+/// ask for them read aloud a part at a time.
+async fn listen_brief(
+    State(shared): State<Arc<Shared>>,
+    Json(req): Json<BriefRequest>,
+) -> Response {
+    match shared.host.brief(&req.text).await {
+        Ok(words) => Json(serde_json::json!({ "words": words })).into_response(),
+        Err(e) if e == NOT_AVAILABLE => (
+            StatusCode::NOT_IMPLEMENTED,
+            "Brief is not available on this host".to_string(),
+        )
+            .into_response(),
+        Err(e) => refused(e),
+    }
 }
 
 /// Item 801: `text` read aloud by this host's Piper voice as one WAV file
@@ -1504,6 +1532,28 @@ async fn listen(State(shared): State<Arc<Shared>>, Json(req): Json<ListenRequest
         )
             .into_response();
     };
+    if let Some(part) = req.part {
+        if req.brief {
+            return (
+                StatusCode::BAD_REQUEST,
+                "ask /listen/brief first, then for its words a part at a time".to_string(),
+            )
+                .into_response();
+        }
+        return match crate::voice::listen::read_part(&*engine, &req.text, part).await {
+            Ok((wav, parts)) => {
+                let mut resp = wav.into_response();
+                let h = resp.headers_mut();
+                h.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/wav"));
+                h.insert(
+                    header::HeaderName::from_static("x-listen-parts"),
+                    HeaderValue::from(parts),
+                );
+                resp
+            }
+            Err(e) => refused(e),
+        };
+    }
     let text = if req.brief {
         match shared.host.brief(&req.text).await {
             Ok(t) => t,

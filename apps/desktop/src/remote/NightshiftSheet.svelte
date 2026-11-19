@@ -361,7 +361,7 @@
     <p class="nz-note">Asking…</p>
   {:else if page !== null}
     <!-- Item 801: the morning page read aloud, or its Brief. -->
-    <div class="nz-listen"><ListenButton kind="morning" id={v.name} text={() => page ?? ""} make={(t, b) => new Client(client.token, client.base).listen(t, b)} /></div>
+    <div class="nz-listen"><ListenButton kind="morning" id={v.name} text={() => page ?? ""} source={new Client(client.token, client.base).listenSource()} /></div>
     <div class="nz-md">{@html renderMarkdown(page)}</div>
   {/if}
 {:else if view.v === "new" && project}

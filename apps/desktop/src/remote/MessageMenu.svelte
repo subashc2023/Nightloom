@@ -1,6 +1,6 @@
 <script lang="ts">
   import ListenButton from "../lib/ListenButton.svelte";
-  import { textId } from "../lib/listen";
+  import { textId, type Source } from "../lib/listen";
   /**
    * The menu a long-press opens on a message (item 246, wave 1C): the
    * desktop's per-message controls — Copy, Edit, Edit and send, Remove or
@@ -44,7 +44,7 @@
     onwhole?: () => void;
     onclose: () => void;
     /** Item 801: Listen and Brief on a reply, through the host's voice. */
-    listen?: (text: string, brief: boolean) => Promise<{ blob: Blob; words?: string }>;
+    listen?: Source;
   }
   let { chat, row, part = null, tool = null, rewind, fork, canAct, host = undefined, checkpoint = false, blocked, problem = null, onact, oncopy, onwhole, onclose, listen = undefined }: Props = $props();
 
@@ -158,7 +158,7 @@
   {#if listen && row.kind === "assistant" && !tool && copyText.trim()}
     <!-- Item 801: the reply read aloud here; it keeps playing with the
          screen locked while this sheet is open. -->
-    <div class="mm-listen"><ListenButton kind="reply" id={textId(copyText)} text={() => copyText} make={listen} /></div>
+    <div class="mm-listen"><ListenButton kind="reply" id={textId(copyText)} text={() => copyText} source={listen} /></div>
   {/if}
   <div class="mm-menu">
     <button onclick={() => (oncopy(copyText), onclose())}>{@render ico("copy")} Copy</button>

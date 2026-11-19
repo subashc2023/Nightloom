@@ -1649,6 +1649,7 @@ fn main() {
             inbox_sort::inbox_sort_plan,
             listen::listen_audio,
             listen::listen_brief,
+            listen::listen_parts,
             inbox_sort::inbox_sort_cancel,
             inbox_sort::inbox_sort_apply,
             commands::turns::cancel,

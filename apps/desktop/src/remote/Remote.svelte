@@ -4010,7 +4010,7 @@
         {:else if sheet === "message" && menuOn && chatId}
           {@const target = rowTarget(events, menuOn.row)}
           <MessageMenu
-            listen={client ? (t, b) => client!.listen(t, b) : undefined}
+            listen={client ? client.listenSource() : undefined}
             chat={chatId}
             row={menuOn.row}
             part={menuOn.part}

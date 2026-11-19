@@ -106,3 +106,49 @@ export function textId(s: string): string {
   }
   return (h >>> 0).toString(16);
 }
+
+/** Item 862: how a host is asked for Listen — the Brief's words, and the
+ *  reading a part at a time (`part` says how many parts there are). */
+export type Source = {
+  brief: (text: string) => Promise<string>;
+  part: (text: string, i: number) => Promise<{ bytes: ArrayBuffer; parts: number }>;
+};
+
+/** Item 862: a WAV file's length in seconds, from its header (the `fmt `
+ *  chunk's byte rate and the `data` chunk's size); 0 when it is not one. */
+export function wavSeconds(buf: ArrayBuffer): number {
+  const v = new DataView(buf);
+  const tag = (at: number) => String.fromCharCode(v.getUint8(at), v.getUint8(at + 1), v.getUint8(at + 2), v.getUint8(at + 3));
+  if (buf.byteLength < 12 || tag(0) !== "RIFF" || tag(8) !== "WAVE") return 0;
+  let byteRate = 0;
+  let at = 12;
+  while (at + 8 <= buf.byteLength) {
+    const id = tag(at);
+    const size = v.getUint32(at + 4, true);
+    if (id === "fmt " && at + 16 <= buf.byteLength) byteRate = v.getUint32(at + 16, true);
+    if (id === "data") {
+      const n = Math.min(size, buf.byteLength - at - 8);
+      return byteRate > 0 ? n / byteRate : 0;
+    }
+    at += 8 + size + (size % 2);
+  }
+  return 0;
+}
+
+/** Item 862: where `t` seconds falls in parts of these lengths — the part
+ *  and the offset in it; past the known parts, the next one to come. */
+export function partAt(lengths: number[], t: number): { i: number; offset: number } {
+  let acc = 0;
+  for (let i = 0; i < lengths.length; i++) {
+    if (t < acc + lengths[i]) return { i, offset: Math.max(0, t - acc) };
+    acc += lengths[i];
+  }
+  return { i: lengths.length, offset: Math.max(0, t - acc) };
+}
+
+/** The sum of the first `n` lengths. */
+export function before(lengths: number[], n: number): number {
+  let s = 0;
+  for (let i = 0; i < n && i < lengths.length; i++) s += lengths[i];
+  return s;
+}

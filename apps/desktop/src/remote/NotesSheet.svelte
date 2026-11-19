@@ -402,7 +402,7 @@
       <pre class="ns-source">{text}</pre>
     {:else if text.trim()}
       <!-- Item 801: this note read aloud by the host's voice. -->
-      <div class="ns-listen"><ListenButton kind="note" id="{v.scope}:{v.name}" text={() => text ?? ""} make={(t, b) => client.listen(t, b)} /></div>
+      <div class="ns-listen"><ListenButton kind="note" id="{v.scope}:{v.name}" text={() => text ?? ""} source={client.listenSource()} /></div>
       <div class="ns-md">{@html renderMarkdown(text)}</div>
     {:else}
       <p class="ns-note">Empty. Edit to write the first line.</p>

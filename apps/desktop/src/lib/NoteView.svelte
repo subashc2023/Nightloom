@@ -27,7 +27,7 @@
   import NoteMedia from "./NoteMedia.svelte";
   import NoteToolbar from "./NoteToolbar.svelte";
   import ListenButton from "./ListenButton.svelte";
-  import { makeHere } from "./listenHere";
+  import { here as listenHere } from "./listenHere";
   import { loadNoteMarkdown, saveNoteMarkdown } from "./noteMode";
   import { attachmentsFolder, imageAlt, imageNoteName, insertImage, linkPath, relativeToNote } from "./noteFormat";
   import { readBase64 } from "./attachFiles.svelte";
@@ -955,7 +955,7 @@
       {/if}
       {#if !media && !reviewing && open}
         <!-- Item 801: this note read aloud (what is in the editor now). -->
-        <ListenButton kind="note" id="{open.scope}:{open.name}" text={() => text} make={makeHere} />
+        <ListenButton kind="note" id="{open.scope}:{open.name}" text={() => text} source={listenHere} />
       {/if}
     </div>
     {#if renaming && open}
