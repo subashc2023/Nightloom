@@ -100,10 +100,19 @@
   const focusTask = $derived(taskOf(focus.id));
   // 846 §7 step 3: the view in focus is written down (a small file, no model) so his next message to Home carries
   // where he was — the header rides on the wire only. Every change of focus, his or the stage's.
+  // Written when the view or task changes (not on every re-read of the tasks — 845 review, (f)), and again each
+  // minute while the stage shows (below), so a long stay on one view still counts as fresh.
+  let focusSent = "";
+  const sendFocus = (v: string, t: string) => {
+    focusSent = `${v}\u0000${t}`;
+    void stageHost.now.focus(v, t).catch(() => {});
+  };
   $effect(() => {
     const v = focus.view;
     const t = focusTask?.name ?? "";
-    untrack(() => void stageHost.now.focus(v, t).catch(() => {}));
+    untrack(() => {
+      if (`${v}\u0000${t}` !== focusSent) sendFocus(v, t);
+    });
   });
   const doing = $derived(focusTask ? (focusTask.state === "live" ? focusTask.doing || def(focusTask.view as ViewId).doing : `Done — ${focusTask.name}`) : focus.view === "brief" ? (brief?.writing ? "Writing your morning brief" : def("brief").doing) : app.busy && focus.view !== "chat" ? "Working on what you sent" : def(focus.view).doing);
   const chips: Record<string, HTMLElement> = $state({});
@@ -142,14 +151,26 @@
       void refreshReach();
       void refreshTasks();
     });
-    const t = setInterval(() => (read(), void refreshTasks()), 60_000);
+    const t = setInterval(() => (read(), void refreshTasks(), untrack(() => sendFocus(focus.view, focusTask?.name ?? ""))), 60_000);
     return () => clearInterval(t);
   });
-  // The tasks are re-read when the chat moves (a step landed — `update_task` may have written) and when a turn ends.
+  // The tasks are re-read when the chat moves (a step landed — `update_task` may have written) and when a turn ends —
+  // at most once a second while a reply streams (845 review, (f): a read per streamed event was hundreds a turn).
+  let soon: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
     void app.events.length;
     void app.busy;
-    untrack(() => void refreshTasks());
+    untrack(() => {
+      if (soon) return;
+      soon = setTimeout(() => {
+        soon = null;
+        void refreshTasks();
+      }, 1000);
+    });
+  });
+  $effect(() => () => {
+    if (soon) clearTimeout(soon);
+    soon = null;
   });
   // A view switch animates only when he picked the tab. A switch the stage makes itself (the tab he left it on comes
   // back once the chat or the tasks are read, at every open) is instant — no exit animation to wait on, so no old view
