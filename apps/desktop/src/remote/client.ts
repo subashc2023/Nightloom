@@ -1070,6 +1070,18 @@ export class Client {
     }
   }
 
+  /** Item 872: Home's steps — the last turns of Home's chat, its messages only (`GET /home/steps`); none when the
+   *  host has no Home chat or an older host has no route. Reading it never marks Home's chat seen. */
+  async homeSteps(): Promise<SessionEvent[]> {
+    try {
+      const v = await (await this.call("/home/steps")).json();
+      return Array.isArray(v) ? v : [];
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return [];
+      throw e;
+    }
+  }
+
   /** Item 845: one click of his on a task view, for Home's next look (kind B). The Mac only. */
   async homeTaskEvent(task: string, view: string, line: string): Promise<void> {
     await this.call("/home/tasks/event", { method: "POST", body: JSON.stringify({ task, view, line }) });

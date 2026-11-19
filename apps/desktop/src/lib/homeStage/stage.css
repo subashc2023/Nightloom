@@ -322,3 +322,4 @@
 .h9-stage.classic :is(.r-node, .r-av, .s-src.hot, .s-claim.hot) { box-shadow: none; }
 .h9-stage.classic .r-link.live::after { display: none; }
 .h9-stage.classic .r-node.live .r-mark { animation: none; }
+.h9-tab.h9-folded { color: var(--dim); }

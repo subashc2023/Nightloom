@@ -73,3 +73,10 @@
 /* Touch: a control is at least 34 px tall. */
 .h9-stage.phone .jb { min-height: 34px; }
 .h9-stage.phone .jb.small { min-height: 32px; }
+/* Item 872: the switch note sits in the flow on a phone (no room for the Mac's floating card); Home's steps fold under a view. */
+.h9-stage.phone .h9-note { position: static; width: auto; margin: 6px 3px 0; }
+.h9-stage.phone .h9-bar .jb { flex: none; }
+.h9-phsteps { margin: 8px 3px 0; border: 1px solid var(--line2); border-radius: var(--r2); background: var(--sheet); }
+.h9-phsteps-h { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 10px; background: none; border: 0; color: var(--ink); font: 600 11px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; text-align: left; }
+.h9-phsteps-h .h9-dim { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.h9-phsteps-b { height: 320px; display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--line2); }

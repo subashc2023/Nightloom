@@ -3196,6 +3196,17 @@ mod tests {
             tasks.as_array().unwrap().is_empty(),
             "the closed tab is gone: {tasks}"
         );
+        // Item 872: Home's steps — none while the host has no Home chat.
+        let steps: serde_json::Value = c
+            .get(format!("{base}/api/home/steps"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(steps, serde_json::json!([]), "{steps}");
         server.stop().await;
     }
 

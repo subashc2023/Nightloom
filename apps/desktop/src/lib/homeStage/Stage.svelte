@@ -27,7 +27,7 @@
   import { tasks, refreshTasks, closeTask, type HomeTask } from "./tasks.svelte";
   import { briefOf } from "./brief";
   import { bag, def, keep, stage, type ViewId } from "./stageState.svelte";
-  import { step, secondOf, type FocusKept } from "./focus";
+  import { rulesPass, foldDone, unfold, secondOf, type FocusKept } from "./focus";
   import { lastExchange, type Ev } from "./steps";
   import { tabsFor, focusOf, type Tab } from "./tabs";
   import { setStageHost, stageHost } from "./host";
@@ -50,12 +50,14 @@
     ...(brief ? [{ id: "brief", view: "brief", name: brief.writing ? "Writing the morning brief" : "Morning brief", needs: 0, live: brief.writing } as Tab] : []),
     ...shown.map((t): Tab => ({ id: `task:${t.id}`, view: t.view as ViewId, name: t.name, needs: t.needs, live: t.state === "live" })),
   ]);
-  const row = $derived(tabsFor({ blank, needs, more }));
+  const all = $derived(tabsFor({ blank, needs, more }));
+  // svelte-ignore state_referenced_locally
+  const fk = bag("stage:focus", { follow: true, split: false, primed: false, ready: [] as string[], seen: {} as Record<string, number>, doneSeen: {} as Record<string, number>, folded: [] as string[] });
+  // Done tasks he has seen and left fold away by themselves (item 872, focus.ts `foldDone`); "N done" brings them back.
+  const row = $derived(all.filter((t) => !fk.folded.includes(t.id)));
   const focus = $derived(focusOf(row, stage.focus));
   // The focus rules (focus.ts; 809 round 6's engine): Follow Home, split, and tabs that wait "ready →". Kept with the
   // stage's state, so a restart neither forgets them nor makes old tabs new. Follow Home and Split are kind A.
-  // svelte-ignore state_referenced_locally
-  const fk = bag("stage:focus", { follow: true, split: false, primed: false, ready: [] as string[], seen: {} as Record<string, number> });
   let note = $state<FocusKept["note"]>(null);
   let lastTouch = Date.now();
   let dragging = false;
@@ -63,18 +65,15 @@
   const asked = (id: string) => !!taskOf(id)?.why;
   // He is mid-typing in a view's own field, or holding a card: a switch would break it.
   const busyHere = () => dragging || (!!rootEl && rootEl.contains(document.activeElement) && /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName ?? ""));
+  const isDone = (id: string) => taskOf(id)?.state === "done";
   function rules() {
-    // The first read ever (the stage is new to this Mac): what is already there is not new — no tab pulses for it.
-    if (!fk.primed && tasks.loaded) {
-      fk.seen = Object.fromEntries(row.filter((t) => t.view !== "watch" && t.view !== "chat").map((t) => [t.id, t.needs]));
-      fk.primed = true;
-    }
-    const k: FocusKept = { focus: stage.focus, follow: fk.follow, split: fk.split, ready: [...fk.ready], seen: { ...fk.seen }, note };
-    step(k, row, { now: Date.now(), lastTouch, busy: busyHere() }, asked, tasks.loaded);
-    if (k.focus !== stage.focus) stage.focus = k.focus; // a switch the stage makes is instant (see viewIn)
-    if (k.ready.join("|") !== fk.ready.join("|")) fk.ready = k.ready;
-    if (JSON.stringify(k.seen) !== JSON.stringify(fk.seen)) fk.seen = k.seen;
-    note = k.note;
+    // The first read ever primes what is there as seen (no pulse storm) — `rulesPass` (focus.ts), shared with the phone.
+    // The rules see every tab, folded ones too, so a tab brought back is not "new".
+    const now = Date.now();
+    const r = rulesPass(fk, stage.focus, note, all, { now, lastTouch, busy: busyHere() }, asked, tasks.loaded);
+    if (r.focus !== stage.focus) stage.focus = r.focus; // a switch the stage makes is instant (see viewIn)
+    note = r.note;
+    if (tasks.loaded) foldDone(fk, all, isDone, focusOf(all, stage.focus).id, now);
   }
   $effect(() => {
     void row;
@@ -216,6 +215,7 @@
         {#if focus.id === t.id && taskOf(t.id)}<!-- svelte-ignore a11y_click_events_have_key_events --><span class="h9-x" role="button" tabindex="-1" aria-label="Close this tab" use:tip={"Close this tab\nHome's work goes on; only the tab goes"} onclick={(e) => (e.stopPropagation(), void close(taskOf(t.id)!))}>×</span>{/if}
       </button>
     {/each}
+    {#if fk.folded.length}<button class="h9-tab h9-folded" onclick={() => unfold(fk)} use:tip={"Done tasks you have seen\nShown again until you look and leave"}><Icon name="check" size={13} /><span class="tn">{fk.folded.length} done</span></button>{/if}
     <span class="sep"></span>
   </div>
   {#snippet taskView(t: HomeTask)}

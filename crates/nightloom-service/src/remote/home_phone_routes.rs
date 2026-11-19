@@ -12,6 +12,7 @@
 //! | `GET /home/tasks` | the tasks on Home's stage (item 845: `home/tasks/<id>.json`, what Home's `update_task` wrote), oldest first |
 //! | `POST /home/tasks/event` | one click of his on a task view, `{task, view, line}`, for Home's next look (the Mac only) |
 //! | `POST /home/tasks/{id}/close` | his × on a task's tab: the tab goes, the work is not stopped (the Mac only) |
+//! | `GET /home/steps` | Home's steps (item 872): the last [`STEP_TURNS`] turns of Home's chat, its messages only — what the Steps panel draws |
 //!
 //! Both hosts serve these from their own config folder
 //! ([`super::Host::home_config`]): the away server's copy is the synced
@@ -45,6 +46,69 @@ pub(super) fn router() -> Router<Arc<Shared>> {
         .route("/home/tasks/event", post(task_event))
         .route("/home/tasks/{id}/close", post(task_close))
         .route("/home/tasks/focus", post(task_focus))
+        .route("/home/steps", get(steps))
+}
+
+/// The turns of Home's chat the phone's Steps panel gets (the Mac's panel
+/// draws three, `stepsOf` in `homeStage/steps.ts`).
+pub const STEP_TURNS: usize = 3;
+/// The most events one reply carries.
+const STEP_EVENTS_MAX: usize = 400;
+
+/// The tail the phone's Steps panel draws (item 872): from the start of
+/// the last `turns` turns (his messages), his messages and Home's replies
+/// only — no tool results, no other rows — at most [`STEP_EVENTS_MAX`],
+/// the newest kept. Pure.
+pub fn steps_tail(
+    events: Vec<nightloom_core::SessionEvent>,
+    turns: usize,
+) -> Vec<nightloom_core::SessionEvent> {
+    use nightloom_core::SessionEvent as E;
+    let kept: Vec<E> = events
+        .into_iter()
+        .filter(|e| matches!(e, E::UserMessage { .. } | E::AssistantMessage { .. }))
+        .collect();
+    let starts: Vec<usize> = kept
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, E::UserMessage { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    let from = if starts.len() > turns {
+        starts[starts.len() - turns]
+    } else {
+        0
+    };
+    let mut tail: Vec<E> = kept.into_iter().skip(from).collect();
+    // His photos and documents are not steps: only his words go.
+    for e in &mut tail {
+        if let E::UserMessage {
+            images, documents, ..
+        } = e
+        {
+            images.clear();
+            documents.clear();
+        }
+    }
+    if tail.len() > STEP_EVENTS_MAX {
+        tail.drain(..tail.len() - STEP_EVENTS_MAX);
+    }
+    tail
+}
+
+/// `GET /home/steps`: Home's chat is the host's own (the scan job's), never
+/// one the phone names, and reading it does not mark it seen on the phone
+/// (the transcript route does) — the panel is not him opening the chat.
+/// No Home chat yet → an empty list.
+async fn steps(State(shared): State<Arc<Shared>>) -> Response {
+    let w = home_where(&shared);
+    let Some(chat) = w.chat else {
+        return answer(Ok::<_, String>(Vec::<nightloom_core::SessionEvent>::new()));
+    };
+    match shared.host.transcript(w.project.as_deref(), &chat).await {
+        Ok(events) => answer(Ok::<_, String>(steps_tail(events, STEP_TURNS))),
+        Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
+    }
 }
 
 /// The most feed rows the phone is sent.
@@ -510,6 +574,36 @@ async fn needs(State(shared): State<Arc<Shared>>) -> Response {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_steps_tail_is_the_last_turns_messages_only() {
+        let ev = |v: serde_json::Value| {
+            serde_json::from_value::<nightloom_core::SessionEvent>(v).unwrap()
+        };
+        let at = "2026-11-19T12:00:00Z";
+        let mut all = vec![ev(
+            serde_json::json!({"event": "session_created", "id": "h", "at": at}),
+        )];
+        for n in 0..5 {
+            all.push(ev(
+                serde_json::json!({"event": "user_message", "text": format!("ask {n}"), "at": at,
+                "images": [{"media_type": "image/png", "data": "AAAA"}]}),
+            ));
+            all.push(ev(serde_json::json!({"event": "assistant_message", "at": at, "model": "m", "stop_reason": null, "usage": {"input_tokens": 0, "output_tokens": 0}, "blocks": [{"type": "text", "text": format!("reply {n}")}]})));
+        }
+        let tail = steps_tail(all.clone(), 3);
+        let v = serde_json::to_value(&tail).unwrap();
+        assert_eq!(tail.len(), 6, "{v}");
+        assert_eq!(v[0]["text"], "ask 2");
+        assert!(v[0].get("images").is_none(), "his photos are not sent: {v}");
+        assert_eq!(
+            steps_tail(all[..3].to_vec(), 3).len(),
+            2,
+            "fewer turns than asked: all of them"
+        );
+        assert!(steps_tail(vec![], 3).is_empty());
+    }
+
     use super::*;
 
     fn row(what: crate::push::What, chat: &str, label: &str) -> crate::push::FeedRow {

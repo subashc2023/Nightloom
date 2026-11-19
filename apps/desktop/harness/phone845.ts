@@ -58,6 +58,10 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (p === "/push/feed") return json({ rows: [{ what: "question", chat: "h-today", label: "Home", project: "home", at: ago(5) }] });
   if (p === "/jobs") return json({ jobs: [], now: new Date().toISOString() });
   if (p === "/running") return json({ chats: [], contexts: {} });
+  if (p === "/home/steps") return json([
+    { event: "user_message", text: "merge round T and build it", at: ago(30) },
+    { event: "assistant_message", at: ago(29), model: "m", stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 }, blocks: [{ type: "tool_use", id: "1", name: "mcp__nightloom__start_chat", input: { project: "Nightloom" } }, { type: "tool_use", id: "2", name: "mcp__nightloom__update_task", input: { task: "Merge round T" } }, { type: "text", text: "Started the merge in a Nightloom chat; I will tell you when the build is ready." }] },
+  ]);
   if (p === "/home/tasks") return json(homeTasks.filter((t) => !closed.includes(t.id)));
   if (p === "/home/tasks/event" && method === "POST") {
     if (away) return refuse();
@@ -102,6 +106,14 @@ async function run() {
   applyLook(q.get("classic") === "1" ? "classic" : "filament");
   const TAB: Record<string, string> = { brief: "brief", timeline: "task:moving-the-review", todo: "task:working-your-list", triage: "task:sorting-what-arrived", browse: "task:renewing-the-permit", run: "task:merge-round-t", research: "task:cache-pricing" };
   Object.assign(kept, { focus: TAB[s] ?? "watch", strip: "open", stripFor: "", ui: {} });
+  // p872=1 (item 872): one tab waiting "ready →", a done task folded away ("1 done"), Home's steps open on the phone.
+  if (q.get("p872") === "1") {
+    const ids = ["task:moving-the-review", "task:working-your-list", "task:sorting-what-arrived", "task:renewing-the-permit", "task:merge-round-t", "task:cache-pricing"];
+    const r = homeTasks.find((t) => t.id === "cache-pricing");
+    if (r) r.state = "done";
+    kept.ui["stage:focus"] = { follow: true, split: false, primed: true, ready: ["task:renewing-the-permit"], seen: Object.fromEntries(ids.map((i) => [i, 9])), doneSeen: { "task:cache-pricing": Date.now() - 300_000 }, folded: ["task:cache-pricing"] };
+    kept.ui["phone:steps"] = { open: true };
+  }
   // runctl=1 (item 872): Run after Stop now (its chat stopped, Resume shown) with a done step open (Run this step again).
   if (q.get("runctl") === "1") kept.ui["task:merge-round-t"] = { stop: false, halted: true, open: "r:merge", again: ["r:merge"] };
   const target = document.getElementById("app")!;
