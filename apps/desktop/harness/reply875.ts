@@ -30,7 +30,15 @@ const FIX: Record<string, { url: string; type: string }> = {
   "bars.svg": { url: barsSvg, type: "image/svg+xml" },
   "clip.mp4": { url: clipMp4, type: "video/mp4" },
 };
-const b64Of = (dataUrl: string) => dataUrl.slice(dataUrl.indexOf(",") + 1);
+// Vite inlines an SVG as a URL-encoded data: URL, not base64 (review: the shot showed "invalid characters").
+const b64Of = (dataUrl: string) => {
+  const body = dataUrl.slice(dataUrl.indexOf(",") + 1);
+  if (/;base64,/.test(dataUrl.slice(0, dataUrl.indexOf(",") + 1))) return body;
+  const bytes = new TextEncoder().encode(decodeURIComponent(body));
+  let bin = "";
+  for (const x of bytes) bin += String.fromCharCode(x);
+  return btoa(bin);
+};
 function fixture(path: string) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const f = FIX[name];
