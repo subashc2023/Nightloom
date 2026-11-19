@@ -2257,11 +2257,18 @@ mod tests {
         fs::write(dir.join("short.md"), "fine\n").unwrap();
         fs::write(dir.join("archive/old.md"), &long).unwrap();
         fs::write(dir.join(".git/x.md"), &long).unwrap();
-        let got: Vec<String> = oversize_notes(&dir)
+        let got: Vec<PathBuf> = oversize_notes(&dir)
             .into_iter()
-            .map(|(p, _, _)| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned())
+            .map(|(p, _, _)| p.strip_prefix(&dir).unwrap().to_path_buf())
             .collect();
-        assert_eq!(got, ["topics/long.md", "wide.md"]);
+        // Compared as paths, so Windows' `\` between parts matches too.
+        assert_eq!(
+            got,
+            [
+                Path::new("topics").join("long.md"),
+                PathBuf::from("wide.md")
+            ]
+        );
     }
 
     /// Item 278: an observation read from a chat lists the chat's short id,
