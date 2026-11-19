@@ -62,6 +62,17 @@ export interface Job {
   confirm?: RunConfirm | null;
   /** Item 812: Run anyway pressed; its run has not started yet. */
   force_once?: boolean;
+  /** Item 794: a research watch — each run appends what changed to `watch.note`. */
+  watch?: Watch | null;
+}
+
+/** Item 794: what a research watch keeps current. */
+export interface Watch {
+  topic: string;
+  /** Pages he named, checked every run. */
+  sources: string[];
+  /** The note's file name in the project's notes (`watch-<slug>.md`), set by the host. */
+  note: string;
 }
 
 export type Approval = "ask" | "once" | "always";
@@ -81,6 +92,8 @@ export interface NewJob {
   from_chat?: string | null;
   offset_min: number;
   tz?: string | null;
+  /** Item 794: a research watch's topic and pages. */
+  watch?: { topic: string; sources: string[] } | null;
 }
 
 export interface JobPatch {
@@ -96,6 +109,8 @@ export interface JobPatch {
   /** Item 812: Cancel on that card. */
   dismiss_confirm?: boolean;
   tz?: string;
+  /** Item 794: a watch's new topic and pages. */
+  watch?: { topic: string; sources: string[] };
 }
 
 /** What the sheet needs of the client. */
@@ -284,13 +299,20 @@ export interface JobDraft {
   every: string;
   text: string;
   title: string;
+  /** Item 794: the form was making a research watch: its topic and pages (one per line). */
+  watch?: { topic: string; sources: string } | null;
+}
+
+function emptyDraft(d: Partial<JobDraft>): boolean {
+  return !d.every && !d.text && !d.title && !d.watch;
 }
 
 export function readJobDraft(store: Pick<Storage, "getItem"> | null = typeof localStorage === "undefined" ? null : localStorage): JobDraft | null {
   try {
     const d = JSON.parse(store?.getItem(DRAFT_KEY) ?? "null") as Partial<JobDraft> | null;
-    if (!d || (!d.every && !d.text && !d.title)) return null;
-    return { every: d.every ?? "", text: d.text ?? "", title: d.title ?? "" };
+    if (!d || emptyDraft(d)) return null;
+    const w = d.watch && typeof d.watch === "object" ? { topic: String(d.watch.topic ?? ""), sources: String(d.watch.sources ?? "") } : null;
+    return { every: d.every ?? "", text: d.text ?? "", title: d.title ?? "", ...(w ? { watch: w } : {}) };
   } catch {
     return null;
   }
@@ -298,7 +320,7 @@ export function readJobDraft(store: Pick<Storage, "getItem"> | null = typeof loc
 
 export function writeJobDraft(d: JobDraft | null, store: Pick<Storage, "setItem" | "removeItem"> | null = typeof localStorage === "undefined" ? null : localStorage): void {
   try {
-    if (!d || (!d.every && !d.text && !d.title)) store?.removeItem(DRAFT_KEY);
+    if (!d || emptyDraft(d)) store?.removeItem(DRAFT_KEY);
     else store?.setItem(DRAFT_KEY, JSON.stringify(d));
   } catch {
     // Private mode: the draft lives for this page only.
@@ -312,4 +334,73 @@ export function homeTodayText(t: { points: number; cap: number; stop: string | n
   const pct = (n: number) => `${Math.round(n * 10) / 10}%`;
   const line = `Home today: ${pct(t.points)} of the week, of its ${pct(t.cap)} a day`;
   return t.stop ? `${line} · paused: ${t.stop}` : line;
+}
+
+// ---- item 794: research watch ----
+
+/** What "keep this current: …" read from the composer gives the form. */
+export interface WatchPrefill {
+  topic: string;
+  sources: string[];
+}
+
+/** The schedules a watch is offered: daily or weekly (anything else is typed). */
+export const WATCH_PRESETS = ["every morning", "every Monday at 9am"] as const;
+
+const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
+
+/** The links in `text`, trailing punctuation off, each once. */
+export function linksIn(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.match(URL_RE) ?? []) {
+    const u = m.replace(/[.,;:]+$/, "");
+    if (!out.includes(u)) out.push(u);
+  }
+  return out;
+}
+
+/**
+ * "keep this current: sparse autoencoders, and https://x.org" → the topic
+ * and the pages he named; null when the text does not start with "keep
+ * this current", "keep it current", "keep current" or "keep me current on".
+ */
+export function parseWatch(text: string): WatchPrefill | null {
+  const m = /^\s*keep\s+(?:(?:this|it)\s+)?current\s*(?::|on\b|about\b|[—–-])\s*([\s\S]+)$/i.exec(text) ?? /^\s*keep\s+me\s+(?:current|posted|updated)\s+(?:on|about)\s*:?\s*([\s\S]+)$/i.exec(text);
+  if (!m) return null;
+  const sources = linksIn(m[1]);
+  let topic = m[1];
+  for (const u of sources) topic = topic.split(u).join(" ");
+  const edge = /^[\s,.:;—–-]+|[\s,.:;—–-]+$/g;
+  topic = topic.replace(/\s+/g, " ").replace(edge, "");
+  topic = topic.replace(/[\s,]+(?:and|plus|also|check|see)$/i, "").replace(edge, "").trim();
+  return topic ? { topic, sources } : null;
+}
+
+/** The proposal the form opens with — instructions, schedule and name — all editable before Save. */
+export function proposeWatch(p: WatchPrefill): { every: string; text: string; title: string; sources: string } {
+  return {
+    every: "every morning",
+    text:
+      `Keep my research note on “${p.topic}” current. Check the literature, the pages listed and the news for anything new ` +
+      `since the note's last entry — new papers, results, releases, corrections — and record only what is new, ` +
+      `each claim with the page you opened for it.`,
+    title: "",
+    sources: p.sources.join("\n"),
+  };
+}
+
+/** The pages box's lines, blank ones off. */
+export function sourceLines(box: string): string[] {
+  return box
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "");
+}
+
+/** The row's watch line: the note it keeps, and how many pages beside the literature. */
+export function watchLine(j: Job): string {
+  const w = j.watch;
+  if (!w) return "";
+  const pages = w.sources.length === 0 ? "the literature and news" : `the literature, news and ${w.sources.length} page${w.sources.length === 1 ? "" : "s"}`;
+  return `Keeps ${w.note} current · checks ${pages}`;
 }

@@ -208,6 +208,35 @@ tell me what failed" in any chat (the form opens filled; nothing is sent).
   `apps/desktop/src-tauri/src/jobs.rs`, `remoteHandlers.ts` (`runJob`),
   `src/remote/jobs.ts`, `JobsSheet.svelte`.
 
+### Research watch (item 794, 2026-11-18)
+
+A watch is a job that keeps one note current on a topic. Make one from the
+drawer → **Jobs** → New watch, or type "keep this current: <topic>" (also
+"keep current —", "keep me posted on …") in any chat: the form opens on a
+proposal — the instructions, the pages named in his words, every morning —
+all editable before **Start watch**; nothing is sent.
+
+- **Each run** sends his instructions plus a block made in code: the
+  topic, the sources (OpenAlex's and arXiv's open search pages, opened with
+  `WebFetch`, so the read-only hold needs no connector; the pages he named;
+  a web search), the note's latest ~6,000 characters, and the answer's
+  shape (line 1 "Nothing new." or what changed; then "- claim — URL").
+- **The note** is written by the host, never the model:
+  `<project workspace>/.agents/watch-<slug>.md` (unfiled jobs:
+  `<home>/watch/`), opened append-only, so earlier entries are never
+  rewritten. A claim whose URL the run opened with `WebFetch` is tagged
+  `external`; any other is kept, tagged `unverified`, and is not a change.
+  Nothing new is one line: `- 2026-11-18 8:00 AM — Nothing new.`
+- **Pushes only on change**: the run's turn-end "Finished" push is held
+  (`watch::is_quiet` in `Push::notify`); a run with at least one verified
+  new claim pushes its first line (`What::Watch`). A failed run still says
+  "Failed".
+- The Jobs row says which note it keeps; the last-run line is the
+  headline with counts, and the cost per run is the job's usual line.
+  Pause, Run now and Delete (asks; the note stays) are the job's.
+- Code: `crates/nightloom-service/src/jobs/watch.rs`, `Job::watch`,
+  `src/remote/jobs.ts` (`parseWatch`, `proposeWatch`), `JobsSheet.svelte`.
+
 ## The runaway guard (item 784, 2026-11-17)
 
 A run nobody is watching pauses when it looks stuck, and asks him.
