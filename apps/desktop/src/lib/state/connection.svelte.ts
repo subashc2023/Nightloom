@@ -272,7 +272,10 @@ export async function applyDraft(): Promise<void> {
   app.connecting = true;
   app.connectError = null;
   try {
-    const res = await api.connect({
+    // Item 873: the window's deadline on this connect too, as on the agent's
+    // (item 220) — without it a provider connect that never answers held
+    // "connecting…" in the top bar for good.
+    const res = await withDeadline(api.connect({
       provider: d.provider,
       model: d.model.trim() || undefined,
       baseUrl: d.baseUrl.trim() || undefined,
@@ -286,7 +289,7 @@ export async function applyDraft(): Promise<void> {
       selfCompact: d.selfCompact,
       knowledge: d.knowledge,
       workspace: d.workspace.trim() || undefined,
-    });
+    }), CONNECT_DEADLINE_MS, "Connecting to the provider");
     app.connection = {
       provider: res.provider,
       model: res.model,

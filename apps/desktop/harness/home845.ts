@@ -34,20 +34,29 @@ const talk = [
   { event: "assistant_message", model: "claude-opus-5-5", blocks: [{ type: "tool_use", id: "t3", name: "chat_status", input: {} }, { type: "text", text: "Design review is at 3:30 PM now — Priya moved it from 2:00 PM. Nothing else on your calendar clashes." }], stop_reason: "end_turn", usage: { input_tokens: 4200, output_tokens: 90 }, at: ago(30) },
 ];
 const events = s === "brief" ? scan : [...scan, ...talk];
+// Item 873: the feed as his reads — each row's label is its chat's title, its project an id the list names.
 const feed = [
-  { at: ago(50), kind: "done", label: null, chat: null, project: "Nightloom", line: "Night run finished — 2 fixes merged, CI passed" },
-  { at: ago(90), kind: "done", label: "Weekly backup", chat: null, project: null, line: "Weekly backup ran on time" },
+  { at: ago(50), kind: "done", label: "Merge round T and build it", chat: "c1", project: "nl", line: "Finished" },
+  { at: ago(70), kind: "question", label: "ICS 51 Exam 3 study plan coverage", chat: "c2", project: "nl", line: "Has a question for you" },
+  { at: ago(90), kind: "job_done", label: "Weekly backup", chat: null, project: null, line: "Weekly backup ran on time" },
+  { at: ago(140), kind: "failed", label: "Lecture activities — answers check", chat: "c3", project: "nl", line: "Failed" },
   { at: ago(200), kind: "done", label: null, chat: null, project: "nightshift-code", line: "Research on cache pricing finished — 1 page" },
 ];
+const acct = (service: string, kind: string, nth: number | null, extra: Record<string, unknown> = {}) => ({ connector: `claude.ai ${service}${nth ? ` ${nth}` : ""}`, service, kind, address: null, nth, status: "connected", on: true, claude_ai: true, in_scan: true, ...extra });
 const reach = { checked_at: ago(12), error: null, locals: [], accounts: [
-  { connector: "claude.ai Gmail", service: "Gmail", kind: "mail", address: "you@example.com", nth: null, status: "connected", on: true, claude_ai: true, in_scan: true },
-  { connector: "claude.ai Google Calendar", service: "Google Calendar", kind: "calendar", address: "you@example.com", nth: null, status: "connected", on: true, claude_ai: true, in_scan: true },
-  { connector: "claude.ai Google Drive", service: "Google Drive", kind: "files", address: null, nth: null, status: "needs_sign_in", on: true, claude_ai: true, in_scan: false },
+  acct("Gmail", "mail", 1), acct("Gmail", "mail", 2), acct("Gmail", "mail", 3),
+  acct("Google Calendar", "calendar", 1), acct("Google Calendar", "calendar", 2, { status: "needs_sign_in", in_scan: false }), acct("Google Calendar", "calendar", 3),
+  acct("Claude Docs", "files", null, { in_scan: false }),
+  acct("Google Drive", "files", null, { status: "needs_sign_in", in_scan: false }),
+  acct("Google Slides", "files", null, { in_scan: false }),
+  acct("Google Sheets", "files", null, { in_scan: false, on: false }),
+  acct("Acme Tracker", "other", null, { status: "failed", in_scan: false, claude_ai: false }),
 ] };
 const macSources = [
   { id: "messages", name: "Messages", status: "allowed", on: true, why: "Home reads unread messages; it never replies.", settings_url: "" },
   { id: "reminders", name: "Reminders", status: "allowed", on: true, why: "Home reads due and overdue reminders.", settings_url: "" },
   { id: "calendar", name: "Calendar app", status: "not_asked", on: false, why: "Not asked yet.", settings_url: "" },
+  { id: "contacts", name: "Contacts", status: "denied", on: false, why: "You turned it down in System Settings.", settings_url: "" },
 ];
 
 import { homeTasks } from "./home845/fixtures";
@@ -159,6 +168,13 @@ async function run() {
   // checkone=1: one source's own Check now pressed (the stub holds it, so the row shows it checking).
   if (q.get("checkone") === "1") {
     document.querySelectorAll<HTMLElement>(".w-src .w-chk .jb")[2]?.click();
+    await wait(300);
+  }
+  // srcend=1 (item 873): the Sources panel scrolled to its end, so a shot shows the rows below the fold (off,
+  // failed, the Mac's apps).
+  if (q.get("srcend") === "1") {
+    const pb = document.querySelector<HTMLElement>(".w-grp")?.closest<HTMLElement>(".h9-pb");
+    if (pb) pb.scrollTop = pb.scrollHeight;
     await wait(300);
   }
   void root;

@@ -13,6 +13,8 @@
   import { onMount } from "svelte";
   import { canAsk, isRead, sourceStatusWords, sourcesSummary, type HomeSource, type SourceId } from "../lib/homeSources";
   import type { Client } from "./client";
+  import Icon from "../lib/Icon.svelte";
+  import { macLook } from "../lib/homeStage/sourceLook";
 
   interface Props {
     client: Pick<Client, "homeSources" | "homeSourceAsk">;
@@ -71,11 +73,14 @@
     <p class="hs-note">{sourcesSummary(rows)}</p>
     {#if problem}<p class="hs-note hs-bad">{problem}</p>{/if}
     {#each rows as r (r.id)}
-      <div class="hs-row" class:off={!isRead(r)}>
-        <span class="hs-dot" class:ok={isRead(r)} class:warn={r.status === "denied" || r.status === "write_only"}></span>
+      {@const look = macLook(r.id)}
+      <!-- Item 873: each app's own mark and tint, as on the Mac's Watch (sourceLook.ts). -->
+      <div class="hs-row" class:off={!isRead(r)} style:--tint={look.tint}>
+        <span class="hs-ico" aria-hidden="true"><Icon name={look.icon} size={17} /></span>
         <div class="hs-main">
           <div class="hs-top">
             <span class="hs-name">{r.name}</span>
+            <span class="hs-dot" class:ok={isRead(r)} class:warn={r.status === "denied" || r.status === "write_only"}></span>
             <span class="hs-tag">{isRead(r) || r.status !== "allowed" ? sourceStatusWords(r.status) : "Off"}</span>
           </div>
           <div class="hs-why">{r.why}</div>
@@ -107,22 +112,53 @@
   }
   .hs-row {
     display: flex;
-    gap: 10px;
+    gap: 12px;
     align-items: flex-start;
     padding: 9px 0;
     border-top: 1px solid var(--line);
     min-width: 0;
   }
+  /* Item 873: the app's mark in its tint on a low-alpha fill of it; Classic keeps the tint on the mark alone. */
+  .hs-ico {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    color: var(--tint);
+    background: color-mix(in srgb, var(--tint) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--tint) 40%, transparent);
+  }
+  /* The phone page does not load app.css's `.ns-ico`: the line icon's stroke, here. */
+  .hs-ico :global(svg) {
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  :global([data-layout="classic"]) .hs-ico {
+    background: var(--well, var(--raised));
+    border-color: var(--line);
+  }
+  .off .hs-ico {
+    opacity: 0.6;
+  }
   .hs-dot {
     flex: none;
+    align-self: center;
     width: 8px;
     height: 8px;
-    margin-top: 6px;
     border-radius: 50%;
     background: var(--line2, var(--line));
   }
   .hs-dot.ok {
     background: var(--done, var(--ink));
+    box-shadow: 0 0 6px color-mix(in srgb, var(--done, var(--ink)) 60%, transparent);
+  }
+  :global([data-layout="classic"]) .hs-dot.ok {
+    box-shadow: none;
   }
   .hs-dot.warn {
     background: var(--accent);
@@ -133,7 +169,7 @@
   }
   .hs-top {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 8px;
   }
   .hs-name {

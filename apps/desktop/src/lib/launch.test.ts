@@ -144,23 +144,25 @@ describe('"not connected" only once it is true (item 220)', () => {
   });
 });
 
-describe("the line under the composer says connecting… while the connect runs (item 230)", () => {
-  it("reads connecting… until the launch connect has settled, then the failure wording", async () => {
+// ~~says connecting… while the connect runs (item 230)~~ — item 873 (2026-11-19): "connecting…" showed twice, in the
+// top bar's chip and under the box; the chip keeps it, the line under the box says only the failure.
+describe("the line under the composer is empty while the connect runs, the failure once true (items 230, 873)", () => {
+  it("reads nothing until the launch connect has settled, then the failure wording", async () => {
     const connect = deferred();
     const s = steps({ connect: () => connect.promise });
     const done = runLaunch(s);
     const hint = () =>
       composerConnectHint({ connected: false, connecting: false, launchConnectSettled: launch.connectSettled });
-    expect(hint()).toBe("connecting…");
+    expect(hint()).toBeNull();
     await vi.waitFor(() => expect(s.log).toContain("newSession"));
-    expect(hint()).toBe("connecting…");
+    expect(hint()).toBeNull();
     connect.reject("claude not found");
     await done;
     expect(hint()).toBe("connect a provider to start");
   });
 
-  it("reads connecting… during a later connect, and nothing when connected", () => {
-    expect(composerConnectHint({ connected: false, connecting: true, launchConnectSettled: true })).toBe("connecting…");
+  it("reads nothing during a later connect (the top bar says it), and nothing when connected", () => {
+    expect(composerConnectHint({ connected: false, connecting: true, launchConnectSettled: true })).toBeNull();
     expect(composerConnectHint({ connected: true, connecting: false, launchConnectSettled: true })).toBeNull();
   });
 });

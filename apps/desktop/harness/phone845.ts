@@ -54,7 +54,13 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (p === "/home/scan") return json({ scan: { date: "2026-11-19", text: SCAN, ran_at: ago(240), today: true, skipped: null } });
   if (p === "/home/held") return json({ blockers: [] });
   if (p === "/home/routes") return json({ cards: [], held: [], started: [] });
-  if (p === "/home/sources") return json([]);
+  // Item 873: the Mac's apps, so the phone's Home on this Mac shows their marks.
+  if (p === "/home/sources") return json([
+    { id: "messages", name: "Messages", status: "allowed", on: true, why: "Home reads unread messages; it never replies.", settings_url: "" },
+    { id: "reminders", name: "Reminders", status: "allowed", on: true, why: "Home reads due and overdue reminders.", settings_url: "" },
+    { id: "calendar", name: "Calendar", status: "not_asked", on: false, why: "Not asked yet.", settings_url: "" },
+    { id: "contacts", name: "Contacts", status: "denied", on: false, why: "You turned it down in System Settings.", settings_url: "" },
+  ]);
   if (p === "/push/feed") return json({ rows: [{ what: "question", chat: "h-today", label: "Home", project: "home", at: ago(5) }] });
   if (p === "/jobs") return json({ jobs: [], now: new Date().toISOString() });
   if (p === "/running") return json({ chats: [], contexts: {} });
@@ -153,6 +159,13 @@ async function run() {
     restart = ` restart=${saved.length}B told=${told.length} notes=${notes.length}`;
   }
   void root;
+  // at=sources (item 873): the page scrolled to Home on this Mac, so the shot shows the Mac's apps and their marks.
+  if (q.get("at") === "sources") {
+    const sec = document.querySelector<HTMLElement>('[data-home-section="sources"]');
+    const box = document.querySelector<HTMLElement>(".home");
+    if (sec && box) box.scrollTop = sec.offsetTop - 80;
+    await wait(200);
+  }
   const st = document.querySelector<HTMLElement>("[data-phone-stage]");
   const bad: string[] = [];
   for (const el of st?.querySelectorAll<HTMLElement>("*") ?? []) {
