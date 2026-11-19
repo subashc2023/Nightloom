@@ -114,6 +114,7 @@ describe("pasteToComposeKeydown / pasteToComposeEvent", () => {
   const root = {
     closest: () => null,
     querySelector: () => box,
+    classList: { contains: () => false },
   };
   const body = el("BODY");
   let active: FocusEl = body;
@@ -170,7 +171,7 @@ describe("pasteToComposeKeydown / pasteToComposeEvent", () => {
     expect(e.preventDefault).not.toHaveBeenCalled();
     expect(seen).toEqual([]);
   });
-  it("no composer listening (an aside's box only): left alone", () => {
+  it("no composer listening: left alone", () => {
     off();
     const e = down();
     expect(e.preventDefault).not.toHaveBeenCalled();
@@ -195,7 +196,9 @@ describe("351: the wiring", () => {
     expect(summonSrc).toContain('window.addEventListener("paste", pasteToComposeEvent, true);');
     expect(summonSrc).toContain('window.removeEventListener("paste", pasteToComposeEvent, true);');
   });
-  it("the chat's composer (not an aside's) registers its handler", () => {
-    expect(composerSrc).toMatch(/if \(aside \|\| !el\) return;\s*return registerPasteHandler\(el, pasteFromOutside\);/);
+  // ~~the chat's composer (not an aside's) registers its handler~~ — item
+  // 853: every box registers; `composerTarget` picks the one meant.
+  it("every composer, an aside's too, registers its handler (853)", () => {
+    expect(composerSrc).toMatch(/if \(!el\) return;\s*return registerPasteHandler\(el, pasteFromOutside\);/);
   });
 });

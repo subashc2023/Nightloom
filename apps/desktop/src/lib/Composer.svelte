@@ -233,7 +233,7 @@
   import { CaretKeeper, clampSel, mayAutoFocus } from "./composerCaret";
   import { ScrollHold } from "./boxPlace";
   import { FocusThroughLock, boxLocked } from "./boxLock";
-  import { chatBoxCount, chatBoxMounted, composerSummon } from "./composerSummon.svelte";
+  import { boxMounted, chatBoxMounted, composerSummon, isSummonTarget } from "./composerSummon.svelte";
   import { registerPasteHandler, type PasteRequest } from "./pasteToCompose";
   import { requestWrapUp } from "./wrapAsides.svelte";
   // Backlog 283: the same composer in an aside.
@@ -1329,15 +1329,19 @@
       });
     });
   });
-  // ⌘L (backlog 290): the chat's box — or an aside tab's, when no chat
-  // box is drawn; never a floating aside card's.
-  $effect(() => (aside ? undefined : untrack(() => chatBoxMounted())));
+  // ⌘L (backlog 290): ~~the chat's box — or an aside tab's, when no chat
+  // box is drawn; never a floating aside card's~~ — item 853: the box
+  // meant, as typing picks it (`composerTarget`): a card he is in or last
+  // pressed on, else the focused pane's box (an aside tab's in front), else
+  // the chat's. Every box mounted keeps the window's type-to-focus, Enter
+  // and ⌘V listeners on, an aside's too.
+  $effect(() => untrack(() => (aside ? boxMounted() : chatBoxMounted())));
   let summonSeen = untrack(() => composerSummon.seq);
   $effect(() => {
     const seq = composerSummon.seq;
     if (seq === summonSeen) return;
     summonSeen = seq;
-    if (aside && (!wantsFocus || untrack(() => chatBoxCount()) > 0)) return;
+    if (!untrack(() => isSummonTarget(root))) return;
     untrack(() => {
       if (!ta) return;
       const box = boxElement(ta);
@@ -1393,9 +1397,10 @@
    * `onpaste` during its dispatch; plain text, which `onpaste` leaves to the
    * browser, goes in at the caret as one paste.
    */
+  // Item 853: every box, an aside's too — `pasteToCompose.ts` asks the one meant.
   $effect(() => {
     const el = root;
-    if (aside || !el) return;
+    if (!el) return;
     return registerPasteHandler(el, pasteFromOutside);
   });
   function pasteFromOutside(req: PasteRequest): void {
@@ -2173,7 +2178,10 @@
     if (!thread) return;
     const take = (id: string): boolean => {
       if (id !== "stop_turn") return false;
-      const asideFocused = !!root && root.contains(document.activeElement);
+      // Item 853: ~~only with its box focused~~ — also when this box is the
+      // one meant (an aside tab in front, a card he last pressed on), as
+      // the chat's ⌘. stops its turn from anywhere in the chat.
+      const asideFocused = !!root && (root.contains(document.activeElement) || isSummonTarget(root));
       if (!asideFocused) return false;
       if (stopChordTarget({ asideFocused, asideBusy, turnBusy: app.busy }) === "aside") stopAside(thread);
       return true;
