@@ -71,7 +71,10 @@ export function rasterBacking(img: HTMLImageElement): RasterBacking {
  * `rasterBacking` says so, and take the paper off when a new source does not need it.
  */
 export function paperIfDarkInk(img: HTMLImageElement): { destroy: () => void } {
-  const judge = () => img.classList.toggle(PAPER_CLASS, rasterBacking(img) === "paper");
+  // An SVG's paper is its surface's call (`svgBacking`); this never touches it.
+  const judge = () => {
+    if (!isSvg(img.currentSrc || img.src)) img.classList.toggle(PAPER_CLASS, rasterBacking(img) === "paper");
+  };
   img.addEventListener("load", judge);
   if (img.complete && img.naturalWidth) judge();
   return { destroy: () => img.removeEventListener("load", judge) };
