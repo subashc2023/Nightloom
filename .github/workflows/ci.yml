@@ -57,6 +57,14 @@ jobs:
       - name: cargo clippy
         shell: bash
         run: cargo clippy --workspace --exclude nightloom-desktop --all-targets 2>&1 | tee "$RUNNER_TEMP/clippy.log"
+      # The history, dream, centre and nightshift tests commit in scratch
+      # repositories with the committer's own identity, as on a developer's
+      # machine; a fresh runner has none ("Author identity unknown").
+      - name: git identity
+        shell: bash
+        run: |
+          git config --global user.name "Nightloom CI"
+          git config --global user.email "ci@nightloom.invalid"
       - name: cargo test
         shell: bash
         run: cargo test --workspace --exclude nightloom-desktop 2>&1 | tee "$RUNNER_TEMP/test.log"
