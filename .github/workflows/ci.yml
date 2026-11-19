@@ -11,11 +11,11 @@
 # that a commit cannot regress on its own.
 name: CI
 
-# `nightshift` is where the work lands day to day (item 864): without it
-# here, 291 commits went unchecked between two pull requests.
+# `ci-check`: the parent pushes nightshift there to run CI on demand (item 864);
+# nightshift itself joins only after a week of green (blocker 1858) — a red run emails him.
 on:
   push:
-    branches: [main, nightshift]
+    branches: [main, ci-check]
   pull_request:
 
 env:
