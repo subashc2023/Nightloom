@@ -171,9 +171,7 @@ pub fn first_reply_in(
             {
                 return false;
             }
-            let meta_type = meta
-                .as_ref()
-                .and_then(|m| m.get("agentType")?.as_str());
+            let meta_type = meta.as_ref().and_then(|m| m.get("agentType")?.as_str());
             if call.is_none() && meta_type.is_some_and(|t| t != agent_type) {
                 return false;
             }
@@ -360,7 +358,11 @@ pub fn hold(
         let released = std::fs::read_to_string(dir.join(STAGGER_FILE))
             .ok()
             .and_then(|s| serde_json::from_str::<BTreeMap<String, Group>>(&s).ok())
-            .and_then(|gs| gs.get(&key).filter(|g| g.released_ms.is_some()).map(|g| g.seen));
+            .and_then(|gs| {
+                gs.get(&key)
+                    .filter(|g| g.released_ms.is_some())
+                    .map(|g| g.seen)
+            });
         if let Some(was_seen) = released {
             seen = was_seen;
             break;
@@ -648,7 +650,13 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.join("agent-x.jsonl"), reply).unwrap();
-        assert!(!first_reply_in(&dir, &[], "toolu_lead", "reusable", Some("opus")));
+        assert!(!first_reply_in(
+            &dir,
+            &[],
+            "toolu_lead",
+            "reusable",
+            Some("opus")
+        ));
         // The leader's own reply counts.
         std::fs::write(
             dir.join("agent-y.meta.json"),
@@ -656,7 +664,13 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.join("agent-y.jsonl"), reply).unwrap();
-        assert!(first_reply_in(&dir, &[], "toolu_lead", "reusable", Some("opus")));
+        assert!(first_reply_in(
+            &dir,
+            &[],
+            "toolu_lead",
+            "reusable",
+            Some("opus")
+        ));
     }
 
     #[test]
