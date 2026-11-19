@@ -509,7 +509,7 @@ pub async fn prepare_office_within(
     let too_long = || {
         format!(
             "making its PDF fit took longer than {} min, so it stopped",
-            (budget.as_secs() + 59) / 60
+            budget.as_secs().div_ceil(60)
         )
     };
     let whole = prepare_office(name, bytes, soffice, timeout).await?;
