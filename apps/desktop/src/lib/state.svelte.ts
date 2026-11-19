@@ -1406,6 +1406,19 @@ export async function activateTab(tabId: string): Promise<void> {
   }
 }
 
+/**
+ * Item 874 (his blocker 2203): Chats or Notes in the sidebar, while the focused tab shows the Nightshift page it took
+ * over in place, turn that tab back into what it held (the same chat — its draft is app state, kept — or note). Other
+ * tabs are untouched. A chat no longer in the open project (deleted, or he switched project): the tab stays Nightshift. True when it turned.
+ */
+export async function backFromNightshift(): Promise<boolean> {
+  const alive = (c: TabContent) => c.kind !== "chat" || c.session === null || app.sessions.some((x) => x.id === c.session);
+  const tab = tabs.takeBack(app.tabs, alive);
+  if (!tab) return false;
+  await activateTab(tab.id);
+  return true;
+}
+
 export async function refreshSessions(): Promise<void> {
   try {
     // A chat made by Send later is named by its scheduled message until

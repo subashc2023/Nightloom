@@ -118,6 +118,9 @@ export function isSingleton(content: TabContent): boolean {
 export interface Tab {
   id: string;
   content: TabContent;
+  /** Item 874 (his blocker 2203): what this tab held before the Nightshift page took it over in place — Chats or
+   *  Notes in the sidebar turn the tab back into it (`takeBack`). Only set while the tab shows Nightshift. */
+  back?: TabContent;
 }
 
 export interface Pane {
@@ -405,6 +408,10 @@ export function land(ws: Workspace, pane: Pane, content: TabContent, how: LandHo
   }
   const current = activeTab(pane);
   if (how === "replace" && current.content.kind !== "new-project") {
+    // Item 874: the Nightshift page takes the tab over in place and remembers what it held; anything else landing
+    // in place forgets it.
+    if (content.kind === "nightshift" && current.content.kind !== "nightshift") current.back = current.content;
+    else if (content.kind !== "nightshift") delete current.back;
     current.content = content;
     return current;
   }
@@ -412,6 +419,21 @@ export function land(ws: Workspace, pane: Pane, content: TabContent, how: LandHo
   const at = pane.tabs.findIndex((t) => t.id === current.id);
   pane.tabs.splice(at + 1, 0, tab);
   pane.active = tab.id;
+  return tab;
+}
+
+/**
+ * Item 874 (his blocker 2203): the focused pane's tab, if it shows the Nightshift page it took over in place, turned
+ * back into what it held — the caller then shows that content. Null when there is nothing to turn back (the page has
+ * its own tab, or what it held is gone: `alive` says no).
+ */
+export function takeBack(ws: Workspace, alive: (c: TabContent) => boolean): Tab | null {
+  const tab = activeTab(focusedPane(ws));
+  if (!tab || tab.content.kind !== "nightshift" || !tab.back) return null;
+  const back = tab.back;
+  delete tab.back;
+  if (!alive(back)) return null;
+  tab.content = back;
   return tab;
 }
 

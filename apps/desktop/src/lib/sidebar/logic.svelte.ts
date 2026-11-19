@@ -2,7 +2,7 @@
 // `SidebarClassic.svelte` mount this and keep only their markup and CSS; `logic.test.ts` beside it fails when
 // one look binds to something the other does not. Moved verbatim from Sidebar.svelte's script.
 import { refreshRoutes } from "../home.svelte";
-import { saveMemoryFromChat, app, addToast, deleteSession, endContentDrag, droppedContent, moveChatToThread, moveSession, newChatInThread, enableNightshift, chatSelected, newSession, openSession, refreshNightshift, renameSession, toggleSidebar, contextUsed, connectionWindowFor, liveChats } from "../state.svelte";
+import { saveMemoryFromChat, app, addToast, deleteSession, endContentDrag, droppedContent, moveChatToThread, moveSession, newChatInThread, enableNightshift, chatSelected, newSession, openSession, refreshNightshift, renameSession, toggleSidebar, contextUsed, connectionWindowFor, liveChats, backFromNightshift } from "../state.svelte";
 import { renamedTo } from "../renameField";
 // Item 534 (Filament IV stage 3): the dated sections, the two-line row's
 // clock and context reading, the live row's line.
@@ -700,11 +700,15 @@ export function sidebarLogic(props: () => SidebarLogicProps) {
   // 140 (2026-09-17) the Nightshift page is a tab, so the sidebar's mode
   // and the centre are decoupled: Chats and Notes change the list only,
   // and the Nightshift tab stays in front until another tab is clicked.
+  // Item 874 (his blocker 2203): Nightshift takes the current tab over in place; Chats or Notes turn that tab back.
   function goChats() {
     app.leftTab = "chats";
+    // The list stays the one he picked even when the tab turns back into a note (showNote picks Notes).
+    void backFromNightshift().then((turned) => turned && (app.leftTab = "chats"));
   }
   function goNotes() {
     app.leftTab = "notes";
+    void backFromNightshift().then((turned) => turned && (app.leftTab = "notes"));
   }
 
   /**
