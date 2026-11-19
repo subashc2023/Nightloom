@@ -72,6 +72,7 @@ pub enum Role {
     Wait {
         deadline_ms: i64,
         before: Vec<String>,
+        leader: String,
     },
 }
 
@@ -81,6 +82,7 @@ pub fn role(group: Option<&Group>, now_ms: i64) -> Role {
         Some(g) if g.released_ms.is_none() && now_ms < g.since_ms + HOLD_MAX_MS => Role::Wait {
             deadline_ms: g.since_ms + HOLD_MAX_MS,
             before: g.before.clone(),
+            leader: g.leader.clone(),
         },
         Some(g) if g.released_ms.is_some_and(|r| now_ms < r + WARM_MS) => Role::Go,
         _ => Role::Lead,
@@ -134,11 +136,16 @@ pub fn agent_ids(dir: &Path) -> Vec<String> {
 
 /// Whether a new agent of `agent_type` (on `model`, when known) in `dir`
 /// — one not in `before` — has its first reply written: an `assistant`
-/// line in its transcript. Its type is its `.meta.json`'s `agentType`; a
-/// file with no meta counts by its model alone.
+/// line in its transcript. The leader is known exactly when its
+/// `.meta.json` names the spawning call (`toolUseId`, CLI 2.1.328): then
+/// only the leader's own reply counts, not a same-type sibling's of
+/// another group (a nested helper's, say) — review, 2026-11-19. A meta
+/// with no call id counts by its `agentType`; a file with no meta by its
+/// model alone.
 pub fn first_reply_in(
     dir: &Path,
     before: &[String],
+    leader: &str,
     agent_type: &str,
     model: Option<&str>,
 ) -> bool {
@@ -146,11 +153,22 @@ pub fn first_reply_in(
         .into_iter()
         .filter(|id| !before.contains(id))
         .any(|id| {
-            let meta_type = std::fs::read_to_string(dir.join(format!("agent-{id}.meta.json")))
+            let meta = std::fs::read_to_string(dir.join(format!("agent-{id}.meta.json")))
                 .ok()
-                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-                .and_then(|m| m.get("agentType")?.as_str().map(str::to_string));
-            if meta_type.as_deref().is_some_and(|t| t != agent_type) {
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+            let call = meta
+                .as_ref()
+                .and_then(|m| m.get("toolUseId")?.as_str())
+                .filter(|c| !c.is_empty());
+            if let Some(call) = call
+                && call != leader
+            {
+                return false;
+            }
+            let meta_type = meta
+                .as_ref()
+                .and_then(|m| m.get("agentType")?.as_str());
+            if call.is_none() && meta_type.is_some_and(|t| t != agent_type) {
                 return false;
             }
             let Ok(text) = std::fs::read_to_string(dir.join(format!("agent-{id}.jsonl"))) else {
@@ -278,9 +296,10 @@ pub fn hold(
         // Old groups go (a day's worth of turns would pile up otherwise).
         gs.retain(|_, g| now_ms - g.since_ms < WARM_MS + hold_max_ms);
         let r = match role(gs.get(&key), now_ms) {
-            Role::Wait { before, .. } => Role::Wait {
+            Role::Wait { before, leader, .. } => Role::Wait {
                 deadline_ms: gs.get(&key).map_or(now_ms, |g| g.since_ms) + hold_max_ms,
                 before,
+                leader,
             },
             r => r,
         };
@@ -300,6 +319,7 @@ pub fn hold(
     let Role::Wait {
         deadline_ms,
         before,
+        leader,
     } = role
     else {
         return None;
@@ -321,7 +341,7 @@ pub fn hold(
             .and_then(|s| serde_json::from_str::<BTreeMap<String, Group>>(&s).ok())
             .and_then(|gs| gs.get(&key).and_then(|g| g.released_ms))
             .is_some();
-        if released || first_reply_in(&agents, &before, &agent_type, model) {
+        if released || first_reply_in(&agents, &before, &leader, &agent_type, model) {
             seen = true;
             break;
         }
@@ -555,5 +575,27 @@ mod tests {
         .unwrap();
         assert!(t0.elapsed().as_millis() < 1_000);
         assert!(note.contains("did not come in time"), "{note}");
+    }
+
+    #[test]
+    fn only_the_leaders_own_reply_releases_when_its_meta_names_the_call() {
+        let dir = tmp("leader");
+        let reply = "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5-5\"}}\n";
+        // A same-type helper of another group answered: not the leader.
+        std::fs::write(
+            dir.join("agent-x.meta.json"),
+            "{\"agentType\":\"reusable\",\"toolUseId\":\"toolu_other\"}",
+        )
+        .unwrap();
+        std::fs::write(dir.join("agent-x.jsonl"), reply).unwrap();
+        assert!(!first_reply_in(&dir, &[], "toolu_lead", "reusable", Some("opus")));
+        // The leader's own reply counts.
+        std::fs::write(
+            dir.join("agent-y.meta.json"),
+            "{\"agentType\":\"reusable\",\"toolUseId\":\"toolu_lead\"}",
+        )
+        .unwrap();
+        std::fs::write(dir.join("agent-y.jsonl"), reply).unwrap();
+        assert!(first_reply_in(&dir, &[], "toolu_lead", "reusable", Some("opus")));
     }
 }
