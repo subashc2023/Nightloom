@@ -224,26 +224,41 @@ pub struct Held {
     pub since_ms: i64,
 }
 
+/// How old a held entry may be before it is taken for a hook that died
+/// mid-hold (a turn stopped, the CLI killed): past the longest hold, with
+/// room for a slow exit. Such an entry is not shown and is dropped at the
+/// next write, so the file never outgrows the holds of the moment, in this
+/// turn or the next (review, 2026-11-19).
+pub const HELD_STALE_MS: i64 = HOLD_MAX_MS + 20_000;
+
+fn fresh(h: &Held, now_ms: i64) -> bool {
+    now_ms - h.since_ms < HELD_STALE_MS
+}
+
 /// The calls held now (the read loop's view).
 pub fn read_held(dir: &Path) -> BTreeMap<String, Held> {
-    std::fs::read_to_string(dir.join(HELD_FILE))
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut held: BTreeMap<String, Held> = std::fs::read_to_string(dir.join(HELD_FILE))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    held.retain(|_, h| fresh(h, now_ms));
+    held
 }
 
 fn set_held(dir: &Path, id: &str, held: Option<Held>) {
-    let _ = with_locked(
-        &dir.join(HELD_FILE),
-        |m: &mut BTreeMap<String, Held>| match held {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let _ = with_locked(&dir.join(HELD_FILE), |m: &mut BTreeMap<String, Held>| {
+        m.retain(|_, h| fresh(h, now_ms));
+        match held {
             Some(h) => {
                 m.insert(id.to_string(), h);
             }
             None => {
                 m.remove(id);
             }
-        },
-    );
+        }
+    });
 }
 
 /// What the Agent row reads while it waits — plain words.
@@ -597,5 +612,30 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join("agent-y.jsonl"), reply).unwrap();
         assert!(first_reply_in(&dir, &[], "toolu_lead", "reusable", Some("opus")));
+    }
+
+    #[test]
+    fn a_held_entry_left_by_a_dead_hook_ages_out() {
+        let dir = tmp("stale");
+        let now = chrono::Utc::now().timestamp_millis();
+        let old = Held {
+            text: "x".into(),
+            since_ms: now - HELD_STALE_MS - 1,
+        };
+        let mut m = BTreeMap::new();
+        m.insert("dead".to_string(), old);
+        std::fs::write(dir.join(HELD_FILE), serde_json::to_string(&m).unwrap()).unwrap();
+        assert!(read_held(&dir).is_empty());
+        set_held(
+            &dir,
+            "live",
+            Some(Held {
+                text: "y".into(),
+                since_ms: now,
+            }),
+        );
+        let on_disk: BTreeMap<String, Held> =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(HELD_FILE)).unwrap()).unwrap();
+        assert_eq!(on_disk.keys().collect::<Vec<_>>(), vec!["live"]);
     }
 }
