@@ -236,6 +236,23 @@ export async function checkReach(): Promise<void> {
   }
 }
 
+/** Item 845: the sources being checked one at a time (Watch's per-source Check now), by row id. */
+export const checkingOne = $state<Record<string, boolean>>({});
+
+/** Check one source: a connector asks Claude Code about it alone; a Mac source re-reads its macOS permission. */
+export async function checkSource(row: string): Promise<void> {
+  if (checkingOne[row] || home.checking) return;
+  checkingOne[row] = true;
+  try {
+    if (row.startsWith("c:")) home.reach = await api.homeReachCheckOne(row.slice(2), app.draft.agentBinary.trim() || undefined);
+    else await refreshSources();
+  } catch (e) {
+    addToast(`Could not check it — ${String(e)}`);
+  } finally {
+    delete checkingOne[row];
+  }
+}
+
 /** Turn one connector on or off for Home. */
 export async function setReach(connector: string, on: boolean): Promise<void> {
   if (home.switching) return;

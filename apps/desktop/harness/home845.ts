@@ -87,8 +87,49 @@ const homeTasks = [
       { id: "promo", from: "Promotions", title: "4 newsletters and offers", source: "gmail", pile: "inbox" },
     ],
   }),
+  // Batch 2: Browse, Run, Research.
+  task("renewing-the-permit", "browse", "Renewing the parking permit", "Reading the total before paying", 1, {
+    url: "permits.cityofirvine.example/renew", site: "City of Irvine", page: "Renew a residential parking permit",
+    fields: [{ label: "Permit number", value: "RP-204418" }, { label: "Licence plate", value: "8KDL402" }, { label: "Term", value: "12 months" }, { label: "Total", value: "$84.00" }],
+    hold: { what: "Pay the renewal", amount: "$84.00", to: "City of Irvine", from: "the Visa ending 6411 saved on the site" },
+  }, "renew my parking permit"),
+  task("merge-round-t", "run", "Merge round T", "Running the code checks", 0, {
+    title: "Merge round T", chat: "h-today", asks: "Quit the app when you can — the build installs then",
+    steps: [
+      { id: "fetch", name: "Fetch", state: "done", out: "3 branches, 41 commits" },
+      { id: "merge", name: "Merge", state: "done", out: "2 clean, 1 conflict resolved", detail: { Touches: "The nightshift branch, locally" } },
+      { id: "check", name: "Checks", state: "live", progress: 0.55, detail: { Does: "Formatting, lint and tests, as CI runs them" } },
+      { id: "review", name: "Review", state: "wait" },
+      { id: "build", name: "Build", state: "wait" },
+      { id: "install", name: "Install", state: "wait", out: "waits for your quit" },
+    ],
+    agents: [
+      { id: "merger", name: "merger", task: "wave-t-766 → nightshift", state: "done", tokens: 182 },
+      { id: "checks", name: "checks", task: "clippy -p nightloom-desktop", state: "live", tokens: 61 },
+    ],
+    log: ["git fetch origin wave-t-766 wave-t-708", "merge wave-t-766: Auto-merging Composer.svelte", "CONFLICT (content): src/remote/Remote.svelte — resolving", "merge wave-t-708: clean", "cargo fmt --all -- --check  ·  ok", "clippy --workspace  ·  0 warnings  ·  1m 52s"],
+  }, "merge round T and build it"),
+  task("cache-pricing", "research", "Prompt cache pricing", "Writing the answer", 0, {
+    question: "What does a 1-hour prompt cache cost against the 5-minute one, and when does it pay?",
+    sources: [
+      { id: "s1", site: "docs.anthropic.com", title: "Prompt caching — pricing table", state: "kept", got: "The pricing table and the two cache lifetimes" },
+      { id: "s2", site: "platform.openai.com", title: "Prompt caching guide", state: "kept", got: "The caching guide, start to end" },
+      { id: "s3", site: "medium.com", title: "10 tricks to cut your LLM bill", state: "dropped", why: "no figures of its own" },
+      { id: "s4", site: "notes/subagent-cost-literature", title: "Your own note, 2026-09-08", state: "kept", own: true, got: "The payback section" },
+    ],
+    claims: [
+      { id: "c1", src: "s1", text: "A 1-hour write costs 2× the base input price; a 5-minute write 1.25×; a read 0.1× either way.", quote: "“Cache writes cost 25% more (5-minute) or 2× (1-hour) the base input price.”", confidence: "high — the provider's own table" },
+      { id: "c2", src: "s2", text: "OpenAI's cache is automatic and unpriced to write; there is no 1-hour option to buy." },
+      { id: "c3", src: "s4", text: "Your reusable agent pays back its 1-hour write after the second follow-up inside the hour.", confidence: "high for your setup — your own measurement" },
+    ],
+    answer: [{ text: "A 1-hour cache costs 2× the input price to write, against 1.25× for the 5-minute one; reading either costs a tenth.", cites: ["c1"] }, { text: "So it pays as soon as one follow-up lands after minute 5 — for your reusable agent, from the second follow-up.", cites: ["c3"] }],
+    open: [{ text: "Does a 1-hour read refresh the hour?", answered: "yes, by claim 1's page" }, "Gemini's storage price for the newest model"],
+    confidence: "High on the prices (each provider's own page); medium on the break-even (Home's arithmetic).",
+    done: true,
+  }, "what does the 1-hour cache cost"),
 ];
 const told: string[] = [];
+const notes: string[] = [];
 
 (window as unknown as { __stub: (c: string, a?: Record<string, unknown>) => Promise<unknown> }).__stub = async (cmd, a) => {
   switch (cmd) {
@@ -101,9 +142,14 @@ const told: string[] = [];
     case "home_info": return { project_id: "home", chat_id: s === "new" ? null : "h-today", folder: home.root, brief: "", scan_words: "Every day at 8:00 AM", scan_job_id: null };
     case "home_feed": return { rows: feed, seen_at: ago(120) };
     case "home_reach": case "home_reach_check": return reach;
+    // Held for the shot: the row stays "checking" while the shot is taken.
+    case "home_reach_check_one": await wait(20_000); return reach;
+    case "list_notes": return notes.map((name) => ({ name, bytes: 1, modified: ago(0), summary: "", kind: "markdown" }));
+    case "save_note": notes.push(String((a as { name?: string })?.name ?? "")); return { name: (a as { name?: string })?.name, bytes: 1, modified: ago(0), summary: "", kind: "markdown" };
+    case "claude_browser_status": return null;
     case "home_sources": return macSources;
     case "home_routes": return { cards: [], held: [], started: [] };
-    case "named_files": case "for_you_files": case "search_backends": case "centre_proposals": case "centre_dream_commits": case "list_notes": case "turn_usage": case "list_threads": case "nightshift_projects": case "tidy_memory": case "tidy_threads":
+    case "named_files": case "for_you_files": case "search_backends": case "centre_proposals": case "centre_dream_commits": case "turn_usage": case "list_threads": case "nightshift_projects": case "tidy_memory": case "tidy_threads":
       return [];
     case "home_tasks": return homeTasks;
     case "home_task_event": told.push(String((a as { line?: string })?.line ?? "")); return null;
@@ -117,7 +163,7 @@ async function run() {
   document.head.insertAdjacentHTML("beforeend", "<style>*,*::before,*::after{animation:none!important;transition:none!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important}.lk-veil,.lk-scan,.toasts{display:none!important}</style>");
   localStorage.clear();
   sessionStorage.clear();
-  const TASK_TAB: Record<string, string> = { timeline: "task:moving-the-review", todo: "task:working-your-list", triage: "task:sorting-what-arrived" };
+  const TASK_TAB: Record<string, string> = { timeline: "task:moving-the-review", todo: "task:working-your-list", triage: "task:sorting-what-arrived", browse: "task:renewing-the-permit", run: "task:merge-round-t", research: "task:cache-pricing" };
   Object.assign(kept, { focus: s === "chat" ? "chat" : s === "brief" ? "brief" : TASK_TAB[s] ?? "watch", strip: "open", stripFor: "", ui: {} });
   if (q.get("classic") === "1") setLayout("classic");
   let root = mount(App, { target: document.getElementById("app")! });
@@ -150,6 +196,14 @@ async function run() {
       flushSync();
       document.querySelector<HTMLElement>(".nd")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     }
+    if (s === "browse") click(".h9-wide .h9-acts .jb.send");
+    if (s === "run") click(".h9-ph-tools .jb.danger");
+    if (s === "research") {
+      click(".s-claim .jb");
+      click(".y-end .jb.send");
+    }
+    if (s === "brief") click(".h9-ph-tools .jb:not(.send)");
+    await wait(200);
     flushSync();
     keep();
     const saved = localStorage.getItem(STAGE_KEY) ?? "";
@@ -161,7 +215,12 @@ async function run() {
     app.project = home as unknown as typeof app.project;
     await openSession("h-today");
     await wait(900);
-    restart = ` restart=${saved.length}B told=${told.length}`;
+    restart = ` restart=${saved.length}B told=${told.length} notes=${notes.length}`;
+  }
+  // checkone=1: one source's own Check now pressed (the stub holds it, so the row shows it checking).
+  if (q.get("checkone") === "1") {
+    document.querySelectorAll<HTMLElement>(".w-src .w-chk .jb")[2]?.click();
+    await wait(300);
   }
   void root;
   // What a script can read off the shot's page: the stage is there, and nothing on it is cut off or scrolls sideways.

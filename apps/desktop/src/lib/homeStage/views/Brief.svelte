@@ -1,19 +1,25 @@
 <script lang="ts">
   // Brief (item 845; 809 round 6) — the morning scan as a page, from the Home chat's newest scan: a count per
   // section on top, each section opening for its text, what the scan was given to read, and Home's steps.
-  // Every control here is kind A (view-only). "Read it to me" and "Keep as a note" (846 §4) are not built yet.
-  import { app } from "../../state.svelte";
+  // Every control here is kind A (view-only, no model call). "Read it to me" speaks the page with the Mac's own voice
+  // (the web view's speech; it stops when he leaves the view, and the button is not drawn where there is no voice).
+  // "Keep as a note" writes the page into Home's notes as a new file (never over one he has); once kept, it says so.
+  import { onDestroy } from "svelte";
+  import * as api from "../../api";
+  import { app, addToast } from "../../state.svelte";
   import { clock, dateLabel, factsWords, isScanMessage, scanFacts } from "../../home";
   import { home } from "../../home.svelte";
   import Panel from "../Panel.svelte";
+  import Btn from "../Btn.svelte";
   import Steps from "../Steps.svelte";
   import Loading from "../Loading.svelte";
   import { bag, reveal } from "../stageState.svelte";
-  import { briefOf } from "../brief";
+  import { briefOf, briefNote, speakable } from "../brief";
+  import { noteName } from "../taskData";
   import type { Ev } from "../steps";
 
   const brief = $derived(briefOf(app.events as unknown as Ev[], isScanMessage, app.busy));
-  const ui = bag("brief", { open: {} as Record<string, boolean>, touched: false });
+  const ui = bag("brief", { open: {} as Record<string, boolean>, touched: false, saved: {} as Record<string, string> });
   const isOpen = (key: string, i: number) => (ui.touched ? !!ui.open[key] : i === 0);
   function toggle(key: string, i: number) {
     const now = !isOpen(key, i);
@@ -22,6 +28,45 @@
   }
   const when = $derived(brief?.at ? `${dateLabel(brief.at)}, ${clock(brief.at)}` : "");
   const read = $derived(brief ? factsWords(scanFacts(brief.asked)) : "");
+  const done = $derived(!!brief && !brief.writing && brief.sections.length > 0);
+  const savedAs = $derived(brief ? ui.saved[brief.at ?? ""] : undefined);
+
+  // Read it to me: the page in the Mac's own voice, section by section.
+  const voice = typeof window !== "undefined" && "speechSynthesis" in window && typeof SpeechSynthesisUtterance !== "undefined" ? window.speechSynthesis : null;
+  let reading = $state(false);
+  function stopReading() {
+    voice?.cancel();
+    reading = false;
+  }
+  function readAloud() {
+    if (!voice || !brief) return;
+    if (reading) return stopReading();
+    voice.cancel();
+    const parts = brief.sections.map((s) => `${s.title}. ${speakable(s.body)}`);
+    parts.forEach((t, i) => {
+      const u = new SpeechSynthesisUtterance(t);
+      if (i === parts.length - 1) u.onend = u.onerror = () => (reading = false);
+      voice.speak(u);
+    });
+    reading = true;
+  }
+  onDestroy(stopReading);
+
+  let saving = $state(false);
+  async function keepNote() {
+    if (!brief || saving || savedAs) return;
+    saving = true;
+    try {
+      const taken = (await api.listNotes("project").catch(() => [])).map((n) => n.name);
+      const name = noteName(`Morning brief — ${when ? dateLabel(brief.at!) : "today"}`, taken);
+      await api.saveNote("project", name, briefNote(brief, when));
+      ui.saved[brief.at ?? ""] = name;
+    } catch (e) {
+      addToast(`Could not keep it as a note — ${String(e)}`);
+    } finally {
+      saving = false;
+    }
+  }
 </script>
 
 <div class="h9-grid">
@@ -34,6 +79,12 @@
       </div>
     {/if}
     <Panel title="Today's page" sub={when} live={!!brief?.writing}>
+      {#snippet tools()}
+        {#if done}
+          {#if voice}<Btn small kind={reading ? "ghost" : "send"} icon={reading ? "stop" : "play"} tip={reading ? "Stop reading" : "Read the page aloud\nThe Mac's own voice; nothing is sent"} onclick={readAloud}>{reading ? "Stop reading" : "Read it to me"}</Btn>{/if}
+          <Btn small icon="note" disabled={!!savedAs || saving} tip={savedAs ? `Kept in Home's notes as\n${savedAs}` : "Keep today's page\nA new note in Home's notes"} onclick={() => void keepNote()}>{savedAs ? "Kept in Notes" : saving ? "Keeping…" : "Keep as a note"}</Btn>
+        {/if}
+      {/snippet}
       {#if !brief}
         <span class="h9-dim b-none">No scan in this chat yet — the morning scan runs {home.info?.scan_words?.toLowerCase() ?? "every day at 8:00 AM"}, and its page lands here.</span>
       {:else if brief.sections.length === 0}

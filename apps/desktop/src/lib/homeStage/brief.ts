@@ -58,3 +58,20 @@ export function briefOf(events: readonly Ev[], isScan: (t: string) => boolean, b
   }
   return null;
 }
+
+/** A section's markdown as plain words to speak: list marks, emphasis, links and code fences gone. */
+export function speakable(md: string): string {
+  return md
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^\s*(?:[-*•]|\d+[.)])\s+/gm, "")
+    .replace(/[*_`#>]+/g, "")
+    .replace(/\s*\n\s*/g, ". ")
+    .replace(/\.(\s*\.)+/g, ".")
+    .trim();
+}
+
+/** The brief as a note: its date heading, then each section under its own heading. */
+export function briefNote(b: Brief, when: string): string {
+  return [`# Morning brief${when ? ` — ${when}` : ""}`, "", ...b.sections.flatMap((s) => [`## ${s.title}`, "", s.body, ""])].join("\n");
+}

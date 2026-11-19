@@ -74,6 +74,10 @@ pub struct Reach {
     /// Why the check found nothing, in words, when it failed.
     #[serde(default)]
     pub error: Option<String>,
+    /// Item 845: when one connector was last checked on its own (Watch's
+    /// per-source Check now, [`check_one`]), by its CLI name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub checked_one: BTreeMap<String, DateTime<Utc>>,
 }
 
 /// The connectors he turned off for Home (`home/accounts.json`).
@@ -128,20 +132,68 @@ pub fn parse_list(out: &str) -> Vec<Connector> {
         let Some((_, state)) = rest.rsplit_once(" - ") else {
             continue;
         };
-        let state = state.to_lowercase();
-        let status = if state.contains("needs auth") {
-            Status::NeedsSignIn
-        } else if state.contains("connected") {
-            Status::Connected
-        } else {
-            Status::Failed
-        };
+        let status = status_of(state);
         let name = name.trim().to_string();
         if !name.is_empty() && !found.iter().any(|c| c.name == name) {
             found.push(Connector { name, status });
         }
     }
     found
+}
+
+/// A server's state from the CLI's words for it (`✔ Connected`, `! Needs
+/// authentication`, `✗ Failed to connect`).
+fn status_of(words: &str) -> Status {
+    let state = words.to_lowercase();
+    if state.contains("needs auth") {
+        Status::NeedsSignIn
+    } else if state.contains("connected") && !state.contains("failed") {
+        Status::Connected
+    } else {
+        Status::Failed
+    }
+}
+
+/// The state in `claude mcp get <name>`'s output: its `Status:` line.
+pub fn parse_get(out: &str) -> Option<Status> {
+    out.lines()
+        .find_map(|l| l.trim().strip_prefix("Status:"))
+        .map(status_of)
+}
+
+/// Item 845: check one connector on its own (`claude mcp get <name>`: no
+/// model request) and keep its state beside the last full check. A name the
+/// last check did not list is refused — this never adds a connector.
+pub fn check_one(
+    config: &Path,
+    binary: &Path,
+    name: &str,
+    now: DateTime<Utc>,
+) -> Result<Reach, String> {
+    let mut reach = load(config);
+    if !reach.connectors.iter().any(|c| c.name == name) {
+        return Err(format!(
+            "{name} is not in the last check — run Check now for all"
+        ));
+    }
+    let dir = super::ensure_folder(config).unwrap_or_else(|_| super::dir_in(config));
+    let status =
+        match crate::cli_update::run(binary, &["mcp", "get", name], &dir, None, CHECK_LIMIT) {
+            Some((true, out, _)) => parse_get(&out)
+                .ok_or_else(|| "Claude Code did not say how it stands".to_string())?,
+            Some((false, _, _)) => return Err("Claude Code did not finish checking it".into()),
+            None => return Err("Claude Code could not be started".into()),
+        };
+    // Read again: a full check may have finished while this one ran.
+    reach = load(config);
+    if let Some(c) = reach.connectors.iter_mut().find(|c| c.name == name) {
+        c.status = status;
+    }
+    reach.checked_one.insert(name.to_string(), now);
+    if let Ok(bytes) = serde_json::to_vec_pretty(&reach) {
+        let _ = std::fs::write(dir.join("reach.json"), bytes);
+    }
+    Ok(reach)
 }
 
 /// Ask the CLI what it reaches now and keep the answer. Blocking (up to
@@ -162,6 +214,7 @@ pub fn check(config: &Path, binary: &Path, now: DateTime<Utc>) -> Reach {
         None => reach.error = Some("Claude Code could not be started.".into()),
     }
     reach.checked_at = Some(now);
+    reach.checked_one.clear();
     if let Ok(bytes) = serde_json::to_vec_pretty(&reach) {
         let _ = std::fs::write(dir.join("reach.json"), bytes);
     }
@@ -291,6 +344,8 @@ pub struct Account {
     /// Whether the morning scan reads it (mail and calendar that are
     /// connected and on).
     pub in_scan: bool,
+    /// Item 845: when it was last checked on its own, after the full check.
+    pub checked_at: Option<DateTime<Utc>>,
 }
 
 /// The panel's rows: every server of the last check, mail first, then
@@ -327,6 +382,7 @@ pub fn accounts(config: &Path) -> Vec<Account> {
                     && on
                     && c.status == Status::Connected
                     && matches!(kind, Kind::Mail | Kind::Calendar),
+                checked_at: reach.checked_one.get(&c.name).copied(),
             }
         })
         .collect();
@@ -417,6 +473,7 @@ openalex: /usr/bin/python /p/openalex_mcp.py - ✔ Connected\n";
             checked_at: Some(Utc::now()),
             connectors,
             error: None,
+            ..Default::default()
         };
         std::fs::write(dir.join("reach.json"), serde_json::to_vec(&r).unwrap()).unwrap();
     }
@@ -431,6 +488,45 @@ openalex: /usr/bin/python /p/openalex_mcp.py - ✔ Connected\n";
         assert_eq!(state("claude.ai Gmail 2117773e"), Some(Status::Connected));
         assert_eq!(state("claude.ai Google Drive"), Some(Status::Failed));
         assert_eq!(state("openalex"), Some(Status::Connected));
+    }
+
+    /// Item 845: Watch's per-source Check now reads `claude mcp get`'s
+    /// Status line, and never checks a name the last full check did not list.
+    #[test]
+    fn one_connector_is_read_from_its_status_line() {
+        let got = "claude.ai Gmail:\n  Scope: claude.ai config\n  Status: ✔ Connected\n";
+        assert_eq!(parse_get(got), Some(Status::Connected));
+        assert_eq!(
+            parse_get("x:\n  Status: ! Needs authentication\n"),
+            Some(Status::NeedsSignIn)
+        );
+        assert_eq!(
+            parse_get("x:\n  Status: ✗ Failed to connect\n"),
+            Some(Status::Failed)
+        );
+        assert_eq!(parse_get("No MCP server found with name: x"), None);
+        let config = scratch("one");
+        keep(&config, parse_list(LIST));
+        let err = check_one(
+            &config,
+            Path::new("/nonexistent/claude"),
+            "claude.ai Nope",
+            Utc::now(),
+        )
+        .unwrap_err();
+        assert!(err.contains("not in the last check"), "{err}");
+        // A CLI that cannot start leaves the kept list as it was.
+        assert!(
+            check_one(
+                &config,
+                Path::new("/nonexistent/claude"),
+                "openalex",
+                Utc::now()
+            )
+            .is_err()
+        );
+        assert_eq!(load(&config).connectors.len(), 7);
+        assert!(load(&config).checked_one.is_empty());
     }
 
     #[test]

@@ -2499,6 +2499,10 @@ export function homeReach(): Promise<HomeReach> {
 export function homeReachCheck(binary?: string): Promise<HomeReach> {
   return invoke("home_reach_check", binary ? { binary } : {});
 }
+/** Item 845: one connector checked on its own (Watch's per-source Check now). */
+export function homeReachCheckOne(connector: string, binary?: string): Promise<HomeReach> {
+  return invoke("home_reach_check_one", binary ? { connector, binary } : { connector });
+}
 
 /** Item 804: turn one connector on or off for Home. */
 export function homeReachSet(connector: string, on: boolean): Promise<HomeReach> {

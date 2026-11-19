@@ -21,6 +21,9 @@
   import Timeline from "./views/Timeline.svelte";
   import Todo from "./views/Todo.svelte";
   import Triage from "./views/Triage.svelte";
+  import Browse from "./views/Browse.svelte";
+  import Run from "./views/Run.svelte";
+  import Research from "./views/Research.svelte";
   import { tasks, refreshTasks, closeTask, type HomeTask } from "./tasks.svelte";
   import { briefOf } from "./brief";
   import { def, keep, stage, type ViewId } from "./stageState.svelte";
@@ -31,8 +34,8 @@
 
   const needs = $derived(needsNow().filter((r) => r.state !== "working").length + home.cards.length);
   const brief = $derived(briefOf(app.events as unknown as Ev[], isScanMessage, app.busy));
-  // The views built so far that a task of Home's may be drawn in (batch 2 adds Browse, Run, Research).
-  const TASK_VIEWS = ["timeline", "todo", "triage"];
+  // The views a task of Home's may be drawn in.
+  const TASK_VIEWS = ["timeline", "todo", "triage", "browse", "run", "research"];
   const shown = $derived(tasks.rows.filter((t) => TASK_VIEWS.includes(t.view)));
   const taskOf = (id: string): HomeTask | undefined => shown.find((t) => `task:${t.id}` === id);
   // The tabs live work adds: the morning brief once this chat holds a scan (its pulse while Home writes it), and one
@@ -138,6 +141,12 @@
           <Todo task={focusTask} />
         {:else if focusTask && focusTask.view === "triage"}
           <Triage task={focusTask} />
+        {:else if focusTask && focusTask.view === "browse"}
+          <Browse task={focusTask} />
+        {:else if focusTask && focusTask.view === "run"}
+          <Run task={focusTask} />
+        {:else if focusTask && focusTask.view === "research"}
+          <Research task={focusTask} />
         {:else}
           <Watch />
         {/if}
@@ -180,4 +189,8 @@
   .h9-stage.classic :global(:is(.t-ev, .t-nowl, .t-now, .t-ask, .t-band, .d-box, .d-sub i, .g-card, .g-pile)) { box-shadow: none; }
   .h9-stage.classic :global(:is(.d-beam, .g-read)) { display: none; }
   .h9-stage.classic :global(.d-sub.on i) { animation: none; }
+  /* Classic, Browse, Run, Research: no glows, no sweeping link, no pulsing marks. */
+  .h9-stage.classic :global(:is(.r-node, .r-av, .s-src.hot, .s-claim.hot)) { box-shadow: none; }
+  .h9-stage.classic :global(.r-link.live::after) { display: none; }
+  .h9-stage.classic :global(.r-node.live .r-mark) { animation: none; }
 </style>

@@ -184,6 +184,23 @@ pub(crate) async fn home_reach_check(binary: Option<String>) -> Result<HomeReach
     .map_err(|e| format!("the check did not finish: {e}"))
 }
 
+/// Item 845: Watch's per-source Check now — ask Claude Code about one
+/// connector (`claude mcp get`: no model request), keep it, return the rows.
+#[tauri::command]
+pub(crate) async fn home_reach_check_one(
+    connector: String,
+    binary: Option<String>,
+) -> Result<HomeReach, String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    let bin = crate::commands::cli::cli_binary(binary);
+    tokio::task::spawn_blocking(move || {
+        home::reach::check_one(&config, &bin, &connector, chrono::Utc::now())?;
+        Ok(reach_of(&config))
+    })
+    .await
+    .map_err(|e| format!("the check did not finish: {e}"))?
+}
+
 /// Turn one of his connectors on or off for Home; the rows after.
 #[tauri::command]
 pub(crate) fn home_reach_set(connector: String, on: bool) -> Result<HomeReach, String> {

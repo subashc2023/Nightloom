@@ -263,6 +263,7 @@ claude.ai Google Drive: u - ✔ Connected\n";
         checked_at: Some(at(7, 0)),
         connectors: reach::parse_list(list),
         error: None,
+        ..Default::default()
     };
     std::fs::write(
         dir_in(&config).join("reach.json"),

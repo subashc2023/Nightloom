@@ -281,7 +281,7 @@ pub fn take_block(config: &Path) -> Option<String> {
     Some(out)
 }
 
-const DESC: &str = "Show what you are working on, on Home's stage — he watches it there. Call it when you start a piece of work that fits a view (timeline: his day and moves you propose; todo: a list you work through; triage: what arrived, sorted into piles; browse: a website task; run: a chain of project work; research: a question, its sources and claims; brief: a page you write for him), whenever the picture changes, and with done: true when it ends. task is the tab's name and identifies the task: use the same words to update it. data is the view's content as JSON, replaced whole each call — give every row a short stable id, times as \"14:30\", detail as {label: value}. timeline: {day: \"Tuesday, November 17\", date: \"2026-11-17\", events: [{id, title, start, end, detail}], changes: [{id, kind: move|add|pick, title, start, end, was (a move's old start), slots (a pick's free starts), why, yours (he asked for it), detail}]}. todo: {items: [{id, text, who: home|you, state: open|doing|done, note, steps: [{text, done}], result, detail}]}. triage: {cards: [{id, from, title, source (gmail, messages, …), pile: inbox|needs|handled|later, verdict, reading, question, options, todo, detail}]}. The result lists anything he did on the stage since you last looked.";
+const DESC: &str = "Show what you are working on, on Home's stage — he watches it there. Call it when you start a piece of work that fits a view (timeline: his day and moves you propose; todo: a list you work through; triage: what arrived, sorted into piles; browse: a website task; run: a chain of project work; research: a question, its sources and claims; brief: a page you write for him), whenever the picture changes, and with done: true when it ends. task is the tab's name and identifies the task: use the same words to update it. data is the view's content as JSON, replaced whole each call — give every row a short stable id, times as \"14:30\", detail as {label: value}. timeline: {day: \"Tuesday, November 17\", date: \"2026-11-17\", events: [{id, title, start, end, detail}], changes: [{id, kind: move|add|pick, title, start, end, was (a move's old start), slots (a pick's free starts), why, yours (he asked for it), detail}]}. todo: {items: [{id, text, who: home|you, state: open|doing|done, note, steps: [{text, done}], result, detail}]}. triage: {cards: [{id, from, title, source (gmail, messages, …), pile: inbox|needs|handled|later, verdict, reading, question, options, todo, detail}]}. browse: {url, site, page (its title), fields: [{label, value}] (what you typed), hold: {what, amount, to, from} (something you will not do without him — pay, submit, send; he answers on the stage), result}. run: {title, steps: [{id, name, state: wait|live|done|failed, out, progress (0-1), detail}], agents: [{id, name, task, state, tokens (thousands)}], log: [the last lines], chat (the chat's id running it), project, asks (what you will ask him at the end)}. research: {question, sources: [{id, site, title, state: reading|kept|dropped, got (what you read of it), why (why dropped), own (his own note)}], claims: [{id, src (a source id), text, quote, confidence}], answer: [{text, cites: [claim ids]}], open: [{text, answered}], confidence, done}. The result lists anything he did on the stage since you last looked.";
 const EVENTS_DESC: &str = "What he did on Home's stage since you last looked (ticked a row, took a task back, skipped a change you proposed), oldest first. Read it before continuing a task he may have touched.";
 
 /// What the server's `initialize` adds when the stage tools are served.
@@ -501,6 +501,17 @@ mod tests {
             "state: open|doing|done",
             "triage: {cards: [",
             "pile: inbox|needs|handled|later",
+            "browse: {url",
+            "fields: [{label, value}]",
+            "hold: {what, amount, to, from}",
+            "run: {title, steps: [",
+            "state: wait|live|done|failed",
+            "agents: [",
+            "log: [",
+            "research: {question, sources: [",
+            "state: reading|kept|dropped",
+            "claims: [{id, src",
+            "answer: [{text, cites:",
         ] {
             assert!(DESC.contains(field), "{field}");
         }

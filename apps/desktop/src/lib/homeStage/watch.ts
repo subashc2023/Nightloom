@@ -23,6 +23,8 @@ export function sourceRows(
   mac: readonly HomeSource[] | null,
   name: (a: ReachAccount) => string,
   words: (s: ReachStatus) => string,
+  /** Item 845: a time in words, for a row checked on its own since the full check. */
+  when: (iso: string) => string = (iso) => iso,
 ): SourceRow[] {
   const rows: SourceRow[] = [];
   for (const a of reach?.accounts ?? []) {
@@ -38,6 +40,7 @@ export function sourceRows(
         ["Status", words(a.status)],
         ["For Home", a.on ? "On — Home may read it; it never writes through it" : "Off — turn it on in Settings → Home"],
         ["Morning scan", a.in_scan ? "Reads it" : "Does not read it"],
+        ...(a.checked_at ? ([["Checked", `${when(a.checked_at)}, on its own`]] as [string, string][]) : []),
       ],
     });
   }

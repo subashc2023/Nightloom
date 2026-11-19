@@ -1860,6 +1860,7 @@ fn main() {
             home::home_save_brief,
             home::home_reach,
             home::home_reach_check,
+            home::home_reach_check_one,
             home::home_reach_set,
             home::home_tasks,
             home::home_task_event,

@@ -1,8 +1,6 @@
 // Item 845 batch 1: the task views' payloads (taskData.ts), the step words for Nightloom's own MCP tools, and the
 // two stage fixes (no container queries; a view switch the stage makes itself does not animate).
-import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { beforeAll, describe, expect, it } from "vitest";
 import { hoursOf, hourWords, rowsOf, timelineOf, todoOf, triageOf } from "./taskData";
 import { toolWords } from "./steps";
 
@@ -102,9 +100,15 @@ describe("step words", () => {
 });
 
 describe("the stage (sources)", () => {
-  const read = (p: string) => readFileSync(resolve(__dirname, p), "utf8");
+  // Read from disk (vitest empties a `.css?raw` import); fs imported the way askLockK.test.ts does, which the app's
+  // type check (no Node types) accepts.
+  const fsP = import(/* @vite-ignore */ "node:" + "fs") as Promise<{ readFileSync(u: URL, enc: string): string }>;
+  let fs: { readFileSync(u: URL, enc: string): string };
+  beforeAll(async () => void (fs = await fsP));
+  const read = (p: string) => fs.readFileSync(new URL(`./${p}`, import.meta.url), "utf8");
   it("uses no container query: WebKit reads them at width × the page zoom (fold.ts)", () => {
-    for (const f of ["stage.css", "views/Timeline.svelte", "views/Triage.svelte", "views/Todo.svelte", "views/Watch.svelte", "views/Brief.svelte"]) {
+    for (const f of ["stage.css", "views/Timeline.svelte", "views/Triage.svelte", "views/Todo.svelte", "views/Watch.svelte", "views/Brief.svelte", "views/Browse.svelte", "views/Run.svelte", "views/Research.svelte"]) {
+      expect(read(f).length, f).toBeGreaterThan(0);
       expect(read(f), f).not.toMatch(/^\s*@container/m);
     }
     expect(read("Stage.svelte")).toMatch(/class:narrow=\{viewW <= 760\}/);
@@ -116,6 +120,6 @@ describe("the stage (sources)", () => {
     expect(s).toMatch(/picked \? hudOut\(node\) : \{ duration: 0 \}/);
   });
   it("draws a task's tab only in a view that is built", () => {
-    expect(read("Stage.svelte")).toMatch(/const TASK_VIEWS = \["timeline", "todo", "triage"\]/);
+    expect(read("Stage.svelte")).toMatch(/const TASK_VIEWS = \["timeline", "todo", "triage", "browse", "run", "research"\]/);
   });
 });

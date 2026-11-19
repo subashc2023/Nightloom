@@ -212,3 +212,196 @@ export function triageOf(data: unknown): Card[] {
   });
   return out.slice(0, 80);
 }
+
+// ---- Browse ----
+
+export interface BrowseField {
+  label: string;
+  value: string;
+}
+/** Something on the page Home will not do without him (pay, submit, send): his Allow once / Not now. */
+export interface BrowseHold {
+  id: string;
+  what: string;
+  amount: string;
+  to: string;
+  from: string;
+}
+export interface Browse {
+  url: string;
+  site: string;
+  page: string;
+  fields: BrowseField[];
+  hold: BrowseHold | null;
+  result: string;
+  detail: Rows;
+}
+
+export function browseOf(data: unknown): Browse {
+  const o = obj(data);
+  const h = obj(o.hold);
+  const what = str(h.what, 160);
+  return {
+    url: str(o.url, 200),
+    site: str(o.site, 80),
+    page: str(o.page, 120) || str(o.title, 120),
+    fields: arr(o.fields)
+      .map((x) => obj(x))
+      .map((f) => ({ label: str(f.label, 60), value: str(f.value, 120) }))
+      .filter((f) => f.label)
+      .slice(0, 12),
+    hold: what ? { id: str(h.id, 80) || `h:${what.slice(0, 40)}`, what, amount: str(h.amount, 40), to: str(h.to, 80), from: str(h.from, 80) } : null,
+    result: str(o.result, 160),
+    detail: rowsOf(o.detail),
+  };
+}
+
+// ---- Run ----
+
+export type RunState = "wait" | "live" | "done" | "failed";
+const runState = (v: unknown): RunState => (v === "live" || v === "done" || v === "failed" ? v : "wait");
+const frac = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(1, v > 1 ? v / 100 : v)) : null);
+
+export interface RunStep {
+  id: string;
+  name: string;
+  state: RunState;
+  out: string;
+  /** 0–1 while live, when Home knows it. */
+  progress: number | null;
+  detail: Rows;
+}
+export interface RunAgent {
+  id: string;
+  name: string;
+  task: string;
+  state: RunState;
+  /** Thousands of tokens used so far, when known. */
+  tokens: number | null;
+  detail: Rows;
+}
+export interface Run {
+  title: string;
+  steps: RunStep[];
+  agents: RunAgent[];
+  log: string[];
+  /** The Nightloom chat that runs it (Open chat), and its project. */
+  chat: string;
+  project: string;
+  /** What it will ask of him at the end. */
+  asks: string;
+}
+
+export function runOf(data: unknown): Run {
+  const o = obj(data);
+  const steps: RunStep[] = [];
+  arr(o.steps).forEach((x, i) => {
+    const s = obj(x);
+    const name = str(s.name, 40) || str(s.title, 40);
+    if (name) steps.push({ id: `r:${idOf(s, i, name)}`, name, state: runState(s.state), out: str(s.out, 120), progress: frac(s.progress), detail: rowsOf(s.detail) });
+  });
+  const agents: RunAgent[] = [];
+  arr(o.agents).forEach((x, i) => {
+    const a = obj(x);
+    const name = str(a.name, 40);
+    if (name) agents.push({ id: `a:${idOf(a, i, name)}`, name, task: str(a.task, 120), state: runState(a.state), tokens: typeof a.tokens === "number" && a.tokens >= 0 ? Math.round(a.tokens) : null, detail: rowsOf(a.detail) });
+  });
+  return {
+    title: str(o.title, 80),
+    steps: steps.slice(0, 12),
+    agents: agents.slice(0, 12),
+    log: arr(o.log).map((l) => str(l, 240)).filter(Boolean).slice(-40),
+    chat: str(o.chat, 80),
+    project: str(o.project, 80),
+    asks: str(o.asks, 160),
+  };
+}
+
+// ---- Research ----
+
+export type SourceState = "reading" | "kept" | "dropped";
+export interface ResearchSource {
+  id: string;
+  site: string;
+  title: string;
+  state: SourceState;
+  /** What Home read of it. */
+  got: string;
+  /** Why it was dropped. */
+  why: string;
+  /** His own note (provenance: he stated it), not an outside page. */
+  own: boolean;
+}
+export interface Claim {
+  id: string;
+  src: string;
+  text: string;
+  quote: string;
+  confidence: string;
+}
+export interface Research {
+  question: string;
+  sources: ResearchSource[];
+  claims: Claim[];
+  answer: { text: string; cites: string[] }[];
+  open: { text: string; answered: string }[];
+  confidence: string;
+  done: boolean;
+}
+
+export function researchOf(data: unknown): Research {
+  const o = obj(data);
+  const sources: ResearchSource[] = [];
+  arr(o.sources).forEach((x, i) => {
+    const s = obj(x);
+    const title = str(s.title, 120);
+    const site = str(s.site, 80);
+    if (!title && !site) return;
+    const state: SourceState = s.state === "reading" || s.state === "dropped" ? s.state : "kept";
+    sources.push({ id: str(s.id, 80) || `s${i}`, site, title: title || site, state, got: str(s.got, 200), why: str(s.why, 120), own: s.own === true });
+  });
+  const claims: Claim[] = [];
+  arr(o.claims).forEach((x, i) => {
+    const c = obj(x);
+    const text = str(c.text, 400);
+    if (text) claims.push({ id: str(c.id, 80) || `c${i}`, src: str(c.src, 80), text, quote: str(c.quote, 400), confidence: str(c.confidence, 120) });
+  });
+  return {
+    question: str(o.question, 300),
+    sources: sources.slice(0, 30),
+    claims: claims.slice(0, 40),
+    answer: arr(o.answer)
+      .map((x) => (typeof x === "string" ? { text: str(x, 600), cites: [] } : { text: str(obj(x).text, 600), cites: arr(obj(x).cites).map((c) => str(c, 80)).filter(Boolean) }))
+      .filter((a) => a.text)
+      .slice(0, 12),
+    open: arr(o.open)
+      .map((x) => (typeof x === "string" ? { text: str(x, 200), answered: "" } : { text: str(obj(x).text, 200), answered: str(obj(x).answered, 120) }))
+      .filter((q) => q.text)
+      .slice(0, 10),
+    confidence: str(o.confidence, 200),
+    done: o.done === true,
+  };
+}
+
+/** A page of the stage kept as a note: a name not taken yet in `taken` ("Research — x.md", then "… (2).md"). */
+export function noteName(base: string, taken: readonly string[]): string {
+  const clean = base.replace(/[\\/:*?"<>|\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "Home";
+  const set = new Set(taken.map((t) => t.toLowerCase()));
+  let name = `${clean}.md`;
+  for (let n = 2; set.has(name.toLowerCase()); n++) name = `${clean} (${n}).md`;
+  return name;
+}
+
+/** A research task as markdown, for Keep as a note: the question, the answer with its claims, the sources. */
+export function researchNote(r: Research, dropped: Record<string, boolean>): string {
+  const kept = r.sources.filter((s) => s.state !== "dropped" && !dropped[s.id]);
+  const claims = r.claims.filter((c) => !dropped[c.src]);
+  const num = (id: string) => claims.findIndex((c) => c.id === id) + 1;
+  const site = (id: string) => r.sources.find((s) => s.id === id)?.site ?? "";
+  const out = [`# ${r.question || "Research"}`, ""];
+  if (r.answer.length) out.push("## Answer", "", ...r.answer.map((a) => `${a.text}${a.cites.filter((c) => num(c) > 0).map((c) => ` [${num(c)}]`).join("")}`), "");
+  if (claims.length) out.push("## Claims", "", ...claims.map((c, i) => `${i + 1}. ${c.text}${site(c.src) ? ` — ${site(c.src)} claims it` : ""}`), "");
+  if (r.confidence) out.push("## Confidence", "", r.confidence, "");
+  if (kept.length) out.push("## Sources", "", ...kept.map((s) => `- ${s.title}${s.site ? ` (${s.site})` : ""}${s.own ? " — your own note" : ""}`), "");
+  return out.join("\n");
+}
