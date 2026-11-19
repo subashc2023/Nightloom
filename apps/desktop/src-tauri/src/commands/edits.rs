@@ -357,7 +357,31 @@ pub(crate) async fn continue_session(
     state: State<'_, AppState>,
 ) -> Result<MessageEdit, String> {
     let target = state.chats.target();
-    let mut agent_guard = lock_agent_at(&state, &target).await;
+    // Item 857 (his report, 2026-11-18): an aside on this chat — the card's
+    // *Review this chat* — holds its agent for its whole run (34 s, his),
+    // and *Continue* sat behind it with both buttons greyed. The agent is
+    // wanted here only to drop the parent's resume, which the aside does
+    // not touch; so while an aside is registered and the agent is not free
+    // within a beat, the chat continues now and the drop waits its turn on
+    // the agent in the background, queued where this call stood. The review
+    // runs on and its page still saves. The window refuses *Continue* while
+    // a turn runs, so the holder is the aside.
+    let mut agent_guard = match state.agents.slot(target.id()) {
+        agents::Found::Ready(slot) if !state.aside_cancel.is_empty() => {
+            let mut lock = Box::pin(slot.lock_owned());
+            tokio::select! {
+                biased;
+                held = &mut lock => agents::Guard::new(held),
+                _ = tokio::time::sleep(super::aside::ASIDE_QUEUED_AFTER) => {
+                    tauri::async_runtime::spawn(async move {
+                        lock.await.set_resume(None);
+                    });
+                    agents::Guard::none()
+                }
+            }
+        }
+        _ => lock_agent_at(&state, &target).await,
+    };
     let log_dir = state.log_dir().await;
     let session_guard = target.lock().await;
     let parent = session_guard

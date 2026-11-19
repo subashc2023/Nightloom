@@ -648,6 +648,18 @@ button {
 .markdown .handoff-go .handoff-review + .handoff-continue {
   margin-left: 0;
 }
+/* Item 857: Cancel beside a running review, first of the three; `.ns-btn`'s
+   display would otherwise beat `hidden`. */
+.markdown .handoff-go .handoff-review-cancel {
+  margin-left: auto;
+  flex: none;
+}
+.markdown .handoff-go .handoff-review-cancel[hidden] {
+  display: none;
+}
+.markdown .handoff-go .handoff-review-cancel:not([hidden]) + .handoff-review {
+  margin-left: 0;
+}
 .markdown .handoff-go .handoff-review-line {
   flex: 1 1 100%;
   min-width: 0;
