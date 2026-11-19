@@ -15,7 +15,7 @@
  * (`svgPicture`), as a fenced SVG is. Theme: the app's colours where the block is shown; a change of palette,
  * look or light/dark draws them again.
  */
-import { DIAGRAM_CLASS, DIAGRAM_MOUNT_CLASS, diagramOf, mermaidError, sourceKey, svgPicture, type Picture } from "./diagramBlock";
+import { DIAGRAM_CLASS, DIAGRAM_MOUNT_CLASS, diagramOf, mermaidError, sourceKey, svgPicture, svgPictureOn, type Picture, type SvgBacking } from "./diagramBlock";
 import { viewGet, viewSet, textKey } from "./viewState";
 import { HTML_CSP_KIT, HTML_SANDBOX, type Scheme } from "./htmlPage";
 import { inlineScript, loadKit, mermaidConfig, type KitTheme } from "./pageKit";
@@ -28,7 +28,7 @@ export const DIAGRAM_TAG = "nightloom-diagram-821";
 export const DRAW_TIMEOUT_MS = 15_000;
 
 /** `transient`: the renderer failed or was slow, not the block — not kept, so the next look draws it again. */
-type Drawn = { picture: Picture } | { error: string; transient?: true };
+type Drawn = { picture: Picture; backing?: SvgBacking } | { error: string; transient?: true };
 
 /** What the Mermaid frame runs: one drawing at a time, on request, answered by id. */
 const RENDERER = `(function(){var TAG=${JSON.stringify(DIAGRAM_TAG)};
@@ -204,7 +204,8 @@ export function dress(el: Element, opts: DiagramOptions = {}): void {
   const d = diagramOf(el);
   if (!d) return;
   // Cheap when nothing changed (this runs on every scan): the colours are read only to draw.
-  const sig = `${d.key}|${d.kind === "mermaid" ? themeEpoch : "-"}`;
+  // Item 879: an SVG drawn on the theme reads the theme's text colour, so it is due again on a theme change too.
+  const sig = `${d.key}|${themeEpoch}`;
   const had = el.querySelector(`:scope > .${DIAGRAM_MOUNT_CLASS}`);
   if (had && had.getAttribute("data-sig") === sig) return;
   had?.remove();
@@ -269,6 +270,9 @@ export function dress(el: Element, opts: DiagramOptions = {}): void {
     status.textContent = "";
     const img = document.createElement("img");
     img.className = "md-diagram-img";
+    // Item 879: an SVG with no background of its own and default (black) lines is drawn on white paper.
+    const backing = r.backing ?? "own";
+    if (backing !== "own") img.dataset.backing = backing;
     img.alt = d.kind === "mermaid" ? "Diagram (Source shows its text)" : "SVG picture (Source shows its text)";
     img.decoding = "async";
     img.draggable = false;
@@ -277,12 +281,17 @@ export function dress(el: Element, opts: DiagramOptions = {}): void {
       if (r.picture.height !== null) img.style.aspectRatio = `${r.picture.width} / ${r.picture.height}`;
     } else img.style.width = "100%";
     img.src = r.picture.url;
-    body.replaceChildren(img);
+    if (backing === "paper") {
+      const paper = document.createElement("span");
+      paper.className = "md-diagram-paper";
+      paper.append(img);
+      body.replaceChildren(paper);
+    } else body.replaceChildren(img);
   };
 
   if (d.kind === "svg") {
-    const picture = svgPicture(d.src);
-    fill(picture ? { picture } : { error: "The block holds no <svg> drawing" });
+    const on = svgPictureOn(d.src, theme.ink);
+    fill(on ? { picture: on, backing: on.backing } : { error: "The block holds no <svg> drawing" });
     return;
   }
   const hit = drawn.get(drawKey);

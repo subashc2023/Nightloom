@@ -178,3 +178,117 @@ export function mermaidError(message: string): string {
   const text = lines.slice(0, 3).join(" — ");
   return (text || "Mermaid could not read this block").slice(0, 300);
 }
+
+/**
+ * Item 879: what an SVG is drawn on. A picture shown as an `<img>` is its own document, so its default black
+ * (and its `currentColor`, which is black there too) does not follow the app's text colour — on the dark looks a
+ * model's diagram drew black on near-black. The rule, cheapest that holds:
+ *
+ * - `own`   — it paints its own background (a style `background` on the root, or a filled `<rect>` the full size
+ *             of the drawing as its first rect): shown as it is.
+ * - `theme` — every colour it names is `currentColor` or light, and nothing relies on the default black (a shape
+ *             or text with no fill while nothing above it sets one): `currentColor` is set to the theme's text
+ *             colour (`withInk`), drawn on the card.
+ * - `paper` — anything else (default black, fixed dark colours, a colour we cannot read): a white backing, as
+ *             the reply strip already shows every SVG — readable whatever the look.
+ */
+export type SvgBacking = "own" | "theme" | "paper";
+
+const NAMED: Record<string, string> = {
+  black: "#000000", white: "#ffffff", red: "#ff0000", green: "#008000", blue: "#0000ff", gray: "#808080", grey: "#808080",
+  silver: "#c0c0c0", yellow: "#ffff00", orange: "#ffa500", navy: "#000080", lightgray: "#d3d3d3", lightgrey: "#d3d3d3",
+  whitesmoke: "#f5f5f5", gainsboro: "#dcdcdc", ivory: "#fffff0", beige: "#f5f5dc", darkgray: "#a9a9a9", darkgrey: "#a9a9a9",
+};
+
+/** Relative luminance 0..1 of a CSS colour, or null when it is not a colour this can read. */
+export function colourLuminance(c: string): number | null {
+  let v = c.trim().toLowerCase();
+  if (NAMED[v]) v = NAMED[v];
+  let r: number, g: number, b: number;
+  let m = /^#([0-9a-f]{3,4})$/.exec(v);
+  if (m) [r, g, b] = [0, 1, 2].map((i) => parseInt(m![1][i] + m![1][i], 16));
+  else if ((m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/.exec(v))) [r, g, b] = [0, 2, 4].map((i) => parseInt(m![1].slice(i, i + 2), 16));
+  else if ((m = /^rgba?\(\s*([\d.]+)%?[\s,]+([\d.]+)%?[\s,]+([\d.]+)%?/.exec(v))) [r, g, b] = [m[1], m[2], m[3]].map(Number);
+  else return null;
+  const lin = (x: number) => {
+    const s = x / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+/** The colours an SVG names in fill / stroke / color / stop-color, as attributes or in styles. */
+function colours(svg: string): string[] {
+  const out: string[] = [];
+  const re = /(?:^|[\s;{"'])(?:fill|stroke|color|stop-color)\s*(?:=\s*["']|:\s*)([^"';}>]+)/gi;
+  for (let m = re.exec(svg); m; m = re.exec(svg)) out.push(m[1].trim());
+  return out;
+}
+
+const attrOf = (tag: string, n: string): string | null => {
+  const m = new RegExp(`\\s${n}\\s*=\\s*("([^"]*)"|'([^']*)')`, "i").exec(tag);
+  return m ? (m[2] ?? m[3]) : null;
+};
+
+/** Item 879: what this SVG should be drawn on (see `SvgBacking`). */
+export function svgBacking(svg: string): SvgBacking {
+  const root = /<svg\b[^>]*>/i.exec(svg)?.[0] ?? "";
+  if (/background(?:-color)?\s*:\s*(?!none|transparent)[^;"']+/i.test(attrOf(root, "style") ?? "")) return "own";
+  const rect = /<rect\b[^>]*>/i.exec(svg)?.[0];
+  if (rect) {
+    const fill = (attrOf(rect, "fill") ?? /fill\s*:\s*([^;"']+)/i.exec(attrOf(rect, "style") ?? "")?.[1] ?? "").trim().toLowerCase();
+    const { width, height } = svgSize(svg);
+    const full = (n: string, whole: number | null) => {
+      const v = (attrOf(rect, n) ?? "").trim();
+      if (v === "100%") return true;
+      const x = parseFloat(v);
+      return whole !== null && Number.isFinite(x) && x >= whole * 0.95;
+    };
+    if (fill && fill !== "none" && fill !== "transparent" && full("width", width) && full("height", height)) return "own";
+  }
+  let themed = false;
+  for (const c of colours(svg)) {
+    const v = c.toLowerCase();
+    if (v === "none" || v === "transparent" || v === "inherit" || v.startsWith("url(")) continue;
+    if (v === "currentcolor") {
+      themed = true;
+      continue;
+    }
+    const l = colourLuminance(v);
+    if (l === null || l < 0.45) return "paper";
+    themed = true;
+  }
+  if (!themed) return "paper";
+  // Default black: a shape or text with no fill of its own, while no group, the root or a style rule sets one.
+  const setsFill = /<(?:svg|g)\b[^>]*\sfill\s*=/i.test(svg) || /<style[\s\S]*?fill\s*:/i.test(svg);
+  if (!setsFill) {
+    const shapes = svg.match(/<(?:text|path|rect|circle|ellipse|polygon)\b[^>]*>/gi) ?? [];
+    if (shapes.some((t) => attrOf(t, "fill") === null && !/fill\s*:/i.test(attrOf(t, "style") ?? ""))) return "paper";
+  }
+  return "theme";
+}
+
+/** A CSS colour safe to write into an SVG's root style (theme tokens are ours, but never trust a string). */
+const safeColour = (c: string) => (/^[#\w\s(),.%/-]+$/.test(c) ? c.trim() : null);
+
+/** The SVG with its root's `color` (what `currentColor` reads) set to `ink`; an own root `color` is kept. */
+export function withInk(svg: string, ink: string): string {
+  const c = safeColour(ink);
+  if (!c) return svg;
+  return svg.replace(/^([\s\S]*?<svg\b)([^>]*)>/i, (_all, open: string, attrs: string) => {
+    if (/\scolor\s*=/i.test(attrs) || /(?:^|[;"'\s])color\s*:/i.test(attrOf(`<x ${attrs}>`, "style") ?? "")) return `${open}${attrs}>`;
+    const style = attrOf(`<x ${attrs}>`, "style");
+    if (style === null) return `${open}${attrs} style="color:${c}">`;
+    return `${open}${attrs.replace(/\sstyle\s*=\s*("[^"]*"|'[^']*')/i, ` style="color:${c};${style.replace(/"/g, "'")}"`)}>`;
+  });
+}
+
+/** An SVG text as a picture on the right ground (item 879): its backing, and `currentColor` set to `ink` when themed. */
+export function svgPictureOn(svg: string, ink: string): (Picture & { backing: SvgBacking }) | null {
+  const clean = sanitizeSvg(svg);
+  if (!clean) return null;
+  const backing = svgBacking(clean);
+  const text = backing === "theme" ? withInk(clean, ink) : clean;
+  const { width, height } = svgSize(text);
+  return { url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`, width, height, backing };
+}

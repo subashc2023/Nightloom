@@ -24,6 +24,8 @@
   import HtmlPage from "./HtmlPage.svelte";
   import { fileFind } from "./fileFind.svelte";
   import { utf16Range } from "./evidenceBlock";
+  import { svgBacking, withInk, type SvgBacking } from "./diagramBlock";
+  import { readKitTheme } from "./pageTheme";
 
   let { content }: { content: Extract<TabContent, { kind: "file" }> } = $props();
 
@@ -68,7 +70,32 @@
   // Item 567: the path as folder (dim under Filament IV) + name; drawn as
   // one run of text, so Classic, which styles neither part, is unchanged.
   const pathCut = $derived(content.path.lastIndexOf("/") + 1);
-  const src = $derived(file?.data ? `data:${file.media_type};base64,${file.data}` : null);
+  // Item 879: an SVG file is its own document as an <img>, so its default black cannot follow the theme. One
+  // with no background of its own is drawn on white paper; one drawn in `currentColor` (or light colours) gets
+  // the theme's text colour — the same rule as a reply's ```svg block (`svgBacking`), redrawn on a theme change.
+  const isSvgFile = $derived(file?.kind === "image" && /^image\/svg\+xml\b/i.test(file?.media_type ?? ""));
+  let themeTick = $state(0);
+  $effect(() => {
+    if (!isSvgFile || typeof MutationObserver === "undefined") return;
+    const mo = new MutationObserver(() => themeTick++);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-scheme", "data-palette", "data-layout"] });
+    return () => mo.disconnect();
+  });
+  const svgShown = $derived.by((): { url: string; backing: SvgBacking } | null => {
+    void themeTick;
+    if (!isSvgFile || !file?.data) return null;
+    try {
+      const text = new TextDecoder().decode(Uint8Array.from(atob(file.data), (c) => c.charCodeAt(0)));
+      const backing = svgBacking(text);
+      if (backing !== "theme") return { url: `data:${file.media_type};base64,${file.data}`, backing };
+      const scheme = document.documentElement.dataset.scheme === "light" ? "light" : "dark";
+      const inked = withInk(text, readKitTheme(null, scheme).ink);
+      return { url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(inked)}`, backing };
+    } catch {
+      return null;
+    }
+  });
+  const src = $derived(svgShown?.url ?? (file?.data ? `data:${file.media_type};base64,${file.data}` : null));
   // Item 380: text drawn in the chat's code colours, by the file's extension
   // (plain past the highlighter's cap).
   const segs = $derived(file?.text != null ? fileSegments(file.text, content.path) : []);
@@ -219,6 +246,7 @@
       <img
         class="img"
         class:full
+        class:paper={svgShown?.backing === "paper"}
         {src}
         alt={content.path}
         use:tip={full ? "Click to fit the pane" : "Click for the image's own size"}
@@ -346,6 +374,13 @@
     object-fit: contain;
     cursor: zoom-in;
     display: block;
+  }
+  /* Item 879: an SVG with default (black) lines and no background of its own, on white paper. */
+  .img.paper {
+    background: #fff;
+    padding: 10px;
+    border-radius: 6px;
+    box-sizing: border-box;
   }
   .img.full {
     max-width: none;
