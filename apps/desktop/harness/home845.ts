@@ -95,7 +95,7 @@ async function run() {
   if (q.get("focus") === "1") kept.ui["stage:focus"] = { follow: true, split: q.get("split") === "1", primed: true, ready: [], seen: { [TASK_TAB[s] ?? "watch"]: 0 } };
   else kept.ui["stage:focus"] = { follow: true, split: false, primed: false, ready: [], seen: {} };
   // runctl=1 (item 872): Run after Stop now (its chat stopped, Resume shown) with a done step open (Run this step again).
-  if (q.get("runctl") === "1") kept.ui["task:merge-round-t"] = { stop: false, halted: true, open: "merge", again: ["merge"] };
+  if (q.get("runctl") === "1") kept.ui["task:merge-round-t"] = { stop: false, halted: true, open: "r:merge", again: ["r:merge"] };
   if (q.get("classic") === "1") setLayout("classic");
   let root = mount(App, { target: document.getElementById("app")! });
   flushSync();
