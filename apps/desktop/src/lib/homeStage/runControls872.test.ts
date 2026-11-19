@@ -10,7 +10,7 @@ const base = stageHost.now;
 afterEach(() => setStageHost(base));
 
 function host(over: Partial<StageHost>, sent: string[], toasts: string[]): StageHost {
-  return { ...base, nudge: (t) => void sent.push(t), toast: (t) => void toasts.push(t), ...over };
+  return { ...base, routedRunning: async () => ["c1"], nudge: (t) => void sent.push(t), toast: (t) => void toasts.push(t), ...over };
 }
 
 describe("Stop now", () => {
@@ -30,6 +30,24 @@ describe("Stop now", () => {
     expect(await stopThenTell(task, "c1", null)).toBe(false);
     expect(sent).toEqual([]);
     expect(toasts).toEqual(["The chat was not stopped — the desktop window could not take the stop"]);
+  });
+  it("a chat no route of Home's is running is never stopped (his own chat, another chat, one that ended)", async () => {
+    const sent: string[] = [];
+    const toasts: string[] = [];
+    const stopped: string[] = [];
+    setStageHost(host({ stopChat: async (c) => void stopped.push(c) }, sent, toasts));
+    expect(await stopThenTell(task, "his-main-chat", null)).toBe(false);
+    expect(stopped).toEqual([]);
+    expect(sent).toEqual([]);
+    expect(toasts[0]).toContain("not a chat Home routed that is running now");
+  });
+  it("when the routes cannot be read, nothing is stopped or told", async () => {
+    const sent: string[] = [];
+    const stopped: string[] = [];
+    setStageHost(host({ routedRunning: async () => { throw new Error("the Mac is not answering"); }, stopChat: async (c) => void stopped.push(c) }, sent, []));
+    expect(await stopThenTell(task, "c1", null)).toBe(false);
+    expect(stopped).toEqual([]);
+    expect(sent).toEqual([]);
   });
   it("with no host that can stop chats, nothing is told", async () => {
     const sent: string[] = [];

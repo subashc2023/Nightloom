@@ -87,14 +87,15 @@ export function phoneStageHost(d: PhoneStageDeps): StageHost {
       await d.client().writeNote("project", name, text, p);
     },
     openChat: (chat, project) => d.open(chat, project),
+    // Run's toast says it once (`stopThenTell`); only the words are the phone's.
     stopChat: async (chat) => {
       try {
         await d.client().cancel(chat);
       } catch (e) {
-        d.note(e instanceof Unreachable ? "The Mac is not answering — the chat was not stopped." : clickNotSent(e));
-        throw e;
+        throw new Error(e instanceof Unreachable ? "the Mac is not answering" : e instanceof Error ? e.message : String(e));
       }
     },
+    routedRunning: async () => (await d.client().homeRoutes()).running ?? [],
     toast: (text) => d.note(text),
     liveBrowser: () => null,
     watchBrowser: () => {},

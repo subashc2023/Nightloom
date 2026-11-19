@@ -55,6 +55,8 @@ export interface StageHost {
   openChat(chat: string, project: string | null): void;
   /** Stop the turn running in a chat now (Run's Stop now, item 872); what already landed stays. */
   stopChat(chat: string): Promise<unknown>;
+  /** The chats a route of Home's is running now (the routes reply's `running`): Stop now stops only one of these. */
+  routedRunning(): Promise<string[]>;
   /** A short notice. */
   toast(text: string): void;
   /** The chat whose app-owned browser is live now, or null (Browse's live picture; the Mac only). */
@@ -83,6 +85,7 @@ const none: StageHost = {
   stopChat: async () => {
     throw new Error("Chats cannot be stopped from here");
   },
+  routedRunning: async () => [],
   toast: () => {},
   liveBrowser: () => null,
   watchBrowser: () => {},

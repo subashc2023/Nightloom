@@ -320,6 +320,16 @@ pub fn started_by_home(config: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The chats a route of Home's is running now (item 872): Run's Stop now
+/// stops only one of these.
+pub fn running_chats(config: &Path) -> Vec<String> {
+    read(config)
+        .into_iter()
+        .filter(|r| r.state == State::Started)
+        .filter_map(|r| r.chat)
+        .collect()
+}
+
 // ---- planning (what a tool call becomes) ---------------------------------
 
 fn sessions_of(config: &Path, project: Option<&Project>) -> PathBuf {

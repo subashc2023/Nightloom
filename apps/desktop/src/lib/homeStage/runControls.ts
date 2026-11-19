@@ -19,9 +19,14 @@ export function againLine(step: string, failed: boolean): string {
   return `you asked to run step "${step}" again${failed ? " (it had failed)" : ""} — send it into the chat running this`;
 }
 
-/** Stop the routed chat, then tell Home. True when the chat was stopped. */
+/** Stop the routed chat, then tell Home. True when the chat was stopped. Only a chat a route of Home's is running now
+ *  is stopped (872 review): the task's `chat` is Home's words, and must never stop his own chat or another one. */
 export async function stopThenTell(task: { name: string; view: string }, chat: string, live: string | null): Promise<boolean> {
   try {
+    if (!(await stageHost.now.routedRunning()).includes(chat)) {
+      stageHost.now.toast("The chat was not stopped — it is not a chat Home routed that is running now");
+      return false;
+    }
     await stageHost.now.stopChat(chat);
   } catch (e) {
     stageHost.now.toast(`The chat was not stopped — ${e instanceof Error ? e.message : String(e)}`);
