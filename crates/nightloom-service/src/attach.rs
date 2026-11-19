@@ -529,6 +529,18 @@ pub async fn prepare_office_within(
         ))
         .await;
     }
+    // `PageRange` counts every slide, hidden ones too, while the PDF has
+    // only the shown ones (868 review, measured on LibreOffice 26.8: a
+    // 3-slide deck with slide 2 hidden gives a 2-page PDF, and range 2-2 no
+    // PDF at all). Ranges over the PDF's pages would drop the last slides
+    // of a deck with hidden ones, so they run over the deck's own count
+    // where it can be read, and the parts must add up to the PDF's pages.
+    let deck_slides = OfficeFormat::of(name)
+        .filter(|f| f.is_slides())
+        .and_then(|f| extract(name, f, bytes).ok())
+        .map(|(_, n)| n)
+        .filter(|&n| n >= pages)
+        .unwrap_or(pages);
     // Parts: enough for the pages, and for the size with a margin.
     let by_pages = limits.max_pages.map_or(1, |m| pages.div_ceil(m.max(1)));
     let by_size = limits
@@ -541,7 +553,7 @@ pub async fn prepare_office_within(
         }
         let mut parts = Vec::with_capacity(n);
         let mut all_fit = true;
-        for (i, range) in page_ranges(pages, n).into_iter().enumerate() {
+        for (i, range) in page_ranges(deck_slides, n).into_iter().enumerate() {
             let opts = export_options(name, Some(range), over_size);
             let Some(t) = left() else {
                 return as_text(too_long()).await;
@@ -574,6 +586,14 @@ pub async fn prepare_office_within(
             parts.push(p);
         }
         if all_fit {
+            // Every slide once, in order: anything else is not his deck.
+            let got: usize = parts.iter().map(|p| p.count.unwrap_or(0)).sum();
+            if got != pages {
+                return as_text(format!(
+                    "its {pages} slides could not be split into parts that keep every slide (the parts had {got})"
+                ))
+                .await;
+            }
             let mut first = parts.remove(0);
             first.more = parts;
             return Ok(first);
@@ -2105,6 +2125,46 @@ i=$a; while [ $i -le $b ]; do printf '%s 0 obj << /Type /Page >> endobj\n' "$i" 
         assert_eq!(page_ranges(184, 2), vec![(1, 92), (93, 184)]);
         assert_eq!(page_ranges(7, 3), vec![(1, 3), (4, 5), (6, 7)]);
         assert_eq!(part_name("a.b.pptx", 2, 3), "a.b (part 2 of 3).pptx");
+    }
+
+    /// 868 review: LibreOffice's `PageRange` counts hidden slides, the PDF
+    /// leaves them out (measured: slide 2 of 3 hidden → a 2-page PDF, and
+    /// range 2-2 writes no PDF). This stand-in does the same for the
+    /// 3-slide fixture; the parts must still carry slides 1 and 3.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_deck_with_a_hidden_slide_splits_without_losing_its_last_slide() {
+        let d = scratch("hidden");
+        let soffice = fake_soffice(
+            &d,
+            r#"conv=""; while [ $# -gt 0 ]; do case "$1" in --convert-to) conv="$2"; shift;; --outdir) out="$2"; shift;; esac; shift; done
+a=1; b=3
+r=$(printf '%s' "$conv" | sed -n 's/.*"PageRange":{"type":"string","value":"\([0-9]*\)-\([0-9]*\)".*/\1 \2/p')
+[ -n "$r" ] && set -- $r && a=$1 && b=$2
+body=""; i=$a; while [ $i -le $b ]; do [ $i -ne 2 ] && body="$body$i 0 obj << /Type /Page >> endobj
+"; i=$((i+1)); done
+[ -z "$body" ] && exit 1
+printf '%%PDF-1.4\n%s' "$body" > "$out/input.pdf""#,
+        );
+        let p = prepare_office_within(
+            "deck.pptx",
+            &fixture("lecture.pptx"),
+            Some(&soffice),
+            CONVERT_TIMEOUT,
+            PdfLimits {
+                max_base64: None,
+                max_pages: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(p.via, "pdf", "{:?}", p.note);
+        let counts: Vec<_> = std::iter::once(&p)
+            .chain(p.more.iter())
+            .map(|m| m.count.unwrap())
+            .collect();
+        assert_eq!(counts.iter().sum::<usize>(), 2, "{counts:?}");
+        let _ = std::fs::remove_dir_all(d);
     }
 
     /// 868 review: the shrink-then-split ends within its budget (4 × the
