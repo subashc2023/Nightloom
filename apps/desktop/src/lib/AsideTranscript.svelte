@@ -150,6 +150,26 @@
     );
     return true;
   }
+  /** Item 859: an option clicked on a question box in this aside goes as its follow-up, as typed would. */
+  async function answerPick(text: string): Promise<boolean> {
+    const words = text.trim();
+    if (!words || aside.draft) return false;
+    if (!open) {
+      addToast("Open the chat to answer — an aside answers from its context");
+      return false;
+    }
+    if (!onClaudeCode) {
+      addToast("An aside is answered by Claude Code — connect it to answer");
+      return false;
+    }
+    if (asking) {
+      addToast("This aside is still answering — send your pick when it is done");
+      return false;
+    }
+    await followUpAside(words, aside, { attachments: [] });
+    scheduleAsideSave();
+    return true;
+  }
   const chipsOfTurn = (at: number): Attachment[] =>
     (aside.turns[at]?.attachments ?? []).filter((c) => c.data).map((c) => ({ ...c }));
 
@@ -245,6 +265,7 @@
       rewind,
       askEdited,
       ...(open && onClaudeCode ? { retry: (index: number) => askAgain(ev.turnOf[index] ?? -1) } : {}),
+      answer: answerPick,
     },
     words: {
       rewindTip:

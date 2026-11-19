@@ -26,9 +26,13 @@
   import NoteEditor from "./NoteEditor.svelte";
   import NoteMedia from "./NoteMedia.svelte";
   import NoteToolbar from "./NoteToolbar.svelte";
+  import ListenButton from "./ListenButton.svelte";
+  import { here as listenHere } from "./listenHere";
   import { loadNoteMarkdown, saveNoteMarkdown } from "./noteMode";
   import { attachmentsFolder, imageAlt, imageNoteName, insertImage, linkPath, relativeToNote } from "./noteFormat";
   import { readBase64 } from "./attachFiles.svelte";
+  import { planFilePaste, planNotePaste, saveNotePasteImages, type NotePastePlan } from "./notePaste";
+  import { fetchPasteImage, rasterize } from "./pasteImages";
   import NoteEditPanel from "./NoteEditPanel.svelte";
   import { noteEditUi, onLanded, runningTurn } from "./noteEdit.svelte";
   import { changedLines, editBlock, jumpTarget } from "./noteEdit";
@@ -41,6 +45,17 @@
   import { isHtmlPath } from "./htmlPage";
   import { splitExt, whoFoldKey } from "./noteHead";
   import { exactTime, relativeTime } from "./time";
+  import {
+    coalesced,
+    noteVanished,
+    stillThere,
+    touchesNote,
+    vanishedMessage,
+    type NotesChanged,
+  } from "./notesFollow";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { acceptBlocked, bothText, conflictMessage, outsideChange, undoTake } from "./noteConflict";
+  import { baseDiffers, setAsideDraft, setDraftBase } from "./state/notes.svelte";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -72,6 +87,17 @@
   let saved = $state("");
   let loading = $state(false);
   let error = $state<string | null>(null);
+  /** Item 869: the file was moved or deleted outside Nightloom. With his
+   *  unsaved edits the buffer holds them (Save puts the file back); without,
+   *  a plain message and Close — never the os error string. */
+  let gone = $state(false);
+  /** Item 870: the file's text when it changed outside Nightloom while he
+   *  had unsaved edits. While set, Save waits for his pick: Keep mine,
+   *  Take theirs or Show both. Neither text is dropped until then. */
+  let theirs = $state<string | null>(null);
+  /** Item 870: Take theirs on a one-file scope (AGENTS.md, memory, model
+   *  or Chat instructions) — no trash to keep his edits in — asks first. */
+  let confirmTake = $state(false);
   /** A note that is not text (backlog 307): drawn, never edited. */
   let media = $state<api.FileTabData | null>(null);
   /**
@@ -339,12 +365,70 @@
     jump += 1;
   });
 
+  /**
+   * Item 869: a note already open whose file is deleted or moved outside
+   * Nightloom. The folder watch's `notes-changed` re-checks the open file
+   * (one read, coalesced); gone shows the banner and Close, and the buffer —
+   * his unsaved edits included — stays, so Save puts the file back.
+   */
+  $effect(() => {
+    const target = open;
+    if (!target || (target.scope !== "project" && target.scope !== "knowledge")) return;
+    let alive = true;
+    let stop: UnlistenFn | null = null;
+    const check = coalesced(async () => {
+      const isMedia = untrack(() => media) !== null;
+      let disk: string | null = null;
+      const there = await stillThere(async () => {
+        if (isMedia) return api.readNoteMedia(target.scope, target.name);
+        disk = await api.readNote(target.scope, target.name);
+        return disk;
+      });
+      if (!alive || open?.scope !== target.scope || open?.name !== target.name) return;
+      // Item 870: the file's text moved under the editor. Not while a
+      // prompt edit is landing (Nightloom's own writes, taken at the end).
+      if (disk !== null && untrack(() => !gone && !streaming && bufferKey !== null)) {
+        followDisk(disk);
+        return;
+      }
+      if (there === false) gone = true;
+      else if (there === true && untrack(() => gone)) {
+        // Review of 869: the file came back (an editor's save by rename, a
+        // Trash put-back, iCloud). With his unsaved edits the buffer keeps
+        // them and the banner clears; with none — or only the vanished
+        // message showing — the note is read again, so the editor shows
+        // the file as it now is and a later Save cannot write the old text
+        // over what came back.
+        if (untrack(() => dirty)) {
+          gone = false;
+          // Item 870: back with other text than his baseline — ask.
+          if (disk !== null) followDisk(disk);
+        } else void load(target);
+      }
+    });
+    listen<NotesChanged>("notes-changed", (e) => {
+      if (touchesNote(e.payload, target.scope, target.name)) void check();
+    })
+      .then((s) => {
+        if (alive) stop = s;
+        else s();
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      stop?.();
+    };
+  });
+
   async function load(target: { scope: NoteScope; name: string } | null) {
     bufferKey = null;
     caret = 0;
     text = "";
     saved = "";
     error = null;
+    gone = false;
+    theirs = null;
+    confirmTake = false;
     media = null;
     backlinks = [];
     images.clear();
@@ -366,6 +450,10 @@
       // saved baseline, so the ● and the Revert button say what differs.
       const draft = app.noteDrafts[key];
       text = draft !== undefined && draft !== content ? draft : content;
+      // Item 870: the draft was typed against other text than the file
+      // now holds — it changed outside Nightloom while the note was shut.
+      // Item 871: also for a draft restored after a relaunch.
+      if (text !== content && draft !== undefined && baseDiffers(key, content) === true) theirs = content;
       // Opened from a memory hit (backlog 296): the cursor on its line,
       // set before the editor mounts on the new buffer.
       const at = app.noteAt;
@@ -375,7 +463,19 @@
       }
       bufferKey = key;
     } catch (e) {
-      error = String(e);
+      const msg = String(e);
+      if (noteVanished(msg)) {
+        gone = true;
+        const key = noteDraftKey(target.scope, target.name);
+        const draft = app.noteDrafts[key];
+        if (draft !== undefined) {
+          // His edits stay offered back (practices §7): the file is gone, so
+          // the saved baseline is empty and Save writes the edits back.
+          saved = "";
+          text = draft;
+          bufferKey = key;
+        } else error = vanishedMessage(target.name, false);
+      } else error = msg;
     } finally {
       loading = false;
     }
@@ -400,10 +500,120 @@
     }
   }
 
-  async function commit() {
+  /**
+   * Item 870: what the file on disk now reads means for the buffer — the
+   * outside text taken when he has nothing unsaved, his own save adopted,
+   * and with unsaved edits a pick he must make before any Save.
+   */
+  function followDisk(disk: string) {
+    const what = outsideChange({ disk, saved, text });
+    if (what === "adopt") {
+      saved = disk;
+      theirs = null;
+    } else if (what === "reload") {
+      saved = disk;
+      text = disk;
+      theirs = null;
+    } else if (what === "conflict") theirs = disk;
+  }
+
+  /** Keep mine: his text is saved over the outside version, by his pick. */
+  function keepMine() {
+    if (theirs === null) return;
+    saved = theirs;
+    theirs = null;
+    void commit(true);
+  }
+
+  /**
+   * Take theirs: the outside version, by his pick. Revert has no confirm,
+   * so neither does this — but nothing of his is lost: an Undo toast gives
+   * his text back, and in the notes and the vault his edits also go to the
+   * notes trash as an unsaved draft. The one-file scopes have no trash, so
+   * there it asks first (`confirmTake`), and Undo still follows.
+   */
+  function takeTheirs(confirmed = false) {
+    const t = theirs;
+    const target = open;
+    const key = bufferKey;
+    if (t === null || !target || !key) return;
+    const trashable = target.scope === "project" || target.scope === "knowledge";
+    if (!trashable && !confirmed) {
+      confirmTake = true;
+      return;
+    }
+    confirmTake = false;
+    const mine = text;
+    const before = saved;
+    theirs = null;
+    saved = t;
+    text = t;
+    unstageProposal(key);
+    if (trashable) setAsideDraft(target.scope, target.name, mine);
+    const base = target.name.split("/").pop() || target.name;
+    addToast(`Took the outside version of ${base}; your edits are set aside`, {
+      label: "Undo",
+      run: () => {
+        if (bufferKey === key) {
+          const r = undoTake({ mine, before, theirs: t, now: text });
+          saved = r.saved;
+          text = r.text;
+          theirs = r.theirs;
+        } else {
+          // Another note is open: his text waits as this note's draft.
+          const held = app.noteDrafts[key];
+          app.noteDrafts[key] = held === undefined ? mine : bothText(mine, held);
+          setDraftBase(key, app.noteDrafts[key], before);
+        }
+      },
+    });
+  }
+
+  /** Show both: one buffer with his lines and the file's, marked; the file
+   *  is the saved baseline, so Save writes what he makes of them. */
+  function showBoth() {
+    const t = theirs;
+    if (t === null) return;
+    theirs = null;
+    const both = bothText(text, t);
+    saved = t;
+    text = both;
+  }
+
+  /**
+   * Item 870: before a Save, the file as it reads now. Changed outside
+   * since the editor loaded it, and not to his text: no write — the pick
+   * shows instead. A vanished file is written back (item 869); a read that
+   * fails otherwise leaves the write to say what is wrong.
+   */
+  async function outsideBeforeSave(target: { scope: NoteScope; name: string }, pending: string): Promise<boolean> {
+    let disk: string;
+    try {
+      disk = await api.readNote(target.scope, target.name);
+    } catch {
+      return false;
+    }
+    if (open?.scope !== target.scope || open?.name !== target.name) return true;
+    const what = outsideChange({ disk, saved, text: pending });
+    if (what === "adopt") {
+      saved = disk;
+      return true;
+    }
+    if (what === "conflict") {
+      theirs = disk;
+      addToast(`Not saved: ${conflictMessage(target.name)}`);
+      return true;
+    }
+    return false;
+  }
+
+  async function commit(force = false) {
     const target = open;
     if (!target || !dirty) return;
     const pending = text;
+    // Item 870: never over an outside change without his pick. Every Save
+    // in the editor comes here — ⌘S, the pill's Save, Save-and-back.
+    if (!force && (theirs !== null || (await outsideBeforeSave(target, pending)))) return;
     if (await saveNote(target.scope, target.name, pending)) {
       saved = pending;
       addToast(`Saved ${target.name}`);
@@ -466,6 +676,19 @@
     const target = open;
     if (!r || !target || accepting || proposed === saved) return;
     const next = proposed;
+    // Item 870: Accept writes the file too — never over an outside change
+    // since the editor loaded it. The editor follows the file (the choice
+    // shows when he has unsaved edits) and the card stays to look again.
+    try {
+      const disk = await api.readNote(target.scope, target.name);
+      if (acceptBlocked({ disk, saved, next })) {
+        followDisk(disk);
+        addToast(`Not accepted: ${target.name.split("/").pop()} changed outside Nightloom; look at the proposal again`);
+        return;
+      }
+    } catch {
+      // Unreadable: the write says what is wrong, as before.
+    }
     const hadDraft = dirty;
     const heldKey = bufferKey;
     accepting = true;
@@ -574,6 +797,88 @@
     }
   }
 
+  /**
+   * Item 860: copied text with images pasted into a note (`notePaste.ts`):
+   * the text and a link per image go in at once, as one paste; the images
+   * are saved into `attachments/` behind it, a one-line count showing while
+   * they do. Only where `addImage` works; elsewhere the paste is the
+   * editor's own (the text alone).
+   */
+  let pasting = $state<{ done: number; total: number; failed: number } | null>(null);
+  function onNotePaste(e: ClipboardEvent): boolean {
+    const target = open;
+    const key = bufferKey;
+    const cd = e.clipboardData;
+    if (!target || !key || !canImage || !cd || !formatted) return false;
+    const html = cd.getData("text/html");
+    const plan = planNotePaste(html, target.name);
+    if (plan) {
+      expectLanding(plan, target);
+      formatted.insertAtCaret(plan.text, true);
+      void landPaste(plan, target, key);
+      return true;
+    }
+    // A bare image (a screenshot copied, an image file copied in Finder).
+    const files = [...cd.files].filter((f) => f.type.startsWith("image/"));
+    if (files.length === 0 || cd.getData("text/plain").trim() !== "") return false;
+    void (async () => {
+      try {
+        const got = await Promise.all(
+          files.map(async (f) => ({ name: f.name || "image.png", src: `data:${f.type};base64,${await readBase64(f)}` })),
+        );
+        if (bufferKey !== key || !formatted) return;
+        const p = planFilePaste(got, target.name);
+        expectLanding(p, target);
+        formatted.insertAtCaret(p.text, true);
+        await landPaste(p, target, key);
+      } catch (err) {
+        addToast(`Could not paste the image: ${String(err)}`);
+      }
+    })();
+    return true;
+  }
+  /** Item 860: images of a paste still landing, by `scope:name`; the editor
+   *  waits for one before drawing it, so its link draws once its file is there. */
+  const landing = new Map<string, { done: Promise<void>; settle: () => void }>();
+  function landingKey(target: NonNullable<typeof open>, file: string, folder: string): string {
+    return `${target.scope}:${folder}/${file}`;
+  }
+  /** Before the links go in: each one's drawing waits for its file. */
+  function expectLanding(plan: NotePastePlan, target: NonNullable<typeof open>): void {
+    for (const img of plan.images) {
+      let settle = () => {};
+      const done = new Promise<void>((r) => (settle = r));
+      landing.set(landingKey(target, img.file, plan.folder), { done, settle });
+    }
+  }
+  async function landPaste(plan: NotePastePlan, target: NonNullable<typeof open>, key: string): Promise<void> {
+    let stale = 0;
+    const { saved, failed } = await saveNotePasteImages(plan, target.name, {
+      fetch: fetchPasteImage,
+      convert: rasterize,
+      keep: async (folder, file, mediaType, data) => {
+        const kept = await api.keepNoteFile(target.scope, folder, file, mediaType, data);
+        if (kept.kind !== "kept") throw new Error(`${kept.rel} is taken`);
+        return kept.rel;
+      },
+      relink: (from, to) => {
+        // The note was switched away from: its link cannot be moved here.
+        if (bufferKey !== key || !formatted || !formatted.replaceFirst(from, to)) stale++;
+      },
+      settled: (img) => {
+        const k = landingKey(target, img.file, plan.folder);
+        landing.get(k)?.settle();
+        landing.delete(k);
+      },
+      progress: (done, total, lost) => {
+        if (bufferKey === key) pasting = done < total ? { done, total, failed: lost } : null;
+      },
+    });
+    pasting = null;
+    if (failed > 0) addToast(`${failed} of ${saved + failed} pasted images could not be saved; each one's place says why`);
+    if (stale > 0) addToast(`${stale} pasted image links need fixing in ${target.name}: it was closed while they saved`);
+  }
+
   /** A relative image link drawn from the file beside the note: its bytes
    *  as a `data:` URL (the way an image tab draws one), kept per note. */
   const images = new Map<string, Promise<string | null>>();
@@ -585,8 +890,10 @@
     const k = `${target.scope}:${name}`;
     const have = images.get(k);
     if (have) return have;
-    const p = api
-      .readNoteMedia(target.scope, name)
+    // Item 860: a pasted image still being saved draws once it is.
+    const wait = landing.get(k)?.done ?? Promise.resolve();
+    const p = wait
+      .then(() => api.readNoteMedia(target.scope, name))
       .then((m) => (m?.kind === "image" && m.data ? `data:${m.media_type};base64,${m.data}` : null))
       .catch(() => null);
     // A miss is not kept: the file may land a moment later.
@@ -865,6 +1172,10 @@
           <span class="state" class:unsaved={dirty}>{dirty ? "unsaved" : "saved"}</span>
         </span>
       {/if}
+      {#if !media && !reviewing && open}
+        <!-- Item 801: this note read aloud (what is in the editor now). -->
+        <ListenButton kind="note" id="{open.scope}:{open.name}" text={() => text} source={listenHere} />
+      {/if}
     </div>
     {#if renaming && open}
         <input
@@ -924,8 +1235,27 @@
     </div>
     <hr />
   </div>
+  {#if theirs !== null && !error && !media}
+    <div class="conflict" role="group" aria-label="Changed outside Nightloom">
+      <p class="conflict-msg">{conflictMessage(open?.name ?? "")}</p>
+      <div class="conflict-picks">
+        <button class="ghost" use:tip={"Save your text over the outside version"} onclick={keepMine}>Keep mine</button>
+        <button class="ghost revert" use:tip={"Use the outside version; your unsaved edits are dropped"} onclick={() => takeTheirs()}
+          >Take theirs</button
+        >
+        <button class="ghost" use:tip={"Both texts in the editor, marked, to edit and save"} onclick={showBoth}>Show both</button>
+      </div>
+    </div>
+  {/if}
+  {#if gone && !error}
+    <p class="err gone">{vanishedMessage(open?.name ?? "", dirty)}</p>
+    <button class="ghost gone-close" onclick={() => closeNote()}>Close</button>
+  {/if}
   {#if error}
     <p class="err">{error}</p>
+    {#if gone}
+      <button class="ghost gone-close" onclick={() => closeNote()}>Close</button>
+    {/if}
   {:else if loading}
     <p class="err quiet">Reading…</p>
   {:else if media}
@@ -1000,6 +1330,13 @@
       <HtmlPage html={text} place={`note:${open?.scope}:${open?.name}`} title={open?.name ?? ""} />
     </div>
   {:else}
+    {#if pasting}
+      <div class="paste-progress" role="status">
+        Saving {pasting.total} pasted images… {pasting.done} of {pasting.total}{pasting.failed
+          ? ` (${pasting.failed} could not be saved)`
+          : ""}
+      </div>
+    {/if}
     {#key `${bufferKey}#${jump}`}
       <NoteEditor
         bind:this={formatted}
@@ -1007,6 +1344,7 @@
         {caret}
         {markdown}
         {imageSource}
+        onpaste={onNotePaste}
         placeholder={isVault
           ? "Yours, and readable from every project. Link another note with [[name]]."
           : isModel
@@ -1079,6 +1417,17 @@
   </div>
 </div>
 
+{#if confirmTake && theirs !== null}
+  <ConfirmDialog
+    title="Take the outside version?"
+    lead="Your unsaved edits to this file are replaced by the version changed outside Nightloom. Undo on the next notice gives them back."
+    facts={[["file", open?.name ?? ""]]}
+    confirmLabel="Take theirs"
+    onconfirm={() => takeTheirs(true)}
+    onclose={() => (confirmTake = false)}
+  />
+{/if}
+
 {#if confirmDismiss && reviewing}
   <ConfirmDialog
     title="Dismiss this proposal?"
@@ -1119,6 +1468,25 @@
     flex-direction: column;
   }
   /* Item 819: an HTML note's page fills the column under the head. */
+  /* Item 860: a pill over the bottom of the note while a paste's images save. */
+  .note {
+    position: relative;
+  }
+  .paste-progress {
+    position: absolute;
+    left: 50%;
+    bottom: 4.2rem;
+    transform: translateX(-50%);
+    z-index: 6;
+    padding: 0.3rem 0.8rem;
+    font-size: 0.8rem;
+    color: var(--ink, var(--text));
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    white-space: nowrap;
+    pointer-events: none;
+  }
   .page-wrap {
     flex: 1;
     min-height: 0;
@@ -1687,6 +2055,28 @@
   .err.quiet {
     color: var(--dim);
   }
+  /* Item 870: the pick when the file changed outside under unsaved edits. */
+  .conflict {
+    margin: 0.75rem 1.2rem 0;
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--panel);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+  }
+  .conflict-msg {
+    margin: 0;
+    flex: 1 1 18rem;
+    color: var(--text);
+    font-size: 0.82rem;
+  }
+  .conflict-picks {
+    display: flex;
+    gap: 0.4rem;
+  }
   .links {
     flex-shrink: 0;
     border-top: 1px solid var(--border);
@@ -1888,6 +2278,14 @@
   :global(:where(:root:not([data-layout="classic"]))) .ghost {
     background: var(--well);
     border-color: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .conflict {
+    background: var(--sheet);
+    border-color: var(--line);
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .conflict-msg {
+    font-size: 12.5px;
   }
   :global(:where(:root:not([data-layout="classic"]))) .ghost.revert {
     border-color: color-mix(in srgb, var(--failed) 55%, var(--line2));

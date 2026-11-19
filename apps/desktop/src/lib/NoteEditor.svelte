@@ -32,6 +32,7 @@
     onfollow,
     markdown = false,
     imageSource,
+    onpaste,
   }: {
     value?: string;
     caret?: number;
@@ -42,6 +43,8 @@
     markdown?: boolean;
     /** A relative image link's loadable URL (item 498). */
     imageSource?: (src: string) => Promise<string | null>;
+    /** Item 860: a paste, before the editor's own; true when it took it. */
+    onpaste?: (e: ClipboardEvent) => boolean;
   } = $props();
 
   let host: HTMLDivElement;
@@ -62,6 +65,7 @@
           onFollow: (t) => onfollow?.(t),
           placeholder,
           imageSource,
+          onPaste: (e) => onpaste?.(e) ?? false,
         }),
         { markdown },
       ),
@@ -107,6 +111,39 @@
   /** The editor's state now (the Text style menu's tick reads it). */
   export function editorState(): EditorState | null {
     return view?.state ?? null;
+  }
+
+  /** Item 860: `text` in at the caret (over any selection), as one paste;
+   *  `blocks`: a paste of paragraphs is set apart by a blank line. */
+  export function insertAtCaret(text: string, blocks = false): void {
+    if (!view) return;
+    const r = view.state.selection.main;
+    if (blocks && text.includes("\n")) {
+      // Several paragraphs stand apart from the text around them.
+      const doc = view.state.doc;
+      const before = doc.sliceString(Math.max(0, r.from - 2), r.from);
+      const after = doc.sliceString(r.to, Math.min(doc.length, r.to + 2));
+      if (before && !before.endsWith("\n")) text = `\n\n${text}`;
+      else if (before && before !== "\n\n" && r.from > 1) text = `\n${text}`;
+      if (after && !after.startsWith("\n")) text = `${text}\n\n`;
+      else if (after && after !== "\n\n" && after.length > 1) text = `${text}\n`;
+    }
+    view.dispatch({
+      changes: { from: r.from, to: r.to, insert: text },
+      selection: { anchor: r.from + text.length },
+      userEvent: "input.paste",
+      scrollIntoView: true,
+    });
+  }
+
+  /** Item 860: the first `from` in the text read as `to` (an image's link
+   *  moved or failed); false when it is not there (he deleted it). */
+  export function replaceFirst(from: string, to: string): boolean {
+    if (!view) return false;
+    const at = view.state.doc.toString().indexOf(from);
+    if (at < 0) return false;
+    view.dispatch({ changes: { from: at, to: at + from.length, insert: to } });
+    return true;
   }
 
   /** Give the editor the keyboard back (after a menu or the file picker). */

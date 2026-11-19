@@ -250,7 +250,50 @@ pub async fn run_agent_turn(
     timing.set_chat(run.chat_id);
     timing.mark(Mark::Started);
     let cancel = run.cancel;
-    let result = turn_body(run, env, &timing).await;
+    // Item 765: the turn's end is snapshotted for Rewind's "restore files
+    // too" (its start is, in `turn_body`, once the message has its index).
+    let AgentTurnRun {
+        agent,
+        session,
+        chat_id,
+        input,
+        spoken,
+        wire_note,
+        council,
+        cancel: run_cancel,
+        ask_dir,
+        ask,
+    } = run;
+    let workspace = agent.spec().workspace.clone();
+    let before = session.events().len();
+    let result = turn_body(
+        AgentTurnRun {
+            agent,
+            session: &mut *session,
+            chat_id,
+            input,
+            spoken,
+            wire_note,
+            council,
+            cancel: run_cancel,
+            ask_dir,
+            ask,
+        },
+        env,
+        &timing,
+    )
+    .await;
+    if let Some(index) = turn_message_index(session, before)
+        && let Some(notice) = crate::turn_snapshot::snapshot_edge(
+            workspace,
+            chat_id.to_string(),
+            index,
+            crate::turn_snapshot::Edge::End,
+        )
+        .await
+    {
+        env.notice(notice);
+    }
     let outcome = match &result {
         _ if cancel.is_cancelled() => "stopped",
         Ok(AgentTurnEnd::StoppedInCouncil) => "stopped",
@@ -260,6 +303,18 @@ pub async fn run_agent_turn(
     };
     timing.end(outcome);
     result
+}
+
+/// The log index of the user message a turn recorded, the first at or
+/// after `before` (item 765: a turn's snapshots are named by it).
+fn turn_message_index(session: &Session, before: usize) -> Option<usize> {
+    session
+        .events()
+        .iter()
+        .enumerate()
+        .skip(before)
+        .find(|(_, e)| matches!(e, SessionEvent::UserMessage { .. }))
+        .map(|(i, _)| i)
 }
 
 async fn turn_body(
@@ -326,6 +381,18 @@ async fn turn_body(
         input.documents.clone(),
         spoken,
     );
+    // Item 765: the folder as the turn found it, before the model runs —
+    // within 5 s or skipped with a notice, never holding the turn longer.
+    if let Some(notice) = crate::turn_snapshot::snapshot_edge(
+        agent.spec().workspace.clone(),
+        chat_id.to_string(),
+        session.events().len().saturating_sub(1),
+        crate::turn_snapshot::Edge::Start,
+    )
+    .await
+    {
+        env.notice(notice);
+    }
     let mut council_run: Option<(CouncilRequest, Vec<council::SeatResult>)> = None;
     let mut council_notices: Vec<String> = Vec::new();
     if let Some(mut request) = council {
@@ -1387,6 +1454,81 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
         fn timing(&self) -> Option<Arc<TurnTiming>> {
             Some(self.timing.clone())
         }
+    }
+
+    /// Item 765: a turn in a git folder saves its start and end under the
+    /// chat's hidden refs, named by its message's log index, and a plan
+    /// for rewinding it lists what the turn wrote.
+    #[tokio::test]
+    async fn a_turn_in_a_git_folder_is_snapshotted_at_both_ends() {
+        let root =
+            std::env::temp_dir().join(format!("nightloom-765-turn-{}", uuid::Uuid::new_v4()));
+        let logs =
+            std::env::temp_dir().join(format!("nightloom-765-logs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&logs).unwrap();
+        let git = |args: &[&str]| {
+            let o = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "{args:?}");
+            String::from_utf8_lossy(&o.stdout).into_owned()
+        };
+        git(&["init", "-q"]);
+        // The stand-in writes a file in its folder, as a model's Write would.
+        let bin = logs.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let cli = stand_in(&bin);
+        let body = std::fs::read_to_string(&cli).unwrap().replacen(
+            "#!/bin/sh\n",
+            &format!("#!/bin/sh\necho made > '{}/made.txt'\n", root.display()),
+            1,
+        );
+        std::fs::write(&cli, body).unwrap();
+        let mut session = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        let mut spec = AgentSpec::new(&root);
+        spec.binary = cli;
+        let mut agent = ClaudeCodeAgent::new(spec);
+        let ask = AskGate::new();
+        let chat = session.id.clone();
+        let env = Env {
+            timing: TurnTiming::begin(turn_timing::DESKTOP, None, None),
+        };
+        let cancel = CancellationToken::new();
+        let end = run_agent_turn(
+            AgentTurnRun {
+                agent: &mut agent,
+                session: &mut session,
+                chat_id: &chat,
+                input: TurnInput::from("make a file"),
+                spoken: false,
+                wire_note: None,
+                council: None,
+                cancel: &cancel,
+                ask_dir: None,
+                ask: &ask,
+            },
+            &env,
+        )
+        .await;
+        assert!(matches!(end, Ok(AgentTurnEnd::Done { .. })));
+        let index = turn_message_index(&session, 0).unwrap();
+        let refs = git(&["for-each-ref", "--format=%(refname)", "refs/nightloom/"]);
+        assert!(refs.contains(&format!("/{index}/start")), "{refs}");
+        assert!(refs.contains(&format!("/{index}/end")), "{refs}");
+        assert!(git(&["branch", "--list"]).is_empty());
+        let plan = crate::turn_snapshot::plan(&root, &chat, index);
+        let files: Vec<_> = plan
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.how))
+            .collect();
+        assert_eq!(files, [("made.txt", "added")], "{plan:?}");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&logs);
     }
 
     /// `turns` stand-in turns in one chat whose log already holds

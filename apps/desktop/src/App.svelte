@@ -76,6 +76,7 @@
   import TitleBar from "./lib/TitleBar.svelte";
   import TopBar from "./lib/TopBar.svelte";
   import SettingsModal from "./lib/SettingsModal.svelte";
+  import RecoveredDrafts from "./lib/RecoveredDrafts.svelte";
   import WrapAsidesDialog from "./lib/WrapAsidesDialog.svelte";
   import ContextPanel from "./lib/ContextPanel.svelte";
   import RightRail from "./lib/RightRail.svelte";
@@ -1108,6 +1109,11 @@
         onconfirm={() => void quitAnyway()}
         onclose={cancelQuit}
       />
+    {/if}
+    <!-- Item 871: kept note drafts whose note is gone, offered back. -->
+    {#if app.showRecoveredDrafts}
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+      <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showRecoveredDrafts = false; }}><RecoveredDrafts /></div>
     {/if}
     <Palette />
     <!-- His feedback to the agent (item 805): the draft outlives the box. -->

@@ -28,15 +28,105 @@ export function pickedOption(options: readonly string[], said: string): number {
 
 const SAID_MAX = 160;
 
+/**
+ * Item 859 (his words: "supposedly it seems like it's a question, yet there's no actual question. There's no
+ * way to answer anything", and of his second shot, the box above the live card: "what was the point of this
+ * shit appearing twice"). Every `<ask>` box is in exactly one of four states, and none is a dead end:
+ *
+ * - `answered` — a message of his follows (851's filled card, the pick marked);
+ * - `live` — the question card (TurnAsk) is drawn under the transcript for it: the box is hidden, so the
+ *   question shows once, as the card; it comes back as the answered card once he answers;
+ * - `closed` — no answer of his, and the chat went on past it (a later question, or more words after it):
+ *   a filled card that says so in one line, its options still buttons that send the pick as his next message;
+ * - `open` — no answer and no card (an aside, a chat whose card is not drawn): filled, options are buttons.
+ */
+export type AskBoxState = "answered" | "live" | "open" | "closed";
+
+export interface AskBoxFacts {
+  /** His words after the reply; null while none follow. */
+  said: string | null;
+  /** The last `<ask>` box in the transcript. */
+  last: boolean;
+  /** A TurnAsk card is drawn in the transcript. */
+  cardDrawn: boolean;
+  /** Words of Claude's follow the box (in its reply or a later one). */
+  laterWords: boolean;
+}
+
+/** The note a box in each state carries (the line under its options); empty for none. */
+export const ASK_OPEN_NOTE = "Pick an answer to send it as your next message.";
+export const ASK_CLOSED_LATER_QUESTION = "Closed without your answer — a later question replaced it. Pick one to send it now.";
+export const ASK_CLOSED_LATER_WORDS = "Closed without your answer — Claude carried on past it. Pick one to send it now.";
+
+/** Which state a box is in, and its note. */
+export function askBoxState(f: AskBoxFacts): { state: AskBoxState; note: string } {
+  if (f.said !== null) return { state: "answered", note: "" };
+  if (f.last && f.cardDrawn) return { state: "live", note: "" };
+  if (!f.last) return { state: "closed", note: ASK_CLOSED_LATER_QUESTION };
+  if (f.laterWords) return { state: "closed", note: ASK_CLOSED_LATER_WORDS };
+  return { state: "open", note: ASK_OPEN_NOTE };
+}
+
+/** The DOM event a box's (or a closed question card's) option sends: the transcript that can send his
+ *  next message takes it (`preventDefault`) and sends `answer`; a pane, which cannot, leaves it. */
+export const ASK_ANSWER_EVENT = "nl-ask-answer";
+export interface AskAnswerDetail {
+  answer: string;
+  ask: { question: string; options: string[] };
+}
+
+/** Dispatch his pick from `from`; true when a transcript took it. */
+export function sendAskAnswer(from: HTMLElement, detail: AskAnswerDetail): boolean {
+  const e = new CustomEvent<AskAnswerDetail>(ASK_ANSWER_EVENT, { bubbles: true, cancelable: true, detail });
+  from.dispatchEvent(e);
+  return e.defaultPrevented;
+}
+
+/** Put one unanswered box in `state` (live, open or closed): its attributes and its options' button roles. */
+function markUnanswered(box: HTMLElement, state: Exclude<AskBoxState, "answered">, note: string): void {
+  if (box.dataset.answered) delete box.dataset.answered;
+  if (box.dataset.said !== undefined) delete box.dataset.said;
+  if (box.dataset.state !== state) box.dataset.state = state;
+  if (note) {
+    if (box.dataset.note !== note) box.dataset.note = note;
+  } else if (box.dataset.note !== undefined) delete box.dataset.note;
+  const pickable = state !== "live";
+  for (const li of Array.from(box.querySelectorAll<HTMLElement>(".nl-ask-o > li"))) {
+    if (li.dataset.picked) delete li.dataset.picked;
+    if (pickable) {
+      if (li.getAttribute("role") !== "button") li.setAttribute("role", "button");
+      if (li.getAttribute("tabindex") !== "0") li.setAttribute("tabindex", "0");
+    } else {
+      li.removeAttribute("role");
+      li.removeAttribute("tabindex");
+    }
+  }
+}
+
+/** Words of Claude's after `box`: a later sibling in its reply with text, or a later reply's words. */
+function wordsAfter(box: HTMLElement, node: HTMLElement, scope: Element): boolean {
+  for (let n = box.nextElementSibling; n; n = n.nextElementSibling) if (n.textContent?.trim()) return true;
+  for (const m of Array.from(scope.querySelectorAll<HTMLElement>(".markdown"))) {
+    if (m === node || m.closest(".user-bubble") || (m.closest(".transcript") ?? m.ownerDocument.body) !== scope) continue;
+    if (node.compareDocumentPosition(m) & Node.DOCUMENT_POSITION_FOLLOWING && m.textContent?.trim()) return true;
+  }
+  return false;
+}
+
 /** Mark one box as answered with his words (null: answered, words unknown). Idempotent. */
 export function settleBox(box: HTMLElement, said: string | null): void {
   if (box.dataset.answered !== "1") box.dataset.answered = "1";
+  if (box.dataset.state !== "answered") box.dataset.state = "answered";
+  if (box.dataset.note !== undefined) delete box.dataset.note;
+  if (box.dataset.sending !== undefined) delete box.dataset.sending;
   const items = Array.from(box.querySelectorAll<HTMLElement>(".nl-ask-o > li"));
   const pick = said === null ? -1 : pickedOption(
     items.map((li) => li.textContent ?? ""),
     said,
   );
   items.forEach((li, i) => {
+    li.removeAttribute("role");
+    li.removeAttribute("tabindex");
     if (i === pick) {
       if (li.dataset.picked !== "1") li.dataset.picked = "1";
     } else if (li.dataset.picked) delete li.dataset.picked;
@@ -51,6 +141,8 @@ export function settleBox(box: HTMLElement, said: string | null): void {
 function nextSaid(node: HTMLElement): string | null {
   const scope = node.closest(".transcript") ?? node.ownerDocument.body;
   for (const b of Array.from(scope.querySelectorAll<HTMLElement>(".user-bubble"))) {
+    // Item 859: an aside card floats inside the chat's transcript; its bubbles are not his answer here.
+    if ((b.closest(".transcript") ?? b.ownerDocument.body) !== scope) continue;
     if (node.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) {
       return (b.querySelector(".user-text")?.textContent ?? b.textContent ?? "").trim();
     }
@@ -67,7 +159,16 @@ export function askSettled(node: HTMLElement) {
     if (!boxes.length) return;
     const said = nextSaid(node);
     if (said === null) {
-      for (const b of boxes) if (b.dataset.answered) delete b.dataset.answered;
+      // Item 859: unanswered — live (the card shows it), closed, or open; never a bare dead box.
+      const scope = node.closest(".transcript") ?? node.ownerDocument.body;
+      // Only this transcript's own (an aside's transcript may sit inside the chat's).
+      const mine = (el: Element) => (el.closest(".transcript") ?? el.ownerDocument.body) === scope;
+      const all = Array.from(scope.querySelectorAll<HTMLElement>(".nl-ask")).filter(mine);
+      const cardDrawn = Array.from(scope.querySelectorAll("[data-turn-ask]")).some(mine);
+      for (const b of boxes) {
+        const { state, note } = askBoxState({ said, last: all[all.length - 1] === b, cardDrawn, laterWords: wordsAfter(b, node, scope) });
+        markUnanswered(b, state as Exclude<AskBoxState, "answered">, note);
+      }
       return;
     }
     // The last block is the question the card answered; an earlier one in the same reply passed unanswered.
@@ -95,11 +196,62 @@ export function askSettled(node: HTMLElement) {
     soon();
   });
   own.observe(node, { childList: true });
+  // Item 859: an open or closed box's option is a button — a click (or Enter / Space) sends it as his next
+  // message through the transcript (ASK_ANSWER_EVENT); greyed until his message lands, or 5 s if refused.
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const pick = (e: Event) => {
+    const li = (e.target as HTMLElement | null)?.closest?.<HTMLElement>(".nl-ask-o > li");
+    const box = li?.closest<HTMLElement>(".nl-ask");
+    if (!li || !box || !node.contains(box)) return;
+    if (box.dataset.state !== "open" && box.dataset.state !== "closed") return;
+    if (e instanceof KeyboardEvent && e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    if (box.dataset.sending) return;
+    const options = Array.from(box.querySelectorAll<HTMLElement>(".nl-ask-o > li")).map((x) => (x.textContent ?? "").trim());
+    const answer = (li.textContent ?? "").trim();
+    const question = (box.querySelector(".nl-ask-q")?.textContent ?? "").trim();
+    if (!answer || !sendAskAnswer(box, { answer, ask: { question, options } })) return;
+    box.dataset.sending = "1";
+    const t = setTimeout(() => {
+      timers.delete(t);
+      if (box.dataset.state !== "answered") delete box.dataset.sending;
+    }, 5000);
+    timers.add(t);
+  };
+  node.addEventListener("click", pick);
+  node.addEventListener("keydown", pick);
   return {
     destroy() {
       if (frame) cancelAnimationFrame(frame);
       watch?.disconnect();
       own.disconnect();
+      node.removeEventListener("click", pick);
+      node.removeEventListener("keydown", pick);
+      for (const t of timers) clearTimeout(t);
     },
   };
+}
+
+/**
+ * Item 859's class (every card that asks him something): the CLI's AskUserQuestion call that closed without
+ * his answer — turned down or timed out (`denied`), returned with no answer in it, or left without a result
+ * when its turn ended. Null while it is still waiting or once he answered. AskAnswered draws the closed card
+ * from this, its options buttons that send the pick as his next message.
+ */
+export function closedAskReason(
+  call: { denied?: boolean; result?: { content?: string | null } | null },
+  hasAnswers: boolean,
+  waiting: boolean,
+  ended: boolean,
+): string | null {
+  if (waiting || hasAnswers) return null;
+  if (call.denied) return "Closed without your answer — the question was turned down or timed out before you answered.";
+  if (call.result) return "Closed without your answer — the question returned with no answer in it.";
+  if (ended) return "Closed without your answer — the turn ended before you answered.";
+  return null;
+}
+
+/** What a pick on a closed card sends: the label alone for one question, `Header: label` for several. */
+export function closedPickText(header: string, label: string, several: boolean): string {
+  return several ? `${header}: ${label}` : label;
 }

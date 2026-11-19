@@ -582,6 +582,10 @@ pub struct Job {
     /// phone, which edits the Mac's own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stand_in: bool,
+    /// Item 794: a research watch — each run appends what changed to one
+    /// note ([`watch`]). `None`: an ordinary job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<watch::Watch>,
 }
 
 /// A job as `/api/jobs` lists it: the job, its schedule in words, and
@@ -650,6 +654,9 @@ pub struct NewJob {
     /// The phone's time zone, its IANA name (item 780).
     #[serde(default)]
     pub tz: Option<String>,
+    /// Item 794: a research watch's topic and pages (its note is named here).
+    #[serde(default)]
+    pub watch: Option<watch::Watch>,
 }
 
 /// `POST /api/jobs/{id}`: each field only when it changes.
@@ -690,6 +697,9 @@ pub struct JobPatch {
     /// before zones were kept) whose offset it had when the job was made.
     #[serde(default)]
     pub tz: Option<String>,
+    /// Item 794: a watch's new topic and pages (its note keeps its name).
+    #[serde(default)]
+    pub watch: Option<watch::Watch>,
 }
 
 /// What a job's chat may do, as its log says it (item 746): a Chat over
@@ -1106,6 +1116,7 @@ impl Jobs {
         let tz = clean_tz(req.tz);
         let zone = zone_of(tz.as_deref(), req.offset_min);
         let every = Every::parse(&req.every, weekday_at(now, &zone))?;
+        let watch = req.watch.map(watch::Watch::cleaned).transpose()?;
         let mut jobs = self.lock();
         if jobs.len() >= MAX_JOBS {
             return Err(format!(
@@ -1116,7 +1127,19 @@ impl Jobs {
             .title
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| title_from(&text));
+            .unwrap_or_else(|| match &watch {
+                Some(w) => title_from(&format!("Watch — {}", w.topic)),
+                None => title_from(&text),
+            });
+        // Item 794: the note's name, fixed now, never one another watch keeps.
+        let watch = watch.map(|mut w| {
+            let taken: Vec<String> = jobs
+                .iter()
+                .filter_map(|j| j.watch.as_ref().map(|w| w.note.clone()))
+                .collect();
+            w.note = watch::note_name(&w.topic, &taken);
+            w
+        });
         let job = Job {
             id: uuid::Uuid::new_v4().simple().to_string(),
             title,
@@ -1145,6 +1168,7 @@ impl Jobs {
             confirm: None,
             force_once: false,
             stand_in: false,
+            watch,
         };
         jobs.push(job.clone());
         self.save(&jobs)?;
@@ -1197,7 +1221,16 @@ impl Jobs {
         if patch.title.as_deref().is_some_and(|t| t.trim().is_empty()) {
             return Err("a job needs a name".into());
         }
+        let new_watch = patch.watch.map(watch::Watch::cleaned).transpose()?;
+        if new_watch.is_some() && current.watch.is_none() {
+            return Err("this job is not a watch".into());
+        }
         self.change(id, |job| {
+            // Item 794: new topic or pages; the note keeps its name.
+            if let (Some(w), Some(cur)) = (new_watch, job.watch.as_mut()) {
+                cur.topic = w.topic;
+                cur.sources = w.sources;
+            }
             if let Some(text) = patch.text {
                 let text = text.trim().to_string();
                 if text != job.text {
@@ -1449,6 +1482,7 @@ impl Jobs {
                     j.paused = m.paused;
                     j.approved = m.approved;
                     j.approved_once = m.approved_once;
+                    j.watch = m.watch;
                 }
                 None => {
                     let chat = m.chat.clone();
@@ -1534,6 +1568,16 @@ impl Jobs {
         // collected now, in code.
         let text = if job.id == crate::home::SCAN_JOB_ID {
             self.scan_text(now, !job.writable())
+        } else if let Some(w) = &job.watch {
+            // Item 794: his instructions, the sources, the note's latest
+            // entries and the answer's shape; its turn end pushes nothing.
+            watch::quiet_started(&chat);
+            let tail = self
+                .config_dir()
+                .map(|c| watch::tail(&watch::note_path(&c, job.project.as_deref(), w)))
+                .unwrap_or_default();
+            let today = watch::stamp(now, &job.zone());
+            watch::run_text(&job.text, w, &tail, &today)
         } else {
             job.text.clone()
         };
@@ -1572,6 +1616,9 @@ impl Jobs {
             }
             Err(e) => {
                 crate::home::job_run_ended(&chat);
+                if job.watch.is_some() {
+                    watch::quiet_ended(&chat);
+                }
                 wait(e, RETRY_SECS)
             }
         }
@@ -1667,6 +1714,9 @@ impl Jobs {
         // Item 763: a relaunch mid-run forgets the process's runs; every
         // tick of a running job says it again.
         crate::home::job_run_started(chat);
+        if job.watch.is_some() {
+            watch::quiet_started(chat);
+        }
         let age = (now - mark.started).num_seconds();
         if age < RUN_GRACE_SECS {
             return;
@@ -1687,7 +1737,8 @@ impl Jobs {
         let mut refused = Vec::new();
         let mut calls = None;
         let mut full_reply: Option<String> = None;
-        let (outcome, summary) = if listed {
+        let mut opened: Vec<String> = Vec::new();
+        let (outcome, mut summary) = if listed {
             (
                 Outcome::Unfinished,
                 "still running after six hours — open its chat".to_string(),
@@ -1704,6 +1755,9 @@ impl Jobs {
                     }
                     calls = crate::runaway::calls_in(&events, &job.text);
                     full_reply = reply_in(&events, &job.text);
+                    if job.watch.is_some() {
+                        opened = watch::opened_in(&events, &job.text);
+                    }
                     match full_reply.clone() {
                         // Item 784: he chose Stop on the guard's card.
                         Some(reply) if stopped_reply(&reply).is_some() => (
@@ -1720,6 +1774,30 @@ impl Jobs {
                 Err(e) => (Outcome::Failed, format!("its chat could not be read: {e}")),
             }
         };
+        // Item 794: a watch's finished run appends its entry to the note
+        // (in code, append-only); the Jobs list shows its first line.
+        let mut changed: Option<String> = None;
+        if let (Some(w), Outcome::Done, Some(reply), Some(config)) =
+            (&job.watch, outcome, &full_reply, self.config_dir())
+        {
+            let e = watch::entry(reply, &opened, &watch::stamp(mark.started, &job.zone()));
+            let path = watch::note_path(&config, job.project.as_deref(), w);
+            summary = match watch::append(&path, &job.title, &w.topic, &e) {
+                Ok(()) if e.changed => {
+                    changed = Some(e.headline.clone());
+                    cut(&format!(
+                        "{} ({} new, {} unverified)",
+                        e.headline, e.verified, e.unverified
+                    ))
+                }
+                Ok(()) if e.unverified > 0 => cut(&format!(
+                    "Nothing verified new ({} unverified)",
+                    e.unverified
+                )),
+                Ok(()) => watch::NOTHING_NEW.into(),
+                Err(err) => format!("its note could not be written: {err}"),
+            };
+        }
         let after = host.usage().await.ok().map(|u| u.plan);
         let points = after.as_ref().and_then(|a| week_points(mark, a));
         let five = after.as_ref().and_then(|a| five_points(mark, a));
@@ -1831,6 +1909,22 @@ impl Jobs {
             }
         }
         crate::home::job_run_ended(chat);
+        if job.watch.is_some() {
+            watch::quiet_ended(chat);
+        }
+        // Item 794: a watch run that found something pushes its first line.
+        if let Some(headline) = changed
+            && let Some(push) = host.push()
+        {
+            push.notify(watch::change_note(
+                &headline,
+                &job.title,
+                Some(chat.clone()),
+                job.project.clone(),
+                host.at_the_mac(),
+            ))
+            .await;
+        }
         // Its push: the job's name and "wants to make changes", nothing of
         // the reply. Not while he is at the Mac (the Mac's chat shows it).
         if wants && let Some(push) = host.push() {
@@ -1867,6 +1961,7 @@ pub async fn run_loop(
 
 pub mod knock;
 pub mod runner;
+pub mod watch;
 
 #[cfg(test)]
 mod tests;

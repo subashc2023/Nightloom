@@ -28,6 +28,9 @@ export interface TranscriptActions {
   askEdited?: (index: number, text: string, chips: Attachment[]) => boolean | void | Promise<boolean | void>;
   /** Answer the turn that ends in reply `index` again. */
   retry?: (index: number) => void | Promise<void>;
+  /** Item 859: send his pick on a reply's question box as his next message here (an aside's follow-up).
+   *  The open chat's transcript sends its own; absent: no option sends (a pane). */
+  answer?: (text: string) => boolean | void | Promise<boolean | void>;
 }
 
 export interface TranscriptSource {

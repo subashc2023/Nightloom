@@ -43,15 +43,18 @@ pub struct Rect {
 
 /// How far apart two edges may be and still count as the same: half a
 /// point, below anything that draws differently.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const FRAME_TOLERANCE: f64 = 0.5;
 
 /// How far the page's `innerWidth`/`innerHeight` (whole CSS pixels, times
 /// the page zoom) may sit from the frame before the page counts as laid out
 /// at another size. Two points covers the rounding.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const PAGE_TOLERANCE: f64 = 2.0;
 
 /// The webview's frame is not its parent's bounds — the stale frame this
 /// item is about.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn differs(frame: Rect, bounds: Rect) -> bool {
     (frame.x - bounds.x).abs() > FRAME_TOLERANCE
         || (frame.y - bounds.y).abs() > FRAME_TOLERANCE
@@ -65,6 +68,7 @@ pub fn differs(frame: Rect, bounds: Rect) -> bool {
 /// taken as 1. Width only: `innerHeight` sits below the frame's height by
 /// the title bar's inset (32 points measured in a window, 390 against 358),
 /// which full screen takes away, so the height cannot be compared.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn page_lags(frame: Rect, zoom: f64, inner_width: f64) -> bool {
     let zoom = if zoom.is_finite() && zoom > 0.0 {
         zoom

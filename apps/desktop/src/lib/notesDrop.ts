@@ -19,6 +19,7 @@
 import { canKeep, keepKey, type KeepState } from "./keep";
 import type { Attachment } from "./types";
 import type { UnpackedZip } from "./api";
+import type { DropRows } from "./notesPending";
 
 /** Why nothing can be kept here, or null when the project can keep. */
 export function whyNoKeep(project: { unfiled?: boolean; name?: string } | null | undefined): string | null {
@@ -53,13 +54,20 @@ export type KeepDeps = {
   state: (key: string) => KeepState;
   /** Forget a "kept" state so Keep asks the backend again. */
   forget: (key: string) => void;
-  /** `source`: an office file's own SHA-256 (item 428). */
-  keep: (key: string, name: string, mediaType: string, from: { data: string }, source?: string) => Promise<void>;
+  /** `source`: an office file's own SHA-256 (item 428). Item 855: a
+   *  string back is why it could not be kept (its row says so). */
+  keep: (key: string, name: string, mediaType: string, from: { data: string }, source?: string) => Promise<void | string>;
   /** Drop the scratch box. */
   discard: (key: string) => void;
+  /** Item 868: a split deck's parts 2..n (`partChips`), kept beside its
+   *  first chip. Without it, only the first is kept. */
+  parts?: (key: string, id: number) => readonly Attachment[];
   /** Item 414: how a zip is unpacked and its entries kept. Without it, a
    *  zip goes through `attach` as any file. */
   zip?: ZipDeps;
+  /** Item 855: a row per file in the notes list from the moment of the
+   *  drop. Given, a file's refusal or failure goes to its row, not a toast. */
+  rows?: DropRows;
 };
 
 /**
@@ -77,8 +85,101 @@ export async function keepDropped(files: readonly File[], d: KeepDeps): Promise<
   // Item 414: a zip is unpacked into a folder, not kept whole.
   const zips = d.zip ? files.filter(isZip) : [];
   const rest = files.filter((f) => !zips.includes(f));
-  let asked = rest.length > 0 ? await keepFiles(rest, d) : 0;
-  for (const z of zips) asked += await keepZip(z, d, d.zip!);
+  const given = d.rows;
+  if (!given) {
+    let asked = rest.length > 0 ? await keepFiles(rest, d) : 0;
+    for (const z of zips) asked += await keepZip(z, d, d.zip!);
+    return asked;
+  }
+  // Which rows the drop is done with, so a throw fails only the others.
+  const ended = new Set<number>();
+  const rows: DropRows = {
+    start: (f) => given.start(f),
+    fail: (id, why) => given.fail(id, why),
+    end: (id) => {
+      ended.add(id);
+      given.end(id);
+    },
+  };
+  // Item 855: every row shows at once, before any file is read.
+  const restIds = rows.start(rest.map((f) => ({ name: f.name, zip: false })));
+  const zipIds = rows.start(zips.map((f) => ({ name: f.name, zip: true })));
+  let asked = 0;
+  try {
+    if (rest.length > 0) asked += await keepFilesRows(rest, restIds, d, rows);
+    for (const [i, z] of zips.entries()) {
+      try {
+        asked += await keepZip(z, d, d.zip!, (why) => rows.fail(zipIds[i], why));
+      } finally {
+        rows.end(zipIds[i]);
+      }
+    }
+  } catch (e) {
+    // Whatever stopped the drop, no row is left saying "adding…".
+    for (const id of [...restIds, ...zipIds]) {
+      if (ended.has(id)) continue;
+      rows.fail(id, `Stopped before it was kept: ${String(e)}`);
+      rows.end(id);
+    }
+    throw e;
+  }
+  return asked;
+}
+
+/**
+ * Item 855: `keepFiles` with a row per file. Each file is attached on its
+ * own (into the one scratch box, so the box's caps still see the whole
+ * drop), so the words said while attaching and converting it are its own:
+ * a refusal or a failed conversion becomes its row's reason. Words that
+ * came with a file that was kept (a deck sent as its text) still toast.
+ */
+async function keepFilesRows(files: readonly File[], ids: readonly number[], d: KeepDeps, rows: DropRows): Promise<number> {
+  const key = scratchKey();
+  let asked = 0;
+  const said: string[][] = files.map(() => []);
+  const chipOf: (number | undefined)[] = [];
+  const why = (i: number, fallback: string) => said[i].at(-1) ?? fallback;
+  try {
+    for (const [i, f] of files.entries()) {
+      const made = await d.attach(key, [f], (t) => void said[i].push(t));
+      chipOf[i] = made[0]?.id;
+      if (made.length === 0) {
+        rows.fail(ids[i], why(i, `${f.name} could not be added`));
+        rows.end(ids[i]);
+      }
+    }
+    await Promise.allSettled(d.jobs(key));
+    const chips = d.chips(key);
+    for (const [i, f] of files.entries()) {
+      if (chipOf[i] === undefined) continue;
+      const a = chips.find((c) => c.id === chipOf[i]);
+      if (!a || a.pending || !a.data) {
+        rows.fail(ids[i], why(i, `${f.name} could not be converted`));
+        rows.end(ids[i]);
+        continue;
+      }
+      for (const t of said[i]) d.toast(t);
+      // Item 868: a deck split into parts keeps every part, on one row.
+      for (const c of [a, ...(d.parts?.(key, a.id) ?? [])]) {
+        const k = keepKey(c.name, c.data);
+        const s = d.state(k);
+        if (s.phase === "kept") d.forget(k);
+        else if (s.phase === "keeping") {
+          d.toast(`${c.name} is being kept already`);
+          continue;
+        }
+        asked++;
+        const src = c.source_sha256 ? [c.source_sha256] : [];
+        const failed = await d.keep(k, c.name, c.media_type, { data: c.data }, ...src);
+        if (typeof failed === "string") rows.fail(ids[i], failed);
+      }
+      // The keep refreshed Notes before it returned: the note's own row
+      // is in the list as this one goes.
+      rows.end(ids[i]);
+    }
+  } finally {
+    d.discard(key);
+  }
   return asked;
 }
 
@@ -93,6 +194,8 @@ async function keepFiles(files: readonly File[], d: KeepDeps): Promise<number> {
     // the chip's Keep button does (disabled while `pending`).
     await Promise.allSettled(d.jobs(key));
     const ids = new Set(made.map((a) => a.id));
+    // Item 868: a split deck's parts 2..n are kept with it.
+    for (const a of made) for (const p of d.parts?.(key, a.id) ?? []) ids.add(p.id);
     // A chip whose conversion failed was removed (and said so).
     const ready = d.chips(key).filter((a) => ids.has(a.id) && !a.pending && a.data);
     for (const a of ready) {
@@ -181,16 +284,18 @@ function bytesOf(b64: string): Uint8Array<ArrayBuffer> {
 }
 
 /** Unpack one zip and keep its entries. Returns how many were kept. */
-export async function keepZip(file: File, d: KeepDeps, z: ZipDeps): Promise<number> {
+export async function keepZip(file: File, d: KeepDeps, z: ZipDeps, fail?: (why: string) => void): Promise<number> {
+  // Item 855: given `fail`, a zip that yields nothing says so on its row.
+  const nothing = fail ?? d.toast;
   let u: UnpackedZip;
   try {
     u = await z.unpack(file.name, await z.read(file));
   } catch (e) {
-    d.toast(`Could not open ${file.name}: ${String(e)}`);
+    nothing(`Could not open ${file.name}: ${String(e)}`);
     return 0;
   }
   if (u.files.length === 0 && u.skipped.length === 0) {
-    d.toast(`${file.name} is empty — nothing to keep`);
+    nothing(`${file.name} is empty — nothing to keep`);
     return 0;
   }
   const key = scratchKey();
@@ -222,19 +327,24 @@ export async function keepZip(file: File, d: KeepDeps, z: ZipDeps): Promise<numb
         skipped.push({ name: path, why: reason(path, "could not be converted") });
         continue;
       }
-      try {
-        const k = await z.keepAt(a.name, a.media_type, a.data, dirOf(path));
-        rels.push(k.rel);
-        anyNew ||= !k.already;
-      } catch (e) {
-        skipped.push({ name: path, why: String(e) });
+      // Item 868: a split deck's parts 2..n land beside part 1.
+      for (const c of [a, ...(d.parts?.(key, a.id) ?? [])]) {
+        try {
+          const k = await z.keepAt(c.name, c.media_type, c.data, dirOf(path));
+          rels.push(k.rel);
+          anyNew ||= !k.already;
+        } catch (e) {
+          skipped.push({ name: path, why: String(e) });
+        }
       }
     }
   } finally {
     d.discard(key);
   }
   if (rels.length > 0) await z.kept(rels, anyNew);
-  d.toast(zipToast(file.name, u.folder, rels.length, skipped, z.base));
+  const words = zipToast(file.name, u.folder, rels.length, skipped, z.base);
+  if (rels.length === 0) nothing(words);
+  else d.toast(words);
   return rels.length;
 }
 

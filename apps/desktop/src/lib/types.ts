@@ -1201,6 +1201,9 @@ export interface Attachment {
   label?: string;
   /** An office file still converting: no `data` yet, and Send waits. */
   pending?: boolean;
+  /** Item 868: when its conversion started and to what — the chip says
+   *  "converting slides · 1:12" so a long deck never looks stuck. */
+  converting?: { since: number; to: "pdf" | "text" };
   /** Text pasted as an attachment (item 284): there is no file on disk to
    *  drop again, so the drafts store keeps it like the box's own text. */
   pasted?: boolean;

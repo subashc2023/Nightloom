@@ -2,6 +2,7 @@
 import { projectSwitch } from "../projectSwitch.svelte";
 import * as api from "../api";
 import { refreshWithin } from "../afterWrite";
+import { watchWhenMoved } from "../notesFollow";
 import { withProject, withoutProject } from "../projectRows";
 import { canDetach } from "../browse";
 import * as tabs from "../tabs";
@@ -50,15 +51,27 @@ export async function refreshProjects(): Promise<void> {
  * note the model just left appears in the sidebar without a reload. Both are
  * refreshed together because the model can write to either.
  */
+/** Item 869: the watch on the folders this list mirrors, re-asked for only
+ *  when the open project or the vault moved. */
+const followNotes = watchWhenMoved(() => api.watchNotes());
+
 export async function refreshNotes(): Promise<void> {
+  // Item 869: the list follows changes made outside Nightloom too.
+  try {
+    followNotes(`${app.project?.id ?? ""}|${app.knowledge?.dir ?? ""}`);
+  } catch {
+    // A test's api mock without the watch: the list still reads.
+  }
   // As a tree since item 457: the same notes, plus the folders (an empty
   // one is still a place to drop a note) and whether the list is whole.
   if (app.project) {
+    const listedFor = app.project.id;
     try {
       const t = await api.listNoteTree("project");
       app.notes = t.notes;
       app.noteFolders.project = t.folders;
       app.notesComplete.project = t.complete;
+      app.notesListed.project = listedFor;
     } catch {
       // A store that cannot be listed shows as empty; the failure surfaces
       // when something is actually read or written.
@@ -76,6 +89,7 @@ export async function refreshNotes(): Promise<void> {
     app.vault = t.notes;
     app.noteFolders.knowledge = t.folders;
     app.notesComplete.knowledge = t.complete;
+    app.notesListed.knowledge = true;
   } catch {
     app.vault = [];
     app.noteFolders.knowledge = [];

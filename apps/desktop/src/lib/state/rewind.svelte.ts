@@ -5,6 +5,7 @@ import { bumpDraft, nextAttachmentId, readDraft, recordDraft, setDraftAttachment
 import { indexOfAim } from "../aim";
 import { dismissRewoundOffer, keepIn, keepsBox, offerRewound, requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "../rewindDraft.svelte";
 import { rewoundWrites, setAsideFiles } from "../rewoundFiles";
+import { restoreFiles, restoreRewoundFiles, restoredSummary, rewindFiles, split, type RestoreFile } from "../rewindRestore";
 import type { Attachment, SessionEvent } from "../types";
 import { chatScope, pushUndo, undoToast, contextUsed } from "./edits.svelte";
 import { openChatKey } from "./queue.svelte";
@@ -67,6 +68,12 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
           done: null,
         }
       : null;
+  app.rewindRestore = null;
+  // Item 765: the files the rewound turns changed, from their snapshots.
+  // Where there are none (not a git folder, or turns from before them),
+  // the item-259 card stands and says why.
+  const gen = ++restoreGen;
+  if (here !== null) void offerRestore(here, written, gen);
   let swap = back ? fillBox(key, back) : null;
   // The inverse lifts the marker this call landed — and, after a redo,
   // the marker *that* call lands, which is why the index is a variable.
@@ -75,12 +82,15 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
     label: "rewind",
     undo: async () => {
       if (!(await adoptOpen(() => api.unrewind(marker)))) return;
+      // A restore plan still on its way is for turns that are back now.
+      restoreGen++;
       refill();
       // Item 724: the message is back in the thread; its offer goes.
       dismissRewoundOffer(key);
       // The turn is back; its files were left alone unless he set them
       // aside, and then the card says where they went.
       if (app.rewoundWrites && app.rewoundWrites.done === null) app.rewoundWrites = null;
+      if (app.rewindRestore && app.rewindRestore.done === null) app.rewindRestore = null;
       // The box gets back what it held — unless he changed the message
       // since, which then stays (never-lose-work).
       if (swap && untouched(readDraft(key), swap)) {
@@ -124,6 +134,87 @@ export async function setAsideRewound(paths: string[]): Promise<void> {
   } catch (e) {
     addToast(`Could not set the files aside: ${String(e)}`);
   }
+}
+
+/** Item 765: each rewind, and each undo of one, bumps this; a plan that
+ *  comes back after another bump is for a rewind no longer standing. */
+let restoreGen = 0;
+
+/** Item 765: read the rewound turns' snapshots and offer the restore. */
+async function offerRestore(to: number, written: import("../rewoundFiles").RewoundWrite[], gen: number): Promise<void> {
+  const chat = app.activeSessionId;
+  const workspace = app.connection?.workspace ?? null;
+  if (!chat || !workspace) return;
+  let plan;
+  try {
+    plan = await rewindFiles(workspace, chat, to);
+  } catch {
+    return;
+  }
+  if (app.activeSessionId !== chat || gen !== restoreGen) return;
+  if (plan.root && plan.start && plan.end && plan.now && plan.files.length > 0) {
+    // This card replaces item 259's: a restore covers what setting aside did.
+    app.rewoundWrites = null;
+    app.rewindRestore = {
+      session: chat,
+      chat,
+      root: plan.root,
+      start: plan.start,
+      end: plan.end,
+      now: plan.now,
+      files: restoreFiles(plan, workspace, written),
+      done: null,
+      undo: null,
+      busy: false,
+    };
+  } else if (app.rewoundWrites && app.rewoundWrites.session === chat && plan.note && plan.files.length === 0) {
+    app.rewoundWrites.note = plan.note;
+  }
+}
+
+/** Item 765: put the ticked files back as they were before the rewound
+ *  turns; files they made move aside. The card then says what happened,
+ *  with an Undo. */
+export async function restoreRewound(ticked: (f: RestoreFile) => boolean): Promise<void> {
+  const r = app.rewindRestore;
+  if (!r || r.busy || r.done !== null) return;
+  const { paths, added } = split(r.files, ticked);
+  if (paths.length + added.length === 0) return;
+  r.busy = true;
+  try {
+    const out = await restoreRewoundFiles(r.chat, r.root, r.start, r.end, paths, added);
+    const { text, undoPaths } = restoredSummary(r.root, out);
+    r.done = text;
+    r.undo = out.after && undoPaths.length ? { from: r.now, guard: out.after, paths: undoPaths } : null;
+  } catch (e) {
+    addToast(`Could not restore the files: ${String(e)}`);
+  } finally {
+    r.busy = false;
+  }
+}
+
+/** Item 765: put the files back as they were just before the restore;
+ *  anything changed since the restore is left alone. */
+export async function undoRestore(): Promise<void> {
+  const r = app.rewindRestore;
+  if (!r?.undo || r.busy) return;
+  r.busy = true;
+  try {
+    const out = await restoreRewoundFiles(r.chat, r.root, r.undo.from, r.undo.guard, r.undo.paths, []);
+    const left = [...out.skipped, ...out.aside.skipped].map((s) => `${s.path}: ${s.why}`);
+    const back = out.restored.length + out.aside.moved.length;
+    r.done = `Restore undone: ${back === 1 ? "1 file" : `${back} files`} as they were before it${out.aside.folder ? ` (brought-back files moved to ${out.aside.folder})` : ""}${left.length ? ` · left alone: ${left.join("; ")}` : ""}`;
+    r.undo = null;
+  } catch (e) {
+    addToast(`Could not undo the restore: ${String(e)}`);
+  } finally {
+    r.busy = false;
+  }
+}
+
+/** Item 765: keep the files as the rewound turns left them. */
+export function keepRewindFiles(): void {
+  app.rewindRestore = null;
 }
 
 /** Leave the rewound turn's files where they are (item 259). */

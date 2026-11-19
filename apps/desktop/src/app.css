@@ -648,6 +648,18 @@ button {
 .markdown .handoff-go .handoff-review + .handoff-continue {
   margin-left: 0;
 }
+/* Item 857: Cancel beside a running review, first of the three; `.ns-btn`'s
+   display would otherwise beat `hidden`. */
+.markdown .handoff-go .handoff-review-cancel {
+  margin-left: auto;
+  flex: none;
+}
+.markdown .handoff-go .handoff-review-cancel[hidden] {
+  display: none;
+}
+.markdown .handoff-go .handoff-review-cancel:not([hidden]) + .handoff-review {
+  margin-left: 0;
+}
 .markdown .handoff-go .handoff-review-line {
   flex: 1 1 100%;
   min-width: 0;
@@ -657,6 +669,97 @@ button {
 }
 .markdown .handoff-go .handoff-review-line.handoff-warn {
   color: var(--warn, var(--accent-ink));
+}
+
+/* Item 705 (option A, Console): the *Next chat* pick on the next-chat card,
+   before Review and Continue (handoffButton.ts `syncModel`), and its menu on
+   the shared HUD glass. */
+.markdown .handoff-go .handoff-model {
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.markdown .handoff-go .handoff-model ~ .handoff-review,
+.markdown .handoff-go .handoff-model ~ .handoff-review-cancel,
+.markdown .handoff-go .handoff-model ~ .handoff-continue {
+  margin-left: 0;
+}
+.markdown .handoff-go .handoff-model-k {
+  font: 500 10px var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.markdown .handoff-go .handoff-model-note {
+  font: 11px var(--mono);
+  color: var(--dim);
+}
+.markdown .handoff-go .handoff-model-note[hidden] {
+  display: none;
+}
+.markdown .handoff-go .handoff-model-chev {
+  color: var(--dim);
+  font-size: 10px;
+}
+.handoff-model-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 260px;
+  max-width: 380px;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--line2);
+  font-family: var(--sans);
+}
+.handoff-model-menu .hud-head {
+  padding: 4px 6px 6px;
+}
+.handoff-model-menu .handoff-model-row {
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  gap: 2px 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.handoff-model-menu .handoff-model-mark {
+  color: var(--accent-ink, var(--accent));
+  font-size: 11px;
+}
+.handoff-model-menu .handoff-model-detail {
+  grid-column: 2;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+:where(:root:not([data-layout="classic"])) .handoff-model-menu {
+  border-radius: var(--r2);
+  background: color-mix(in srgb, var(--raised) 97%, var(--term));
+}
+:where(:root:not([data-layout="classic"])) .markdown .handoff-go .handoff-model {
+  background: var(--well);
+  border: 1px solid var(--line2);
+  color: var(--ink);
+}
+:where([data-layout="classic"]) .handoff-model-menu {
+  border-radius: 8px;
+  background: var(--sheet);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+:where([data-layout="classic"]) .handoff-model-menu .handoff-model-row:hover,
+:where([data-layout="classic"]) .handoff-model-menu .handoff-model-row:focus-visible {
+  background: var(--paper);
+  outline: none;
 }
 
 /* Item 747: above the button, what the hand-off carries besides the prompt
@@ -2090,3 +2193,80 @@ button,
   font-size: 0.92em;
   overflow-wrap: anywhere;
 }
+/* Item 859 (his words: "there's no way to answer anything", and of the box
+   above the live card, "what was the point of this shit appearing twice"):
+   the box is never a dead end (askSettled.ts). While the question card is
+   drawn for it (`live`), the box is hidden — the question shows once, as the
+   card. Unanswered with no card (`open`: an aside; `closed`: the chat went
+   on past it) it is 851's filled card, its options buttons that send the
+   pick as his next message, and a line under them that says which. */
+.nl-ask[data-state="live"] {
+  display: none;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) {
+  background: var(--raised);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.16),
+    0 8px 22px -12px rgba(0, 0, 0, 0.45);
+  padding: 12px 16px;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-h::after {
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.nl-ask[data-state="open"] .nl-ask-h::after {
+  content: "Waiting on you";
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.nl-ask[data-state="closed"] .nl-ask-h::after {
+  content: "Closed — not answered";
+  background: var(--well);
+  color: var(--dim);
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o {
+  list-style: none;
+  padding-left: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li {
+  margin: 0;
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-ink);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-size: 0.95em;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:hover {
+  filter: brightness(1.15);
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+.nl-ask[data-sending] .nl-ask-o > li {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.nl-ask[data-note]::after {
+  content: attr(data-note);
+  display: block;
+  margin-top: 8px;
+  font-size: 0.88em;
+  color: var(--dim);
+}
+

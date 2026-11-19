@@ -8,7 +8,8 @@
   import { chatLabel } from "./chatLabel";
   import { tip } from "./tip";
   import { onDestroy, onMount, tick } from "svelte";
-  import { addToast, app, openSession, showNote, useProject } from "./state.svelte";
+  import { addToast, app, noteDraftKey, openSession, showNote, useProject } from "./state.svelte";
+  import { UNSAVED_TIP, isUnsaved } from "./unsavedCue";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
   import { relativeTime } from "./time";
@@ -372,6 +373,13 @@
               <Icon name="chev" size={11} />
             </button>
             <span class="gt">{g.name}</span>
+            <!-- Item 867: the note has edits not yet saved — the hits are from the file on disk. -->
+            {#if isUnsaved(app.noteDrafts, noteDraftKey(g.scope, g.name))}<span
+                class="unsaved"
+                role="img"
+                aria-label={UNSAVED_TIP}
+                use:tip={UNSAVED_TIP}
+              ></span>{/if}
             <span class="proj">{g.scope === "knowledge" ? "vault" : "project"}</span>
             <span class="gm">{relativeTime(g.modified)}</span>
             <span class="gn">{g.hits}</span>
@@ -593,6 +601,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* Item 867: the unsaved-changes ring (the tab strip's draft ring). */
+  .unsaved {
+    box-sizing: border-box;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    border: 1.5px solid var(--accent);
+    flex-shrink: 0;
+  }
   .search-gh .gm {
     font-family: var(--mono);
     font-size: 10.5px;
@@ -772,5 +789,11 @@
   :global(:where(:root:not([data-layout="classic"]))) .search-hit.on {
     background: var(--well);
     box-shadow: none;
+  }
+  /* Item 867: lit in his amber under Jarvis; Calm's --glow-accent is none. */
+  :global(:where(:root:not([data-layout="classic"]))) .unsaved {
+    width: 7px;
+    height: 7px;
+    box-shadow: var(--glow-accent, none);
   }
 </style>

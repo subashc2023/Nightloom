@@ -114,7 +114,7 @@ pub fn keep_cursor<R: Runtime>(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, trigger);
+        let _ = (app, kind, trigger);
     }
     Ok(())
 }

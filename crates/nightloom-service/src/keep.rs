@@ -1278,24 +1278,28 @@ mod tests {
             );
         }
         assert!(!docs.join(".trash").exists());
-        // A symlinked folder that leads out is refused too.
-        let out = scratch("492-outside");
-        std::os::unix::fs::symlink(&out, docs.join("link")).unwrap();
-        assert!(
-            keep_in_folder(
-                &docs,
-                "link",
-                "a.txt",
-                "text/plain",
-                b"x",
-                None,
-                OnClash::Both
-            )
-            .is_err()
-        );
-        assert!(std::fs::read_dir(&out).unwrap().next().is_none());
+        // A symlinked folder that leads out is refused too (Unix: a
+        // Windows symlink needs Developer Mode or an admin runner).
+        #[cfg(unix)]
+        {
+            let out = scratch("492-outside");
+            std::os::unix::fs::symlink(&out, docs.join("link")).unwrap();
+            assert!(
+                keep_in_folder(
+                    &docs,
+                    "link",
+                    "a.txt",
+                    "text/plain",
+                    b"x",
+                    None,
+                    OnClash::Both
+                )
+                .is_err()
+            );
+            assert!(std::fs::read_dir(&out).unwrap().next().is_none());
+            let _ = std::fs::remove_dir_all(out);
+        }
         let _ = std::fs::remove_dir_all(docs);
-        let _ = std::fs::remove_dir_all(out);
     }
 
     #[test]

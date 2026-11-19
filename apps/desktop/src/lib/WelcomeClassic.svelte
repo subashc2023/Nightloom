@@ -9,6 +9,7 @@
     runMenuCommand,
     showNewProject,
     showNote,
+    noteDraftKey,
   } from "./state.svelte";
   import { MODEL_KEYS, providerLabel } from "./catalog";
   import type { Note, NoteScope } from "./types";
@@ -17,6 +18,7 @@
   import Kbd from "./Kbd.svelte";
   import { isMac } from "./platform";
   import { relativeTime } from "./time";
+  import { UNSAVED_TIP, isUnsaved } from "./unsavedCue";
 
   /**
    * The new-chat page, redesigned 2026-09-13 (nightshift
@@ -222,7 +224,7 @@
         style:offset-path="path('{t.path}')"
         style:animation-duration="{t.lap}s"
         style:animation-delay="{t.delay}s"
-        use:tipAction={t.note.name}
+        use:tipAction={isUnsaved(app.noteDrafts, noteDraftKey(t.scope, t.note.name)) ? `${t.note.name} · ${UNSAVED_TIP}` : t.note.name}
         onmouseenter={(e) => showTip(t, e.currentTarget)}
         onmouseleave={hideTipSoon}
         onfocus={(e) => showTip(t, e.currentTarget)}
@@ -231,6 +233,12 @@
       >
         <Icon name="note" size={12} />
         <span class="tname">{t.scope === "knowledge" ? "@kb · " : ""}{leaf(t.note.name)}</span>
+        <!-- Item 867: the note has edits not yet saved. -->
+        {#if isUnsaved(app.noteDrafts, noteDraftKey(t.scope, t.note.name))}<span
+            class="unsaved"
+            role="img"
+            aria-label={UNSAVED_TIP}
+          ></span>{/if}
       </button>
     {/each}
     {#if tip}
@@ -416,6 +424,15 @@
     background: var(--sheet);
     color: var(--dim);
     z-index: 0;
+  }
+  /* Item 867: the unsaved-changes ring (the tab strip's draft ring). */
+  .unsaved {
+    box-sizing: border-box;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    border: 1.5px solid var(--accent);
+    flex-shrink: 0;
   }
   .tname {
     overflow: hidden;

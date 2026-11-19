@@ -41,6 +41,10 @@ import { ranMessage, routeRun, runStatus, runTabTitle } from "./shellRun";
 
 /** How long Stop's ⌃C has before the tab's process is killed. */
 export const STOP_GRACE_MS = 1500;
+/** When Stop sends its ⌃C a second time (item 861): a ⌃C that lands as a
+ *  looping block starts its next command can be lost (bash 3.2, item 852),
+ *  and a second one lets the block's own ⌃C handling run before the kill. */
+export const STOP_RESEND_MS = 750;
 
 /** Where a block came from, read when he clicks and held by the run. */
 export interface RunFrom {
@@ -226,13 +230,19 @@ export async function sendSoFar(id: number): Promise<void> {
   await send(row, { soFar: true });
 }
 
-/** The tab's Stop: ⌃C, and past the grace the process is killed. What ran is
- *  sent, with "stopped by you"; the tab stays. */
+/** The tab's Stop: ⌃C, again at `STOP_RESEND_MS` if it is still running, and
+ *  past the grace the process is killed. What ran is sent, with "stopped by
+ *  you"; the tab stays. */
 export async function stopRun(id: number): Promise<void> {
   const row = term.shells.find((s) => s.id === id);
   if (!row?.run || row.run.finished || row.exit) return;
   row.run.stopped = true;
   void api.terminalWrite(id, "\u0003").catch(() => {});
+  setTimeout(() => {
+    const now = term.shells.find((s) => s.id === id);
+    if (!now || now.exit) return;
+    void api.terminalWrite(id, "\u0003").catch(() => {});
+  }, STOP_RESEND_MS);
   setTimeout(() => {
     const now = term.shells.find((s) => s.id === id);
     if (!now || now.exit) return;

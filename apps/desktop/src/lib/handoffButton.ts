@@ -23,7 +23,9 @@ import { hasHiddenChars } from "./shellRun";
 import { foldMotion } from "./foldMotion";
 import type { SessionMeta } from "./types";
 import type { HandoffOpened } from "./handoffLog";
-import { REVIEW_TIP, reviewBusy, reviewLabel, reviewLine, type ReviewState } from "./chatReview.svelte";
+import { placeMenu } from "./floatMenu";
+import type { NextModelRow } from "./nextChatModel.svelte";
+import { REVIEW_TIP, reviewBusy, reviewCancellable, reviewLabel, reviewLine, type ReviewState } from "./chatReview.svelte";
 
 /** Item 796: "Review this chat" on the card — where its review stands, and
  *  the two things the button does (start one; open the saved page). */
@@ -31,6 +33,8 @@ export interface ReviewHook {
   state: ReviewState;
   start: () => void;
   open: (path: string) => void;
+  /** Item 857: stop the running review (its Cancel). */
+  cancel: () => void;
 }
 
 export const CONTINUE_LABEL = "Continue with this prompt";
@@ -56,13 +60,27 @@ export interface NextChat {
   /** Item 747: what the card adds to the prompt — the goal, his unquoted
    *  messages, the artifact list, the cost; absent, the prompt goes alone. */
   carry?: Carry | null;
-  onContinue: () => void;
+  /** Item 857: may return the click's work, so the button comes back if it
+   *  did not continue (a refusal, a failure) rather than stay greyed. */
+  onContinue: () => void | Promise<void>;
   /** Item 756: a minimize or a restore done on the card, with its inverse,
    *  for the chat's undo stack (⌘Z restores what a minimize folded). */
   onFold?: (minimized: boolean, undo: () => void, redo: () => void) => void;
   /** Item 796: the retrospective; absent (no button) for a chat with no
    *  Claude Code session, which has no transcript to digest. */
   review?: ReviewHook | null;
+  /** Item 705: the *Next chat* model pick — the same value as the hand-off
+   *  card's; absent (no button) off the Claude Code engine. */
+  model?: ModelHook | null;
+}
+
+/** Item 705: what the card's model pick shows and does. */
+export interface ModelHook {
+  /** The model's name, and whether it is the default (this chat's). */
+  name: string;
+  isDefault: boolean;
+  rows: NextModelRow[];
+  pick: (id: string) => void;
 }
 
 // ---- item 747: the goal he typed and the messages he ticked, per card ----
@@ -342,7 +360,12 @@ function goRow(next: NextChat, read: () => NextChat | null | undefined): HTMLEle
     const now = read();
     if (!now || b.disabled || now.used || now.blocked) return;
     b.disabled = true;
-    now.onContinue();
+    // Item 857: a click that did not continue leaves the button pressable;
+    // before, it stayed greyed until something else redrew the card.
+    void Promise.resolve(now.onContinue()).finally(() => {
+      const after = read();
+      if (b.isConnected) b.disabled = !after || after.used || after.blocked !== null;
+    });
   });
   row.append(details, b);
   return row;
@@ -351,14 +374,19 @@ function goRow(next: NextChat, read: () => NextChat | null | undefined): HTMLEle
 /** Item 796: the button and its line, in the row before *Continue*. */
 export const REVIEW_CLASS = "handoff-review";
 export const REVIEW_LINE_CLASS = "handoff-review-line";
+/** Item 857: Cancel beside a running review. */
+export const REVIEW_CANCEL_CLASS = "handoff-review-cancel";
+export const REVIEW_CANCEL_LABEL = "Cancel review";
 
 function syncReview(row: HTMLElement, next: NextChat, read: () => NextChat | null | undefined): void {
   let b = row.querySelector<HTMLButtonElement>(`:scope > button.${REVIEW_CLASS}`);
   let line = row.querySelector<HTMLElement>(`:scope > .${REVIEW_LINE_CLASS}`);
+  let cancel = row.querySelector<HTMLButtonElement>(`:scope > button.${REVIEW_CANCEL_CLASS}`);
   const hook = next.review;
   if (!hook) {
     b?.remove();
     line?.remove();
+    cancel?.remove();
     return;
   }
   if (!b) {
@@ -377,12 +405,25 @@ function syncReview(row: HTMLElement, next: NextChat, read: () => NextChat | nul
     if (go) go.before(btn);
     else row.append(btn);
   }
+  if (!cancel) {
+    cancel = el("button", `ns-btn ghost small ${REVIEW_CANCEL_CLASS}`, REVIEW_CANCEL_LABEL);
+    cancel.type = "button";
+    cancel.title = "Stop the review pass; nothing is saved";
+    cancel.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      read()?.review?.cancel();
+    });
+    b.before(cancel);
+  }
   if (!line) {
     line = el("div", REVIEW_LINE_CLASS);
     line.setAttribute("aria-live", "polite");
     row.append(line);
   }
   const s = hook.state;
+  const stoppable = reviewCancellable(s);
+  if (cancel.hidden === stoppable) cancel.hidden = !stoppable;
   const label = reviewLabel(s);
   if (b.textContent !== label) b.textContent = label;
   // A review waits for a running turn as an aside would; it is not started under one.
@@ -395,6 +436,131 @@ function syncReview(row: HTMLElement, next: NextChat, read: () => NextChat | nul
   if (line.textContent !== text) line.textContent = text;
   line.hidden = !text;
   line.classList.toggle("handoff-warn", s.phase === "error");
+}
+
+/** Item 705: the *Next chat* pick on the card, before Review and Continue. */
+export const MODEL_CLASS = "handoff-model";
+export const MODEL_MENU_CLASS = "handoff-model-menu";
+
+/** The open menu of a card's pick, and how to close it. */
+let openModelMenu: { menu: HTMLElement; close: () => void } | null = null;
+
+function closeModelMenu(): void {
+  openModelMenu?.close();
+}
+
+/** The pick's menu: the shared HUD glass (`hud-m`), fixed by the button's
+ *  rectangle as `floatMenu` places the composer's menus; one row per model. */
+function openMenu(btn: HTMLButtonElement, read: () => NextChat | null | undefined): void {
+  closeModelMenu();
+  const hook = read()?.model;
+  if (!hook) return;
+  const menu = el("div", `${MODEL_MENU_CLASS} hud-m`);
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "The next chat's model");
+  menu.tabIndex = -1;
+  menu.append(el("div", "hud-head", "The next chat's model"));
+  for (const r of hook.rows) {
+    const row = el("button", "handoff-model-row");
+    row.type = "button";
+    row.setAttribute("role", "menuitemradio");
+    row.setAttribute("aria-checked", String(r.on));
+    row.tabIndex = -1;
+    if (r.on) row.classList.add("hud-cur");
+    row.append(el("span", "handoff-model-mark", r.on ? "\u2713" : ""), el("span", "handoff-model-label", r.label));
+    if (r.detail) row.append(el("span", "handoff-model-detail", r.detail));
+    row.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      read()?.model?.pick(r.id);
+      close();
+      btn.focus({ preventScroll: true });
+    });
+    menu.append(row);
+  }
+  document.body.append(menu);
+  const p = placeMenu(btn.getBoundingClientRect(), menu.offsetWidth, menu.offsetHeight, window.innerWidth, window.innerHeight, "right");
+  menu.style.top = `${p.top}px`;
+  menu.style.left = `${p.left}px`;
+  menu.style.maxHeight = `${p.maxHeight}px`;
+  const away = (e: PointerEvent) => {
+    const t = e.target as Node;
+    if (!menu.contains(t) && !btn.contains(t)) close();
+  };
+  const keys = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+      btn.focus({ preventScroll: true });
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const items = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitemradio"]'));
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
+  };
+  // Item 705 review: the menu is on <body>, so a card redrawn or gone (a chat
+  // switch by key, the reply re-rendered) would leave it floating over
+  // another chat, its rows still writing the old chat's pick; it closes when
+  // its button leaves the page.
+  const gone = window.setInterval(() => {
+    if (!btn.isConnected) close();
+  }, 250);
+  function close(): void {
+    window.clearInterval(gone);
+    window.removeEventListener("pointerdown", away, true);
+    menu.removeEventListener("keydown", keys);
+    menu.remove();
+    btn.setAttribute("aria-expanded", "false");
+    if (openModelMenu?.menu === menu) openModelMenu = null;
+  }
+  window.addEventListener("pointerdown", away, true);
+  menu.addEventListener("keydown", keys);
+  btn.setAttribute("aria-expanded", "true");
+  openModelMenu = { menu, close };
+  (menu.querySelector<HTMLElement>('[aria-checked="true"]') ?? menu.querySelector<HTMLElement>("button"))?.focus({ preventScroll: true });
+}
+
+function syncModel(row: HTMLElement, next: NextChat, read: () => NextChat | null | undefined): void {
+  let b = row.querySelector<HTMLButtonElement>(`:scope > button.${MODEL_CLASS}`);
+  const hook = next.model;
+  if (!hook) {
+    if (b && openModelMenu) closeModelMenu();
+    b?.remove();
+    return;
+  }
+  if (!b) {
+    b = el("button", `ns-btn ghost small ${MODEL_CLASS}`);
+    b.type = "button";
+    b.setAttribute("aria-haspopup", "menu");
+    b.setAttribute("aria-expanded", "false");
+    b.setAttribute("aria-label", "The model the next chat starts on");
+    b.title = "The model the next chat opens on \u2014 this chat's unless picked; the hand-off card shows the same pick";
+    b.append(el("span", "handoff-model-k", "Next chat"), el("span", "handoff-model-v"), el("span", "handoff-model-note"), el("span", "handoff-model-chev", "\u25BE"));
+    const btn = b;
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (btn.disabled) return;
+      if (openModelMenu && btn.getAttribute("aria-expanded") === "true") closeModelMenu();
+      else openMenu(btn, read);
+    });
+    const before =
+      row.querySelector(`:scope > button.${REVIEW_CANCEL_CLASS}`) ??
+      row.querySelector(`:scope > button.${REVIEW_CLASS}`) ??
+      row.querySelector(":scope > button.handoff-continue");
+    if (before) before.before(btn);
+    else row.append(btn);
+  }
+  const v = b.querySelector<HTMLElement>(".handoff-model-v");
+  if (v && v.textContent !== hook.name) v.textContent = hook.name;
+  const note = b.querySelector<HTMLElement>(".handoff-model-note");
+  const noteText = hook.isDefault ? "this chat's" : "";
+  if (note && note.textContent !== noteText) note.textContent = noteText;
+  if (note) note.hidden = !noteText;
+  if (b.disabled !== next.used) b.disabled = next.used;
 }
 
 /** The card's key attribute, so an undo finds the card it folded wherever it is drawn now. */
@@ -513,6 +679,7 @@ export function addContinueControls(root: HTMLElement, read: () => NextChat | nu
   }
   syncCarry(row, next, read);
   syncReview(row, next, read);
+  syncModel(row, next, read);
   if (card) syncMinimize(card, next, read);
   const details = row.querySelector<HTMLDetailsElement>(":scope > details.handoff-order");
   const body = row.querySelector(":scope > .handoff-order > .handoff-order-text");
@@ -526,7 +693,10 @@ export function addContinueControls(root: HTMLElement, read: () => NextChat | nu
     b.disabled = next.used || next.blocked !== null;
     b.title = next.used
       ? "This reply has been continued in a new chat"
-      : (next.blocked ?? "Open a new chat and send this prompt as its first message");
+      : (next.blocked ??
+        (next.review && reviewBusy(next.review.state)
+          ? "Open a new chat and send this prompt now — the review keeps running and saves its page"
+          : "Open a new chat and send this prompt as its first message"));
   }
 }
 

@@ -137,6 +137,8 @@ pub fn allowed(debug: bool, env: Option<&str>) -> bool {
 
 /// What registers a hot key — Carbon in the app, a stub in the tests (a
 /// test must never take a real shortcut on his Mac).
+// Carbon is macOS only: off it, Quick Entry registers nothing.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub trait Backend {
     type Handle;
     fn register(&mut self, s: Shortcut) -> Result<Self::Handle, String>;
@@ -146,11 +148,13 @@ pub trait Backend {
 /// The one shortcut held: a new one replaces it; `None` turns it off; a
 /// string that does not parse, or a register the system refuses (another
 /// app holds the combination), leaves Quick Entry off and says why.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub struct Registrar<B: Backend> {
     backend: B,
     held: Option<(Shortcut, B::Handle)>,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl<B: Backend> Registrar<B> {
     pub fn new(backend: B) -> Self {
         Self {
@@ -388,11 +392,13 @@ pub fn install() -> QuickEntry {
 /// Show the box (made the first time), its page told so it re-reads the
 /// targets and its draft. Called on the main thread by Carbon's handler;
 /// the window is built off it (Tauri's safe path), the panel calls run on it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn show<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move { open_box(&app) });
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn open_box<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     use tauri::{Emitter, Manager};
     let (win, fresh) = match app.get_webview_window(LABEL) {

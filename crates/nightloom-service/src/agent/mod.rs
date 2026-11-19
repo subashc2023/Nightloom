@@ -42,6 +42,7 @@ pub mod nested;
 pub mod own_browser;
 mod protocol;
 mod record;
+pub mod stagger;
 pub mod steer;
 mod translate;
 pub mod warm;
@@ -86,6 +87,13 @@ const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 /// How often a running chat turn looks at its budget ledger for a wake
 /// (item 538): a file read under its lock, nothing when no wake waits.
 const BUDGET_TICK: Duration = Duration::from_secs(2);
+/// How often the read loop looks for spawns held by the stagger (item 761).
+const HELD_TICK: Duration = Duration::from_millis(400);
+/// How long after a spawn call it looks (review, 2026-11-19): the hook
+/// may first refresh `/usage` (~30 s at worst, measured in 761's run),
+/// then hold at most 10 s. Outside it, and with nothing shown, the read
+/// loop does not look at all — a turn with no spawn pays nothing.
+const HELD_WINDOW: Duration = Duration::from_secs(90);
 
 /// How long to keep reading after a kill (item 466, 2026-10-29): what the
 /// CLI wrote before it is already in the pipe; this is only the backstop
@@ -2703,6 +2711,12 @@ impl ClaudeCodeAgent {
         let mut bash_tails = bash_tail::BashTails::new();
         let mut tail_tick = tokio::time::interval(bash_tail::TICK);
         tail_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Item 761: the spawns the Agent hook holds for a sibling's first
+        // reply, shown on their rows as passing text while they wait.
+        let mut held_tick = tokio::time::interval(HELD_TICK);
+        held_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut held_shown: std::collections::BTreeSet<String> = Default::default();
+        let mut spawn_seen: Option<tokio::time::Instant> = None;
 
         loop {
             // A subagent's end the main thread was not told of (406): the
@@ -2787,6 +2801,28 @@ impl ClaudeCodeAgent {
                                 // thread's next call, or the next look.
                                 budget::put_back(&dir, wakes);
                             }
+                        }
+                    }
+                    continue;
+                }
+                _ = held_tick.tick(), if budget_dir.is_some()
+                    && (!held_shown.is_empty()
+                        || spawn_seen.is_some_and(|t| t.elapsed() < HELD_WINDOW)) => {
+                    if let Some(dir) = &budget_dir {
+                        let held = stagger::read_held(dir);
+                        for (id, h) in &held {
+                            if held_shown.insert(id.clone()) {
+                                on_event(TurnEvent::ToolOutput {
+                                    tool_use_id: id.clone(),
+                                    lines: vec![h.text.clone()],
+                                });
+                            }
+                        }
+                        let gone: Vec<String> =
+                            held_shown.iter().filter(|id| !held.contains_key(*id)).cloned().collect();
+                        for id in gone {
+                            held_shown.remove(&id);
+                            on_event(TurnEvent::ToolOutput { tool_use_id: id, lines: Vec::new() });
                         }
                     }
                     continue;
@@ -2944,6 +2980,20 @@ impl ClaudeCodeAgent {
                         if let TurnEvent::ToolCall { name, .. } = &event {
                             last_call = Some(name.clone());
                             stopped = None;
+                        }
+                        // Item 761: a spawn's call (the main thread's or a
+                        // helper's) opens the held file's look; its
+                        // tool_use is on the stream before its hook runs.
+                        let spawn_call = match &event {
+                            TurnEvent::ToolCall { name, .. } => brief::is_spawn(name),
+                            TurnEvent::Subagent { event, .. } => matches!(
+                                &**event,
+                                TurnEvent::ToolCall { name, .. } if brief::is_spawn(name)
+                            ),
+                            _ => false,
+                        };
+                        if spawn_call {
+                            spawn_seen = Some(tokio::time::Instant::now());
                         }
                         // Item 656: a foreground Bash call's spool is looked
                         // for from the call — its `task_started` comes ~3 s in.

@@ -76,6 +76,7 @@ mod handoff_log;
 mod image_calls;
 /// The notes Inbox's Sort inbox (nightshift backlog 488).
 mod inbox_sort;
+mod listen;
 // Recurring jobs' part on the Mac (item 746).
 mod home;
 mod jobs;
@@ -92,6 +93,8 @@ mod model_list;
 mod nightshift;
 /// Edit a note by prompt (nightshift backlog 151).
 mod note_edit;
+/// The notes folders followed from outside Nightloom (item 869).
+mod notes_watch;
 /// A debug build's off-screen window for live tests (backlog 339). Not
 /// compiled into a release (backlog 341): there it is a stub that is off.
 #[cfg(debug_assertions)]
@@ -1554,6 +1557,7 @@ fn main() {
             });
             // The Nightshift file watches, beside `AppState` rather than in it.
             app.manage(nightshift::Watches::default());
+            app.manage(notes_watch::NotesWatches::default());
             app.manage(nightshift::PendingLaunches::default());
             app.manage(nightshift::Interviews::default());
             app.manage(prompt_hold::Pending::default());
@@ -1646,6 +1650,9 @@ fn main() {
             note_edit::cancel_note_edit,
             inbox_sort::inbox_sort_list,
             inbox_sort::inbox_sort_plan,
+            listen::listen_audio,
+            listen::listen_brief,
+            listen::listen_parts,
             inbox_sort::inbox_sort_cancel,
             inbox_sort::inbox_sort_apply,
             commands::turns::cancel,
@@ -1653,6 +1660,8 @@ fn main() {
             commands::edits::rewind,
             commands::edits::unrewind,
             commands::edits::set_aside_files,
+            commands::edits::rewind_files,
+            commands::edits::restore_rewound_files,
             commands::edits::edit_message,
             commands::edits::remove_message,
             commands::edits::restore_message,
@@ -1932,6 +1941,7 @@ fn main() {
             nightshift::nightshift_revert,
             nightshift::nightshift_watch,
             nightshift::nightshift_unwatch,
+            notes_watch::watch_notes,
             webtab::web_open,
             webtab::web_bounds,
             webtab::web_nav,
