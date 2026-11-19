@@ -787,14 +787,23 @@
             {#if classic()}<TabStripClassic {pane} />{:else}<TabStrip {pane} />{/if}
             {#if barPane === pane.id}
               {#if classic()}<TopBarClassic />{:else}<TopBar />{/if}
-            {:else if t.content.kind === "aside" && !classic()}
+            {:else if t.content.kind === "aside"}
               <!-- Item 605: an aside tab's bar — the chat's TopBar, given
-                   the aside (Filament only: Classic keeps 1d4ca17's look). -->
-              <TopBar
-                aside={asideOf(t.content.session, asideTabThread(t.content) ?? null)}
-                asideChat={t.content.session}
-                bell={asideBellPane === pane.id}
-              />
+                   the aside. ~~Filament only: Classic keeps 1d4ca17's look~~ —
+                   item 856: Classic's bar shares TopBar's logic and draws it too. -->
+              {#if classic()}
+                <TopBarClassic
+                  aside={asideOf(t.content.session, asideTabThread(t.content) ?? null)}
+                  asideChat={t.content.session}
+                  bell={asideBellPane === pane.id}
+                />
+              {:else}
+                <TopBar
+                  aside={asideOf(t.content.session, asideTabThread(t.content) ?? null)}
+                  asideChat={t.content.session}
+                  bell={asideBellPane === pane.id}
+                />
+              {/if}
             {/if}
             <!-- Item 487: the note and the read-only views stay mounted
                  once shown, hidden while another tab is in front, so a

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import providerRail from "./ProviderRail.svelte?raw";
-import topBar from "./TopBar.svelte?raw";
-import topBarClassic from "./TopBarClassic.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import topBarLogicRaw from "./topBar/logic.svelte.ts?raw";
+import topBarRaw from "./TopBar.svelte?raw";
+const topBar = asOneFile(topBarRaw, topBarLogicRaw);
+import topBarClassicRaw from "./TopBarClassic.svelte?raw";
+const topBarClassic = asOneFile(topBarClassicRaw, topBarLogicRaw);
 import rightRailClassic from "./RightRailClassic.svelte?raw";
 import settings from "./SettingsModal.svelte?raw";
 

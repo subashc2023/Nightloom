@@ -3,9 +3,12 @@ import { gearTarget, GRACE_S, LIGHT_S, newDrive, stepDrive, WIND_S, type Drive, 
 import dialSrc from "./ContextDial.svelte?raw";
 import motionSrc from "./DialMotion.svelte?raw";
 import railSrc from "./RightRail.svelte?raw";
-import topSrc from "./TopBar.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import topBarLogicRaw from "./topBar/logic.svelte.ts?raw";
+import topSrcRaw from "./TopBar.svelte?raw";
+const topSrc = asOneFile(topSrcRaw, topBarLogicRaw);
 import classicRail from "./RightRailClassic.svelte?raw";
-import classicTop from "./TopBarClassic.svelte?raw";
+import classicTopRaw from "./TopBarClassic.svelte?raw";
 
 // Item 654 (his pick B3, blocker 1962): the column's dial moves with a reply.
 
@@ -172,7 +175,9 @@ describe("wiring", () => {
     expect(topSrc).toMatch(/class:dimmed=\{liveEst\} class:landed=\{landFlash\}/);
   });
   it("Classic is untouched", () => {
-    for (const src of [classicRail, classicTop]) {
+    // test-change: item 856 — the logic is shared now, so Classic's own file
+    // (its markup) is what must not draw the drive or the flash.
+    for (const src of [classicRail, classicTopRaw]) {
       expect(src).not.toMatch(/ContextDrive|dialDrive|landFlash/);
     }
   });

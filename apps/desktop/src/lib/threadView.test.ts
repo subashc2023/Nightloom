@@ -18,7 +18,10 @@ import {
 import Sidebar from "./Sidebar.svelte";
 import ThreadView from "./ThreadView.svelte";
 import type { SessionMeta, ThreadInfo } from "./types";
-import sidebarSource from "./Sidebar.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import sidebarLogicRaw from "./sidebar/logic.svelte.ts?raw";
+import sidebarSourceRaw from "./Sidebar.svelte?raw";
+const sidebarSource = asOneFile(sidebarSourceRaw, sidebarLogicRaw);
 
 // Nightshift backlog 292: "Threads" over the thread groups and "Not in a
 // thread" over the rest; the thread's name opens a view of what it stores

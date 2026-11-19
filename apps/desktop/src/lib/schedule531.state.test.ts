@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import composerSrc from "./Composer.svelte?raw";
 import appSrc from "../App.svelte?raw";
-import sidebarSrc from "./Sidebar.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import sidebarLogicRaw from "./sidebar/logic.svelte.ts?raw";
+import sidebarSrcRaw from "./Sidebar.svelte?raw";
+const sidebarSrc = asOneFile(sidebarSrcRaw, sidebarLogicRaw);
 import type { Attachment, SessionEvent, SessionMeta } from "./types";
 
 // Items 531 (Send later carries attachments) and 532 (a chat made by Send

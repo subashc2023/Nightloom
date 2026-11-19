@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import sidebarSrc from "./Sidebar.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import sidebarLogicRaw from "./sidebar/logic.svelte.ts?raw";
+import sidebarSrcRaw from "./Sidebar.svelte?raw";
+const sidebarSrc = asOneFile(sidebarSrcRaw, sidebarLogicRaw);
 
 // Item 559, the review's 534-2: the Sidebar recorded the opened chat's size
 // against `app.connection.contextLimit`, which follows the opened chat only

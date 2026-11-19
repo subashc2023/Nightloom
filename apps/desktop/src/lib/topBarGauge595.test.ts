@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import topBar from "./TopBar.svelte?raw";
-import topBarClassic from "./TopBarClassic.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import topBarLogicRaw from "./topBar/logic.svelte.ts?raw";
+import topBarRaw from "./TopBar.svelte?raw";
+const topBar = asOneFile(topBarRaw, topBarLogicRaw);
+import topBarClassicRaw from "./TopBarClassic.svelte?raw";
+const topBarClassic = asOneFile(topBarClassicRaw, topBarLogicRaw);
 
 /**
  * Item 595 ("either both dials or both bars"): the top bar's gauge chip

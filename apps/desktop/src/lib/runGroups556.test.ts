@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { chatRun, groupRuns, projectSummary } from "./runGroups";
 import type { RunEntry } from "./running";
-import topBar from "./TopBar.svelte?raw";
-import topBarClassic from "./TopBarClassic.svelte?raw";
-import sidebarClassic from "./SidebarClassic.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import topBarLogicRaw from "./topBar/logic.svelte.ts?raw";
+import topBarRaw from "./TopBar.svelte?raw";
+const topBar = asOneFile(topBarRaw, topBarLogicRaw);
+import topBarClassicRaw from "./TopBarClassic.svelte?raw";
+const topBarClassic = asOneFile(topBarClassicRaw, topBarLogicRaw);
+import sidebarLogicRaw from "./sidebar/logic.svelte.ts?raw";
+import sidebarClassicRaw from "./SidebarClassic.svelte?raw";
+const sidebarClassic = asOneFile(sidebarClassicRaw, sidebarLogicRaw);
 import tasks from "./RunningTasks.svelte?raw";
 
 /** Items 556 + 558 (2026-11-10): which chat runs, and the running list by project. */

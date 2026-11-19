@@ -2,9 +2,14 @@
   import ProviderRail from "./ProviderRail.svelte";
   import { tabPlace } from "./tabPlace"; // Item 715: the view keeps its scroll across close and reopen.
   import TaskPanel from "./TaskPanel.svelte";
-  import { currentTodos } from "./state.svelte";
+  import { currentTodos, type Aside } from "./state.svelte";
 
   type Tab = "connection" | "tasks";
+
+  // Item 856 (from RightRail's item 657): an aside's settings card, from
+  // its top bar's chip — its model and effort its own; no Tasks (the to-do
+  // list is the chat's session's).
+  let { aside = null, asideChat = null }: { aside?: Aside | null; asideChat?: string | null } = $props();
 
   let tab = $state<Tab>("connection");
 
@@ -26,7 +31,7 @@
 
 <aside class="rail" use:tabPlace={`rail:pop:classic:${tab}`}>
   <div class="tabs" role="tablist">
-    {#each TABS as t (t.id)}
+    {#each aside ? TABS.filter((t) => t.id !== "tasks") : TABS as t (t.id)}
       <button
         role="tab"
         aria-selected={tab === t.id}
@@ -39,8 +44,8 @@
     {/each}
   </div>
 
-  {#if tab === "connection"}
-    <ProviderRail />
+  {#if tab === "connection" || aside}
+    <ProviderRail {aside} {asideChat} />
   {:else}
     <TaskPanel />
   {/if}

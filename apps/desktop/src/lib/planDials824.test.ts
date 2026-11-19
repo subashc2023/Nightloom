@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import topBar from "./TopBar.svelte?raw";
-import topBarClassic from "./TopBarClassic.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import topBarLogicRaw from "./topBar/logic.svelte.ts?raw";
+import topBarRaw from "./TopBar.svelte?raw";
+const topBar = asOneFile(topBarRaw, topBarLogicRaw);
+import topBarClassicRaw from "./TopBarClassic.svelte?raw";
+const topBarClassic = asOneFile(topBarClassicRaw, topBarLogicRaw);
 import planDialsSrc from "./PlanDials.svelte?raw";
 import remote from "../remote/Remote.svelte?raw";
 import { contextPct, dialWindow, pastStop, projected, resetShort, ringArcs, staleTag, stopLine, tickAt, tokens } from "./planDials";
@@ -99,7 +103,8 @@ describe("824: every surface shows the dials", () => {
   });
 
   it("Classic's card is PlanDials too", () => {
-    expect(topBarClassic).toMatch(/<PlanDials figures=\{dialFigures\}/);
+    // test-change: item 856 — the call spans lines now (the aside's Itemise chat).
+    expect(topBarClassic).toMatch(/<PlanDials\s+figures=\{dialFigures\}/);
     expect(topBarClassic).not.toMatch(/paceCardLine\(|\{planWhere\}|class="gc-foot"/);
     expect(topBarClassic).toMatch(/stop: stopLine\(app\.draft\.agentLimits\)/);
   });
