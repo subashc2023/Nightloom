@@ -40,8 +40,6 @@ import {
 import { viewGet, viewSet } from "./viewState";
 import type { SessionEvent } from "./types";
 
-/** The log's file, under `<config>/logs/`. */
-export const HANDOFF_LOG = "handoffs.jsonl";
 /** The record's shape; bumped when a field changes meaning. */
 export const LOG_VERSION = 1;
 /** How many of the next chat's turns are logged. */

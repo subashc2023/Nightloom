@@ -1084,8 +1084,14 @@ mod tests {
         drop(session);
         let listed = list(&dir).unwrap();
         let wrote = listed[0].last_message.expect("a message time");
-        assert!(wrote <= listed[0].modified);
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        // The message's time is the precise clock read just before the
+        // write; the file's time is the kernel's coarse clock, which can lag
+        // it by one tick (a jiffy on Linux, ~15.6 ms on Windows; item 864).
+        // So "not after the write" holds to within that tick.
+        let tick = chrono::Duration::milliseconds(32);
+        assert!(wrote <= listed[0].modified + tick);
+        // Well past a tick, so the rename's own time is after the message.
+        std::thread::sleep(std::time::Duration::from_millis(100));
         let path = listed[0].path.clone();
         let mut session = Session::load(path).unwrap();
         session.record_title_by("renamed", nightloom_core::TitleBy::User);

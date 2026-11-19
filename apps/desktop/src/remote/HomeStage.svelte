@@ -12,7 +12,7 @@
    * (`stageState.svelte.ts`, the Mac's own keys — the phone's storage is its own), so leaving Home, a reload or
    * closing the page loses nothing.
    */
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import "../lib/homeStage/stage.css";
   import "./homeStage.css";
   import Icon from "../lib/Icon.svelte";
@@ -24,7 +24,11 @@
   import Run from "../lib/homeStage/views/Run.svelte";
   import Research from "../lib/homeStage/views/Research.svelte";
   import { tasks, refreshTasks, closeTask } from "../lib/homeStage/tasks.svelte";
-  import { def, keep, stage, type ViewId } from "../lib/homeStage/stageState.svelte";
+  import { bag, def, keep, stage, type ViewId } from "../lib/homeStage/stageState.svelte";
+  import Btn from "../lib/homeStage/Btn.svelte";
+  import Steps from "../lib/homeStage/Steps.svelte";
+  import { rulesPass, foldDone, unfold, holdsHim, type FocusKept } from "../lib/homeStage/focus";
+  import type { Ev } from "../lib/homeStage/steps";
   import { tabsFor, focusOf, type Tab } from "../lib/homeStage/tabs";
   import { setStageHost, type HomeTask } from "../lib/homeStage/host";
   import { phoneBrief, phoneStageHost } from "./phoneStageHost";
@@ -50,7 +54,8 @@
   let { client, home, scan, needs, fil, tick: bump = 0, watching = $bindable(true), where = $bindable({ view: "watch", task: "" }), onopen, onnote }: Props = $props();
 
   // The views ask this page for what they need (set before any view draws).
-  setStageHost(phoneStageHost({ client: () => client, home: () => home, scan: () => scan, open: (c, p) => onopen(c, p), note: (t) => onnote(t) }));
+  let steps = $state<Ev[]>([]);
+  setStageHost(phoneStageHost({ client: () => client, home: () => home, scan: () => scan, open: (c, p) => onopen(c, p), note: (t) => onnote(t), steps: () => steps }));
 
   const TASK_VIEWS = ["timeline", "todo", "triage", "browse", "run", "research"];
   const shown = $derived(tasks.rows.filter((t) => TASK_VIEWS.includes(t.view)));
@@ -60,7 +65,11 @@
     ...(brief ? [{ id: "brief", view: "brief", name: "Morning brief", needs: 0, live: false } as Tab] : []),
     ...shown.map((t): Tab => ({ id: `task:${t.id}`, view: t.view as ViewId, name: t.name, needs: t.needs, live: t.state === "live" })),
   ]);
-  const row = $derived(tabsFor({ blank: !home.chat, needs, more }));
+  const all = $derived(tabsFor({ blank: !home.chat, needs, more }));
+  // The focus rules, ready marks and done folding (item 872): the Mac's own (`focus.ts`), kept in the phone's storage.
+  // svelte-ignore state_referenced_locally
+  const fk = bag("stage:focus", { follow: true, split: false, primed: false, ready: [] as string[], seen: {} as Record<string, number>, doneSeen: {} as Record<string, number>, folded: [] as string[] });
+  const row = $derived(all.filter((t) => !fk.folded.includes(t.id)));
   // Chat is not a view on the phone: its tab opens Home's chat screen, so focus never rests on it.
   const focus = $derived(focusOf(row.filter((t) => t.view !== "chat"), stage.focus));
   const focusTask = $derived(taskOf(focus.id));
@@ -87,8 +96,60 @@
       if (home.chat) onopen(home.chat, home.project);
       return;
     }
+    fk.ready = fk.ready.filter((x) => x !== t.id);
+    note = null;
     stage.focus = t.id;
   }
+
+  // The rules (focus.ts): a task he asked for takes the screen at once unless he is typing; anything else only with
+  // Follow on, after 10 s without his touch, over a lower rank — else its tab says "<View> ready →". A switch the
+  // stage makes shows its note (Back / Stay here). Chat never takes focus here (it is a screen of its own).
+  let note = $state<FocusKept["note"]>(null);
+  let lastTouch = Date.now();
+  let rootEl = $state<HTMLElement | null>(null);
+  const asked = (id: string) => !!taskOf(id)?.why;
+  const isDone = (id: string) => taskOf(id)?.state === "done";
+  const typing = () => !!rootEl && rootEl.contains(document.activeElement) && /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName ?? "");
+  function rules() {
+    const now = Date.now();
+    const views = all.filter((t) => t.view !== "chat");
+    // The kept focus as it is (not as drawn): before the tasks are read its tab may not be there yet, and the rules move
+    // focus only once they are.
+    const r = rulesPass(fk, stage.focus, note, views, { now, lastTouch, busy: typing() }, asked, tasks.loaded);
+    if (r.focus !== stage.focus) stage.focus = r.focus;
+    note = r.note;
+    if (tasks.loaded) foldDone(fk, views, isDone, focusOf(views, stage.focus).id, now, (t) => holdsHim(t, stage.ui[t.id]));
+  }
+  $effect(() => {
+    void all;
+    untrack(rules);
+  });
+  onMount(() => {
+    const t = setInterval(() => untrack(rules), 1000);
+    const touch = () => (lastTouch = Date.now());
+    const evs = ["pointerdown", "keydown", "wheel", "touchstart", "scroll"];
+    for (const e of evs) window.addEventListener(e, touch, { passive: true, capture: true });
+    return () => {
+      clearInterval(t);
+      for (const e of evs) window.removeEventListener(e, touch, { capture: true });
+    };
+  });
+
+  // Home's steps (item 872), in a fold under a task's view: read from `GET /home/steps` when the fold opens, with the
+  // tasks every 30 s while it is open, and when the page reads again. Folded by default; kept as he left it.
+  // svelte-ignore state_referenced_locally
+  const sf = bag("phone:steps", { open: false });
+  async function readSteps() {
+    if (!sf.open) return;
+    try {
+      steps = (await client.homeSteps()) as unknown as Ev[];
+    } catch {
+      // kept as last read; the fold says nothing new
+    }
+  }
+  $effect(() => {
+    if (sf.open) untrack(() => void readSteps());
+  });
   async function close(t: HomeTask) {
     if (focus.id === `task:${t.id}`) stage.focus = "watch";
     await closeTask(t.id).catch(() => {});
@@ -100,7 +161,7 @@
   const onVisible = () => document.visibilityState === "visible" && void refreshTasks();
   onMount(() => {
     void refreshTasks();
-    timer = setInterval(() => void refreshTasks(), 30_000);
+    timer = setInterval(() => (void refreshTasks(), void readSteps()), 30_000);
     document.addEventListener("visibilitychange", onVisible);
   });
   onDestroy(() => {
@@ -112,26 +173,43 @@
     if (bump !== lastBump) {
       lastBump = bump;
       void refreshTasks();
+      untrack(() => void readSteps());
     }
   });
 </script>
 
-<div class="h9-stage phone" class:classic={!fil} class:narrow={width <= 760} class:tiny={width <= 480} bind:clientWidth={width} data-home-stage data-phone-stage>
+<div class="h9-stage phone" class:classic={!fil} class:narrow={width <= 760} class:tiny={width <= 480} bind:clientWidth={width} data-home-stage data-phone-stage bind:this={rootEl}>
   <div class="h9-bar">
     <span class="h9-home"><i class="h9-dot" class:idle={!focusTask || focusTask.state !== "live"} aria-hidden="true"></i>HOME</span>
     <span class="h9-doing">{doing}</span>
+    <Btn small on={fk.follow} label="Follow Home" onclick={() => (fk.follow = !fk.follow)}>Follow</Btn>
   </div>
   <div class="h9-tabs" role="tablist" bind:this={tabsEl}>
     {#each row as t (t.id)}
-      <button class="h9-tab" data-tab={t.id} class:on={focus.id === t.id} role="tab" aria-selected={focus.id === t.id} onclick={() => pick(t)} aria-label={t.view === "chat" ? "Open Home's chat" : undefined}>
+      {@const ready = fk.ready.includes(t.id) && focus.id !== t.id}
+      <button class="h9-tab" data-tab={t.id} class:on={focus.id === t.id} class:ready role="tab" aria-selected={focus.id === t.id} onclick={() => pick(t)} aria-label={t.view === "chat" ? "Open Home's chat" : undefined}>
         <Icon name={def(t.view).icon} size={13} /><span class="tn">{t.name}</span>
         {#if t.live}<i class="pulse" class:amber={t.needs > 0}></i>{/if}
         {#if t.needs > 0}<span class="cnt" aria-label="{t.needs} need you">{t.needs}</span>{/if}
+        {#if ready}<span class="rdy">{def(t.view).name} ready →</span>{/if}
         {#if focus.id === t.id && taskOf(t.id)}<!-- svelte-ignore a11y_click_events_have_key_events --><span class="h9-x" role="button" tabindex="-1" aria-label="Close this tab" onclick={(e) => (e.stopPropagation(), void close(taskOf(t.id)!))}>×</span>{/if}
       </button>
     {/each}
+    {#if fk.folded.length}<button class="h9-tab h9-folded" onclick={() => unfold(fk)}><Icon name="check" size={13} /><span class="tn">{fk.folded.length} done</span></button>{/if}
     <span class="sep"></span>
   </div>
+  {#if note && row.some((t) => t.id === note?.to)}
+    {@const to = row.find((t) => t.id === note?.to)!}
+    {@const from = row.find((t) => t.id === note?.from)}
+    <div class="h9-note hud-m">
+      <span class="hud-head">Switched to {to.name}</span>
+      <span class="h9-note-why">{to.needs > 0 ? "It needs you" : asked(to.id) ? "You asked for it" : "Home started it, and you were away from the stage"}</span>
+      <span class="h9-note-acts">
+        {#if from}<Btn small onclick={() => pick(from)}>Back to {from.name}</Btn>{/if}
+        <Btn small onclick={() => ((fk.follow = false), (note = null))}>Stay here</Btn>
+      </span>
+    </div>
+  {/if}
   {#if focus.view !== "watch"}
     <div class="h9-body">
       {#key focus.id}
@@ -153,6 +231,12 @@
           {/if}
         </div>
       {/key}
+      {#if focusTask}
+        <div class="h9-phsteps" data-phone-steps>
+          <button class="h9-phsteps-h" aria-expanded={sf.open} onclick={() => (sf.open = !sf.open)}><Icon name={sf.open ? "chev" : "chevr"} size={12} /><span>Home's steps</span>{#if sf.open && steps.length}<span class="h9-dim">· last {Math.min(3, steps.filter((e) => e.event === "user_message").length)} turns</span>{/if}</button>
+          {#if sf.open}<div class="h9-phsteps-b"><Steps id={focusTask.id} /></div>{/if}
+        </div>
+      {/if}
     </div>
   {/if}
 </div>

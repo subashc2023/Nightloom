@@ -71,6 +71,11 @@ pub struct RoutesReply {
     pub held: Vec<Route>,
     /// The chats a route of Home's began.
     pub started: Vec<String>,
+    /// The chats a route of Home's is running now (item 872): the only
+    /// chats Run's Stop now may stop — never one a task's data merely
+    /// names. An older host sends none.
+    #[serde(default)]
+    pub running: Vec<String>,
 }
 
 /// The reply from the folder. Pure apart from reading `config`.
@@ -79,6 +84,7 @@ pub fn routes_reply(config: &std::path::Path) -> RoutesReply {
         cards: route::cards(config),
         held: route::held(config),
         started: route::started_by_home(config),
+        running: route::running_chats(config),
     }
 }
 

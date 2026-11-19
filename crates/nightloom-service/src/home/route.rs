@@ -320,6 +320,16 @@ pub fn started_by_home(config: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The chats a route of Home's is running now (item 872): Run's Stop now
+/// stops only one of these.
+pub fn running_chats(config: &Path) -> Vec<String> {
+    read(config)
+        .into_iter()
+        .filter(|r| r.state == State::Started)
+        .filter_map(|r| r.chat)
+        .collect()
+}
+
 // ---- planning (what a tool call becomes) ---------------------------------
 
 fn sessions_of(config: &Path, project: Option<&Project>) -> PathBuf {
@@ -1181,6 +1191,9 @@ async fn finish(host: &dyn Host, config: &Path, mut route: Route, now: DateTime<
     route.summary = Some(summary.clone());
     let _ = record(config, &route);
     let kind = if ok { "route_done" } else { "route_failed" };
+    // Item 872: Home's next turn reads the end with his clicks, not only
+    // by asking `chat_status` (846 §7 step 7). Best-effort like the feed.
+    let _ = super::tasks::record_route_end(config, &route.place(), ok, &summary, now);
     feed(config, &route, kind, summary, now);
     super::job_run_ended(&chat);
 }

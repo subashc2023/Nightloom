@@ -2212,14 +2212,28 @@ printf '%%PDF-1.4\n%s' "$body" > "$out/input.pdf""#,
             std::fs::create_dir_all(d.join("out")).unwrap();
         }
         let past = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
-        std::fs::File::open(&old)
-            .unwrap()
-            .set_modified(past)
-            .unwrap();
-        std::fs::File::open(&other)
-            .unwrap()
-            .set_modified(past)
-            .unwrap();
+        // A folder's time is set through a handle to it. Windows opens a
+        // folder only with FILE_FLAG_BACKUP_SEMANTICS, and setting its time
+        // needs FILE_WRITE_ATTRIBUTES; a plain open is "Access is denied"
+        // there (item 864).
+        let set_time = |d: &Path| {
+            #[cfg(windows)]
+            let dir = {
+                use std::os::windows::fs::OpenOptionsExt;
+                const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+                const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+                std::fs::OpenOptions::new()
+                    .access_mode(FILE_WRITE_ATTRIBUTES)
+                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                    .open(d)
+                    .unwrap()
+            };
+            #[cfg(not(windows))]
+            let dir = std::fs::File::open(d).unwrap();
+            dir.set_modified(past).unwrap();
+        };
+        set_time(&old);
+        set_time(&other);
         sweep_stale_convert_dirs(&base, STALE_CONVERT_DIR);
         assert!(!old.exists());
         assert!(fresh.exists());

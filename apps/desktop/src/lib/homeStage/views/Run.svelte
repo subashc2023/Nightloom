@@ -2,9 +2,15 @@
   // Run (item 845; 809 round 6) — a chain of project work (a build, a merge, a night run), on live data: the steps,
   // helpers and log lines Home puts in the task (`update_task` data). Each step is a node on the chain with the live
   // one bracketed; helpers carry their own state; the log's last lines follow the newest.
-  //   Stop / Undo — kind B: kept here at once and told to Home ("stop after the step in hand"; the short turn it
-  //   should start, and the run controls proper, are 846's contract — batch 4). Open chat — kind A.
-  //   Opening a step or a helper — kind A.
+  //   Stop / Undo — kind B + the short turn (blocker 2143): "stop after the step in hand"; its Undo is told at the next
+  //   look. Run controls (item 872; 846 §4 Run, §7 step 7):
+  //   Stop now — kind A + B + the short turn: code stops the routed chat's turn (`stopChat`; what landed stays), then
+  //     Home is told to start nothing in the chain. Shown only when the task names its chat and it has not ended.
+  //   Resume — kind B + the short turn (blocker 2199's default): after either stop; Home carries on (`send_chat`).
+  //   Run this step again — kind B + the short turn (blocker 2199's default): on an open step that is done or failed;
+  //     Home sends it into the chat (`send_chat`, gated by the route's own Start card when the chat may write).
+  //   Open chat — kind A. Opening a step or a helper — kind A.
+  //   How a routed chat ended reaches Home as a row in the same block (`home::tasks::record_route_end`), in code.
   import Icon from "../../Icon.svelte";
   import Panel from "../Panel.svelte";
   import Steps from "../Steps.svelte";
@@ -15,21 +21,47 @@
   import { tell, nudge, type HomeTask } from "../tasks.svelte";
   import { stageHost } from "../host";
   import { runOf, type RunStep, type Rows } from "../taskData";
+  import { stopThenTell, resumeLine, againLine } from "../runControls";
 
   let { task }: { task: HomeTask } = $props();
   const r = $derived(runOf(task.data));
   // svelte-ignore state_referenced_locally
-  const ui = bag(`task:${task.id}`, { stop: false, open: null as string | null });
+  const ui = bag(`task:${task.id}`, { stop: false, halted: false, open: null as string | null, again: [] as string[] });
+  let halting = $state(false);
   const toggle = (id: string) => (ui.open = ui.open === id ? null : id);
   const liveStep = $derived(r.steps.find((s) => s.state === "live"));
   const at = $derived(r.steps.filter((s) => s.state !== "wait").length);
   const ended = $derived(task.state !== "live");
-  const sub = $derived(ended ? (r.steps.some((s) => s.state === "failed") ? "ended with a failed step" : "finished") : ui.stop ? "stopping after this step — Home was told" : r.steps.length ? `step ${Math.max(1, at)} of ${r.steps.length}` : "starting");
+  const sub = $derived(ended ? (r.steps.some((s) => s.state === "failed") ? "ended with a failed step" : "finished") : ui.halted ? "stopped — its chat was stopped; Resume to carry on" : ui.stop ? "stopping after this step — Home was told" : r.steps.length ? `step ${Math.max(1, at)} of ${r.steps.length}` : "starting");
   function stop() {
     ui.stop = !ui.stop;
     // Stop is one of the four that start a short Home turn (846 §2, blocker 2143); its Undo is told at the next look.
     if (ui.stop) nudge(task, `you asked to stop after the step in hand${liveStep ? ` (${liveStep.name})` : ""} — start nothing after it`);
     else void tell(task, "you took back the stop — carry on");
+  }
+  // Stop now: the routed chat's own turn ends here (the run controls, 846 §7 step 7); `runControls.ts` tells Home
+  // only once it stopped.
+  async function stopNow() {
+    if (!r.chat || halting) return;
+    halting = true;
+    try {
+      if (await stopThenTell(task, r.chat, liveStep?.name ?? null)) {
+        ui.halted = true;
+        ui.stop = false;
+      }
+    } finally {
+      halting = false;
+    }
+  }
+  function resume() {
+    const line = resumeLine(ui.halted);
+    ui.halted = false;
+    ui.stop = false;
+    nudge(task, line);
+  }
+  function again(s: RunStep) {
+    if (!ui.again.includes(s.id)) ui.again = [...ui.again, s.id];
+    nudge(task, againLine(s.name, s.state === "failed"));
   }
   const pct = (s: RunStep) => (s.progress === null ? "" : `${Math.round(s.progress * 100)}%`);
   const stepRows = (s: RunStep): Rows => [["Step", s.name], ...s.detail, ["Now", s.state === "wait" ? "Not started" : s.state === "live" ? `Running${pct(s) ? ` — ${pct(s)}` : ""}` : s.state === "failed" ? `Failed${s.out ? ` — ${s.out}` : ""}` : s.out || "Done"]];
@@ -47,7 +79,11 @@
     <Panel title={r.title || task.name} {sub} live={!ended && !ui.stop}>
       {#snippet tools()}
         {#if r.chat}<Btn small icon="chat" tip={"Open the chat running this"} onclick={() => stageHost.now.openChat(r.chat, r.project || null)}>Open chat</Btn>{/if}
-        {#if !ended}<Btn small kind={ui.stop ? "ghost" : "danger"} icon={ui.stop ? "revert" : "stop"} tip={ui.stop ? "Take back the stop" : "Stop after the step in hand\nHome reads this at its next look"} onclick={stop}>{ui.stop ? "Stopping · Undo" : "Stop"}</Btn>{/if}
+        {#if !ended && ui.halted}<Btn small icon="play" tip={"Tell Home to carry on\nIt sends the chain on from where it stopped"} onclick={resume}>Resume</Btn>
+        {:else if !ended}
+          <Btn small kind={ui.stop ? "ghost" : "danger"} icon={ui.stop ? "revert" : "stop"} tip={ui.stop ? "Take back the stop" : "Stop after the step in hand\nHome is told now"} onclick={stop}>{ui.stop ? "Stopping · Undo" : "Stop"}</Btn>
+          {#if r.chat}<Btn small kind="danger" icon="stop" tip={"Stop its chat now, mid-step\nWhat it already did stays"} onclick={stopNow}>{halting ? "Stopping…" : "Stop now"}</Btn>{/if}
+        {/if}
       {/snippet}
       {#if r.steps.length === 0}<Loading label={task.doing || "Home is planning the run"} lines={2} />{/if}
       <div class="r-chain" class:compact={!!openStep}>
@@ -63,7 +99,7 @@
         {/each}
       </div>
       {#if task.why}<div class="h9-why" style="margin-top:8px"><b>YOU ASKED</b><span>{task.why}</span></div>{/if}
-      {#if openStep}<div class="r-det"><Detail rows={stepRows(openStep)} /></div>{/if}
+      {#if openStep}<div class="r-det"><Detail rows={stepRows(openStep)} />{#if openStep.state === "done" || openStep.state === "failed"}<div class="r-again">{#if ui.again.includes(openStep.id)}<span class="h9-dim">Home was asked to run it again</span>{/if}<Btn small icon="refresh" tip={"Ask Home to run this step again\nIt is told now"} onclick={() => openStep && again(openStep)}>Run this step again</Btn></div>{/if}</div>{/if}
       {#if r.asks}<p class="r-asks"><b>At the end</b>{r.asks}</p>{/if}
     </Panel>
     <div class="h9-row h9-fill">
@@ -115,6 +151,7 @@
   .r-chain.compact { position: sticky; top: 0; z-index: 3; margin: 0 -12px; padding: 4px 12px 6px; background: var(--sheet); }
   .r-chain.compact .r-out { min-height: 0; }
   .r-chain.compact .r-node { padding: 6px 8px; gap: 2px; }
+  .r-again { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 6px; font-size: 12px; }
   .r-asks { margin: 8px 2px 0; font-size: 12px; color: var(--ink2); }
   .r-asks b { font: 600 10px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent-ink); margin-right: 8px; }
   .r-agent { align-items: flex-start; padding: 5px 8px; }

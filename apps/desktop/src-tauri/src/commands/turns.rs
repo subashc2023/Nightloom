@@ -404,7 +404,9 @@ pub(crate) async fn send_agent(
     // Item 845 (846 §2, §7 steps 2–3): a message to Home carries the view
     // he typed from and what he did on the stage since Home last looked,
     // on the wire only (the transcript shows his words as he typed them).
-    let wire_note = home_wire_note(&state, turn_project.as_deref(), wire_note).await;
+    // The clicks it took come back (item 872) if the message never reaches
+    // the model (below).
+    let (wire_note, home_taken) = home_wire_note(&state, turn_project.as_deref(), wire_note).await;
     // The cache-miss check (item 727): this request's prefix print, and
     // how many replies the log held before it, for the check at its end.
     let miss_before = nightloom_service::cache_miss::assistant_count(session);
@@ -437,7 +439,26 @@ pub(crate) async fn send_agent(
         },
         &env,
     )
-    .await?;
+    .await;
+    // Item 872 (845 review finding 11): his stage clicks this message
+    // carried are given back for Home's next look when the model never
+    // read it — the turn failed outright, stopped in the council (no chair
+    // ran), or the CLI ended before it named a session (a Stop or a
+    // failure at its start). Once the CLI named a session the message is
+    // in Home's own history, which its next turn resumes: an error, the
+    // plan's limit or his Stop after that point leaves it there, and
+    // giving the clicks back would show them twice (872 review).
+    if let Some((config, rows)) = &home_taken {
+        let unread = match &end {
+            Err(_) => true,
+            Ok(AgentTurnEnd::Done { outcome, .. }) => outcome.session_id.is_none(),
+            Ok(AgentTurnEnd::StoppedInCouncil) => true,
+        };
+        if unread && let Err(e) = nightloom_service::home::tasks::requeue(config, rows) {
+            eprintln!("home: clicks not given back after a failed send: {e}");
+        }
+    }
+    let end = end?;
     let (outcome, granted_any, context_limit) = match end {
         AgentTurnEnd::StoppedInCouncil => {
             return Ok(AgentTurn {
@@ -1099,13 +1120,20 @@ pub(crate) fn approve_call(
 
 /// [`nightloom_service::home::tasks::wire_note`] after `note`, for a turn
 /// in Home's project; `note` unchanged for any other.
+#[allow(clippy::type_complexity)]
 async fn home_wire_note(
     state: &State<'_, AppState>,
     turn_project: Option<&str>,
     note: Option<String>,
-) -> Option<String> {
+) -> (
+    Option<String>,
+    Option<(
+        std::path::PathBuf,
+        Vec<nightloom_service::home::tasks::Event>,
+    )>,
+) {
     let Some(project) = turn_project else {
-        return note;
+        return (note, None);
     };
     let is_home = state
         .workspaces
@@ -1115,13 +1143,13 @@ async fn home_wire_note(
         .find_by_source(nightloom_service::home::SOURCE)
         .is_some_and(|p| p.id == project);
     let Some(config) = nightloom_service::project::config_dir().filter(|_| is_home) else {
-        return note;
+        return (note, None);
     };
-    match (
-        note,
-        nightloom_service::home::tasks::wire_note(&config, chrono::Utc::now()),
-    ) {
+    let (home, taken) = nightloom_service::home::tasks::wire_note_kept(&config, chrono::Utc::now());
+    let note = match (note, home) {
         (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
         (a, b) => a.or(b),
-    }
+    };
+    let taken = (!taken.is_empty()).then_some((config, taken));
+    (note, taken)
 }

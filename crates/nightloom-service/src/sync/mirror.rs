@@ -175,6 +175,7 @@ impl SyncServer {
         let gone = manifest::gone(local, &index);
         for rel in &gone {
             if let Some(path) = manifest::join(&root, rel) {
+                make_replaceable(&path);
                 match fs::remove_file(&path) {
                     Ok(()) => prune_empty(&root, &path),
                     Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -420,12 +421,34 @@ fn write_whole(path: &Path, bytes: &[u8], read_only: bool) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
+    make_replaceable(path);
     if let Err(e) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
     Ok(())
 }
+
+/// Windows refuses to replace or delete a read-only file (error 5, "Access
+/// is denied"), where Unix asks only the folder; so there the flag on an
+/// older copy is lifted first (item 864). Nothing to do elsewhere.
+#[cfg(windows)]
+fn make_replaceable(path: &Path) {
+    let Ok(meta) = fs::metadata(path) else {
+        return;
+    };
+    let mut perms = meta.permissions();
+    if perms.readonly() {
+        // On Windows this clears the read-only attribute and nothing else;
+        // the lint's concern (a world-writable mode) is a Unix one.
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        let _ = fs::set_permissions(path, perms);
+    }
+}
+
+#[cfg(not(windows))]
+fn make_replaceable(_path: &Path) {}
 
 fn set_read_only(path: &Path) -> io::Result<()> {
     let mut perms = fs::metadata(path)?.permissions();

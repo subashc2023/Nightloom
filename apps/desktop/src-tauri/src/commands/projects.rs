@@ -78,13 +78,6 @@ pub(crate) fn project_infos(projects: &[Project]) -> Vec<ProjectInfo> {
     })
 }
 
-#[tauri::command]
-pub(crate) async fn active_project(
-    state: State<'_, AppState>,
-) -> Result<Option<ProjectInfo>, String> {
-    Ok(state.active().await.as_ref().map(ProjectInfo::of))
-}
-
 /// Register a folder as a project. Idempotent: the same folder is the same
 /// project, so this doubles as "open the one I already have".
 /// One project an import produced.

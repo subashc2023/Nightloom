@@ -826,6 +826,9 @@ mod tests {
             .as_bytes(),
         )
         .unwrap();
+        // Closed, as the CLI's appends are: Windows' directory listing (where
+        // the size is read) shows an open file's old size (item 864).
+        drop(f);
         let again = sync(&config, &claude).unwrap();
         assert_eq!(again.messages, 1);
         let log = mirrored(&config, id).unwrap();

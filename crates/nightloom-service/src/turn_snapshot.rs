@@ -678,6 +678,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         sh(&d, &["init", "-q"]);
+        // Byte-for-byte checkouts: Windows runners set core.autocrlf, which
+        // would restore "v1\r\n" (item 864).
+        sh(&d, &["config", "core.autocrlf", "false"]);
         std::fs::write(d.join("kept.txt"), "v1\n").unwrap();
         std::fs::write(d.join("gone.txt"), "here\n").unwrap();
         std::fs::write(d.join(".gitignore"), "ignored/\n").unwrap();

@@ -17,13 +17,24 @@ import { saveLastProject, app, applyDraft, activateTab, refreshSessions, clearPe
 
 // ---- projects ----
 
+/** Item 865: reads may overlap (the launch's list runs beside the reopen,
+ *  which re-reads behind it), so a read that started before the one last
+ *  applied is dropped rather than putting an older list back. */
+let projectsAsked = 0;
+let projectsApplied = 0;
+
 export async function refreshProjects(): Promise<void> {
+  const asked = ++projectsAsked;
+  let rows: Awaited<ReturnType<typeof api.listProjects>>;
   try {
-    app.projects = await api.listProjects();
+    rows = await api.listProjects();
   } catch (e) {
     addToast(String(e));
     return;
   }
+  if (asked < projectsApplied) return;
+  projectsApplied = asked;
+  app.projects = rows;
   // Keep the open project in step with the list it is a row of. `app.project`
   // is otherwise a snapshot taken at open/connect/rename, and `exists` is a
   // fact about the disk that changes underneath it — so the Welcome pane went
@@ -203,7 +214,7 @@ export async function useProject(id: string | null): Promise<void> {
   // is covered meanwhile (`projectSwitch.svelte.ts`, `Welcome.svelte`).
   projectSwitch.on = true;
   try {
-    saveLastProject(app.project?.id ?? null);
+    saveLastProject(app.project?.id ?? null, app.project?.name);
     // ~~The workspace just left is dropped~~ — since backlog 201 it is
     // written under its project first (while its chat is still the open
     // one, so an aside tab of it finds its threads), and the new project's
@@ -463,7 +474,11 @@ export async function importFromClaude(): Promise<void> {
 export async function renameProject(id: string, name: string): Promise<void> {
   try {
     const project = await api.renameProject(id, name);
-    if (app.project?.id === id) app.project = project;
+    if (app.project?.id === id) {
+      app.project = project;
+      // Item 865: the launch screen says the kept name before the list lands.
+      saveLastProject(id, project.name);
+    }
     // The row renamed in place; the re-read follows (backlog 211).
     app.projects = withProject(app.projects, project);
     void refreshWithin("renaming " + name, [refreshProjects]);

@@ -37,6 +37,8 @@ export const desktopHost: StageHost = {
   noteNames: async () => (await api.listNotes("project").catch(() => [])).map((n) => n.name),
   saveNote: (name, text) => api.saveNote("project", name, text),
   openChat: (chat, project) => void openRun({ session: chat, project, onScreen: false }),
+  stopChat: (chat) => api.cancel(chat),
+  routedRunning: async () => (await api.homeRoutes()).running ?? [],
   toast: (text) => addToast(text),
   liveBrowser: () => {
     const s = app.activeSessionId;

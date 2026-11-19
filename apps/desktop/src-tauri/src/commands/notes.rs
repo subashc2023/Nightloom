@@ -428,16 +428,6 @@ pub(crate) async fn list_proposals(
     blocking(move || Ok::<_, String>(nightloom_service::proposal::list_in(&store))).await
 }
 
-#[tauri::command]
-pub(crate) async fn read_proposal(
-    state: State<'_, AppState>,
-    scope: NoteScope,
-    id: String,
-) -> Result<nightloom_service::proposal::Proposal, String> {
-    let store = proposal_store(&state, scope).await?;
-    blocking(move || nightloom_service::proposal::read(&store, &id)).await
-}
-
 /// Move a proposal aside as turned down. The frontend confirms first — a
 /// dismissed proposal leaves the badge, which is the closest thing here to
 /// losing work — and the file is kept under `proposals/dismissed/`.
@@ -490,7 +480,7 @@ pub(crate) struct KnowledgeInfo {
 impl KnowledgeInfo {
     pub(crate) fn of(dir: PathBuf, is_default: bool) -> Self {
         Self {
-            notes: project::list_notes(&dir).len(),
+            notes: project::count_notes(&dir),
             exists: dir.is_dir(),
             alias: nightloom_service::tools::VAULT_ALIAS.to_string(),
             is_default,

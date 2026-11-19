@@ -410,7 +410,9 @@ impl ProjectInfo {
                 .map(|f| f.to_string_lossy().into_owned())
                 .collect(),
             notes_dir: project.notes_dir().to_string_lossy().into_owned(),
-            notes: project::list_notes(&project.notes_dir()).len(),
+            // Counted without opening a note (item 865): the cold first read
+            // opened ~480 iCloud files for summaries this row never shows.
+            notes: project::count_notes(&project.notes_dir()),
             // Counted, not listed. This runs on every rail refresh and once
             // per project in the project picker, and `list` reads every log
             // it names — a hundred megabytes, after an import, to learn a
@@ -1744,7 +1746,6 @@ fn main() {
             commands::projects::pick_export,
             commands::projects::import_claude,
             commands::projects::list_projects,
-            commands::projects::active_project,
             commands::projects::create_project,
             commands::projects::projects_folder_info,
             commands::projects::set_projects_folder,
@@ -1796,7 +1797,6 @@ fn main() {
             commands::notes::delete_note,
             commands::notes::trash_note_drafts,
             commands::notes::list_proposals,
-            commands::notes::read_proposal,
             commands::notes::dismiss_proposal,
             commands::notes::mark_applied,
             commands::notes::knowledge_info,
@@ -1905,13 +1905,11 @@ fn main() {
             nightshift::nightshift_disable,
             nightshift::nightshift_default_runner,
             nightshift::nightshift_items,
-            nightshift::nightshift_item,
             nightshift::nightshift_set_order,
             nightshift::nightshift_blockers,
             nightshift::nightshift_answer_blocker,
             nightshift::ask_file_answer,
             nightshift::nightshift_shifts,
-            nightshift::nightshift_shift,
             nightshift::nightshift_shift_log,
             nightshift::nightshift_synth_plan,
             nightshift::nightshift_write_plan,
@@ -1929,9 +1927,6 @@ fn main() {
             nightshift::nightshift_morning,
             nightshift::nightshift_notes,
             nightshift::nightshift_read_file,
-            nightshift::nightshift_stream,
-            nightshift::nightshift_schedule,
-            nightshift::nightshift_set_schedule,
             nightshift::nightshift_diff,
             nightshift::nightshift_shift_diff,
             nightshift::nightshift_new_item,

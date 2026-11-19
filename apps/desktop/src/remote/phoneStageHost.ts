@@ -6,11 +6,13 @@
  *   the brief — the scan page the phone's Home already reads (`/home/scan`), cut into its sections;
  *   notes — Home's project's notes (`/notes`, the PUT the Notes sheet uses);
  *   Open chat — the page's own chat screen.
- * Home's steps are not drawn on the phone (the narrow stage has no wide column), so `events` is empty; there is no
+ * Home's steps (item 872) come from `GET /home/steps` — the page keeps them and draws them in a fold under the view
+ * (the narrow stage has no wide column); there is no
  * live browser picture (the Mac's window owns it), so Browse draws the page Home reports.
  */
 import type { StageHost } from "../lib/homeStage/host";
 import { sectionsOf, type Brief } from "../lib/homeStage/brief";
+import type { Ev } from "../lib/homeStage/steps";
 import { ApiError, Unreachable, type Client, type HomeScanWire } from "./client";
 
 export interface PhoneStageDeps {
@@ -19,6 +21,8 @@ export interface PhoneStageDeps {
   scan: () => HomeScanWire | null;
   open: (chat: string, project: string | null) => void;
   note: (text: string) => void;
+  /** Home's steps as the page last read them (`GET /home/steps`, item 872); reactive where the page keeps them. */
+  steps?: () => readonly Ev[];
 }
 
 /** The phone's brief: the scan page, its sections as the Mac's Brief cuts them. Pure. */
@@ -36,7 +40,7 @@ export function clickNotSent(e: unknown): string {
 
 export function phoneStageHost(d: PhoneStageDeps): StageHost {
   return {
-    events: () => [],
+    events: () => d.steps?.() ?? [],
     busy: () => false,
     brief: () => phoneBrief(d.scan()),
     scanWords: () => null,
@@ -83,6 +87,15 @@ export function phoneStageHost(d: PhoneStageDeps): StageHost {
       await d.client().writeNote("project", name, text, p);
     },
     openChat: (chat, project) => d.open(chat, project),
+    // Run's toast says it once (`stopThenTell`); only the words are the phone's.
+    stopChat: async (chat) => {
+      try {
+        await d.client().cancel(chat);
+      } catch (e) {
+        throw new Error(e instanceof Unreachable ? "the Mac is not answering" : e instanceof Error ? e.message : String(e));
+      }
+    },
+    routedRunning: async () => (await d.client().homeRoutes()).running ?? [],
     toast: (text) => d.note(text),
     liveBrowser: () => null,
     watchBrowser: () => {},

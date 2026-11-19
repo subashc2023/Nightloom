@@ -833,8 +833,11 @@ pub(crate) async fn stop_group(pgid: Option<u32>) {
 /// so a stop takes it too.
 #[cfg(unix)]
 pub(crate) fn spawn_watchdog(pgid: u32, watch: u32) {
-    let script =
-        format!("while kill -0 {watch} 2>/dev/null; do sleep 2; done; kill -KILL -- -{pgid}");
+    // No `--` before the group: dash (Debian and Ubuntu's /bin/sh) reads it
+    // as a pid and fails "Illegal number", so the group outlived its app
+    // there (item 864). `kill -KILL -<pgid>` means the group in dash, bash
+    // and zsh alike.
+    let script = format!("while kill -0 {watch} 2>/dev/null; do sleep 2; done; kill -KILL -{pgid}");
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.arg("-c")
         .arg(script)
@@ -1348,18 +1351,25 @@ mod tests {
     /// range (49152 up), so no outgoing connection is ever given one; a
     /// random start and a step per call keep this process's ports apart
     /// and away from another test run's.
+    /// A port nothing answers on, from 20000 to 32767: below every OS's
+    /// ephemeral range (Linux starts at 32768, macOS and Windows at
+    /// 49152). In Linux's range (item 864), an outgoing socket of another
+    /// test can hold the port as its local end; nothing answers there, but
+    /// Linux refuses the server's bind, and the preview exits unheard.
     fn free_port() -> u16 {
         use std::sync::atomic::AtomicU16;
+        const LOW: u16 = 20_000;
+        const SPAN: u16 = 32_768 - LOW;
         static NEXT: AtomicU16 = AtomicU16::new(0);
         let _ = NEXT.compare_exchange(
             0,
-            20_000 + (uuid::Uuid::new_v4().as_u128() % 20_000) as u16,
+            LOW + (uuid::Uuid::new_v4().as_u128() % u128::from(SPAN)) as u16,
             Ordering::SeqCst,
             Ordering::SeqCst,
         );
         loop {
             let p = NEXT.fetch_add(1, Ordering::SeqCst);
-            let p = 20_000 + p.wrapping_sub(20_000) % 25_000;
+            let p = LOW + p.wrapping_sub(LOW) % SPAN;
             if !port_answers(p) {
                 return p;
             }
@@ -1429,7 +1439,7 @@ mod tests {
         // A child of the shell that is not exec'd: a stop by pid would miss it.
         let cmd = format!("python3 -m http.server {port} --bind 127.0.0.1 & wait");
         let snap = p.start("chat-s", &dir, &cmd, port).await.unwrap();
-        assert_eq!(snap.status, Status::Listening);
+        assert_eq!(snap.status, Status::Listening, "{snap:?}");
         let pgid = snap.pgid.unwrap();
         let stopped = p.stop("chat-s").await.unwrap();
         assert_eq!(stopped.port, port);
@@ -1480,7 +1490,7 @@ mod tests {
         let dir = tmp("watchdog");
         let port = free_port();
         let snap = p.start("chat-w", &dir, &server(port), port).await.unwrap();
-        assert_eq!(snap.status, Status::Listening);
+        assert_eq!(snap.status, Status::Listening, "{snap:?}");
         fake_app.kill().unwrap();
         let _ = fake_app.wait();
         let until = std::time::Instant::now() + Duration::from_secs(6);

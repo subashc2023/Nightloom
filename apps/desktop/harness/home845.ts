@@ -94,6 +94,16 @@ async function run() {
   // they wait "ready →"; split=1 also turns Split on (the newest task beside the one in focus).
   if (q.get("focus") === "1") kept.ui["stage:focus"] = { follow: true, split: q.get("split") === "1", primed: true, ready: [], seen: { [TASK_TAB[s] ?? "watch"]: 0 } };
   else kept.ui["stage:focus"] = { follow: true, split: false, primed: false, ready: [], seen: {} };
+  // p872=1 (item 872): one tab waiting "ready →", a done task folded away ("1 done"), Home's steps open on the phone.
+  if (q.get("p872") === "1") {
+    const ids = ["task:moving-the-review", "task:working-your-list", "task:sorting-what-arrived", "task:renewing-the-permit", "task:merge-round-t", "task:cache-pricing"];
+    const r = (homeTasks as { id: string; state: string }[]).find((t) => t.id === "cache-pricing");
+    if (r) r.state = "done";
+    kept.ui["stage:focus"] = { follow: true, split: false, primed: true, ready: ["task:renewing-the-permit"], seen: Object.fromEntries(ids.map((i) => [i, 9])), doneSeen: { "task:cache-pricing": Date.now() - 300_000 }, folded: ["task:cache-pricing"] };
+    kept.ui["phone:steps"] = { open: true };
+  }
+  // runctl=1 (item 872): Run after Stop now (its chat stopped, Resume shown) with a done step open (Run this step again).
+  if (q.get("runctl") === "1") kept.ui["task:merge-round-t"] = { stop: false, halted: true, open: "r:merge", again: ["r:merge"] };
   if (q.get("classic") === "1") setLayout("classic");
   let root = mount(App, { target: document.getElementById("app")! });
   flushSync();

@@ -827,3 +827,24 @@ fn the_cards_push_says_a_state_and_is_not_a_second_feed_row() {
 }
 
 mod review;
+
+#[test]
+fn only_a_running_routes_chat_is_one_stop_now_may_stop() {
+    let c = scratch("running");
+    let route = |id: &str, chat: Option<&str>, state: &str| -> Route {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "at": "2026-11-19T12:00:00Z", "kind": "send",
+            "project_name": "Nightloom", "chat": chat, "prompt": "go",
+            "write": false, "state": state,
+        }))
+        .unwrap()
+    };
+    record(&c, &route("r1", Some("c-live"), "started")).unwrap();
+    record(&c, &route("r2", Some("c-done"), "finished")).unwrap();
+    record(&c, &route("r3", None, "started")).unwrap();
+    record(&c, &route("r4", Some("c-wait"), "waiting")).unwrap();
+    assert_eq!(running_chats(&c), vec!["c-live".to_string()]);
+    // Its end moves it out.
+    record(&c, &route("r1", Some("c-live"), "finished")).unwrap();
+    assert!(running_chats(&c).is_empty());
+}

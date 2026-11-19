@@ -160,6 +160,25 @@ fn names(text: &str, note: &HeldNote) -> bool {
         || text.contains(HELD_FILE)
 }
 
+/// Every string in `v` (keys and values), unescaped, one per line.
+fn strings_in(v: &Value, out: &mut String) {
+    match v {
+        Value::String(s) => {
+            out.push_str(s);
+            out.push('\n');
+        }
+        Value::Array(items) => items.iter().for_each(|i| strings_in(i, out)),
+        Value::Object(map) => {
+            for (k, i) in map {
+                out.push_str(k);
+                out.push('\n');
+                strings_in(i, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The words every refusal ends with: what would be released.
 fn how(name: &str, note: &HeldNote) -> String {
     format!(
@@ -186,9 +205,13 @@ pub fn release_gate(chat_dir: &Path, tool_name: &str, tool_input: &Value, main: 
         .get("command")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    // And at every string as written: a Windows path's `\` is doubled in
+    // the JSON, so a Read of the file passed there (item 864).
+    let mut raw = String::new();
+    strings_in(tool_input, &mut raw);
     let named: Vec<(&String, &HeldNote)> = held
         .iter()
-        .filter(|(_, n)| names(&text, n) || names(command, n))
+        .filter(|(_, n)| names(&text, n) || names(command, n) || names(&raw, n))
         .collect();
     if named.is_empty() {
         return Gate::Pass;

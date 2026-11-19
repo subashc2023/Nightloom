@@ -3196,6 +3196,17 @@ mod tests {
             tasks.as_array().unwrap().is_empty(),
             "the closed tab is gone: {tasks}"
         );
+        // Item 872: Home's steps — none while the host has no Home chat.
+        let steps: serde_json::Value = c
+            .get(format!("{base}/api/home/steps"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(steps, serde_json::json!([]), "{steps}");
         server.stop().await;
     }
 
@@ -4399,7 +4410,10 @@ mod tests {
     /// waves run against the Mac, `nightloom-cli serve` and the Fly
     /// machine) passes against both fakes: everything on the full host,
     /// and on the bare one the new routes reported as lacking, not failed.
-    /// Skipped where bash, curl or jq is missing.
+    /// Skipped where bash, curl or jq is missing. Unix only: on Windows
+    /// `bash` resolves to System32's WSL launcher ahead of PATH (CI's runner
+    /// has no distribution, item 864), and the script is for Unix hosts.
+    #[cfg(unix)]
     #[tokio::test]
     async fn the_api_check_script_passes_against_both_hosts() {
         let have = |tool: &str| {
@@ -4616,15 +4630,24 @@ mod tests {
         )
         .await;
         assert_eq!(status, 409, "{why}");
+        let filed = || std::fs::read_dir(host.nightshift.join("backlog")).map_or(0, |d| d.count());
+        let before = filed();
         let huge = "A".repeat(60 * 1024 * 1024);
-        let r = c
+        // The server answers before the body is all read and then closes,
+        // so the client sees the 413 or a reset while still writing — a
+        // race on loopback that Windows loses (error 10053, item 864), as
+        // `/api/send`'s limit test says. Either way nothing is filed.
+        match c
             .post(format!("{base}/api/feedback"))
             .bearer_auth(&token)
             .json(&serde_json::json!({"text": "x", "images": [{"data": huge}]}))
             .send()
             .await
-            .unwrap();
-        assert_eq!(r.status(), 413);
+        {
+            Ok(r) => assert_eq!(r.status(), 413),
+            Err(e) => assert!(e.is_request(), "{e}"),
+        }
+        assert_eq!(filed(), before, "nothing filed");
         server.stop().await;
     }
 

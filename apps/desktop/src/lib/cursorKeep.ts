@@ -141,8 +141,3 @@ export function installCursorKeep(doc: Document = document, win: Window = window
   doc.documentElement.addEventListener("mouseleave", forget);
   win.addEventListener("blur", forget);
 }
-
-/** For the tests: forget that the listeners went in. */
-export function resetCursorKeepForTests(): void {
-  installed = false;
-}

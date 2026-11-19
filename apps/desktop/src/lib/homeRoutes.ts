@@ -30,6 +30,8 @@ export interface RoutesReply {
   held?: HomeRoute[];
   /** The chats Home started. */
   started: string[];
+  /** The chats a route of Home's is running now (item 872): the only ones Run's Stop now may stop. An older host: none. */
+  running?: string[];
 }
 
 /** "a new chat in Nightloom" / "“778 fix” in Nightshift". */
