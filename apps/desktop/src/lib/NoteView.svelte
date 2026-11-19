@@ -374,7 +374,16 @@
       );
       if (!alive || open?.scope !== target.scope || open?.name !== target.name) return;
       if (there === false) gone = true;
-      else if (there === true && error === null) gone = false;
+      else if (there === true && untrack(() => gone)) {
+        // Review of 869: the file came back (an editor's save by rename, a
+        // Trash put-back, iCloud). With his unsaved edits the buffer keeps
+        // them and the banner clears; with none — or only the vanished
+        // message showing — the note is read again, so the editor shows
+        // the file as it now is and a later Save cannot write the old text
+        // over what came back.
+        if (untrack(() => dirty)) gone = false;
+        else void load(target);
+      }
     });
     listen<NotesChanged>("notes-changed", (e) => {
       if (touchesNote(e.payload, target.scope, target.name)) void check();
