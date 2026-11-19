@@ -10,6 +10,11 @@
 //! the second and later spawns of one group — the caller (main thread or
 //! the helper spawning), the `subagent_type`, the model — until the
 //! group's first spawn has its first reply on disk, or [`HOLD_MAX_MS`].
+//! The caller is the calling process's own id with its turn (review,
+//! 2026-11-19): a main thread by its session, so two sessions sharing a
+//! chat's folder (an aside, a checkpoint fork) never wait on each other's
+//! leader, whose subagents sit in another folder; and a leader of an
+//! earlier turn (one stopped before its first reply) holds no one now.
 //! A single spawn never waits: the first of a group is the leader, and a
 //! leader goes at once.
 //!

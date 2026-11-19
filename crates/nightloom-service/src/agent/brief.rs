@@ -3283,11 +3283,15 @@ fn decide_holding_unheld(
     // turn wait for the first's first reply, so they read its cached
     // prompt; last of the checks, so a refused spawn never leads a group.
     let line = if task {
-        let caller = if subagent { who } else { "" };
+        // The caller by its own id (a helper's agent id, a main thread's
+        // session — an aside or a checkpoint fork sharing this folder is
+        // its own session, with its own subagents folder to watch) and
+        // the turn, so a group never spans two sessions or two turns.
+        let caller = format!("{who}@{turn}");
         let note = super::stagger::hold(
             dir,
             input.transcript_path.as_deref(),
-            caller,
+            &caller,
             &input.tool_input,
             alias,
             &input.tool_use_id,
