@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ListenButton from "../lib/ListenButton.svelte";
   /**
    * Nightshift from the phone (item 246 wave 5; blocker 669's default as
    * the wave-3 spec narrows it): the queue in order and each item, the
@@ -12,7 +13,7 @@
    */
   import { onMount, tick } from "svelte";
   import { renderMarkdown } from "../lib/markdown";
-  import { nonceFor, shortWhen, type Client, type Try } from "./client";
+  import { Client, nonceFor, shortWhen, type Try } from "./client";
   import BlockerAnswer from "./BlockerAnswer.svelte";
   import {
     NightshiftClient,
@@ -359,6 +360,8 @@
   {#if page === null && !problem}
     <p class="nz-note">Asking…</p>
   {:else if page !== null}
+    <!-- Item 801: the morning page read aloud, or its Brief. -->
+    <div class="nz-listen"><ListenButton kind="morning" id={v.name} text={() => page ?? ""} make={(t, b) => new Client(client.token, client.base).listen(t, b)} /></div>
     <div class="nz-md">{@html renderMarkdown(page)}</div>
   {/if}
 {:else if view.v === "new" && project}
@@ -621,5 +624,10 @@
   .nz-btn.danger {
     color: var(--failed);
     border-color: color-mix(in srgb, var(--failed) 45%, transparent);
+  }
+  .nz-listen {
+    display: flex;
+    padding: 0 0 0.4rem;
+    font-size: 0.95rem;
   }
 </style>

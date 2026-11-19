@@ -881,6 +881,22 @@ export class Client {
   /** Item 820: a picture or a video a reply names, read by the Mac under
    *  its own rules; the type rides in `x-media-type` (the body is always
    *  `application/octet-stream`), and the blob is built with it. */
+  /** Item 801: `text` read aloud by the host's Piper voice, one WAV file;
+   *  `brief` first rewrites it for the ear (its words come back too). */
+  async listen(text: string, brief: boolean): Promise<{ blob: Blob; words?: string }> {
+    const r = await this.call("/listen", { method: "POST", body: JSON.stringify({ text, brief }) });
+    const raw = r.headers.get("x-brief-words");
+    let words: string | undefined;
+    if (raw) {
+      try {
+        words = decodeURIComponent(raw);
+      } catch {
+        words = undefined;
+      }
+    }
+    return { blob: await r.blob(), words };
+  }
+
   async replyMedia(chat: string, path: string): Promise<{ mediaType: string; bytes: Blob }> {
     const r = await this.call(`/chats/${encodeURIComponent(chat)}/media`, { method: "POST", body: JSON.stringify({ path }) });
     const mediaType = r.headers.get("x-media-type") ?? "application/octet-stream";

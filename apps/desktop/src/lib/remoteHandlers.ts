@@ -23,6 +23,7 @@
  */
 import { contextOf as usageContext } from "./warmWrap";
 import { invoke } from "@tauri-apps/api/core";
+import { briefHere } from "./listenHere";
 import { emit, listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import { pastOf } from "./asideHistory.svelte";
@@ -1042,6 +1043,8 @@ export async function installRemoteHandlers(): Promise<void> {
     void answer(id, async () => (patch ? runSetRail(patch) : railOf()));
   });
   await listen<{ id: number }>("remote-running", (e) => void answer(e.payload.id, async () => runningNow()));
+  // Item 801: the phone's Brief, on this window's agent binary.
+  await listen<{ id: number; text: string }>("remote-brief", (e) => void answer(e.payload.id, () => briefHere(e.payload.text)));
   await listen<ProjectOp & { id: number }>("remote-project", (e) => {
     const { id, ...op } = e.payload;
     void answer(id, () => runProject(op as ProjectOp));

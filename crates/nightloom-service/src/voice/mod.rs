@@ -21,6 +21,7 @@
 //! `bin/voice-setup.sh` fetches) or on `PATH`; [`Setup::find`] says `None`
 //! when either half is missing, and the host then reports no voice.
 
+pub mod listen;
 pub mod session;
 pub mod split;
 pub mod stt;
