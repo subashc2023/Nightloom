@@ -65,11 +65,13 @@ export async function refreshNotes(): Promise<void> {
   // As a tree since item 457: the same notes, plus the folders (an empty
   // one is still a place to drop a note) and whether the list is whole.
   if (app.project) {
+    const listedFor = app.project.id;
     try {
       const t = await api.listNoteTree("project");
       app.notes = t.notes;
       app.noteFolders.project = t.folders;
       app.notesComplete.project = t.complete;
+      app.notesListed.project = listedFor;
     } catch {
       // A store that cannot be listed shows as empty; the failure surfaces
       // when something is actually read or written.
@@ -87,6 +89,7 @@ export async function refreshNotes(): Promise<void> {
     app.vault = t.notes;
     app.noteFolders.knowledge = t.folders;
     app.notesComplete.knowledge = t.complete;
+    app.notesListed.knowledge = true;
   } catch {
     app.vault = [];
     app.noteFolders.knowledge = [];

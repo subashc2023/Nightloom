@@ -391,6 +391,12 @@ export const app = $state({
    */
   noteFolders: { project: [] as string[], knowledge: [] as string[] },
   notesComplete: { project: true, knowledge: true },
+  /** Item 871: which listings have been read — the project id whose notes
+   *  were listed, and whether the vault was — so a recovered draft (its
+   *  note missing) is told only from a listing that exists. */
+  notesListed: { project: null as string | null, knowledge: false },
+  /** Item 871: the Recovered drafts list is open. */
+  showRecoveredDrafts: false,
   /** Where the vault is; null on a machine with no user config directory. */
   knowledge: null as KnowledgeInfo | null,
   /**
@@ -997,7 +1003,11 @@ export function persistNoteDrafts(): (() => void) | null {
   });
   if (typeof window !== "undefined") window.addEventListener("pagehide", writer.flush);
   const n = Object.keys(app.noteDrafts).length;
-  if (n > 0) addToast(`${n === 1 ? "An unsaved note draft" : `${n} unsaved note drafts`} from last time ${n === 1 ? "is" : "are"} kept — marked as unsaved on the notes`);
+  if (n > 0)
+    addToast(`${n === 1 ? "An unsaved note draft" : `${n} unsaved note drafts`} from last time ${n === 1 ? "is" : "are"} kept — marked as unsaved on the notes`, {
+      label: "Show",
+      run: () => (app.showRecoveredDrafts = true),
+    });
   return writer.flush;
 }
 
