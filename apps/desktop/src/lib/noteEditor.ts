@@ -730,6 +730,8 @@ export interface NoteEditorHooks {
   placeholder?: string;
   /** A relative image link's loadable URL (item 498, `imageSource`). */
   imageSource?: (src: string) => Promise<string | null>;
+  /** Item 860: a paste, first; true when it took the paste. */
+  onPaste?: (e: ClipboardEvent) => boolean;
 }
 
 /**
@@ -811,6 +813,11 @@ export function noteExtensions(hooks: NoteEditorHooks): Extension[] {
       if (u.docChanged || u.selectionSet) hooks.onCaret?.(u.state.selection.main.head);
     }),
     EditorView.domEventHandlers({
+      paste(e) {
+        if (!hooks.onPaste || !hooks.onPaste(e)) return false;
+        e.preventDefault();
+        return true;
+      },
       mousedown(e) {
         if (!(e.metaKey || e.ctrlKey) || !hooks.onFollow) return false;
         const link = (e.target as HTMLElement | null)?.closest?.("[data-wikilink]");
