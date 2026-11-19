@@ -1014,6 +1014,7 @@ export function persistNoteDrafts(): (() => void) | null {
 export async function init(): Promise<void> {
   if (initialized) return;
   initialized = true;
+  persistNoteDrafts();
   // Item 865: the provider list (a keychain read per provider) is asked for
   // now and read beside the listeners below, awaited where it always was;
   // the two marks say where the time before the launch steps goes.
@@ -1022,7 +1023,6 @@ export async function init(): Promise<void> {
     (rows) => ({ rows }),
     (e: unknown) => ({ error: e }),
   );
-  persistNoteDrafts();
   await listen<TurnEvent & { chat?: string }>("turn-event", (e) => applyTurnEvent(e.payload));
   // The aside's answer as it streams (nightshift backlog 128): a delta
   // for the live exchange is appended; one for a cancelled or replaced
