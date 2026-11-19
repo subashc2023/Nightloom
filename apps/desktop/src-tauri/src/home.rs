@@ -191,3 +191,25 @@ pub(crate) fn home_reach_set(connector: String, on: bool) -> Result<HomeReach, S
     home::reach::set_on(&config, &connector, on)?;
     Ok(reach_of(&config))
 }
+
+/// Item 845: the tasks on Home's stage, oldest first.
+#[tauri::command]
+pub(crate) fn home_tasks() -> Result<Vec<home::tasks::Task>, String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    Ok(home::tasks::read(&config, chrono::Utc::now()))
+}
+
+/// Item 845: one click of his on the stage that Home should know (a
+/// "kind B" control) — a line Home reads at its next look.
+#[tauri::command]
+pub(crate) fn home_task_event(task: String, view: String, line: String) -> Result<(), String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    home::tasks::record(&config, &task, &view, &line, chrono::Utc::now())
+}
+
+/// Item 845: his × on a task's tab. The work is not stopped by this.
+#[tauri::command]
+pub(crate) fn home_task_close(id: String) -> Result<(), String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    home::tasks::close(&config, &id, chrono::Utc::now())
+}
