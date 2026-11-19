@@ -1,0 +1,9 @@
+/* Item 875: a markdown image's placeholder in a reply. Once the picture is
+   mounted (replyMediaInline.ts) its alt text hides; wherever nothing mounts
+   (a quote, a surface without the action) the alt text is what shows. */
+.md-media:has(> .md-media-mount) > .md-local-img {
+  display: none;
+}
+.md-media-mount {
+  display: block;
+}

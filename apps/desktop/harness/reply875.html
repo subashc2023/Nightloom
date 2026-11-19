@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- Item 875: pictures where the reply places them (text → picture → text → picture, then a bare path), built by
+     harness/reply875/vite.config.ts and snapped with nightshift-code bin/snap. Query (window.__h9q or the hash):
+     classic=1 · phone=1 · stream=<chars> · w=<column px> · big=1 (the first inline picture opened full size) -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); color: var(--ink); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { padding: 20px 24px; box-sizing: border-box; max-width: 100%; }
+      #root.phone { padding: 12px 14px; font-size: 15px; }
+      #cap { font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000; padding: 4px 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="cap"></div>
+    <div id="root"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent = "rejection: " + e.reason));
+    </script>
+    <script type="module" src="./reply875.ts"></script>
+  </body>
+</html>

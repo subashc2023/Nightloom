@@ -49,7 +49,8 @@ const MD_IMAGE = /!\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^)\s]+))(?:\s+"[^"\n]*")?\s
 /** A backticked bare file name: `plot.png`. */
 const BARE_QUOTED = /`([\w.@+-]+\.[A-Za-z0-9]{2,5})`/g;
 
-function resolve(written: string, roots: string[]): string {
+/** A written path against the first root when relative and a root is known; else as written. */
+export function resolveMedia(written: string, roots: string[]): string {
   if (written.startsWith("/") || written.startsWith("~/")) return written;
   const base = roots.map((r) => r.replace(/[\\/]+$/, "")).find((r) => r !== "");
   return base ? `${base}/${written.replace(/^\.\//, "")}` : written;
@@ -79,7 +80,7 @@ export function mediaCandidates(text: string, roots: string[]): MediaCandidate[]
     w = w.replace(/^file:\/\//, "");
     const kind = mediaKindOf(w);
     if (!kind) return;
-    found.push({ at, c: { written: w, path: resolve(w, roots), kind, explicit } });
+    found.push({ at, c: { written: w, path: resolveMedia(w, roots), kind, explicit } });
   };
   for (const m of src.matchAll(MD_IMAGE)) {
     const target = m[1] ?? m[2];
