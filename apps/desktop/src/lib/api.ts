@@ -249,12 +249,33 @@ export interface PreparedOffice {
   /** SHA-256 (hex) of the office file itself (item 428): Keep finds the
    *  same file kept before by this, its PDF differing on every run. */
   source_sha256?: string;
+  /** Parts 2..n when the PDF was split to fit its limits (item 868); this
+   *  one is part 1. Absent otherwise. */
+  more?: PreparedOffice[];
+}
+
+/** What one PDF must fit (item 868): the engine's base64 cap, the API's
+ *  pages. Over it, the backend shrinks pictures and then splits a deck. */
+export interface PdfLimits {
+  maxBase64?: number;
+  maxPages?: number;
 }
 
 /** An office file as a PDF (LibreOffice) or its text; `textOnly` skips the
  *  converter — for a PDF that came out over the engine's cap. */
-export function prepareOfficeAttachment(name: string, data: string, textOnly = false): Promise<PreparedOffice> {
-  return invoke("prepare_office_attachment", { name, data, textOnly });
+export function prepareOfficeAttachment(
+  name: string,
+  data: string,
+  textOnly = false,
+  limits: PdfLimits = {},
+): Promise<PreparedOffice> {
+  return invoke("prepare_office_attachment", {
+    name,
+    data,
+    textOnly,
+    maxBase64: limits.maxBase64 ?? null,
+    maxPages: limits.maxPages ?? null,
+  });
 }
 
 /** Whether LibreOffice is installed: an office file becomes a PDF. */

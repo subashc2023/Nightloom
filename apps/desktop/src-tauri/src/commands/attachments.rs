@@ -5,7 +5,7 @@ use crate::*;
 
 /// An office file made sendable (nightshift item 277): a PDF through
 /// LibreOffice when it is installed, its text otherwise or when the
-/// conversion fails or passes `CONVERT_TIMEOUT` (the result's `note` says
+/// conversion fails or passes `convert_timeout` (the result's `note` says
 /// why). `data` is the file's base64; his file on disk is never touched —
 /// the bytes go into a temporary folder that is removed after.
 #[tauri::command]
@@ -15,6 +15,10 @@ pub(crate) async fn prepare_office_attachment(
     // The text whatever is installed: the PDF came out over the engine's
     // cap, and the words are what can still go.
     text_only: Option<bool>,
+    // Item 868: what one PDF must fit (the engine's base64 cap, the API's
+    // pages); over it, smaller pictures and then parts, not text.
+    max_base64: Option<usize>,
+    max_pages: Option<usize>,
 ) -> Result<nightloom_service::attach::Prepared, String> {
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -25,11 +29,16 @@ pub(crate) async fn prepare_office_attachment(
     } else {
         nightloom_service::attach::find_soffice()
     };
-    nightloom_service::attach::prepare_office(
+    nightloom_service::attach::prepare_office_within(
         &name,
         &bytes,
         soffice.as_deref(),
-        nightloom_service::attach::CONVERT_TIMEOUT,
+        // Item 868: a 184-slide deck took 113 s; the flat 60 s killed it.
+        nightloom_service::attach::convert_timeout(bytes.len()),
+        nightloom_service::attach::PdfLimits {
+            max_base64,
+            max_pages,
+        },
     )
     .await
 }

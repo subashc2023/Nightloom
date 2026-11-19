@@ -26,7 +26,7 @@
   import { viewGet, viewSet } from "./viewState";
   import { projectFilesChanged, refreshNotes } from "./state.svelte";
   import { carriesFiles } from "./dropLook";
-  import { acceptFiles, conversionJobs, readBase64 } from "./attachFiles.svelte";
+  import { acceptFiles, conversionJobs, partChips, readBase64 } from "./attachFiles.svelte";
   import { discardDraft, readDraft } from "./drafts.svelte";
   import {
     holdKeptNotices,
@@ -450,6 +450,7 @@
         attach: acceptFiles,
         jobs: conversionJobs,
         chips: (k) => readDraft(k).attachments,
+        parts: partChips,
         state: keepStateOf,
         forget: (k) => delete keeps[k],
         keep: async (_k, name, mediaType, from, source) => {

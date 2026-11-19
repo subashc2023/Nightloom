@@ -55,6 +55,10 @@ export const MAX_DOCUMENT_BASE64 = 32 * 1024 * 1024;
 // failure can be made loud. Images near their own cap went through.
 export const MAX_AGENT_DOCUMENT_BASE64 = 20 * 1024 * 1024;
 export const encodedLimit = (n: number) => Math.floor((n / 4) * 3);
+// The API's pages per PDF (item 868): a deck past it is split into parts.
+// The Claude Code engine reads a long PDF by path (item 491), so no page
+// limit there.
+export const MAX_API_PDF_PAGES = 100;
 
 /** Exported for a dropped zip (item 414). */
 export function readBase64(file: File): Promise<string> {
@@ -203,6 +207,17 @@ export function conversionJobs(key: string): Promise<void>[] {
     .filter((j): j is Promise<void> => !!j);
 }
 
+/** Item 868: a split deck's parts 2..n, by its first chip's id. */
+const partsOf = new Map<number, number[]>();
+
+/** The chips of a split deck's parts 2..n in `key`'s box — what Keep keeps
+ *  beside part 1 (item 868). Empty for a file that was not split. */
+export function partChips(key: string, id: number): Attachment[] {
+  const ids = partsOf.get(id);
+  if (!ids) return [];
+  return readDraft(key).attachments.filter((a) => ids.includes(a.id) && !a.pending && !!a.data);
+}
+
 /**
  * An office file: a chip at once, saying what is happening, and the
  * conversion behind it. A PDF over the engine's cap goes again as its
@@ -233,9 +248,14 @@ async function attachOffice(chatKey: string, file: File, addToast: (text: string
   const job = (async () => {
     try {
       const data = await readBase64(file);
-      let out = await prepareOfficeAttachment(chip.name, data);
-      if (out.note) addToast(`${chip.name}: ${out.note} — sending its text instead`);
       const cap = capFor("document");
+      // Item 868: over the cap or the API's pages, the backend shrinks the
+      // pictures, then splits a deck into parts; text is its last resort.
+      let out = await prepareOfficeAttachment(chip.name, data, false, {
+        maxBase64: cap,
+        ...(engineNow() === "api" ? { maxPages: MAX_API_PDF_PAGES } : {}),
+      });
+      if (out.note) addToast(`${chip.name}: ${out.note}${out.via === "text" ? " — sending its text instead (no slides)" : ""}`);
       if (out.via === "pdf" && out.data.length > cap) {
         addToast(
           `${chip.name} became a ${Math.round(out.data.length / 1024 / 1024)} MB PDF once encoded — over the ${cap / 1024 / 1024} MB limit${cap === MAX_AGENT_DOCUMENT_BASE64 ? " on the subscription engine" : ""}; sending its text instead (no pictures)`,
@@ -243,9 +263,11 @@ async function attachOffice(chatKey: string, file: File, addToast: (text: string
         out = await prepareOfficeAttachment(chip.name, data, true);
       }
       const done: Partial<Attachment> = {
+        // A split deck's part 1 takes its part name (item 868).
+        ...(out.name && out.name !== chip.name ? { name: out.name } : {}),
         media_type: out.media_type,
         data: out.data,
-        label: convertedLabel(chip.name, out.via, out.count),
+        label: convertedLabel(out.name || chip.name, out.via, out.count),
         pending: false,
         ...(out.source_sha256 ? { source_sha256: out.source_sha256 } : {}),
         // Its pages route it (item 491): a deck that became a long PDF goes
@@ -253,7 +275,27 @@ async function attachOffice(chatKey: string, file: File, addToast: (text: string
         ...(out.via === "pdf" && out.count ? { pages: out.count } : {}),
       };
       if (!updateAttachment(chatKey, chip.id, done)) settledWhileOut.set(chip.id, done);
-      else stashLong(chatKey, { ...chip, ...done });
+      else {
+        stashLong(chatKey, { ...chip, ...done });
+        // Parts 2..n of a split deck: chips of their own beside part 1.
+        const parts: number[] = [];
+        for (const m of out.more ?? []) {
+          const part: Attachment = {
+            id: nextAttachmentId(),
+            kind: "document",
+            name: m.name,
+            media_type: m.media_type,
+            data: m.data,
+            label: convertedLabel(m.name, m.via, m.count),
+            ...(m.source_sha256 ? { source_sha256: m.source_sha256 } : {}),
+            ...(m.via === "pdf" && m.count ? { pages: m.count } : {}),
+          };
+          addAttachment(chatKey, part);
+          stashLong(chatKey, part);
+          parts.push(part.id);
+        }
+        if (parts.length) partsOf.set(chip.id, parts);
+      }
     } catch (e) {
       removeAttachment(chatKey, chip.id);
       settledWhileOut.set(chip.id, null);
