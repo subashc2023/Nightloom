@@ -103,6 +103,12 @@
    body in CSS px and sets .narrow (view ≤ 760 px) and .tiny (≤ 480 px) instead. */
 .h9-stage.narrow .h9-grid { grid-template-columns: minmax(0, 1fr); }
 .h9-stage.narrow .h9-wide { display: none !important; }
+/* Item 874: a short view (under 400 px tall: a 600 px window with the reply strip open) — a column holding two panels
+   scrolls as a whole and each panel takes its own height, so Needs you never shrinks to a line and Handled never runs
+   past the view's edge under the reply strip. */
+.h9-stage.short .h9-col:has(> .h9-panel + .h9-panel) { overflow: hidden auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
+.h9-stage.short .h9-col:has(> .h9-panel + .h9-panel) > .h9-panel { flex: none; min-height: auto; }
+.h9-stage.short .h9-col:has(> .h9-panel + .h9-panel) > .h9-panel > .h9-pb { overflow: visible; }
 .h9-stage.tiny .h9-grid { display: flex; flex-direction: column; overflow-y: auto; }
 .h9-stage.tiny .h9-view { inset: 8px; }
 .h9-stage.tiny .h9-row { flex-direction: column; }

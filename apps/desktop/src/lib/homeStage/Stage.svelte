@@ -130,6 +130,11 @@
   const secondTask = $derived(second ? taskOf(second.id) : undefined);
   // What .narrow and .tiny are set from: one view's width (half the stage when split).
   const oneW = $derived(secondTask ? (viewW - 10) / 2 : viewW);
+  // Item 874: the view's height (the body less its 10 px insets). A short view (a 600 px window with the reply strip
+  // open) cannot fit a column's two panels at their floors — Watch's Needs you shrank to a line and Handled ran under
+  // the strip — so .short lets such a column scroll as a whole, each panel at its own height (stage.css).
+  let bodyH = $state(800);
+  const short = $derived(bodyH - 20 < 400);
 
   // A new send opens the strip again (he closed it on an older message).
   $effect(() => {
@@ -200,7 +205,7 @@
   }
 </script>
 
-<div class="h9-stage real" class:classic={classic()} class:blank class:narrow={oneW <= 760} class:tiny={oneW <= 480} data-home-stage bind:this={rootEl}>
+<div class="h9-stage real" class:classic={classic()} class:blank class:narrow={oneW <= 760} class:tiny={oneW <= 480} class:short data-home-stage bind:this={rootEl}>
   <div class="h9-bar">
     <span class="h9-home"><i class="h9-dot" class:idle={!app.busy} aria-hidden="true"></i>HOME</span>
     {#key doing}<span class="h9-doing h9-stagein">{doing}</span>{/key}
@@ -232,7 +237,7 @@
     {:else if t.view === "run"}<Run task={t} />
     {:else if t.view === "research"}<Research task={t} />{/if}
   {/snippet}
-  <div class="h9-body" class:split={!!secondTask} bind:clientWidth={bodyW}>
+  <div class="h9-body" class:split={!!secondTask} bind:clientWidth={bodyW} bind:clientHeight={bodyH}>
     {#key focus.id}
       <div class="h9-view" class:chatview={focus.view === "chat"} in:viewIn|global={{ anchor: chips[focus.id] }} out:viewOut|global>
         {#if focus.view === "chat"}
