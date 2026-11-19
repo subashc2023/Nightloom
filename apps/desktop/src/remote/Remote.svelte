@@ -125,7 +125,7 @@
   // Item 763 H8: Home, the phone's first screen.
   import HomeFirst from "./HomeFirst.svelte";
   import JobChatCard from "./JobChatCard.svelte";
-  import { parseRepeat } from "./jobs";
+  import { parseRepeat, parseWatch, type WatchPrefill } from "./jobs";
   import UsageLine from "./UsageLine.svelte";
   // Item 824: the Context and Plan card (design B, Dials) as a bottom sheet.
   import PlanDials from "../lib/PlanDials.svelte";
@@ -1759,6 +1759,13 @@
       openJobs(repeat);
       return;
     }
+    // Item 794: "keep this current: …" is a research watch — the form opens
+    // on the proposal; his words stay in the box until he saves it.
+    const watch = hasFeature(remote, "jobs") && sameHost ? parseWatch(text) : null;
+    if (watch) {
+      openJobs({ every: "", text: "", watch });
+      return;
+    }
     if (chatId === null) {
       await sendNew(text);
       return;
@@ -2427,8 +2434,8 @@
 
   /** Item 746: "repeat every …" read from the composer, for the Jobs
    *  sheet's form; null when the sheet was opened from the drawer. */
-  let jobPrefill = $state<{ every: string; text: string } | null>(null);
-  function openJobs(prefill: { every: string; text: string } | null = null) {
+  let jobPrefill = $state<{ every: string; text: string; watch?: WatchPrefill } | null>(null);
+  function openJobs(prefill: { every: string; text: string; watch?: WatchPrefill } | null = null) {
     drawer = false;
     jobPrefill = prefill;
     sheet = "jobs";
@@ -4003,6 +4010,7 @@
         {:else if sheet === "message" && menuOn && chatId}
           {@const target = rowTarget(events, menuOn.row)}
           <MessageMenu
+            listen={client ? client.listenSource() : undefined}
             chat={chatId}
             row={menuOn.row}
             part={menuOn.part}

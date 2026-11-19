@@ -156,6 +156,8 @@ pub fn push_is_a_row(note: &crate::push::Note) -> bool {
     use crate::push::What;
     match note.what {
         What::Scan => false,
+        // Item 794: the watch run's own `job_done` row carries its line.
+        What::Watch => false,
         What::Done | What::Failed => !note.chat.as_deref().is_some_and(is_job_run),
         // H5: a Start card's push; the card's own `route_waiting` row covers it.
         What::Approval => note.detail.as_deref() != Some(route::CARD_PUSH),
@@ -215,6 +217,7 @@ pub fn row_for_note(note: &crate::push::Note, at: DateTime<Utc>) -> FeedRow {
         What::SetAside | What::Unattended => "approval",
         What::Stuck => "stuck",
         What::Scan => "scan",
+        What::Watch => "job_done",
     };
     FeedRow {
         at,
@@ -526,6 +529,7 @@ pub fn scan_job(project: &str) -> crate::jobs::NewJob {
         from_chat: None,
         offset_min: 0,
         tz: None,
+        watch: None,
     }
 }
 

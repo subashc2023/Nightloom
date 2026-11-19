@@ -16,6 +16,10 @@
    *   the job to its trash file (its chat and past results stay).
    * - The form's half-typed words are kept (`jobs.ts`'s draft) until Save
    *   or Discard, whatever closes the sheet.
+   * - Item 794: New watch (or "keep this current: …" in a chat) makes a
+   *   research watch — the topic, the pages to check and the proposed
+   *   instructions and schedule, all editable before Save; each run appends
+   *   what changed to one note and pushes only when something did.
    */
   import { untrack } from "svelte";
   import { promptBox } from "./promptBox"; // Item 800: saved prompts after a `/`.
@@ -33,7 +37,12 @@
     lastText,
     nextText,
     offsetMin,
+    proposeWatch,
     readJobDraft,
+    sourceLines,
+    watchLine,
+    WATCH_PRESETS,
+    type WatchPrefill,
     weekText,
     writeJobDraft,
     type Job,
@@ -42,8 +51,8 @@
 
   interface Props {
     api: JobsApi;
-    /** "repeat every …" read from the composer: the form opens filled. */
-    prefill?: { every: string; text: string } | null;
+    /** "repeat every …" (or item 794's "keep this current: …") read from the composer: the form opens filled. */
+    prefill?: { every: string; text: string; watch?: WatchPrefill } | null;
     /** Where a new job's chat is made: the project on the phone's screen. */
     project?: string | null;
     projectName?: string | null;
@@ -65,17 +74,35 @@
   let confirm = $state<null | "delete" | "approve">(null);
 
   const kept = untrack(() => prefill) ? null : readJobDraft();
+  // Item 794: a watch from the composer opens on the proposal.
+  const proposed = untrack(() => (prefill?.watch ? proposeWatch(prefill.watch) : null));
   let adding = $state(untrack(() => prefill !== null) || kept !== null);
-  let every = $state(untrack(() => prefill?.every) ?? kept?.every ?? "");
-  let text = $state(untrack(() => prefill?.text) ?? kept?.text ?? "");
+  let kind = $state<"job" | "watch">(proposed || kept?.watch ? "watch" : "job");
+  let every = $state(proposed?.every ?? untrack(() => prefill?.every) ?? kept?.every ?? "");
+  let text = $state(proposed?.text ?? untrack(() => prefill?.text) ?? kept?.text ?? "");
   let title = $state(kept?.title ?? "");
+  let topic = $state(untrack(() => prefill?.watch?.topic) ?? kept?.watch?.topic ?? "");
+  let sources = $state(proposed?.sources ?? kept?.watch?.sources ?? "");
+  /** The instructions as last proposed: while he has not changed them, they follow the topic. */
+  let proposal = proposed?.text ?? "";
+  function topicChanged() {
+    if (text.trim() === "" || text === proposal) {
+      proposal = topic.trim() ? proposeWatch({ topic: topic.trim(), sources: [] }).text : "";
+      text = proposal;
+    }
+  }
+  function startNew(k: "job" | "watch") {
+    kind = k;
+    adding = true;
+    if (k === "watch" && !every.trim()) every = "every morning";
+  }
   let formProblem = $state<string | null>(null);
   const fromComposer = untrack(() => prefill !== null);
 
   $effect(() => {
     // The draft follows every keystroke; the composer's own words are the
     // composer's draft, not this one's.
-    if (!fromComposer) writeJobDraft(adding ? { every, text, title } : null);
+    if (!fromComposer) writeJobDraft(adding ? { every, text, title, watch: kind === "watch" ? { topic, sources } : null } : null);
   });
 
   function said(e: unknown): string {
@@ -108,13 +135,25 @@
 
   async function save() {
     formProblem = null;
+    const watching = kind === "watch";
+    if (watching && !topic.trim()) return void (formProblem = "Say what to keep current — a topic or a question.");
     if (!every.trim()) return void (formProblem = "Say how often — “every morning”, “every 2 hours”.");
-    if (!text.trim()) return void (formProblem = "Write the message it repeats.");
+    if (!text.trim()) return void (formProblem = watching ? "Write what each run should look for." : "Write the message it repeats.");
     busy = "new";
     try {
-      await api.jobNew({ every, text, title: title.trim() || undefined, project, from_chat: fromChat, offset_min: offsetMin(), tz: phoneTz() });
+      await api.jobNew({
+        every,
+        text,
+        title: title.trim() || undefined,
+        project,
+        from_chat: fromChat,
+        offset_min: offsetMin(),
+        tz: phoneTz(),
+        ...(watching ? { watch: { topic: topic.trim(), sources: sourceLines(sources) } } : {}),
+      });
       adding = false;
-      every = text = title = "";
+      every = text = title = topic = sources = "";
+      kind = "job";
       writeJobDraft(null);
       if (fromComposer) onmade?.();
       await refresh();
@@ -127,7 +166,8 @@
 
   function discard() {
     adding = false;
-    every = text = title = "";
+    every = text = title = topic = sources = "";
+    kind = "job";
     formProblem = null;
     writeJobDraft(null);
   }
@@ -154,30 +194,47 @@
 <div class="jb-head">
   <span class="jb-title">Jobs</span>
   {#if !adding}
-    <button class="jb-link" data-act="job-new" onclick={() => (adding = true)}>New job</button>
+    <span>
+      <button class="jb-link" data-act="watch-new" onclick={() => startNew("watch")}>New watch</button>
+      <button class="jb-link" data-act="job-new" onclick={() => startNew("job")}>New job</button>
+    </span>
   {/if}
 </div>
 {#if homeLine}<p class="jb-note" data-home-today>{homeLine}</p>{/if}
 
 {#if adding}
-  <div class="jb-form" data-job-form>
+  <div class="jb-form" data-job-form data-kind={kind}>
+    {#if kind === "watch"}
+      <!-- Item 794: a research watch keeps one note current. -->
+      <p class="jb-form-title">Research watch</p>
+      <label class="jb-label" for="jb-topic">Keep this current</label>
+      <input id="jb-topic" class="jb-input" bind:value={topic} oninput={topicChanged} placeholder="A topic or a question" autocomplete="off" />
+      <label class="jb-label" for="jb-sources">Pages to check each run (one per line, optional)</label>
+      <textarea id="jb-sources" class="jb-input" rows="2" bind:value={sources} placeholder="https://…" autocapitalize="off"></textarea>
+      <p class="jb-note">Every run also checks the literature (OpenAlex and arXiv, open indexes of papers) and the news.</p>
+    {/if}
     <label class="jb-label" for="jb-every">Repeat</label>
     <input id="jb-every" class="jb-input" bind:value={every} placeholder="every morning" autocapitalize="off" autocomplete="off" />
     <div class="jb-chips">
-      {#each EVERY_PRESETS as p (p)}
+      {#each kind === "watch" ? WATCH_PRESETS : EVERY_PRESETS as p (p)}
         <button class="jb-chip" class:on={every.trim().toLowerCase() === p.toLowerCase()} onclick={() => (every = p)}>{p.replace(/^every /, "")}</button>
       {/each}
     </div>
-    <label class="jb-label" for="jb-text">The message it sends each time</label>
-    <textarea id="jb-text" class="jb-input" rows="3" use:promptBox bind:value={text} placeholder="Check CI on main and tell me what failed"></textarea>
+    <label class="jb-label" for="jb-text">{kind === "watch" ? "What each run looks for" : "The message it sends each time"}</label>
+    <textarea id="jb-text" class="jb-input" rows={kind === "watch" ? 4 : 3} use:promptBox bind:value={text} placeholder={kind === "watch" ? "Proposed from the topic" : "Check CI on main and tell me what failed"}></textarea>
     <label class="jb-label" for="jb-name">Name (optional)</label>
-    <input id="jb-name" class="jb-input" bind:value={title} placeholder="From the message" />
+    <input id="jb-name" class="jb-input" bind:value={title} placeholder={kind === "watch" ? "From the topic" : "From the message"} />
+    {#if kind === "watch"}
+      <p class="jb-note">
+        Each run appends a dated “what changed” entry to one note in {projectName ?? "your notes"} — earlier entries are never rewritten — and every new claim carries a link the run opened. A run that finds nothing writes one line and sends no notification; one that finds something sends you its first line.
+      </p>
+    {/if}
     <p class="jb-note">
       It runs on {where} in its own chat{projectName ? ` in ${projectName}` : ""}, read-only: it can read, search and use the web, not edit files or run commands — until you approve it, once or always. Each run spends some of the weekly limit; the list shows how much.
     </p>
     {#if formProblem}<p class="jb-problem" role="alert">{formProblem}</p>{/if}
     <div class="jb-row">
-      <button class="jb-btn primary" data-act="job-save" disabled={busy === "new"} onclick={save}>{busy === "new" ? "Saving…" : "Save job"}</button>
+      <button class="jb-btn primary" data-act="job-save" disabled={busy === "new"} onclick={save}>{busy === "new" ? "Saving…" : kind === "watch" ? "Start watch" : "Save job"}</button>
       <button class="jb-btn" data-act="job-discard" onclick={discard}>Discard</button>
     </div>
   </div>
@@ -188,7 +245,7 @@
 {#if jobs === null && !problem}
   <p class="jb-note">Reading the jobs…</p>
 {:else if jobs && jobs.length === 0 && !adding}
-  <p class="jb-note">No jobs yet. Make one here, or type “repeat every morning: …” in any chat.</p>
+  <p class="jb-note">No jobs yet. Make one here, or type “repeat every morning: …” or “keep this current: …” in any chat.</p>
 {/if}
 
 {#each jobs ?? [] as j (j.id)}
@@ -196,6 +253,7 @@
     <button class="jb-main" aria-expanded={open === j.id} onclick={() => ((open = open === j.id ? null : j.id), (confirm = null))}>
       <span class="jb-name">{j.title}</span>
       <span class="jb-badge" class:write={!j.read_only} class:always={j.approval === "always"}>{approvalBadge(j)}</span>
+      {#if j.watch}<span class="jb-line" data-watch>{watchLine(j)}</span>{/if}
       <span class="jb-line">{everyText(j)}</span>
       <span class="jb-line" class:live={j.running !== null} class:warn={!j.running && !j.paused && j.note !== null}>{nextText(j)}</span>
       <span class="jb-line">{lastText(j)}</span>
@@ -211,10 +269,20 @@
     {#if open === j.id}
       <div class="jb-detail">
         {#if j.last}<p class="jb-summary">{j.last.summary}</p>{/if}
-        <p class="jb-label">The message</p>
+        {#if j.watch}
+          <p class="jb-label">Keeps current</p>
+          <p class="jb-text">{j.watch.topic}</p>
+          {#if j.watch.sources.length}
+            <p class="jb-label">Pages it checks</p>
+            <p class="jb-text">{j.watch.sources.join("\n")}</p>
+          {/if}
+          <p class="jb-label">Its note</p>
+          <p class="jb-text">{j.watch.note} in {j.project ? "the project's notes" : "the watch folder"}</p>
+        {/if}
+        <p class="jb-label">{j.watch ? "What each run looks for" : "The message"}</p>
         <p class="jb-text">{j.text}</p>
         {#if confirm === "delete"}
-          <p class="jb-ask">Delete this job? It stops running. Its chat and past results stay.</p>
+          <p class="jb-ask">Delete this {j.watch ? "watch" : "job"}? It stops running. Its chat{j.watch ? ", its note" : ""} and past results stay.</p>
           <div class="jb-row">
             <button class="jb-btn danger" data-act="job-delete-yes" disabled={busy === j.id} onclick={() => act(j, () => api.jobDelete(j.id))}>Delete</button>
             <button class="jb-btn" onclick={() => (confirm = null)}>Keep it</button>
@@ -251,6 +319,11 @@
   .jb-title {
     font-weight: 600;
     font-size: 17px;
+  }
+  .jb-form-title {
+    font-weight: 600;
+    font-size: 15px;
+    margin: 0;
   }
   .jb-link {
     background: none;

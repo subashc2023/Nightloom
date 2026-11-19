@@ -21,6 +21,7 @@
 //! `bin/voice-setup.sh` fetches) or on `PATH`; [`Setup::find`] says `None`
 //! when either half is missing, and the host then reports no voice.
 
+pub mod listen;
 pub mod session;
 pub mod split;
 pub mod stt;
@@ -201,12 +202,18 @@ impl Setup {
     }
 }
 
+/// `name` on `PATH`, then in Homebrew's two folders: an app opened from the
+/// Finder gets a bare `PATH` without them (review of item 801, 2026-11-18:
+/// `whisper-server` here is Homebrew's, and Listen needs the whole setup).
 fn on_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|d| d.join(name))
-            .find(|p| p.is_file())
-    })
+    let listed: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default();
+    listed
+        .into_iter()
+        .chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from))
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
 }
 
 /// What `/api/state` says about voice, so the page knows whether to offer

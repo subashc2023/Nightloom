@@ -361,7 +361,7 @@ pub fn needs_from(
             }
             What::Question => out.push(Need::Question(label)),
             What::Stuck => out.push(Need::Stuck(label)),
-            What::Changes | What::Done | What::Failed | What::Limit | What::Scan => {}
+            What::Changes | What::Done | What::Failed | What::Limit | What::Scan | What::Watch => {}
         }
     }
     if pending > 0

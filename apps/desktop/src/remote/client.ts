@@ -5,6 +5,7 @@
  * while the Mac is unreachable. Nothing here touches the DOM, so all of it
  * is under `client.test.ts`; `Remote.svelte` is the screen over it.
  */
+import type { Source } from "../lib/listen";
 import type { HomeRoute, RoutePick, RoutesReply } from "../lib/homeRoutes";
 import type { HomeSource, SourceId } from "../lib/homeSources";
 import type { Job, JobPatch, JobsReply, NewJob } from "./jobs";
@@ -876,6 +877,42 @@ export class Client {
     images?: { data: string; kind: "paste" }[];
   }): Promise<FeedbackSent> {
     return (await this.call("/feedback", { method: "POST", body: JSON.stringify(body) })).json();
+  }
+
+  /** Item 801: `text` read aloud by the host's Piper voice, one WAV file;
+   *  `brief` first rewrites it for the ear (its words come back too). */
+  async listen(text: string, brief: boolean): Promise<{ blob: Blob; words?: string }> {
+    const r = await this.call("/listen", { method: "POST", body: JSON.stringify({ text, brief }) });
+    const raw = r.headers.get("x-brief-words");
+    let words: string | undefined;
+    if (raw) {
+      try {
+        words = decodeURIComponent(raw);
+      } catch {
+        words = undefined;
+      }
+    }
+    return { blob: await r.blob(), words };
+  }
+
+  /** Item 862: the Brief's words alone, then read a part at a time. */
+  async listenBrief(text: string): Promise<string> {
+    const r = (await (await this.call("/listen/brief", { method: "POST", body: JSON.stringify({ text }) })).json()) as { words?: string };
+    if (!r.words?.trim()) throw new Error("the Brief came back empty");
+    return r.words;
+  }
+
+  /** Item 862: part `i` of `text` read aloud, and how many parts there are
+   *  (`x-listen-parts`; a host older than 862 sends the whole file, one part). */
+  async listenPart(text: string, i: number): Promise<{ bytes: ArrayBuffer; parts: number }> {
+    const r = await this.call("/listen", { method: "POST", body: JSON.stringify({ text, part: i }) });
+    const parts = Number(r.headers.get("x-listen-parts"));
+    return { bytes: await r.arrayBuffer(), parts: Number.isFinite(parts) && parts > 0 ? parts : 1 };
+  }
+
+  /** Item 862: this host as Listen's source. */
+  listenSource(): Source {
+    return { brief: (t) => this.listenBrief(t), part: (t, i) => this.listenPart(t, i) };
   }
 
   /** Item 820: a picture or a video a reply names, read by the Mac under

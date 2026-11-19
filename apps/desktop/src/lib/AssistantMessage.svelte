@@ -73,6 +73,9 @@
   import AskAnswered from "./AskAnswered.svelte";
   import Icon from "./Icon.svelte";
   import CopyButton from "./CopyButton.svelte";
+  import ListenButton from "./ListenButton.svelte";
+  import { here as listenHere } from "./listenHere";
+  import { textId } from "./listen";
   import { COPIED_MS } from "./copyIcon";
   import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
   import { removeTip } from "./removeAsk";
@@ -133,6 +136,9 @@
       .map((s) => s.text)
       .join("\n\n");
   }
+  /** Item 801: where Listen keeps this reply's place — its words' own id,
+   *  so the same reply keeps its place in the chat and in an aside. */
+  const listenId = $derived(textId(textOf()));
   let copied = $state(false);
   async function copy(): Promise<void> {
     try {
@@ -1414,6 +1420,8 @@
     {@const share = size ? shareOf(size.tokens, limit) : null}
     <div class="footer">
       <CopyButton {copied} label="Copy this reply" onclick={() => void copy()} />
+      <!-- Item 801: this reply read aloud, or its Brief. -->
+      <ListenButton kind="reply" id={listenId} text={textOf} source={listenHere} />
       {#if onretry}
         <!-- Retry (item 333): the prompt again, in a fork from it; this
              reply stays where it is, a version (‹ ›) away. -->
