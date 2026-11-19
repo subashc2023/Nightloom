@@ -181,7 +181,11 @@ mod tests {
             fs::write(dir.join(format!(".cache/{i}.bin")), b"x").unwrap();
         }
         std::thread::sleep(Duration::from_millis(1200));
-        assert!(seen.lock().unwrap().is_empty(), "{:?}", seen.lock().unwrap());
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "{:?}",
+            seen.lock().unwrap()
+        );
         fs::write(dir.join("files/lectures/new.md"), "x").unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline && seen.lock().unwrap().is_empty() {
@@ -189,7 +193,10 @@ mod tests {
         }
         let batches = seen.lock().unwrap().clone();
         assert!(
-            batches.iter().flatten().any(|p| p == "files/lectures/new.md"),
+            batches
+                .iter()
+                .flatten()
+                .any(|p| p == "files/lectures/new.md"),
             "{batches:?}"
         );
         drop(w);
