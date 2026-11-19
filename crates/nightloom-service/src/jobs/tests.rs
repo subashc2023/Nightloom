@@ -1355,3 +1355,139 @@ async fn the_macs_home_rows_run_now_starts_under_the_guard_and_asks_past_it() {
     );
     let _ = std::fs::remove_dir_all(&cfg);
 }
+
+/// Item 794: a host whose jobs live under a home of their own, so a
+/// watch's note (`<home>/watch/…` for an unfiled job) lands in scratch.
+fn host_with_home() -> (Arc<FakeHost>, std::path::PathBuf) {
+    let home = std::env::temp_dir().join(format!("nightloom-794-{}", uuid::Uuid::new_v4()));
+    let (tx, _) = broadcast::channel(8);
+    let h = Arc::new(FakeHost {
+        jobs: Jobs::open_in(Jobs::dir_under(&home), None),
+        tx,
+        preps: Mutex::default(),
+        sends: Mutex::default(),
+        running: Mutex::default(),
+        refuse: Mutex::default(),
+        week: Mutex::new(Some(40)),
+        five: Mutex::new(Some(10)),
+        log: Mutex::default(),
+    });
+    (h, home)
+}
+
+fn watch_log(sent: &str, fetched: &[&str], reply: &str) -> Vec<SessionEvent> {
+    let calls: Vec<serde_json::Value> = fetched
+        .iter()
+        .enumerate()
+        .map(|(i, u)| serde_json::json!({"type": "tool_use", "id": format!("w{i}"), "name": "WebFetch", "input": {"url": u}}))
+        .collect();
+    serde_json::from_value(serde_json::json!([
+        {"event": "user_message", "text": sent, "at": "2026-11-16T16:00:00Z"},
+        {"event": "assistant_message", "model": "m", "blocks": calls,
+         "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}, "at": "2026-11-16T16:00:30Z"},
+        {"event": "assistant_message", "model": "m", "blocks": [{"type": "text", "text": reply}],
+         "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}, "at": "2026-11-16T16:01:00Z"},
+    ]))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_watch_appends_what_changed_to_its_note_and_says_nothing_new_in_one_line() {
+    let (h, home) = host_with_home();
+    let made = at(2026, 11, 16, 15, 0);
+    let v = h
+        .jobs
+        .create(
+            NewJob {
+                every: "every morning".into(),
+                text: "Keep my ACE note current.".into(),
+                offset_min: -480,
+                tz: Some("America/Los_Angeles".into()),
+                watch: Some(watch::Watch {
+                    topic: "concept extrapolation".into(),
+                    sources: vec!["https://aligned.ai/blog".into()],
+                    note: String::new(),
+                }),
+                ..NewJob::default()
+            },
+            made,
+        )
+        .unwrap();
+    assert!(
+        v.read_only,
+        "a watch is read-only: the host writes its note"
+    );
+    assert_eq!(v.job.title, "Watch — concept extrapolation");
+    assert_eq!(
+        v.job.watch.as_ref().unwrap().note,
+        "watch-concept-extrapolation.md"
+    );
+
+    // Run 1: the message is his words plus the block; its turn end is quiet.
+    let start = at(2026, 11, 16, 16, 0);
+    h.jobs.tick(h.as_ref(), start).await;
+    let sent = h.sends.lock().unwrap()[0].2.clone();
+    assert!(sent.starts_with("Keep my ACE note current."));
+    assert!(sent.contains(watch::WATCH_LINE));
+    assert!(sent.contains("The note is new"));
+    assert!(watch::is_quiet("job-chat"));
+    *h.running.lock().unwrap() = None;
+    *h.log.lock().unwrap() = watch_log(
+        &sent,
+        &["https://arxiv.org/abs/2511.00001"],
+        "A preprint extends it to images.\n- Lee extends it to images — https://arxiv.org/abs/2511.00001\n- A rumour — https://rumour.example/x",
+    );
+    h.jobs
+        .tick(h.as_ref(), start + Duration::seconds(120))
+        .await;
+    assert!(!watch::is_quiet("job-chat"));
+    let j = h.jobs.list().remove(0).job;
+    assert_eq!(
+        j.last.as_ref().unwrap().summary,
+        "A preprint extends it to images. (1 new, 1 unverified)"
+    );
+    let note = home.join("watch").join("watch-concept-extrapolation.md");
+    let one = std::fs::read_to_string(&note).unwrap();
+    assert!(one.contains("## 2026-11-16 8:00 AM — A preprint extends it to images."));
+    assert!(one.contains("2511.00001 `external`"));
+    assert!(one.contains("rumour.example/x `unverified: not opened in this run`"));
+
+    // Run 2: the note's entries go into the message; nothing new is one line.
+    let start2 = at(2026, 11, 17, 16, 0);
+    h.jobs.tick(h.as_ref(), start2).await;
+    let sent2 = h.sends.lock().unwrap()[1].2.clone();
+    assert!(sent2.contains("Lee extends it to images"));
+    *h.running.lock().unwrap() = None;
+    *h.log.lock().unwrap() = watch_log(&sent2, &[], "Nothing new.");
+    h.jobs
+        .tick(h.as_ref(), start2 + Duration::seconds(120))
+        .await;
+    let j = h.jobs.list().remove(0).job;
+    assert_eq!(j.last.as_ref().unwrap().summary, "Nothing new.");
+    let two = std::fs::read_to_string(&note).unwrap();
+    assert!(two.starts_with(&one), "earlier entries are never rewritten");
+    assert_eq!(&two[one.len()..], "- 2026-11-17 8:00 AM — Nothing new.\n");
+
+    // A patch changes the topic and pages; the note keeps its name.
+    let p = h
+        .jobs
+        .patch(
+            &j.id,
+            JobPatch {
+                watch: Some(watch::Watch {
+                    topic: "ACE".into(),
+                    sources: vec![],
+                    note: "other.md".into(),
+                }),
+                ..JobPatch::default()
+            },
+            start2,
+        )
+        .unwrap();
+    let w = p.job.watch.unwrap();
+    assert_eq!(
+        (w.topic.as_str(), w.note.as_str()),
+        ("ACE", "watch-concept-extrapolation.md")
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}

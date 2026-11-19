@@ -98,6 +98,8 @@ pub enum What {
     /// Home's morning scan landed (item 763): "Morning scan · 3 waiting",
     /// counts only.
     Scan,
+    /// A research watch found something new (item 794): its first line.
+    Watch,
 }
 
 impl What {
@@ -115,6 +117,7 @@ impl What {
             What::Unattended => "Needed your approval while you were away — set aside, not run",
             What::Stuck => "Looks stuck — Continue or Stop?",
             What::Scan => "Morning scan",
+            What::Watch => "Research watch — something changed",
         }
     }
 
@@ -513,6 +516,14 @@ impl Push {
                     ..Sent::default()
                 };
             }
+            // Item 794: a research watch's turn end — the run pushes its
+            // first line itself, and only when something changed.
+            if note.what == What::Done && crate::jobs::watch::is_quiet(&chat) {
+                return Sent {
+                    skipped: Some("a watch pushes only when something changed"),
+                    ..Sent::default()
+                };
+            }
             if note.what == What::Done
                 && inner.last.get(&chat).is_some_and(|(w, at)| {
                     matches!(w, What::Failed | What::Limit) && at.elapsed() < SAME_END
@@ -618,7 +629,7 @@ impl Push {
             name.to_string()
         };
         let body = match (note.what, note.detail.as_deref().map(str::trim)) {
-            (What::Stuck | What::Scan, Some(d)) if !d.is_empty() => {
+            (What::Stuck | What::Scan | What::Watch, Some(d)) if !d.is_empty() => {
                 d.chars().take(DETAIL_MAX).collect()
             }
             _ => note.what.words().to_string(),
