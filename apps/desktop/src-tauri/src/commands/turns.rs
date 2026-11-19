@@ -442,14 +442,16 @@ pub(crate) async fn send_agent(
     .await;
     // Item 872 (845 review finding 11): his stage clicks this message
     // carried are given back for Home's next look when the model never
-    // read it — the turn failed outright, or ended in an error or the
-    // plan's limit with no reply. A click shown twice beats one lost.
+    // read it — the turn failed outright, stopped in the council (no chair
+    // ran), or the CLI ended before it named a session (a Stop or a
+    // failure at its start). Once the CLI named a session the message is
+    // in Home's own history, which its next turn resumes: an error, the
+    // plan's limit or his Stop after that point leaves it there, and
+    // giving the clicks back would show them twice (872 review).
     if let Some((config, rows)) = &home_taken {
         let unread = match &end {
             Err(_) => true,
-            Ok(AgentTurnEnd::Done { outcome, .. }) => {
-                outcome.text.trim().is_empty() && (outcome.is_error || outcome.limit.is_some())
-            }
+            Ok(AgentTurnEnd::Done { outcome, .. }) => outcome.session_id.is_none(),
             Ok(AgentTurnEnd::StoppedInCouncil) => true,
         };
         if unread && let Err(e) = nightloom_service::home::tasks::requeue(config, rows) {
