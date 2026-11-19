@@ -1,7 +1,7 @@
 import { EditorView } from "@codemirror/view";
 import { pasteToComposeEvent, pasteToComposeKeydown } from "./pasteToCompose";
 import { isMac } from "./platform";
-import { typeToComposeKeydown } from "./typeToCompose";
+import { composerTarget, noteCardPress, typeToComposeKeydown } from "./typeToCompose";
 
 /**
  * ⌘L's ask (nightshift backlog 290): the open chat's composer takes the
@@ -22,14 +22,44 @@ export function summonComposer(): void {
  */
 let chatBoxes = 0;
 
+/** Every box mounted, the chat's and the asides' (item 853): the window
+ *  listens while there is one. */
+let allBoxes = 0;
+
 /** A chat composer mounting; the returned function is its unmount. */
 export function chatBoxMounted(): () => void {
   chatBoxes += 1;
-  if (chatBoxes === 1) listenForTyping(true);
+  const done = boxMounted();
   return () => {
     chatBoxes -= 1;
-    if (chatBoxes === 0) listenForTyping(false);
+    done();
   };
+}
+
+/**
+ * Any box mounting — an aside tab's or card's too (item 853, his "Asides
+ * dont automatically start typing … the way main chat does"): typing,
+ * Enter, ⌘V from outside go to the box `composerTarget` picks, so the
+ * listener runs while any box is drawn, not only the chat's.
+ */
+export function boxMounted(): () => void {
+  allBoxes += 1;
+  if (allBoxes === 1) listenForTyping(true);
+  return () => {
+    allBoxes -= 1;
+    if (allBoxes === 0) listenForTyping(false);
+  };
+}
+
+/**
+ * ⌘L's box (item 853): the box `composerTarget` picks — an aside card he
+ * is in or last pressed on, else the focused pane's box (an aside tab's
+ * when it is in front), else the chat's. ~~The chat's box, or an aside
+ * tab's only with no chat box drawn~~ (290).
+ */
+export function isSummonTarget(root: Element | null): boolean {
+  if (!root || typeof document === "undefined") return false;
+  return composerTarget(document)?.root === root;
 }
 
 /**
@@ -64,9 +94,11 @@ function listenForTyping(on: boolean): void {
   if (on) {
     window.addEventListener("keydown", onTyping, true);
     window.addEventListener("paste", pasteToComposeEvent, true);
+    window.addEventListener("pointerdown", noteCardPress, true);
   } else {
     window.removeEventListener("keydown", onTyping, true);
     window.removeEventListener("paste", pasteToComposeEvent, true);
+    window.removeEventListener("pointerdown", noteCardPress, true);
   }
 }
 

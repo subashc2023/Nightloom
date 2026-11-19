@@ -413,6 +413,11 @@
    *  panel it is the way back, not the end of the thread. */
   function cardKeys(e: KeyboardEvent): void {
     if (e.key !== "Escape") return;
+    // Item 853: an Escape the card's box already took (the slash menu, the
+    // ghost, the maths bar, the clip ring, an offer) closes only that, as
+    // in the chat's box — never the card too; nor one an input method
+    // takes to cancel a composition.
+    if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
     // Item 674: a question the thread's transcript is asking (drop this
     // edit?) takes the Escape itself — it must never close the card with
     // a half-typed edit in it.
