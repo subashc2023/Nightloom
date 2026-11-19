@@ -1,6 +1,17 @@
 // Item 879 (2:54 PM): a transparent PNG with black lines drew black-on-dark. `rasterBackingOf` decides paper.
 import { describe, expect, it } from "vitest";
-import fs from "node:fs";
+import replyMedia from "./ReplyMedia.svelte?raw";
+import fileView from "./FileView.svelte?raw";
+import noteMedia from "./NoteMedia.svelte?raw";
+import toolImages from "./ToolImagesView.svelte?raw";
+import attachmentView from "./AttachmentView.svelte?raw";
+import attachmentLayer from "./AttachmentLayer.svelte?raw";
+import userBubble from "./UserBubble.svelte?raw";
+import userBubbleClassic from "./UserBubbleClassic.svelte?raw";
+import noteEditor from "./noteEditor.ts?raw";
+
+// A .css ?raw import is empty under vitest; read the file (as svgBacking879.test.ts does).
+const fs = (await import(/* @vite-ignore */ "node:" + "fs")) as { readFileSync(u: URL, enc: string): string };
 import { rasterBackingOf } from "./rasterBacking";
 
 /** A w×h picture: `paint(x, y)` answers [r, g, b, a]. */
@@ -46,20 +57,10 @@ describe("rasterBackingOf (item 879)", () => {
   });
 
   it("is wired into every surface a picture shows on, and the paper is white", () => {
-    const read = (f: string) => fs.readFileSync(new URL(f, import.meta.url), "utf8");
-    for (const f of [
-      "./ReplyMedia.svelte",
-      "./FileView.svelte",
-      "./NoteMedia.svelte",
-      "./ToolImagesView.svelte",
-      "./AttachmentView.svelte",
-      "./AttachmentLayer.svelte",
-      "./UserBubble.svelte",
-      "./UserBubbleClassic.svelte",
-    ])
-      expect(read(f), f).toMatch(/use:paperIfDarkInk/);
-    expect(read("./ReplyMedia.svelte").match(/use:paperIfDarkInk/g)).toHaveLength(2);
-    expect(read("./noteEditor.ts")).toMatch(/paperIfDarkInk\(el\)/);
-    expect(read("./rasterBacking.css")).toMatch(/img\.nl-paper\s*{[^}]*background:\s*#fff/);
+    const files = { replyMedia, fileView, noteMedia, toolImages, attachmentView, attachmentLayer, userBubble, userBubbleClassic };
+    for (const [name, src] of Object.entries(files)) expect(src, name).toMatch(/use:paperIfDarkInk/);
+    expect(replyMedia.match(/use:paperIfDarkInk/g)).toHaveLength(2);
+    expect(noteEditor).toMatch(/paperIfDarkInk\(el\)/);
+    expect(fs.readFileSync(new URL("./rasterBacking.css", import.meta.url), "utf8")).toMatch(/img\.nl-paper\s*{[^}]*background:\s*#fff/);
   });
 });
