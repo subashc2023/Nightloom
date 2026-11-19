@@ -3279,6 +3279,31 @@ fn decide_holding_unheld(
     {
         return HookReply::deny(super::fork::report(&out));
     }
+    // Item 761: the second and later spawns of one type and model in this
+    // turn wait for the first's first reply, so they read its cached
+    // prompt; last of the checks, so a refused spawn never leads a group.
+    let line = if task {
+        let caller = if subagent { who } else { "" };
+        let note = super::stagger::hold(
+            dir,
+            input.transcript_path.as_deref(),
+            caller,
+            &input.tool_input,
+            alias,
+            &input.tool_use_id,
+            // Now, not the call's start: a `/usage` refresh above can take
+            // seconds, which would cut a follower's wait short.
+            chrono::Utc::now().timestamp_millis(),
+            super::stagger::HOLD_MAX_MS.min(hold_ms),
+            super::stagger::POLL_MS.min(poll_ms),
+        );
+        match (note, line) {
+            (Some(n), Some(l)) => Some(format!("{l}\n{n}")),
+            (n, l) => n.or(l),
+        }
+    } else {
+        line
+    };
     let brief = std::fs::read_to_string(dir.join(BRIEF_FILE)).unwrap_or_default();
     // What the helper is told of the budget (538, 539's table): under
     // "work to the cap" nothing — the brief goes in without its pacing

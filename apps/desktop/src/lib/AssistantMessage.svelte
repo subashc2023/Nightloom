@@ -1086,6 +1086,8 @@
                 {#if running && kind === "shell"}<BashPassing id={seg.call.id} input={seg.call.input} />{/if}
                 <!-- Item 649: and its last lines a moment after it ends, fading. -->
                 {#if remnant}<BashPassing id={seg.call.id} ended input={seg.call.input} />{/if}
+                <!-- Item 761: a spawn the hook holds for a sibling's first reply says so. -->
+                {#if running && isAgentCall(seg.call.name)}<BashPassing id={seg.call.id} />{/if}
                 <!-- An Agent call's row is a drag source (backlog 160): its
                      subagent's transcript as a tab, dropped on a strip or a
                      pane's half — live while it runs (guess pass 2026-09-25,

@@ -42,6 +42,7 @@ pub mod nested;
 pub mod own_browser;
 mod protocol;
 mod record;
+pub mod stagger;
 pub mod steer;
 mod translate;
 pub mod warm;
@@ -86,6 +87,8 @@ const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 /// How often a running chat turn looks at its budget ledger for a wake
 /// (item 538): a file read under its lock, nothing when no wake waits.
 const BUDGET_TICK: Duration = Duration::from_secs(2);
+/// How often the read loop looks for spawns held by the stagger (item 761).
+const HELD_TICK: Duration = Duration::from_millis(400);
 
 /// How long to keep reading after a kill (item 466, 2026-10-29): what the
 /// CLI wrote before it is already in the pipe; this is only the backstop
@@ -2681,6 +2684,11 @@ impl ClaudeCodeAgent {
         let mut bash_tails = bash_tail::BashTails::new();
         let mut tail_tick = tokio::time::interval(bash_tail::TICK);
         tail_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Item 761: the spawns the Agent hook holds for a sibling's first
+        // reply, shown on their rows as passing text while they wait.
+        let mut held_tick = tokio::time::interval(HELD_TICK);
+        held_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut held_shown: std::collections::BTreeSet<String> = Default::default();
 
         loop {
             // A subagent's end the main thread was not told of (406): the
@@ -2765,6 +2773,26 @@ impl ClaudeCodeAgent {
                                 // thread's next call, or the next look.
                                 budget::put_back(&dir, wakes);
                             }
+                        }
+                    }
+                    continue;
+                }
+                _ = held_tick.tick(), if budget_dir.is_some() => {
+                    if let Some(dir) = &budget_dir {
+                        let held = stagger::read_held(dir);
+                        for (id, h) in &held {
+                            if held_shown.insert(id.clone()) {
+                                on_event(TurnEvent::ToolOutput {
+                                    tool_use_id: id.clone(),
+                                    lines: vec![h.text.clone()],
+                                });
+                            }
+                        }
+                        let gone: Vec<String> =
+                            held_shown.iter().filter(|id| !held.contains_key(*id)).cloned().collect();
+                        for id in gone {
+                            held_shown.remove(&id);
+                            on_event(TurnEvent::ToolOutput { tool_use_id: id, lines: Vec::new() });
                         }
                     }
                     continue;
