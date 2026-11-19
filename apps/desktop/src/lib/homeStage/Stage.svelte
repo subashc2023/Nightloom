@@ -125,6 +125,8 @@
   // Split needs room for two views (each at least ~540 px); on a narrower stage it is off without forgetting his choice.
   const roomy = $derived(viewW >= 1090);
   const second = $derived(roomy ? secondOf({ focus: focus.id, split: fk.split } as FocusKept, row) : undefined);
+  // Item 874: whether there is anything to split with (a task tab besides the one in focus).
+  const canSplit = $derived(!!secondOf({ focus: focus.id, split: true } as FocusKept, row));
   const secondTask = $derived(second ? taskOf(second.id) : undefined);
   // What .narrow and .tiny are set from: one view's width (half the stage when split).
   const oneW = $derived(secondTask ? (viewW - 10) / 2 : viewW);
@@ -204,7 +206,8 @@
     {#key doing}<span class="h9-doing h9-stagein">{doing}</span>{/key}
     <span class="h9-grow"></span>
     <button class="ns-switch" class:on={fk.follow} aria-pressed={fk.follow} onclick={() => (fk.follow = !fk.follow)} use:tip={"Focus follows Home's tasks\nOnly after 10 s without your touch"}><i></i>Follow Home</button>
-    {#if roomy}<Btn small icon="cols" on={fk.split} tip={"Two live tasks side by side\nThe newest beside the one in focus"} onclick={() => (fk.split = !fk.split)}>Split</Btn>{/if}
+    <!-- Item 874: Split needs a second task to put beside this one; dimmed, and saying so, until there is one. -->
+    {#if roomy}<Btn small icon="cols" on={fk.split && canSplit} waits={!canSplit} tip={canSplit ? "Two live tasks side by side\nThe newest beside the one in focus" : "Needs a second task\nSplit wakes once Home starts one"} onclick={() => (fk.split = !fk.split)}>Split</Btn>{/if}
     {#if home.info?.scan_words}<span class="h9-ms ns-mono" use:tip={"The morning scan's schedule\nChange it in Settings → Home"}>scan {home.info.scan_words.toLowerCase()}</span>{/if}
   </div>
   <div class="h9-tabs" role="tablist">

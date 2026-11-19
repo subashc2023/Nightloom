@@ -12,7 +12,9 @@
   import { app, openRun } from "../../state.svelte";
   import { home, homeDone, markHomeSeen, checkReach, refreshSources, checkingOne, checkSource } from "../../home.svelte";
   import { clock, dateLabel, feedTag, reachName, reachStatusWords, type FeedRow } from "../../home";
-  import { needsNow } from "../../needsBoard.svelte";
+  import { needsNow, needs as board, replyTo, setDraft, dropEnded } from "../../needsBoard.svelte";
+  import { withNote } from "../../askQuestions";
+  import type { NeedRow } from "../../needsYou";
   import Panel from "../Panel.svelte";
   import Steps from "../Steps.svelte";
   import Btn from "../Btn.svelte";
@@ -23,7 +25,24 @@
   import { tip } from "../../tip";
   import { nudge } from "../tasks.svelte";
 
-  const ui = bag("watch", { open: null as string | null });
+  const ui = bag("watch", { open: null as string | null, reply: null as string | null });
+  // Item 874: what each Needs-you card's first button says and does — it opens the card's own reply box.
+  const REPLY_LABEL: Record<NonNullable<NeedRow["reply"]>, string> = { "answer-ask": "Answer", "answer-blocker": "Answer", message: "Reply", "follow-up": "Follow up" };
+  const REPLY_TIP: Record<NonNullable<NeedRow["reply"]>, string> = {
+    "answer-ask": "Answer here\nSent as your next message",
+    "answer-blocker": "Answer here\nFiled as the blocker's answer",
+    message: "Reply here\nSent in that chat",
+    "follow-up": "Something wrong?\nIt becomes a new item",
+  };
+  async function send(n: NeedRow, words: string) {
+    if (await replyTo(n, words)) {
+      setDraft(n.id, "");
+      if (ui.reply === n.id) ui.reply = null;
+    }
+  }
+  const focusOnce = (el: HTMLInputElement) => {
+    el.focus({ preventScroll: true });
+  };
   const toggle = (id: string) => (ui.open = ui.open === id ? null : id);
 
   const sources = $derived(sourceRows(home.reach, home.sources, reachName, reachStatusWords, clock));
@@ -93,16 +112,38 @@
       <Panel title="Needs you" sub={String(needs.length)} lock={needs.length > 0}>
         <div class="w-needs">
           {#each needs as n (n.id)}
+            {@const busy = !!board.sending[n.id]}
+            {@const draft = board.drafts[n.id] ?? ""}
             <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
             <div class="nd h9-open" class:isopen={ui.open === "n" + n.id} onclick={() => toggle("n" + n.id)}>
               <span class="nd-who">{n.tag} · {n.where}<span class="g"></span><span class="h9-chev">▸</span></span>
               <p class="nd-q">{n.title}</p>
               {#if ui.open === "n" + n.id}
-                <Detail rows={[["What", n.detail || n.title], ["Where", n.where]]} />
+                <Detail rows={[["What", n.detail || n.title], ...(n.detail && n.detail !== n.title ? ([["Chat", n.title]] as [string, string][]) : []), ["Where", n.where]]} />
+              {/if}
+              {#if ui.reply === n.id && n.reply}
+                <!-- Item 874: the answer is typed on the card itself (the Needs-you view's own reply, `replyTo`); the
+                     draft is the Needs-you view's kept draft — leaving the card, the view or the app keeps it. -->
+                <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+                <span class="w-answer" onclick={(e) => e.stopPropagation()}>
+                  {#if n.ask && n.ask.options.length}
+                    <span class="nd-opts">{#each n.ask.options as o (o)}<Btn small disabled={busy} tip={"Send this answer\nWhat you typed goes with it"} onclick={() => void send(n, withNote(o, draft))}>{o}</Btn>{/each}</span>
+                  {/if}
+                  <span class="nd-reply">
+                    <input placeholder={n.replyHint} aria-label={`${n.replyHint} — ${n.title}`} value={draft} disabled={busy} use:focusOnce oninput={(e) => setDraft(n.id, e.currentTarget.value)} onkeydown={(e) => { if (e.key === "Enter" && !e.isComposing) void send(n, e.currentTarget.value); else if (e.key === "Escape") ui.reply = null; }} />
+                    <Btn kind="send" small disabled={busy || !draft.trim()} onclick={() => void send(n, draft)}>{busy ? "Sending…" : "Send"}</Btn>
+                  </span>
+                </span>
               {/if}
               <span class="h9-acts">
-                <Btn kind="send" icon="reply" small tip={"Opens the Needs-you view\nYour answer is typed there"} onclick={() => (app.showNeeds = true)}>Answer</Btn>
-                {#if n.chat}<Btn small icon="chat" onclick={() => void openRun({ session: n.chat!, project: n.project, onScreen: false })}>Open chat</Btn>{/if}
+                {#if n.reply}
+                  <Btn kind="send" icon="reply" small on={ui.reply === n.id} tip={REPLY_TIP[n.reply]} onclick={() => (ui.reply = ui.reply === n.id ? null : n.id)}>{REPLY_LABEL[n.reply]}</Btn>
+                {:else}
+                  <Btn kind="send" icon="reply" small tip={"Opens the Needs-you view\nEverything waiting on you"} onclick={() => (app.showNeeds = true)}>Open</Btn>
+                {/if}
+                {#if n.chat}<Btn small icon="chat" tip={"Opens this chat\nIn its own project"} onclick={() => void openRun({ session: n.chat!, project: n.project, onScreen: false })}>Open chat</Btn>{/if}
+                {#if (n.kind === "done" || n.kind === "failed") && n.chat}<Btn small icon="check" tip={"Seen — off this list\nThe chat is untouched"} onclick={() => dropEnded(n.chat!)}>Mark seen</Btn>{/if}
+                {#if draft && ui.reply !== n.id}<span class="nd-hint">draft kept — “{draft.length > 40 ? draft.slice(0, 40) + "…" : draft}”</span>{/if}
               </span>
             </div>
           {/each}
@@ -170,6 +211,10 @@
   .w-chk { flex: none; opacity: 0.55; transition: opacity 120ms; }
   .w-src:hover .w-chk, .w-src.isopen .w-chk, .w-chk:focus-within { opacity: 1; }
   .w-needs { display: flex; flex-direction: column; gap: 8px; }
+  .w-answer { display: flex; flex-direction: column; gap: 6px; cursor: default; }
+  .w-answer :global(.nd-reply) { flex-wrap: wrap; }
+  .w-answer :global(.nd-reply input) { flex: 1 1 140px; }
+  .h9-acts .nd-hint { align-self: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .w-feed { align-items: center; }
   .w-feed .w-main { gap: 2px; }
   .w-ft { min-width: 0; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
