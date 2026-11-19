@@ -20,6 +20,9 @@ import notesPanel from "./NotesPanel.svelte?raw";
 import tabStrip from "./TabStrip.svelte?raw";
 import tabStripClassic from "./TabStripClassic.svelte?raw";
 import notesSheet from "../remote/NotesSheet.svelte?raw";
+import searchPanel from "./SearchPanel.svelte?raw";
+import graphView from "./GraphView.svelte?raw";
+import welcomeClassic from "./WelcomeClassic.svelte?raw";
 
 const NOTE = "research/plan.md";
 
@@ -107,6 +110,25 @@ describe("item 867: every surface draws the cue on that state", () => {
     expect(notesSheet).toContain("{#if mark(scope, n.name)}{@render unsavedCue()}{/if}");
     expect(notesSheet).toContain("{#if mark(f.scope, FIXED_NOTES[f.scope]!)}{@render unsavedCue()}{/if}");
     expect(notesSheet).toContain('aria-label="Unsaved changes" title="Unsaved changes"');
+  });
+
+  it("search results: the ring beside a note group's name, with the hover", () => {
+    expect(searchPanel).toContain("{#if isUnsaved(app.noteDrafts, noteDraftKey(g.scope, g.name))}<span");
+    expect(searchPanel).toMatch(/class="unsaved"\s+role="img"\s+aria-label=\{UNSAVED_TIP\}\s+use:tip=\{UNSAVED_TIP\}/);
+    expect(searchPanel).toContain(':global(:where(:root:not([data-layout="classic"]))) .unsaved {');
+  });
+
+  it("graph: an unsaved vault note's node wears the ring; its hover says so", () => {
+    expect(graphView).toContain('return isUnsaved(app.noteDrafts, noteDraftKey("knowledge", name));');
+    expect(graphView).toMatch(/if \(unsavedNote\(n\.name\)\) \{[\s\S]*?ctx\.arc\(n\.x, n\.y, radius\(n\) \+ 3/);
+    expect(graphView).toContain("hovered && unsavedNote(hovered) ? `${hovered} · ${UNSAVED_TIP}` : hovered");
+    expect(graphView).toContain("use:tip={hoverWords");
+  });
+
+  it("Welcome's recent notes: the ring on the traveller, the words in its hover", () => {
+    expect(welcomeClassic).toContain("{#if isUnsaved(app.noteDrafts, noteDraftKey(t.scope, t.note.name))}<span");
+    expect(welcomeClassic).toContain("? `${t.note.name} · ${UNSAVED_TIP}` : t.note.name");
+    expect(welcomeClassic).toMatch(/class="unsaved"\s+role="img"\s+aria-label=\{UNSAVED_TIP\}/);
   });
 
   it("the hover words", () => {
