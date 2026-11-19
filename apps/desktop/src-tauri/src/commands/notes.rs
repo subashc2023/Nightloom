@@ -490,7 +490,7 @@ pub(crate) struct KnowledgeInfo {
 impl KnowledgeInfo {
     pub(crate) fn of(dir: PathBuf, is_default: bool) -> Self {
         Self {
-            notes: project::list_notes(&dir).len(),
+            notes: project::count_notes(&dir),
             exists: dir.is_dir(),
             alias: nightloom_service::tools::VAULT_ALIAS.to_string(),
             is_default,
