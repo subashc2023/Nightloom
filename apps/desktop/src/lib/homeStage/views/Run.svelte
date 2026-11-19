@@ -6,7 +6,6 @@
   //   should start, and the run controls proper, are 846's contract — batch 4). Open chat — kind A.
   //   Opening a step or a helper — kind A.
   import Icon from "../../Icon.svelte";
-  import { openRun } from "../../state.svelte";
   import Panel from "../Panel.svelte";
   import Steps from "../Steps.svelte";
   import Btn from "../Btn.svelte";
@@ -14,6 +13,7 @@
   import Loading from "../Loading.svelte";
   import { bag } from "../stageState.svelte";
   import { tell, type HomeTask } from "../tasks.svelte";
+  import { stageHost } from "../host";
   import { runOf, type RunStep, type Rows } from "../taskData";
 
   let { task }: { task: HomeTask } = $props();
@@ -44,7 +44,7 @@
   <div class="h9-col r-main">
     <Panel title={r.title || task.name} {sub} live={!ended && !ui.stop}>
       {#snippet tools()}
-        {#if r.chat}<Btn small icon="chat" tip={"Open the chat running this"} onclick={() => void openRun({ session: r.chat, project: r.project || null, onScreen: false })}>Open chat</Btn>{/if}
+        {#if r.chat}<Btn small icon="chat" tip={"Open the chat running this"} onclick={() => stageHost.now.openChat(r.chat, r.project || null)}>Open chat</Btn>{/if}
         {#if !ended}<Btn small kind={ui.stop ? "ghost" : "danger"} icon={ui.stop ? "revert" : "stop"} tip={ui.stop ? "Take back the stop" : "Stop after the step in hand\nHome reads this at its next look"} onclick={stop}>{ui.stop ? "Stopping · Undo" : "Stop"}</Btn>{/if}
       {/snippet}
       {#if r.steps.length === 0}<Loading label={task.doing || "Home is planning the run"} lines={2} />{/if}

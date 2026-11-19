@@ -5,18 +5,18 @@
   import { untrack } from "svelte";
   import Icon from "../Icon.svelte";
   import type { IconName } from "../icons";
-  import { app } from "../state.svelte";
   import { isScanMessage } from "../home";
   import Btn from "./Btn.svelte";
   import Detail from "./Detail.svelte";
   import { bag } from "./stageState.svelte";
-  import { stepsOf, type Ev } from "./steps";
+  import { stageHost } from "./host";
+  import { stepsOf } from "./steps";
 
   let { id }: { id: string } = $props();
   // svelte-ignore state_referenced_locally
   const ui = bag(`steps:${id}`, { open: {} as Record<string, boolean> });
-  const rows = $derived(stepsOf(app.events as unknown as Ev[], 3, isScanMessage));
-  const working = $derived(app.busy);
+  const rows = $derived(stepsOf(stageHost.now.events(), 3, isScanMessage));
+  const working = $derived(stageHost.now.busy());
 
   let box = $state<HTMLElement | null>(null);
   let stick = $state(true);

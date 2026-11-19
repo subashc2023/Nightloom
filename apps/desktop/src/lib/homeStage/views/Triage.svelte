@@ -184,6 +184,8 @@
   .g-safe :global(svg) { flex: none; transform: translateY(1px); color: var(--accent-ink); }
   /* A narrow stage (Stage.svelte's .narrow, measured in CSS px — never a container query, which WebKit reads × the page zoom). */
   :global(.h9-stage.narrow) .g-piles { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(190px, 1fr); overflow: hidden auto; padding: 4px; scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
+  /* A tiny stage (the phone, 845 batch 3): one pile under another, each as tall as its cards; the page scrolls. */
+  :global(.h9-stage.tiny) .g-piles { grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto; overflow: visible; }
 
   .g-gm { margin: 4px 0 2px; align-items: center; }
 </style>

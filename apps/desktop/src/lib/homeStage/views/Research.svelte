@@ -7,8 +7,6 @@
   //   cursor in the message box. Hover, opening a row — kind A.
   import { flip } from "svelte/animate";
   import Icon from "../../Icon.svelte";
-  import * as api from "../../api";
-  import { addToast } from "../../state.svelte";
   import Panel from "../Panel.svelte";
   import Steps from "../Steps.svelte";
   import Btn from "../Btn.svelte";
@@ -16,6 +14,7 @@
   import Loading from "../Loading.svelte";
   import { bag } from "../stageState.svelte";
   import { tell, type HomeTask } from "../tasks.svelte";
+  import { stageHost } from "../host";
   import { noteName, researchNote, researchOf, type ResearchSource } from "../taskData";
 
   let { task }: { task: HomeTask } = $props();
@@ -50,12 +49,12 @@
     if (saving || ui.saved) return;
     saving = true;
     try {
-      const taken = (await api.listNotes("project").catch(() => [])).map((n) => n.name);
+      const taken = await stageHost.now.noteNames();
       const name = noteName(`Research — ${r.question || task.name}`, taken);
-      await api.saveNote("project", name, researchNote(r, ui.dropped));
+      await stageHost.now.saveNote(name, researchNote(r, ui.dropped));
       ui.saved = name;
     } catch (e) {
-      addToast(`Could not keep it as a note — ${String(e)}`);
+      stageHost.now.toast(`Could not keep it as a note — ${String(e)}`);
     } finally {
       saving = false;
     }

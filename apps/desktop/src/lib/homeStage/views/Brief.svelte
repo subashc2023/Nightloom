@@ -5,20 +5,17 @@
   // (the web view's speech; it stops when he leaves the view, and the button is not drawn where there is no voice).
   // "Keep as a note" writes the page into Home's notes as a new file (never over one he has); once kept, it says so.
   import { onDestroy } from "svelte";
-  import * as api from "../../api";
-  import { app, addToast } from "../../state.svelte";
-  import { clock, dateLabel, factsWords, isScanMessage, scanFacts } from "../../home";
-  import { home } from "../../home.svelte";
+  import { clock, dateLabel, factsWords, scanFacts } from "../../home";
   import Panel from "../Panel.svelte";
   import Btn from "../Btn.svelte";
   import Steps from "../Steps.svelte";
   import Loading from "../Loading.svelte";
   import { bag, reveal } from "../stageState.svelte";
-  import { briefOf, briefNote, speakable } from "../brief";
+  import { briefNote, speakable } from "../brief";
+  import { stageHost } from "../host";
   import { noteName } from "../taskData";
-  import type { Ev } from "../steps";
 
-  const brief = $derived(briefOf(app.events as unknown as Ev[], isScanMessage, app.busy));
+  const brief = $derived(stageHost.now.brief());
   const ui = bag("brief", { open: {} as Record<string, boolean>, touched: false, saved: {} as Record<string, string> });
   const isOpen = (key: string, i: number) => (ui.touched ? !!ui.open[key] : i === 0);
   function toggle(key: string, i: number) {
@@ -57,12 +54,12 @@
     if (!brief || saving || savedAs) return;
     saving = true;
     try {
-      const taken = (await api.listNotes("project").catch(() => [])).map((n) => n.name);
+      const taken = await stageHost.now.noteNames();
       const name = noteName(`Morning brief — ${when ? dateLabel(brief.at!) : "today"}`, taken);
-      await api.saveNote("project", name, briefNote(brief, when));
+      await stageHost.now.saveNote(name, briefNote(brief, when));
       ui.saved[brief.at ?? ""] = name;
     } catch (e) {
-      addToast(`Could not keep it as a note — ${String(e)}`);
+      stageHost.now.toast(`Could not keep it as a note — ${String(e)}`);
     } finally {
       saving = false;
     }
@@ -86,7 +83,7 @@
         {/if}
       {/snippet}
       {#if !brief}
-        <span class="h9-dim b-none">No scan in this chat yet — the morning scan runs {home.info?.scan_words?.toLowerCase() ?? "every day at 8:00 AM"}, and its page lands here.</span>
+        <span class="h9-dim b-none">No scan in this chat yet — the morning scan runs {stageHost.now.scanWords()?.toLowerCase() ?? "every day at 8:00 AM"}, and its page lands here.</span>
       {:else if brief.sections.length === 0}
         <Loading label={brief.writing ? "Home is writing today's page" : "The scan ended without a page"} lines={4} />
       {:else}
@@ -102,7 +99,7 @@
   </div>
   <div class="h9-col h9-wide">
     {#if read}<Panel title="What the scan read"><span class="b-read">{read}</span></Panel>{/if}
-    <Panel title="Home's steps" live={app.busy} flush><Steps id="brief" /></Panel>
+    <Panel title="Home's steps" live={stageHost.now.busy()} flush><Steps id="brief" /></Panel>
   </div>
 </div>
 

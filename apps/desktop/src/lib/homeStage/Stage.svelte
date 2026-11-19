@@ -29,6 +29,11 @@
   import { def, keep, stage, type ViewId } from "./stageState.svelte";
   import { lastExchange, type Ev } from "./steps";
   import { tabsFor, focusOf, type Tab } from "./tabs";
+  import { setStageHost } from "./host";
+  import { desktopHost } from "./desktopHost";
+
+  // The views ask the window for what they need (the phone's Home page sets its own host).
+  setStageHost(desktopHost);
 
   let { blank, children }: { blank: boolean; children: Snippet } = $props();
 
@@ -177,20 +182,7 @@
   .h9-chat { position: relative; height: 100%; display: flex; flex-direction: column; min-height: 0; }
   .h9-strip { max-height: 132px; overflow-y: auto; }
   .h9-said-tx { white-space: pre-wrap; }
-  /* Classic (item 542's layout): the same stage in Classic's plain dress — no glows, no pulse, square tabs. */
-  .h9-stage.classic { --home: #7a63c7; --home-glow: none; }
-  .h9-stage.classic :global(.h9-dot) { animation: none; box-shadow: none; }
-  .h9-stage.classic :global(.h9-panel) { box-shadow: none; }
-  .h9-stage.classic :global(.jb) { box-shadow: none; text-shadow: none; }
-  .h9-stage.classic :global(.jb-scan), .h9-stage.classic :global(.bk) { display: none; }
+  /* Classic: the rules shared with the phone's stage are in stage.css (845 batch 3). */
   .h9-stage.classic .h9-home { letter-spacing: 0.08em; }
   .h9-stage.classic .h9-view.chatview { box-shadow: none; }
-  /* Classic, the task views (Timeline, To-do, Triage): the same marks without glows or moving scan lines. */
-  .h9-stage.classic :global(:is(.t-ev, .t-nowl, .t-now, .t-ask, .t-band, .d-box, .d-sub i, .g-card, .g-pile)) { box-shadow: none; }
-  .h9-stage.classic :global(:is(.d-beam, .g-read)) { display: none; }
-  .h9-stage.classic :global(.d-sub.on i) { animation: none; }
-  /* Classic, Browse, Run, Research: no glows, no sweeping link, no pulsing marks. */
-  .h9-stage.classic :global(:is(.r-node, .r-av, .s-src.hot, .s-claim.hot)) { box-shadow: none; }
-  .h9-stage.classic :global(.r-link.live::after) { display: none; }
-  .h9-stage.classic :global(.r-node.live .r-mark) { animation: none; }
 </style>

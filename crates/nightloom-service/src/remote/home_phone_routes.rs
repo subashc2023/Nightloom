@@ -9,6 +9,9 @@
 //! | `GET /home/scan` | today's scan page (`home/scans/<date>.md`), else the newest, with when it ran and, for a skipped scan, why |
 //! | `GET /home/held` | the held blockers of every Nightshift project (status `open`, `default: held`) |
 //! | `GET /shortcut/needs` | one plain sentence for Siri: "Three things need you: …" |
+//! | `GET /home/tasks` | the tasks on Home's stage (item 845: `home/tasks/<id>.json`, what Home's `update_task` wrote), oldest first |
+//! | `POST /home/tasks/event` | one click of his on a task view, `{task, view, line}`, for Home's next look (the Mac only) |
+//! | `POST /home/tasks/{id}/close` | his × on a task's tab: the tab goes, the work is not stopped (the Mac only) |
 //!
 //! Both hosts serve these from their own config folder
 //! ([`super::Host::home_config`]): the away server's copy is the synced
@@ -18,8 +21,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use axum::Json;
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Path as UrlPath, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -37,6 +41,9 @@ pub(super) fn router() -> Router<Arc<Shared>> {
         .route("/home/held", get(held))
         .route("/shortcut/needs", get(needs))
         .route("/home/today", get(today))
+        .route("/home/tasks", get(tasks))
+        .route("/home/tasks/event", post(task_event))
+        .route("/home/tasks/{id}/close", post(task_close))
 }
 
 /// The most feed rows the phone is sent.
@@ -173,6 +180,74 @@ async fn seen(State(shared): State<Arc<Shared>>) -> Response {
     let now = chrono::Utc::now();
     answer(
         home::mark_seen(&config, now).map(|()| serde_json::json!({ "seen_at": now.to_rfc3339() })),
+    )
+}
+
+// ---- item 845: Home's stage on the phone ------------------------------------
+
+/// `GET /home/tasks`: what Home's `update_task` wrote, oldest first (a done
+/// task older than a day is left out). A file read; no model.
+async fn tasks(State(shared): State<Arc<Shared>>) -> Response {
+    let config = match config(&shared) {
+        Ok(c) => c,
+        Err(r) => return *r,
+    };
+    answer(Ok::<_, String>(home::tasks::read(
+        &config,
+        chrono::Utc::now(),
+    )))
+}
+
+/// His clicks reach Home only on the Mac: the away server's copy of the
+/// folder is a synced one Home never reads, so a click there would be lost
+/// without a word. The phone says so instead.
+pub const STAGE_ON_THE_MAC: &str = "Home's stage answers only from the Mac — your click was not sent. Try again when the Mac is reachable.";
+
+fn mac_only(shared: &Shared) -> Result<(), Box<Response>> {
+    if shared.host.kind() == "mac" {
+        Ok(())
+    } else {
+        Err(Box::new(
+            (StatusCode::SERVICE_UNAVAILABLE, STAGE_ON_THE_MAC).into_response(),
+        ))
+    }
+}
+
+/// One click of his on a task view (a "kind B" control).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TaskEvent {
+    pub task: String,
+    pub view: String,
+    pub line: String,
+}
+
+/// `POST /home/tasks/event`: the line Home reads at its next look.
+async fn task_event(State(shared): State<Arc<Shared>>, Json(ev): Json<TaskEvent>) -> Response {
+    if let Err(r) = mac_only(&shared) {
+        return *r;
+    }
+    let config = match config(&shared) {
+        Ok(c) => c,
+        Err(r) => return *r,
+    };
+    answer(
+        home::tasks::record(&config, &ev.task, &ev.view, &ev.line, chrono::Utc::now())
+            .map(|()| serde_json::json!({ "ok": true })),
+    )
+}
+
+/// `POST /home/tasks/{id}/close`: his × on the tab. The work goes on.
+async fn task_close(State(shared): State<Arc<Shared>>, UrlPath(id): UrlPath<String>) -> Response {
+    if let Err(r) = mac_only(&shared) {
+        return *r;
+    }
+    let config = match config(&shared) {
+        Ok(c) => c,
+        Err(r) => return *r,
+    };
+    answer(
+        home::tasks::close(&config, &id, chrono::Utc::now())
+            .map(|()| serde_json::json!({ "ok": true })),
     )
 }
 

@@ -8,6 +8,7 @@ import stageSrc from "./Stage.svelte?raw";
 import watchSrc from "./views/Watch.svelte?raw";
 import briefSrc from "./views/Brief.svelte?raw";
 import browseSrc from "./views/Browse.svelte?raw";
+import desktopHostSrc from "./desktopHost.ts?raw";
 
 describe("browse", () => {
   it("reads the page, its fields and a hold; drops the wrong types", () => {
@@ -19,8 +20,14 @@ describe("browse", () => {
     expect(browseOf(null)).toMatchObject({ url: "", fields: [], hold: null });
   });
   it("shows the live picture only when the chat has the app's browser", () => {
-    expect(browseSrc).toContain('phase(session) !== "none"');
-    expect(browseSrc).toContain("<ClaudeBrowserView {session} />");
+    // 845 batch 3: the check and the picture are the host's (the Mac's window: desktopHost.ts); the phone has neither.
+    expect(desktopHostSrc).toContain('phase(s) !== "none"');
+    expect(desktopHostSrc).toContain("BrowserView: ClaudeBrowserView");
+    expect(browseSrc).toContain("<BrowserView {session} />");
+  });
+  it("draws the hold (kind C) in the main column when the stage is narrow, where the wide column is not drawn", () => {
+    expect(browseSrc).toContain('{#if b.hold}<div class="w-narrow">{@render holdCard()}</div>{/if}');
+    expect(browseSrc).toContain(":global(.h9-stage.narrow) .w-narrow { display: contents; }");
   });
 });
 

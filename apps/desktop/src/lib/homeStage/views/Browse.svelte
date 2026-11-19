@@ -7,9 +7,6 @@
   //   Allow once / Not now / I'll do it myself — kind C: an answer to the hold, kept here at once and told to Home.
   //   Undo on an answer — kind B. Opening a field — kind A.
   import Icon from "../../Icon.svelte";
-  import ClaudeBrowserView from "../../ClaudeBrowserView.svelte";
-  import { app } from "../../state.svelte";
-  import { phase, readStatus, startBrowsers } from "../../claudeBrowser.svelte";
   import Panel from "../Panel.svelte";
   import Steps from "../Steps.svelte";
   import Btn from "../Btn.svelte";
@@ -18,21 +15,18 @@
   import { bag } from "../stageState.svelte";
   import { tell, type HomeTask } from "../tasks.svelte";
   import { browseOf } from "../taskData";
+  import { stageHost } from "../host";
 
   let { task }: { task: HomeTask } = $props();
   const b = $derived(browseOf(task.data));
   // svelte-ignore state_referenced_locally
   const ui = bag(`task:${task.id}`, { answer: {} as Record<string, "yes" | "no" | "mine">, open: null as string | null });
-  const session = $derived(app.activeSessionId);
-  // The chat's browser status, read when the view opens and at each edge of a turn (events keep it between).
-  $effect(() => {
-    const s = session;
-    void app.busy;
-    if (!s) return;
-    void startBrowsers();
-    void readStatus(s);
-  });
-  const live = $derived(!!session && phase(session) !== "none");
+  // The chat's browser status, read when the view opens and at each edge of a turn (events keep it between). The live
+  // picture is the Mac's (the host's BrowserView, ClaudeBrowserView there); the phone draws the reported page.
+  $effect(() => stageHost.now.watchBrowser());
+  const session = $derived(stageHost.now.liveBrowser());
+  const live = $derived(!!session);
+  const BrowserView = stageHost.now.BrowserView;
   const answer = $derived(b.hold ? ui.answer[b.hold.id] : undefined);
   const WORDS = { yes: "Allowed once", no: "Not now — held", mine: "You'll do it yourself" } as const;
   function decide(v: "yes" | "no" | "mine") {
@@ -50,12 +44,23 @@
   const toggle = (id: string) => (ui.open = ui.open === id ? null : id);
 </script>
 
+{#snippet holdCard()}
+    <Panel title={answer ? WORDS[answer] : "Home is holding"} lock={!answer} keep>
+      <p class="w-hold">{holdWords}</p>
+      {#if !answer}
+        <span class="h9-acts"><Btn kind="send" icon="check" small onclick={() => decide("yes")}>Allow once</Btn><Btn small onclick={() => decide("no")}>Not now</Btn><Btn small onclick={() => decide("mine")}>I'll do it myself</Btn></span>
+      {:else}
+        <span class="h9-acts"><span class="ns-pill {answer === 'yes' ? 'done' : 'partial'}"><span class="dot"></span>Home reads this at its next look</span><Btn small icon="revert" tip={"Take back your answer\nHome asks again"} onclick={undo}>Undo</Btn></span>
+      {/if}
+    </Panel>
+{/snippet}
+
 <div class="h9-grid">
   <div class="h9-col">
     <Panel title="Home's browser" sub={live ? "live — the page Home sees" : b.site || "what Home reports"} live={task.state === "live"} flush>
       {#if task.why}<div class="h9-why" style="margin:6px 12px 0"><b>YOU ASKED</b><span>{task.why}</span></div>{/if}
-      {#if live && session}
-        <div class="w-live"><ClaudeBrowserView {session} /></div>
+      {#if live && session && BrowserView}
+        <div class="w-live"><BrowserView {session} /></div>
       {:else}
         <div class="w-chrome">
           <span class="w-url"><Icon name="lock" size={11} /><span>{b.url || "no page yet"}</span></span>
@@ -80,23 +85,18 @@
         </div>
       {/if}
     </Panel>
+    {#if b.hold}<div class="w-narrow">{@render holdCard()}</div>{/if}
   </div>
   <div class="h9-col h9-wide">
-    {#if b.hold}
-      <Panel title={answer ? WORDS[answer] : "Home is holding"} lock={!answer} keep>
-        <p class="w-hold">{holdWords}</p>
-        {#if !answer}
-          <span class="h9-acts"><Btn kind="send" icon="check" small onclick={() => decide("yes")}>Allow once</Btn><Btn small onclick={() => decide("no")}>Not now</Btn><Btn small onclick={() => decide("mine")}>I'll do it myself</Btn></span>
-        {:else}
-          <span class="h9-acts"><span class="ns-pill {answer === 'yes' ? 'done' : 'partial'}"><span class="dot"></span>Home reads this at its next look</span><Btn small icon="revert" tip={"Take back your answer\nHome asks again"} onclick={undo}>Undo</Btn></span>
-        {/if}
-      </Panel>
-    {/if}
+    {#if b.hold}{@render holdCard()}{/if}
     <Panel title="Home's steps" live={task.state === "live"} flush><Steps id={task.id} /></Panel>
   </div>
 </div>
 
 <style>
+  /* A narrow stage (and the phone) does not draw the wide column; the hold, kind C, is drawn in the main one there. */
+  .w-narrow { display: none; }
+  :global(.h9-stage.narrow) .w-narrow { display: contents; }
   .w-live { position: relative; flex: 1; min-height: 0; height: calc(100% - 4px); display: flex; flex-direction: column; }
   .w-chrome { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
   .w-url { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 10px; border-radius: 13px; background: var(--term); border: 1px solid var(--line2); font: 12px var(--mono); color: var(--ink2); }

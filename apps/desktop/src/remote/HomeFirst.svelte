@@ -70,6 +70,7 @@
     type NeedRow,
   } from "./homeFirst";
   import type { HostRole } from "./hosts";
+  import HomeStage from "./HomeStage.svelte";
 
   interface Props {
     client: Client;
@@ -99,6 +100,8 @@
 
   // Home covers the page's dock, so its notes show here.
   let msg = $state<string | null>(null);
+  /** Item 845: the stage's Watching tab is in focus (Home's own sections show); a task's tab draws its view instead. */
+  let watching = $state(true);
   function onnote(text: string) {
     msg = text;
     setTimeout(() => {
@@ -501,6 +504,11 @@
     </button>
   {/if}
 
+  <!-- Item 845: Home's stage — the bar, the tab row (Watching, the brief, Home's tasks, Chat); a task's tab draws its
+       view here in place of Home's own sections. Tell Home stays under every tab. -->
+  <HomeStage {client} {home} {scan} needs={needs.length + cards.length} {fil} tick={bump} bind:watching onopen={(c, p) => onopen(c, p)} {onnote} />
+
+  {#if watching}
   <!-- 1. Needs you -->
   <div class="h-sec" data-home-section="needs">
     {@render head("needs", "Needs you", needs.length + cards.length)}
@@ -636,6 +644,8 @@
     {/if}
   </div>
 
+  {/if}
+
   <!-- 5. Tell Home, and the Jobs row -->
   <div class="h-sec tell" data-home-section="tell">
     <label class="h-tell-label" for="h-tell">Tell Home…</label>
@@ -645,6 +655,7 @@
       <button class="h-btn primary" disabled={tellBusy || !tell.trim()} onclick={sendTell}>Send</button>
     </div>
   </div>
+  {#if watching}
   <button class="h-row link jobs" onclick={onjobs} data-home-jobs>
     <span class="h-row-top">
       <span class="h-row-title">Jobs</span>
@@ -659,6 +670,7 @@
       {@render head("sources", "Home on this Mac", null)}
       {#if !folded("sources")}<HomeSources {client} />{/if}
     </div>
+  {/if}
   {/if}
   <div class="h-foot"></div>
   {#if msg || queued > 0}

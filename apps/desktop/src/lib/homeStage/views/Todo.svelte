@@ -135,4 +135,10 @@
   .d-sub.on i { animation: h9-pulse 0.9s ease-in-out infinite; box-shadow: var(--glow-signal); }
   .d-sub.ok { color: var(--dim); }
   .d-sub.ok i { border-color: var(--done); }
+  /* A tiny stage (the phone, 845 batch 3): the row's words take the width; its pill and button wrap under them. */
+  :global(.h9-stage.tiny) .d-item { flex-wrap: wrap; row-gap: 6px; }
+  :global(.h9-stage.tiny) .d-main { flex: 1 1 calc(100% - 64px); }
+  :global(.h9-stage.tiny) .d-item > :global(.h9-chev) { order: 1; }
+  :global(.h9-stage.tiny) .d-item > :global(:is(.ns-pill, .jb, .h9-mono)) { order: 3; }
+  :global(.h9-stage.tiny) .d-item::after { content: ""; order: 2; flex: none; width: 18px; }
 </style>

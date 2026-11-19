@@ -301,3 +301,20 @@
 .h9-x:hover { color: var(--ink); background: var(--well2); }
 .h9-tab.two { border-color: color-mix(in srgb, var(--accent) 30%, var(--line2)); color: var(--ink); }
 .h9-menu .hud-row b { font: 600 11px var(--mono); color: var(--accent-ink); align-self: flex-start; padding-top: 2px; }
+
+/* Classic (item 542's layout): the same stage in Classic's plain dress — no glows, no pulse, no scan lines. Moved here
+   from Stage.svelte (845 batch 3) so the phone's stage (src/remote/HomeStage.svelte) draws it the same way. */
+/* Classic (item 542's layout): the same stage in Classic's plain dress — no glows, no pulse, square tabs. */
+.h9-stage.classic { --home: #7a63c7; --home-glow: none; }
+.h9-stage.classic .h9-dot { animation: none; box-shadow: none; }
+.h9-stage.classic .h9-panel { box-shadow: none; }
+.h9-stage.classic .jb { box-shadow: none; text-shadow: none; }
+.h9-stage.classic .jb-scan, .h9-stage.classic .bk { display: none; }
+/* Classic, the task views (Timeline, To-do, Triage): the same marks without glows or moving scan lines. */
+.h9-stage.classic :is(.t-ev, .t-nowl, .t-now, .t-ask, .t-band, .d-box, .d-sub i, .g-card, .g-pile) { box-shadow: none; }
+.h9-stage.classic :is(.d-beam, .g-read) { display: none; }
+.h9-stage.classic .d-sub.on i { animation: none; }
+/* Classic, Browse, Run, Research: no glows, no sweeping link, no pulsing marks. */
+.h9-stage.classic :is(.r-node, .r-av, .s-src.hot, .s-claim.hot) { box-shadow: none; }
+.h9-stage.classic .r-link.live::after { display: none; }
+.h9-stage.classic .r-node.live .r-mark { animation: none; }

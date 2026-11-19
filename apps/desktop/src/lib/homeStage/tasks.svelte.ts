@@ -1,10 +1,9 @@
 /**
- * Home's tasks on the stage (item 845), in the window: what Home's `update_task` wrote (`home_tasks`, a file read,
- * no model), his clicks Home should know (`tell` → `home_task_event`, kind B), and his × on a tab (`home_task_close`).
- * The views draw these; nothing here calls a model.
+ * Home's tasks on the stage (item 845): what Home's `update_task` wrote (`home_tasks`, a file read, no model), his
+ * clicks Home should know (`tell` → `home_task_event`, kind B), and his × on a tab (`home_task_close`) — through the
+ * stage's host (`host.ts`: the window's commands on the Mac, the listener's routes on the phone). Nothing here calls a model.
  */
-import * as api from "../api";
-import type { HomeTask } from "../api";
+import { stageHost, type HomeTask } from "./host";
 
 export type { HomeTask };
 
@@ -20,7 +19,7 @@ export async function refreshTasks(): Promise<void> {
   }
   reading = true;
   try {
-    const rows = await api.homeTasks();
+    const rows = await stageHost.now.homeTasks();
     tasks.rows = Array.isArray(rows) ? rows.filter((t) => t && typeof t.id === "string" && typeof t.view === "string") : [];
     tasks.problem = null;
   } catch (e) {
@@ -38,7 +37,7 @@ export async function refreshTasks(): Promise<void> {
 /** Kind B: one line of what he did, for Home's next look ("you skipped moving Design review"). Best-effort. */
 export async function tell(task: HomeTask, line: string): Promise<void> {
   try {
-    await api.homeTaskEvent(task.name, task.view, line);
+    await stageHost.now.taskEvent(task.name, task.view, line);
   } catch {
     // best-effort, like the feed: his click is kept in the view's own state either way
   }
@@ -47,7 +46,7 @@ export async function tell(task: HomeTask, line: string): Promise<void> {
 /** His × on a task's tab: the tab goes; Home's work is not stopped. */
 export async function closeTask(id: string): Promise<void> {
   try {
-    await api.homeTaskClose(id);
+    await stageHost.now.taskClose(id);
   } finally {
     tasks.rows = tasks.rows.filter((t) => t.id !== id);
     void refreshTasks();
