@@ -83,7 +83,7 @@
   import Icon from "./Icon.svelte";
   import CopyButton from "./CopyButton.svelte";
   import ListenButton from "./ListenButton.svelte";
-  import { makeHere } from "./listenHere";
+  import { here as listenHere } from "./listenHere";
   import { textId } from "./listen";
   import { COPIED_MS } from "./copyIcon";
   import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
@@ -1124,7 +1124,7 @@
     <div class="footer">
       <CopyButton {copied} label="Copy this reply" onclick={() => void copy()} />
       <!-- Item 801: this reply read aloud, or its Brief. -->
-      <ListenButton kind="reply" id={listenId} text={textOf} make={makeHere} />
+      <ListenButton kind="reply" id={listenId} text={textOf} source={listenHere} />
       {#if onretry}
         <!-- Retry (item 333): the prompt again, in a fork from it; this
              reply stays where it is, a version (‹ ›) away. -->

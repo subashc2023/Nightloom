@@ -9,17 +9,29 @@ use nightloom_service::{ClaudeCodeAgent, PassSpec};
 use tauri::State;
 use tokio_util::sync::CancellationToken;
 
-/// `text` read aloud, as a WAV file's bytes.
+/// `text` read aloud, as a WAV file's bytes — the whole of it, or only
+/// part `part` of [`listen_parts`] (item 862: the player starts on the
+/// first part while the rest are made).
 #[tauri::command]
 pub async fn listen_audio(
     remote: State<'_, Remote>,
     text: String,
+    part: Option<usize>,
 ) -> Result<tauri::ipc::Response, String> {
     let engine = remote
         .voice_engine()
         .ok_or("Listen needs the host's voice — run bin/voice-setup.sh once")?;
-    let wav = listen::read_aloud(&*engine, &text).await?;
+    let wav = match part {
+        Some(i) => listen::read_part(&*engine, &text, i).await?.0,
+        None => listen::read_aloud(&*engine, &text).await?,
+    };
     Ok(tauri::ipc::Response::new(wav))
+}
+
+/// Item 862: how many parts `text` is read in (0: nothing to read).
+#[tauri::command]
+pub fn listen_parts(text: String) -> usize {
+    listen::part_count(&text)
 }
 
 /// `text` rewritten for the ear in under two minutes, ending with what was

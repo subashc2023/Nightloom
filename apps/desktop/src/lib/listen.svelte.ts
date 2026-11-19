@@ -1,39 +1,82 @@
 /*
- * Item 801: the audio made this session, by key, so a player closed (or a
- * view left) and opened again plays at once from where it was — Piper is
- * not asked twice. Blob URLs live as long as the window; the cache holds
- * the last few.
+ * Item 801, parts since item 862: the readings made this session, by key
+ * (the thing, Brief or not, and its words), so a player closed (or a view
+ * left) and opened again plays at once from where it was — Piper is not
+ * asked twice. A reading fills in a part at a time: the first is short so
+ * playback starts within seconds, each next is made while the one before
+ * plays. Blob URLs live as long as the window; the cache holds the last few.
  */
-export type Made = { url: string; words?: string };
+import { failWords, wavSeconds, type Source } from "./listen";
 
 const MAX = 12;
-const made = new Map<string, Made>();
-const making = new Map<string, Promise<Made>>();
 
-/** The audio for `key`, made once by `make` (a WAV blob, and the Brief's
- *  words when it is one). */
-export function audioFor(key: string, make: () => Promise<{ blob: Blob; words?: string }>): Promise<Made> {
-  const have = made.get(key);
-  if (have) return Promise.resolve(have);
-  const running = making.get(key);
-  if (running) return running;
-  const p = make()
-    .then(({ blob, words }) => {
-      const m: Made = { url: URL.createObjectURL(blob), words };
-      made.set(key, m);
-      while (made.size > MAX) {
-        const [oldest, o] = made.entries().next().value as [string, Made];
-        URL.revokeObjectURL(o.url);
-        made.delete(oldest);
-      }
-      return m;
-    })
-    .finally(() => making.delete(key));
-  making.set(key, p);
-  return p;
+export class Reading {
+  /** The Brief's words, once written (a Brief only). */
+  words = $state<string | undefined>(undefined);
+  /** Each landed part's audio, in order. */
+  urls = $state<string[]>([]);
+  /** Each landed part's length, seconds (from its WAV header: exact). */
+  lengths = $state<number[]>([]);
+  /** How many parts there are; 0 until the first lands. */
+  count = $state(0);
+  /** Why it stopped short, if it did. */
+  failed = $state("");
+  dropped = false;
+
+  get done(): boolean {
+    return this.count > 0 && this.urls.length >= this.count;
+  }
+
+  drop(): void {
+    this.dropped = true;
+    for (const u of this.urls) URL.revokeObjectURL(u);
+  }
 }
 
-/** Whether `key`'s audio is being made now. */
-export function isMaking(key: string): boolean {
-  return making.has(key);
+const readings = new Map<string, Reading>();
+
+/** The reading for `key`, started now if there is none (or the last one
+ *  failed): `text` read aloud by `source`, after its Brief when `brief`. */
+export function readingFor(key: string, text: string, brief: boolean, source: Source): Reading {
+  const have = readings.get(key);
+  if (have && !have.failed) {
+    // Most recently used last, so the oldest is the one dropped.
+    readings.delete(key);
+    readings.set(key, have);
+    return have;
+  }
+  const r = new Reading();
+  readings.set(key, r);
+  while (readings.size > MAX) {
+    const [oldest, o] = readings.entries().next().value as [string, Reading];
+    o.drop();
+    readings.delete(oldest);
+  }
+  void run(r, text, brief, source);
+  return r;
+}
+
+async function run(r: Reading, text: string, brief: boolean, source: Source): Promise<void> {
+  try {
+    let body = text;
+    if (brief) {
+      body = await source.brief(text);
+      if (r.dropped) return;
+      r.words = body;
+    }
+    for (let i = 0; ; i++) {
+      const { bytes, parts } = await source.part(body, i);
+      const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+      if (r.dropped) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      r.count = Math.max(1, parts);
+      r.lengths = [...r.lengths, wavSeconds(bytes)];
+      r.urls = [...r.urls, url];
+      if (i + 1 >= r.count) return;
+    }
+  } catch (e) {
+    r.failed = failWords(e) || "Listen failed";
+  }
 }

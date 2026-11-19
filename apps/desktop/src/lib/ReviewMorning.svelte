@@ -23,7 +23,7 @@
   import Grip from "./Grip.svelte";
   import Icon from "./Icon.svelte";
   import ListenButton from "./ListenButton.svelte";
-  import { makeHere } from "./listenHere";
+  import { here as listenHere } from "./listenHere";
 
   const project = $derived(app.nightshift.selected);
   const page = $derived(app.nightshift.morning);
@@ -131,7 +131,7 @@
         {/if}
         <span class="spacer"></span>
         <!-- Item 801: the page read aloud, or its Brief. -->
-        <ListenButton kind="morning" id="{project ?? ''}:{page.name}" text={() => page?.text ?? ""} make={makeHere} />
+        <ListenButton kind="morning" id="{project ?? ''}:{page.name}" text={() => page?.text ?? ""} source={listenHere} />
         <button class="ns-btn ghost small" onclick={openInNotes}>Open in Notes</button>
         {#if unread}
           <button class="ns-btn ghost small" onclick={() => markMorningRead(page.name)}>Mark read</button>
