@@ -2408,6 +2408,15 @@ export function nightshiftWatch(projectId: string): Promise<null> {
   return invoke("nightshift_watch", { projectId });
 }
 
+/**
+ * Item 869: watch this window's project notes and the knowledge base; an
+ * outside add, remove or rename emits `notes-changed` (the scope). Kept
+ * when the folders are unchanged; refused while one does not exist yet.
+ */
+export function watchNotes(): Promise<null> {
+  return invoke("watch_notes");
+}
+
 export function nightshiftUnwatch(projectId: string): Promise<null> {
   return invoke("nightshift_unwatch", { projectId });
 }

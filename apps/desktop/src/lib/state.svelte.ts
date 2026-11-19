@@ -54,6 +54,7 @@ import {
   type ChatChoice,
 } from "./chatChoice";
 import { madeChatRow } from "./afterWrite";
+import { coalesced } from "./notesFollow";
 import { runLaunch } from "./launch.svelte";
 import { chatName, notifyNeedsYou, notifyNudge, postHeldNeedsYou } from "./notify";
 import { connectorWords } from "../remote/rules";
@@ -944,6 +945,10 @@ let initialized = false;
  */
 let compactedThisTurn = false;
 
+/** Item 869: the notes re-read a folder change or a focus asks for —
+ *  coalesced, so a sync landing many files is at most two re-reads. */
+const followNotesNow = coalesced(() => refreshNotes());
+
 export async function init(): Promise<void> {
   if (initialized) return;
   initialized = true;
@@ -1075,6 +1080,9 @@ export async function init(): Promise<void> {
   // Only the watched project (selectNightshiftProject calls nightshiftWatch)
   // emits this, and only that project's row and morning page are worth
   // re-reading — a change event for anything else could not reach here.
+  // Item 869: a notes folder changed (outside Nightloom or in); one
+  // coalesced re-read, so a burst is never a re-read storm.
+  await listen<string>("notes-changed", () => void followNotesNow());
   await listen<NightshiftChange>("nightshift-change", (e) => {
     // The bell's morning and blocker counts follow the watched root.
     void refreshCentre();
@@ -1118,7 +1126,11 @@ export async function init(): Promise<void> {
   // the time they return. Cheap enough to leave unconditional — one command
   // that stats a handful of paths, and only when the window is activated —
   // where a poll would be a filesystem check every few seconds forever.
-  window.addEventListener("focus", () => void refreshProjects());
+  // Item 869: the notes too — the safety net under the folder watch.
+  window.addEventListener("focus", () => {
+    void refreshProjects();
+    void followNotesNow();
+  });
   const last = loadLastConnection();
   if (last) {
     app.draft = last;

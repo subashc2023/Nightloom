@@ -45,6 +45,7 @@
   import { isHtmlPath } from "./htmlPage";
   import { splitExt, whoFoldKey } from "./noteHead";
   import { exactTime, relativeTime } from "./time";
+  import { noteVanished, vanishedMessage } from "./notesFollow";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -76,6 +77,10 @@
   let saved = $state("");
   let loading = $state(false);
   let error = $state<string | null>(null);
+  /** Item 869: the file was moved or deleted outside Nightloom. With his
+   *  unsaved edits the buffer holds them (Save puts the file back); without,
+   *  a plain message and Close — never the os error string. */
+  let gone = $state(false);
   /** A note that is not text (backlog 307): drawn, never edited. */
   let media = $state<api.FileTabData | null>(null);
   /**
@@ -349,6 +354,7 @@
     text = "";
     saved = "";
     error = null;
+    gone = false;
     media = null;
     backlinks = [];
     images.clear();
@@ -379,7 +385,19 @@
       }
       bufferKey = key;
     } catch (e) {
-      error = String(e);
+      const msg = String(e);
+      if (noteVanished(msg)) {
+        gone = true;
+        const key = noteDraftKey(target.scope, target.name);
+        const draft = app.noteDrafts[key];
+        if (draft !== undefined) {
+          // His edits stay offered back (practices §7): the file is gone, so
+          // the saved baseline is empty and Save writes the edits back.
+          saved = "";
+          text = draft;
+          bufferKey = key;
+        } else error = vanishedMessage(target.name, false);
+      } else error = msg;
     } finally {
       loading = false;
     }
@@ -1016,8 +1034,14 @@
     </div>
     <hr />
   </div>
+  {#if gone && !error}
+    <p class="err gone">{vanishedMessage(open?.name ?? "", true)}</p>
+  {/if}
   {#if error}
     <p class="err">{error}</p>
+    {#if gone}
+      <button class="ghost gone-close" onclick={() => closeNote()}>Close</button>
+    {/if}
   {:else if loading}
     <p class="err quiet">Reading…</p>
   {:else if media}
