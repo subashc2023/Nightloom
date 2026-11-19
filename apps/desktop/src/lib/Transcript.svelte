@@ -189,6 +189,8 @@
   import { openAttachment } from "./attachments.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import TurnAskHost from "./TurnAskHost.svelte";
+  import { ASK_ANSWER_EVENT, type AskAnswerDetail } from "./askSettled";
+  import { answerAsk as answerTurnAsk, hereTarget as askTarget } from "./needsBoard.svelte";
   import AskHandBack from "./AskHandBack.svelte";
   import BudgetStopCard from "./BudgetStopCard.svelte";
   import { afterWrapTurn, wrapAsk } from "./budgetWrap.svelte";
@@ -1477,6 +1479,25 @@
   });
 
   let viewport = $state<HTMLDivElement | null>(null);
+  // Item 859: an option clicked on a reply's question box (or a closed question card) sends it — to
+  // the open chat: its next message and an answered blocker, as the card sends; an aside: its follow-up (`src.actions.answer`); a pane takes none (a click there opens the chat).
+  $effect(() => {
+    const v = viewport;
+    if (!v) return;
+    const take = (e: Event) => {
+      const d = (e as CustomEvent<AskAnswerDetail>).detail;
+      if (!d?.answer || e.defaultPrevented) return;
+      if (src.kind === "chat") {
+        e.preventDefault();
+        void answerTurnAsk(askTarget(), d.ask, d.answer);
+      } else if (src.actions.answer) {
+        e.preventDefault();
+        void src.actions.answer(d.answer);
+      }
+    };
+    v.addEventListener(ASK_ANSWER_EVENT, take);
+    return () => v.removeEventListener(ASK_ANSWER_EVENT, take);
+  });
   // Item 621: the canvas behind the scroller that draws its dot ground
   // while the field runs (`dotField` decides; it drops the CSS tile then).
   let dotCanvas = $state<HTMLCanvasElement | null>(null);
