@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import composerSrc from "./Composer.svelte?raw";
-import railSrc from "./RightRail.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import rightRailLogicRaw from "./rightRail/logic.svelte.ts?raw";
+import railSrcRaw from "./RightRail.svelte?raw";
+const railSrc = asOneFile(railSrcRaw, rightRailLogicRaw);
 import { asideSinceCold, cacheState, chipFace, ownModelCache, stoppedUnsure } from "./cache";
 import { app, askAside, asideReads, draftAside, stopAside } from "./state.svelte";
 import { stoppedRead } from "./state/asides.svelte";

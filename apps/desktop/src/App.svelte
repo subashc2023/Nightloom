@@ -80,6 +80,8 @@
   import WrapAsidesDialog from "./lib/WrapAsidesDialog.svelte";
   import ContextPanel from "./lib/ContextPanel.svelte";
   import RightRail from "./lib/RightRail.svelte";
+  // Item 856: Classic's aside-tab column (605).
+  import RightRailClassic from "./lib/RightRailClassic.svelte";
   import { railFold, RAIL_SLIDE_MS } from "./lib/railFold.svelte";
   import PromptLibrary from "./lib/PromptLibrary.svelte";
   import Transcript from "./lib/Transcript.svelte";
@@ -300,7 +302,9 @@
    * when both are in front: one column at the edge.
    */
   const railAsideTab = $derived.by(() => {
-    if (classic() || app.asidePanel || splitWidth < RAIL_MIN_SPLIT || chatColumn) return null;
+    // ~~Not under Classic~~ — item 856: Classic's aside tab gets the column too
+    // (RightRailClassic shares RightRail's logic); a chat still has none (542).
+    if (app.asidePanel || splitWidth < RAIL_MIN_SPLIT || chatColumn) return null;
     const f = tabs.focusedPane(app.tabs);
     for (const p of [f, ...app.tabs.panes.filter((x) => x.id !== f.id)]) {
       const c = tabs.activeTab(p).content;
@@ -1032,7 +1036,11 @@
         {:else if railColumn}
           {#if railAsideTab}
             <!-- Item 605: the column beside an aside tab, reading the aside. -->
-            <RightRail column aside={asideOf(railAsideTab.session, asideTabThread(railAsideTab) ?? null)} asideChat={railAsideTab.session} />
+            {#if classic()}
+              <RightRailClassic column aside={asideOf(railAsideTab.session, asideTabThread(railAsideTab) ?? null)} asideChat={railAsideTab.session} />
+            {:else}
+              <RightRail column aside={asideOf(railAsideTab.session, asideTabThread(railAsideTab) ?? null)} asideChat={railAsideTab.session} />
+            {/if}
           {:else}
             <RightRail column />
           {/if}

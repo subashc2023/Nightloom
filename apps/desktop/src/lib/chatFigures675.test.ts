@@ -15,7 +15,9 @@ import topBarRaw from "./TopBar.svelte?raw";
 const topBar = asOneFile(topBarRaw, topBarLogicRaw);
 import topBarClassicRaw from "./TopBarClassic.svelte?raw";
 const topBarClassic = asOneFile(topBarClassicRaw, topBarLogicRaw);
-import rightRail from "./RightRail.svelte?raw";
+import rightRailLogicRaw from "./rightRail/logic.svelte.ts?raw";
+import rightRailRaw from "./RightRail.svelte?raw";
+const rightRail = asOneFile(rightRailRaw, rightRailLogicRaw);
 
 const figures = (over: Partial<SessionFigures> = {}): SessionFigures => ({
   found: true,

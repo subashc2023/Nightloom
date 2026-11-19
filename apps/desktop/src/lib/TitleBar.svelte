@@ -1,130 +1,19 @@
 <script lang="ts">
-  import { chatLabel } from "./chatLabel";
   import { tip } from "./tip";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
-  import type { UnlistenFn } from "@tauri-apps/api/event";
   import { app } from "./state.svelte";
   import { isMac } from "./platform";
+  import { titleBarLogic, type TitleBarLogicProps } from "./titleBar/logic.svelte";
 
-  /**
-   * The window's own chrome, drawn in the webview because the system frame is
-   * off on Windows and Linux (see `build_window` in `main.rs`). Everything a
-   * title bar is expected to do has to be done here rather than assumed: drag
-   * and double-click-to-maximize come from `data-tauri-drag-region="deep"`,
-   * which Tauri's injected handler reads — clickable elements inside it block
-   * the drag on their own, so the buttons need no opt-out.
-   *
-   * **macOS draws none of it.** The frame is native there, so a bar of ours
-   * would be a second one under the system's, and the commands that would
-   * have sat in it are in the menu bar instead (`mac_menu`). What is left for
-   * this component on that platform is the window title, which the native bar
-   * displays and so matters there more than anywhere.
-   */
-  const win = getCurrentWindow();
-
-  /**
-   * Two things the system used to track for us. The maximize button has two
-   * glyphs and they are not interchangeable — a restore icon on a windowed
-   * window is the one wrong thing a caption bar can do and still look
-   * plausible — and `onResized` is what reports the state, since dragging a
-   * window to the top edge maximizes it without the button being touched.
-   * Focus dims the bar the way every native one does, which is most of what
-   * makes a background window read as a background window.
-   */
-  let maximized = $state(false);
-  let focused = $state(true);
-
-  $effect(() => {
-    // Both answers describe chrome that macOS draws itself, so there is
-    // nothing there for them to be true of.
-    if (isMac) return;
-    let alive = true;
-    const stops: UnlistenFn[] = [];
-    // A listener that resolves after the effect is torn down has to stop
-    // itself; nothing else is holding it any more.
-    const keep = (stop: UnlistenFn) => {
-      if (alive) stops.push(stop);
-      else stop();
-    };
-    // `onResized` fires every frame of a resize drag and the answer is a
-    // round trip, so the checks are coalesced rather than queued: one in
-    // flight at a time, and one more afterwards if anything arrived while it
-    // was out. Dropping the trailing event instead would be the cheap version
-    // and would leave the glyph wrong exactly when the drag ended on a
-    // maximize.
-    let checking = false;
-    let again = false;
-    const sync = () => {
-      if (checking) {
-        again = true;
-        return;
-      }
-      checking = true;
-      void win
-        .isMaximized()
-        .then((m) => (maximized = m))
-        .finally(() => {
-          checking = false;
-          if (again) {
-            again = false;
-            sync();
-          }
-        });
-    };
-    sync();
-    void win.onResized(sync).then(keep);
-    void win.onFocusChanged(({ payload }) => (focused = payload)).then(keep);
-    return () => {
-      alive = false;
-      for (const stop of stops) stop();
-    };
-  });
-
-  /**
-   * What the window is called, which in a chat app is what the chat is
-   * called: five alt-tab entries all reading "Nightloom" say less than the
-   * names the sidebar is already showing. `title ?? first_user` for the same
-   * reason every other list does it — a log written before names existed has
-   * no title and is not nameless.
-   */
-  const label = $derived.by(() => {
-    const open = app.sessions.find((s) => s.id === app.activeSessionId);
-    const name = open ? chatLabel(open, "") || null : null;
-    if (name) return name.length > 64 ? `${name.slice(0, 64)}…` : name;
-    return app.project?.name ?? null;
-  });
-
-  /**
-   * The taskbar and the switcher read the OS title, not the bar, so it is set
-   * rather than only drawn.
-   *
-   * macOS gets the bare name: the app's own is in the menu bar two
-   * millimetres above, and a window titled "Draft — Nightloom" beside a menu
-   * bar reading "Nightloom" is the app saying its name twice. Windows and
-   * Linux have no menu bar to say it once, and their switchers show the title
-   * and nothing else.
-   */
-  $effect(() => {
-    if (isMac) void win.setTitle(label ?? "Nightloom");
-    else void win.setTitle(label ? `${label} — Nightloom` : "Nightloom");
-  });
-
-  /*
-   * Resizing is not here, and the first draft had eight edge grips calling
-   * `startResizeDragging`. `tauri-runtime-wry`'s `undecorated_resizing`
-   * already does it — a `TAURI_DRAG_RESIZE_BORDERS` child window on Windows
-   * (visible in the live window's child list) and a GTK button-press handler
-   * on the webview for Linux, both hit-testing a five-pixel inset and both
-   * checking resizable-and-not-maximized. The grips reimplemented that, with
-   * the same inset, over the top of it.
-   */
+  // Item 856: the behaviour lives once, in `titleBar/logic.svelte.ts`; this file is the look.
+  const props: TitleBarLogicProps = $props();
+  const T = titleBarLogic(() => props);
 </script>
 
 {#if !isMac}
-  <header class="titlebar" class:blur={!focused} data-tauri-drag-region="deep">
+  <header class="titlebar" class:blur={!T.focused} data-tauri-drag-region="deep">
     <span class="wordmark">nightloom</span>
-    {#if label}
-      <span class="doc">{label}</span>
+    {#if T.label}
+      <span class="doc">{T.label}</span>
     {/if}
 
     <div class="controls">
@@ -152,7 +41,7 @@
         class="cap"
         use:tip={"Minimize"}
         aria-label="Minimize"
-        onclick={() => void win.minimize()}
+        onclick={() => void T.win.minimize()}
       >
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
           <path d="M0 5.5H10" />
@@ -160,12 +49,12 @@
       </button>
       <button
         class="cap"
-        use:tip={maximized ? "Restore" : "Maximize"}
-        aria-label={maximized ? "Restore" : "Maximize"}
-        onclick={() => void win.toggleMaximize()}
+        use:tip={T.maximized ? "Restore" : "Maximize"}
+        aria-label={T.maximized ? "Restore" : "Maximize"}
+        onclick={() => void T.win.toggleMaximize()}
       >
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-          {#if maximized}
+          {#if T.maximized}
             <path d="M2.5 2.5V0.5H9.5V7.5H7.5" />
             <rect x="0.5" y="2.5" width="7" height="7" />
           {:else}
@@ -177,7 +66,7 @@
         class="cap close"
         use:tip={"Close"}
         aria-label="Close"
-        onclick={() => void win.close()}
+        onclick={() => void T.win.close()}
       >
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
           <path d="M0.5 0.5L9.5 9.5M9.5 0.5L0.5 9.5" />

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isImeKey } from "./imeKey";
 import composerSrc from "./Composer.svelte?raw";
-import threadSrc from "./AsideThread.svelte?raw";
+import editSrc from "./edit.ts?raw";
 import nameSrc from "./AsideNameEdit.svelte?raw";
 import subagentSrc from "./SubagentView.svelte?raw";
 import remoteSrc from "../remote/Remote.svelte?raw";
@@ -33,9 +33,11 @@ describe("Enter-to-send boxes guard on the input method", () => {
     expect(guard).toBeLessThan(fn.indexOf('e.key === "Enter"'));
   });
   it("the aside's edit-question box", () => {
-    const fn = threadSrc.slice(threadSrc.indexOf("function editKeys"));
+    // test-change: item 856 — AsideThread.svelte is deleted; an aside's
+    // question is edited in the transcript's box, keyed by `editorKey`.
+    const fn = editSrc.slice(editSrc.indexOf("export function editorKey"));
     expect(fn.indexOf("isImeKey(e)")).toBeGreaterThan(0);
-    expect(fn.indexOf("isImeKey(e)")).toBeLessThan(fn.indexOf('e.key === "Enter"'));
+    expect(fn.indexOf("isImeKey(e)")).toBeLessThan(fn.indexOf('e.key !== "Enter"'));
   });
   it("the aside's name box", () => {
     expect(nameSrc.indexOf("isImeKey(e)")).toBeGreaterThan(0);

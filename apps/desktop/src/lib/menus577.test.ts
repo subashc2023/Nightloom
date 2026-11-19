@@ -6,7 +6,9 @@ import topBarRaw from "./TopBar.svelte?raw";
 const topBar = asOneFile(topBarRaw, topBarLogicRaw);
 import topBarClassicRaw from "./TopBarClassic.svelte?raw";
 const topBarClassic = asOneFile(topBarClassicRaw, topBarLogicRaw);
-import rightRailClassic from "./RightRailClassic.svelte?raw";
+import rightRailLogicRaw from "./rightRail/logic.svelte.ts?raw";
+import rightRailClassicRaw from "./RightRailClassic.svelte?raw";
+const rightRailClassic = asOneFile(rightRailClassicRaw, rightRailLogicRaw);
 import settings from "./SettingsModal.svelte?raw";
 
 /*

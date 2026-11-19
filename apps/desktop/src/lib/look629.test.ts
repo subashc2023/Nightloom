@@ -3,7 +3,10 @@
 // look as it was drawn; Jarvis is a label only; the pick motion.
 import { describe, expect, it } from "vitest";
 import welcome from "./Welcome.svelte?raw";
-import rightRail from "./RightRail.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import rightRailLogicRaw from "./rightRail/logic.svelte.ts?raw";
+import rightRailRaw from "./RightRail.svelte?raw";
+const rightRail = asOneFile(rightRailRaw, rightRailLogicRaw);
 import taskPanel from "./TaskPanel.svelte?raw";
 import settingsModal from "./SettingsModal.svelte?raw";
 import { migrateLook, parseMotionInk, parseNewChat, type LookStore } from "./settings/look.svelte";

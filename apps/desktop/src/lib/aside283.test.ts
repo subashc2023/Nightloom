@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import cardSrc from "./AsideCard.svelte?raw";
 import viewSrc from "./AsideView.svelte?raw";
-import threadSrc from "./AsideThread.svelte?raw";
 import asideTranscriptSrc from "./AsideTranscript.svelte?raw";
 import transcriptSrcRaw from "./Transcript.svelte?raw";
 import composerSrc from "./Composer.svelte?raw";
@@ -288,7 +287,6 @@ describe("what an aside draws and hides (283)", () => {
   const files: Record<string, string> = {
     "./AsideCard.svelte": cardSrc,
     "./AsideView.svelte": viewSrc,
-    "./AsideThread.svelte": threadSrc,
     "./AsideTranscript.svelte": asideTranscriptSrc,
     "./Transcript.svelte": transcriptSrc,
     "./Composer.svelte": composerSrc,
@@ -317,14 +315,10 @@ describe("what an aside draws and hides (283)", () => {
     }
     // The thread draws his words with the transcript's own bubble and the
     // answer with the chat's reply piece; the transcript uses the bubble too.
-    // test-change: item 674 step 7 — AsideThread is Classic's alone (blocker
-    // 1989), so its pieces are the Classic ones; Filament's are Transcript's.
-    expect(src("./AsideThread.svelte")).toMatch(/<UserBubbleClassic /);
-    expect(src("./AsideThread.svelte")).toMatch(/<AssistantMessageClassic\b/);
-    expect(src("./AsideThread.svelte")).not.toMatch(/<UserBubble |<AssistantMessage\s|classic\(\)/);
+    // ~~test-change: item 674 step 7 — AsideThread is Classic's alone~~ —
+    // test-change: item 856: AsideThread.svelte is deleted; both looks draw
+    // an aside through their transcript, each with its own bubble.
     expect(src("./Transcript.svelte")).toMatch(/<UserBubble/);
-    // Fork and Remove-from-context are not in the aside's thread.
-    expect(src("./AsideThread.svelte")).not.toMatch(/Fork helpers from here"/);
   });
 
   it("the composer gates the chat-only pieces through the list", () => {
