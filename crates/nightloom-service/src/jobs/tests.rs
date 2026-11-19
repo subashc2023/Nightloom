@@ -1254,9 +1254,12 @@ async fn cancel_on_the_run_anyway_card_starts_nothing() {
 #[tokio::test]
 async fn a_scheduled_home_run_is_still_refused_after_run_anyway() {
     let (h, cfg) = home_host();
-    let t0 = at(2026, 11, 17, 15, 0);
     let scan = crate::home::SCAN_JOB_ID;
-    assert!(h.jobs.ensure_home_scan("home-p", t0));
+    assert!(h.jobs.ensure_home_scan("home-p", at(2026, 11, 17, 0, 0)));
+    // An hour before the scan's first 8:00 AM on this host's clock, so the
+    // forced run and the scheduled one after it share a local date in any
+    // zone (item 864: CI runs on UTC, where 15:00 UTC put them a day apart).
+    let t0 = home_row(&h, scan).next_run - Duration::hours(1);
     *h.five.lock().unwrap() = Some(82);
     h.jobs.press_run(h.as_ref(), scan, t0).await.unwrap();
     h.jobs

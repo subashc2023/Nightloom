@@ -877,10 +877,15 @@ mod tests {
             "6 lines sent back for a second look (named something his messages do not \
              contain); none refused"
         );
+        // The log's path as this OS writes it (`\` between parts on Windows).
+        let log = c.join("logs").join("dream-refusals.log");
+        let line = refused_line(1, 1, c).unwrap();
         assert!(
-            refused_line(1, 1, c)
-                .unwrap()
-                .ends_with("1 refused and dropped, listed in /c/logs/dream-refusals.log")
+            line.ends_with(&format!(
+                "1 refused and dropped, listed in {}",
+                log.display()
+            )),
+            "{line}"
         );
     }
 

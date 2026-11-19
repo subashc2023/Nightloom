@@ -2558,11 +2558,13 @@ mod tests {
         let project = scratch();
         let outside = scratch();
         std::fs::create_dir_all(project.join("hw1")).unwrap();
+        // Paths JSON-quoted: a Windows path's `\` must be escaped to parse.
+        let quoted = |p: &std::path::Path| serde_json::to_string(&p.to_string_lossy()).unwrap();
         let line = |path: &std::path::Path, extra: &str| {
             format!(
-                r#"{{"cwd":"{}","hook_event_name":"PreToolUse","tool_name":"mcp__nightloom__add_folder","tool_input":{{"path":"{}"}},"tool_use_id":"t613","permission_mode":"auto"{extra}}}"#,
-                project.display(),
-                path.display()
+                r#"{{"cwd":{},"hook_event_name":"PreToolUse","tool_name":"mcp__nightloom__add_folder","tool_input":{{"path":{}}},"tool_use_id":"t613","permission_mode":"auto"{extra}}}"#,
+                quoted(&project),
+                quoted(path)
             )
         };
         assert_eq!(
