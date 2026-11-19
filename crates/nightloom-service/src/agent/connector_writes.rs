@@ -533,6 +533,7 @@ pub const TABLE: &[(&str, &str, Class)] = {
         ("Own entries", "mcp__nightloom__preview", R),
         ("Own entries", "mcp__nightloom__add_folder", R),
         ("Own entries", "mcp__nightloom__request_secret", R),
+        ("Own entries", "mcp__nightloom__ask_user_to_drive", R),
         ("Own entries", "mcp__claude-in-chrome__navigate", R),
         ("Own entries", "mcp__playwright__browser_click", R),
         // Not MCP: the policy's and the tool list's business

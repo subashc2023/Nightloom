@@ -18,6 +18,7 @@ import type { CacheRatesWire } from "../lib/cachePrice";
 import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
 import { isCouncilBlock } from "../lib/council";
 import { isSecretRequest, type BwItem, type BwReady } from "../lib/secret";
+import { isDriveRequest } from "../lib/drive";
 import { parseSubagentBlock } from "../lib/subagent";
 import { cleanPassage, shownText, splitAttachNote } from "../lib/keep";
 import { isSendFile, parseSentFile, sentFileRoute, type SentFile } from "../lib/sentFiles";
@@ -2024,8 +2025,10 @@ export function newQueued(
 // ---- the cards --------------------------------------------------------------
 
 /** The card a prompt draws, by the tool the CLI paused on. */
-export function cardKind(req: ApprovalRequest): "question" | "plan" | "playwright" | "stuck" | "secret" | "call" {
+export function cardKind(req: ApprovalRequest): "question" | "plan" | "playwright" | "stuck" | "secret" | "drive" | "call" {
   if (req.name === "AskUserQuestion") return "question";
+  // Item 872 step 5: Home asks him to take the page — only the Mac can.
+  if (isDriveRequest(req.name)) return "drive";
   // Item 766: the chat asks for a secret — typed on the card, never in the chat.
   if (isSecretRequest(req.name)) return "secret";
   // Item 784: the runaway guard paused a run — Continue or Stop.

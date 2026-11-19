@@ -148,6 +148,7 @@
   import { PLAYWRIGHT_BUTTONS, PLAYWRIGHT_DECLINED, playwrightAction } from "../lib/playwright";
   import { stuckView } from "../lib/stuck";
   import { SECRET_DECLINED, secretView, type BwApi } from "../lib/secret";
+  import { DRIVE_DECLINED, DRIVE_HEAD, DRIVE_NO_WHY, DRIVE_PHONE, driveWhy } from "../lib/drive";
   import SecretAsk from "./SecretAsk.svelte";
   // Item 300 (wave 8B F1): the drawer follows the finger; Recents and Projects.
   import { dragAxis, drawerX, fingerSpeed, settleOpen } from "./client";
@@ -3536,6 +3537,22 @@
                 return null;
               }}
             />
+          {:else if kind === "drive"}
+            <!-- 872 step 5: Home asks him to take the page — only the Mac's card can; here he is told, and may set it aside. -->
+            <div class="card-head" data-card-kind="drive">{DRIVE_HEAD}</div>
+            <div class="args">
+              <div class="arg"><span class="key">what to do there</span><pre>{driveWhy(req.input) ?? DRIVE_NO_WHY}</pre></div>
+            </div>
+            <p class="card-note" data-drive-phone>{DRIVE_PHONE}</p>
+            {#if req.back || (setAside[chatId ?? ""] ?? []).includes(asideKey(req.name, req.input))}
+              <p class="card-note" data-aside-back>Back again — this was set aside earlier. It waits for you now.</p>
+            {/if}
+            <div class="actions">
+              {#if hasFeature(chatState ?? remote, "later")}
+                <button class="btn accent" data-act="later" onclick={() => answer(req, "later")}>Not now — carry on</button>
+              {/if}
+              <button class="btn" data-act="drive-decline" onclick={() => answer(req, "deny", undefined, undefined, DRIVE_DECLINED)}>Decline</button>
+            </div>
           {:else if kind === "stuck"}
             <!-- 784: a run nobody watched repeated itself and was paused; the Mac's card. -->
             {@const sv = stuckView(req.input, req.reason)}
