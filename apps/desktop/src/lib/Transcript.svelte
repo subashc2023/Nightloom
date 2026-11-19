@@ -49,7 +49,7 @@
   import { asideReads } from "./state.svelte";
   import { coldUsdFor } from "./cacheRates.svelte";
   import { cardLog, continuableReply, continuedFromReply, nextChatMessage, type NextChat } from "./handoffButton";
-  import { reviewOf, runReview } from "./chatReview.svelte";
+  import { cancelReview, reviewOf, runReview } from "./chatReview.svelte";
   import { openPathAsTab } from "./forYou.svelte";
   import { carryFor } from "./handoffCarryFor";
   import { pushUndo } from "./state/edits.svelte";
@@ -622,7 +622,8 @@
       // Item 757: and what it carried goes to the hand-off log (`cardLog`).
       onContinue: () => {
         const n = { chat: from, index: reply.index, prompt: reply.prompt, carry };
-        void continueWithPrompt(from, reply.index, nextChatMessage(n), cardLog(n));
+        // Item 857: the click's work goes back to the card, which re-arms its button.
+        return continueWithPrompt(from, reply.index, nextChatMessage(n), cardLog(n));
       },
       // Item 756: a minimize (or restore) of the card is on the chat's undo stack, so ⌘Z opens it again.
       onFold: (minimized, undo, redo) =>
@@ -641,10 +642,12 @@
               const meta = app.sessions.find((s) => s.id === from);
               void runReview(
                 { chat: from, index: reply.index, agentSession: cliSession, title: meta?.title ?? meta?.first_user ?? "", thread: meta?.thread ?? null },
-                { openChat: () => app.activeSessionId },
+                // Item 857: a review that ends after he continued says where its page went.
+                { openChat: () => app.activeSessionId, notify: (m) => addToast(m) },
               );
             },
             open: (path) => void openPathAsTab(path, from),
+            cancel: () => void cancelReview(from, reply.index),
           }
         : null,
     };

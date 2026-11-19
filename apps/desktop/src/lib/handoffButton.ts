@@ -23,7 +23,7 @@ import { hasHiddenChars } from "./shellRun";
 import { foldMotion } from "./foldMotion";
 import type { SessionMeta } from "./types";
 import type { HandoffOpened } from "./handoffLog";
-import { REVIEW_TIP, reviewBusy, reviewLabel, reviewLine, type ReviewState } from "./chatReview.svelte";
+import { REVIEW_TIP, reviewBusy, reviewCancellable, reviewLabel, reviewLine, type ReviewState } from "./chatReview.svelte";
 
 /** Item 796: "Review this chat" on the card — where its review stands, and
  *  the two things the button does (start one; open the saved page). */
@@ -31,6 +31,8 @@ export interface ReviewHook {
   state: ReviewState;
   start: () => void;
   open: (path: string) => void;
+  /** Item 857: stop the running review (its Cancel). */
+  cancel: () => void;
 }
 
 export const CONTINUE_LABEL = "Continue with this prompt";
@@ -56,7 +58,9 @@ export interface NextChat {
   /** Item 747: what the card adds to the prompt — the goal, his unquoted
    *  messages, the artifact list, the cost; absent, the prompt goes alone. */
   carry?: Carry | null;
-  onContinue: () => void;
+  /** Item 857: may return the click's work, so the button comes back if it
+   *  did not continue (a refusal, a failure) rather than stay greyed. */
+  onContinue: () => void | Promise<void>;
   /** Item 756: a minimize or a restore done on the card, with its inverse,
    *  for the chat's undo stack (⌘Z restores what a minimize folded). */
   onFold?: (minimized: boolean, undo: () => void, redo: () => void) => void;
@@ -342,7 +346,12 @@ function goRow(next: NextChat, read: () => NextChat | null | undefined): HTMLEle
     const now = read();
     if (!now || b.disabled || now.used || now.blocked) return;
     b.disabled = true;
-    now.onContinue();
+    // Item 857: a click that did not continue leaves the button pressable;
+    // before, it stayed greyed until something else redrew the card.
+    void Promise.resolve(now.onContinue()).finally(() => {
+      const after = read();
+      if (b.isConnected) b.disabled = !after || after.used || after.blocked !== null;
+    });
   });
   row.append(details, b);
   return row;
@@ -351,14 +360,19 @@ function goRow(next: NextChat, read: () => NextChat | null | undefined): HTMLEle
 /** Item 796: the button and its line, in the row before *Continue*. */
 export const REVIEW_CLASS = "handoff-review";
 export const REVIEW_LINE_CLASS = "handoff-review-line";
+/** Item 857: Cancel beside a running review. */
+export const REVIEW_CANCEL_CLASS = "handoff-review-cancel";
+export const REVIEW_CANCEL_LABEL = "Cancel review";
 
 function syncReview(row: HTMLElement, next: NextChat, read: () => NextChat | null | undefined): void {
   let b = row.querySelector<HTMLButtonElement>(`:scope > button.${REVIEW_CLASS}`);
   let line = row.querySelector<HTMLElement>(`:scope > .${REVIEW_LINE_CLASS}`);
+  let cancel = row.querySelector<HTMLButtonElement>(`:scope > button.${REVIEW_CANCEL_CLASS}`);
   const hook = next.review;
   if (!hook) {
     b?.remove();
     line?.remove();
+    cancel?.remove();
     return;
   }
   if (!b) {
@@ -377,12 +391,25 @@ function syncReview(row: HTMLElement, next: NextChat, read: () => NextChat | nul
     if (go) go.before(btn);
     else row.append(btn);
   }
+  if (!cancel) {
+    cancel = el("button", `ns-btn ghost small ${REVIEW_CANCEL_CLASS}`, REVIEW_CANCEL_LABEL);
+    cancel.type = "button";
+    cancel.title = "Stop the review pass; nothing is saved";
+    cancel.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      read()?.review?.cancel();
+    });
+    b.before(cancel);
+  }
   if (!line) {
     line = el("div", REVIEW_LINE_CLASS);
     line.setAttribute("aria-live", "polite");
     row.append(line);
   }
   const s = hook.state;
+  const stoppable = reviewCancellable(s);
+  if (cancel.hidden === stoppable) cancel.hidden = !stoppable;
   const label = reviewLabel(s);
   if (b.textContent !== label) b.textContent = label;
   // A review waits for a running turn as an aside would; it is not started under one.
@@ -526,7 +553,10 @@ export function addContinueControls(root: HTMLElement, read: () => NextChat | nu
     b.disabled = next.used || next.blocked !== null;
     b.title = next.used
       ? "This reply has been continued in a new chat"
-      : (next.blocked ?? "Open a new chat and send this prompt as its first message");
+      : (next.blocked ??
+        (next.review && reviewBusy(next.review.state)
+          ? "Open a new chat and send this prompt now — the review keeps running and saves its page"
+          : "Open a new chat and send this prompt as its first message"));
   }
 }
 
