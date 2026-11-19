@@ -54,6 +54,10 @@ describe("source rows and groups", () => {
     expect(rows.map((r) => r.light)).toEqual(["ok", "warn", "idle", "off", "bad", "bad"]);
     for (const r of rows) expect(r.why.split("\n")).toHaveLength(2); // tooltips: two short lines
   });
+  it("rings a Mac app never asked, never a dim green", () => {
+    const [r] = sourceRows(null, [{ id: "calendar", name: "Calendar", status: "not_asked", on: false, why: "", settings_url: "" }], reachName, (s) => s);
+    expect(r.light).toBe("off");
+  });
   it("names an account inside its group by which one it is", () => {
     expect(rows[0].name).toBe("Gmail · first account");
     expect(rows[0].short).toBe("first account");

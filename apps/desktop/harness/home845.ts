@@ -170,6 +170,13 @@ async function run() {
     document.querySelectorAll<HTMLElement>(".w-src .w-chk .jb")[2]?.click();
     await wait(300);
   }
+  // srcend=1 (item 873): the Sources panel scrolled to its end, so a shot shows the rows below the fold (off,
+  // failed, the Mac's apps).
+  if (q.get("srcend") === "1") {
+    const pb = document.querySelector<HTMLElement>(".w-grp")?.closest<HTMLElement>(".h9-pb");
+    if (pb) pb.scrollTop = pb.scrollHeight;
+    await wait(300);
+  }
   void root;
   // What a script can read off the shot's page: the stage is there, and nothing on it is cut off or scrolls sideways.
   const stage = document.querySelector<HTMLElement>("[data-home-stage]");

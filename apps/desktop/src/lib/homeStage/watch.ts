@@ -100,7 +100,7 @@ export function sourceRows(
     if (s.status === "not_on_this_mac") continue;
     const allowed = s.status === "allowed";
     const look = macLook(s.id);
-    const light: SourceLight = allowed ? (s.on ? "ok" : "off") : s.status === "denied" ? "bad" : s.status === "write_only" ? "warn" : "idle";
+    const light: SourceLight = allowed ? (s.on ? "ok" : "off") : s.status === "denied" ? "bad" : s.status === "write_only" ? "warn" : "off"; // ~~"idle"~~ (2026-11-19 review: a dim green read as half-connected on a source never asked; the ring says "not reading")
     const why = allowed
       ? s.on
         ? "Allowed · on for Home\nIt reads it; it never writes"
