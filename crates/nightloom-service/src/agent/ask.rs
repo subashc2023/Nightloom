@@ -1171,6 +1171,13 @@ pub fn read_only_card(home: Option<&Path>, tool: &str) -> Option<&'static str> {
     if tool == crate::mcp_server::mcp_name(super::connector_writes::REMEMBER) {
         return Some("remember");
     }
+    // Home's gated mail and calendar writers (item 845): their own card,
+    // one call at a time — never "Allow always", so no standing allow is
+    // read for them. Only Home's read-only chat lets one get this far; any
+    // other refuses it by `KNOWN_WRITES_MATCHER` before a card could show.
+    if super::connector_writes::home_gated(tool) {
+        return Some("home_write");
+    }
     (super::connector_writes::asks(tool) && !crate::approval_rules::is_read(home, tool))
         .then_some("connector")
 }
@@ -2637,6 +2644,40 @@ mod tests {
             v["agent_id"] = json!(a);
         }
         v.to_string()
+    }
+
+    /// Item 845 (846 §7 step 5): Home's gated mail and calendar writers
+    /// reach the read-only card as `home_write`, in every position; a
+    /// standing allow (his "Allow always" for reads, or "Allow for this
+    /// chat") never answers one; a subagent's is refused in words; only
+    /// this call's own answer runs it, once.
+    #[test]
+    fn homes_gated_writer_is_its_own_card_and_no_standing_allow_answers_it() {
+        let root = std::env::temp_dir().join(format!("nightloom-845g-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let dir = home.join("sessions/ask/chat1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tool = "mcp__claude_ai_Gmail__label_message";
+        assert_eq!(read_only_card(Some(&home), tool), Some("home_write"));
+        let _ = crate::approval_rules::allow_read(&home, tool);
+        assert_eq!(read_only_card(Some(&home), tool), Some("home_write"));
+        AskDir::new(&dir).allow_tool(tool).unwrap();
+        for mode in ["default", "auto", "plan", "bypassPermissions"] {
+            let r = decide_read_only(&dir, Some(&home), &mcp_stdin("t1", tool, mode, None), false);
+            assert_eq!(r.decision(), "defer", "{mode}");
+        }
+        let r = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t1", tool, "auto", Some("a1")),
+            false,
+        );
+        assert_eq!(r.decision(), "deny");
+        assert_eq!(
+            read_only_card(Some(&home), "mcp__claude_ai_Gmail__send_message"),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Item 783 (blocker 2033): in a read-only chat a connector action

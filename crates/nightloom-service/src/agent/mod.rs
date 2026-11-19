@@ -481,6 +481,11 @@ pub struct AgentSpec {
     /// in the environment and the CLI never loads them ([`connectors`] has
     /// the measurements). Only a chat's rail switch turns it on.
     pub claude_ai_connectors: bool,
+    /// Item 845 (846 §7 step 5): Home's read-only chat — its mail and
+    /// calendar writers ([`connector_writes::HOME_GATED_MATCHER`]) ask him
+    /// on a card, one call at a time, instead of being refused. Set only by
+    /// `home::reach::apply`; off everywhere else.
+    pub home_gated_writes: bool,
     /// With [`Self::claude_ai_connectors`] on, the connectors he unticked,
     /// by the init event's server name (`claude.ai Google Drive`): each a
     /// server-level `--disallowedTools` rule. Ignored while off.
@@ -911,6 +916,7 @@ impl AgentSpec {
             born_chat: false,
             fork_mode: true,
             claude_ai_connectors: false,
+            home_gated_writes: false,
             claude_ai_blocked: Vec::new(),
             browser: false,
             playwright: None,
@@ -1611,8 +1617,16 @@ impl AgentSpec {
                             if !matches!(ask.mode, AskMode::Aside | AskMode::PlanAside)
                                 && !ask.dir.as_os_str().is_empty() =>
                         {
+                            // Home's mail and calendar writers (item 845,
+                            // 846 §7 step 5): out of the refusal, and asked
+                            // about on their own card, one call at a time.
+                            let known = if self.home_gated_writes {
+                                connector_writes::KNOWN_WRITES_MATCHER_HOME
+                            } else {
+                                connector_writes::KNOWN_WRITES_MATCHER
+                            };
                             pre.push(serde_json::json!({
-                                "matcher": connector_writes::KNOWN_WRITES_MATCHER,
+                                "matcher": known,
                                 "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
                             }));
                             pre.push(ask::hook_entry(
@@ -1621,6 +1635,14 @@ impl AgentSpec {
                                 connector_writes::CARD_MATCHER,
                                 &[ask::READ_ONLY_ARG],
                             ));
+                            if self.home_gated_writes {
+                                pre.push(ask::hook_entry(
+                                    &ask.hook,
+                                    &ask.dir,
+                                    connector_writes::HOME_GATED_MATCHER,
+                                    &[ask::READ_ONLY_ARG],
+                                ));
+                            }
                         }
                         _ => pre.push(serde_json::json!({
                             "matcher": connector_writes::MATCHER,
@@ -4717,6 +4739,27 @@ mod tests {
         assert_eq!(pre[1]["matcher"], PREVIEW_TOOL_MATCHER);
         assert_eq!(pre[2]["matcher"], connector_writes::KNOWN_WRITES_MATCHER);
         assert_eq!(pre[3]["matcher"], connector_writes::CARD_MATCHER);
+        // Item 845: Home's read-only chat — its mail and calendar writers
+        // leave the refusal for their own asking entry, last.
+        let mut h = s.clone();
+        h.home_gated_writes = true;
+        let a = h.args("hi");
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 5, "{v}");
+        assert_eq!(
+            pre[2]["matcher"],
+            connector_writes::KNOWN_WRITES_MATCHER_HOME
+        );
+        assert_eq!(pre[3]["matcher"], connector_writes::CARD_MATCHER);
+        assert_eq!(pre[4]["matcher"], connector_writes::HOME_GATED_MATCHER);
+        assert!(
+            pre[4]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains(ask::READ_ONLY_ARG)
+        );
         // Without the policy, the matcher is untouched.
         let mut plain = spec();
         plain.ask = s.ask.clone();

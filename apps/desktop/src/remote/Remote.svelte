@@ -3573,6 +3573,9 @@
             {#if req.kind === "remember"}
               <div class="card-head" data-card-kind="remember">Remember this?</div>
               <p class="card-note">This chat is read-only, so Claude asks before it adds to your memory.</p>
+            {:else if req.kind === "home_write"}
+              <div class="card-head" data-card-kind="home_write">Let Home <b>{connectorWords(req.name)}</b>?</div>
+              <p class="card-note">Home changes your mail or calendar only on your tap — this one change, once. The next one asks again.</p>
             {:else if req.kind === "connector"}
               <div class="card-head" data-card-kind="connector">Let <b>{connectorWords(req.name)}</b> run?</div>
               <p class="card-note">This chat is read-only, and this connector action's name does not say whether it only reads or also changes something.</p>
@@ -3592,6 +3595,9 @@
               {#if req.kind === "remember"}
                 <button class="btn accent" data-act="allow" onclick={() => answer(req, "allow")}>Remember it</button>
                 <button class="btn danger" data-act="deny" onclick={() => answer(req, "deny")}>Don’t</button>
+              {:else if req.kind === "home_write"}
+                <button class="btn accent" data-act="allow" onclick={() => answer(req, "allow")}>Allow once</button>
+                <button class="btn danger" data-act="deny" onclick={() => answer(req, "deny")}>Deny</button>
               {:else if req.kind === "connector"}
                 <button class="btn accent" data-act="allow" onclick={() => answer(req, "allow")}>Allow once</button>
                 <button class="btn" data-act="always" onclick={() => answer(req, "always")}>Allow always</button>

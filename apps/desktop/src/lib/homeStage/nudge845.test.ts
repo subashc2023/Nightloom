@@ -70,3 +70,26 @@ describe("the phone's short turn", () => {
     expect(kept).toBe(2);
   });
 });
+
+describe("Home's gated writes (846 §5 #3)", () => {
+  const fsP = import(/* @vite-ignore */ "node:" + "fs") as Promise<{ readFileSync(u: URL, enc: string): string }>;
+  let fs: { readFileSync(u: URL, enc: string): string };
+  beforeAll(async () => void (fs = await fsP));
+  it("the Mac's card offers Allow once and Deny, never a standing allow", () => {
+    const src = fs.readFileSync(new URL("../ApprovalPrompt.svelte", import.meta.url), "utf8");
+    expect(src).toContain('data-card-kind="home_write"');
+    expect(src).toContain('req.kind === "connector" || req.kind === "home_write" ? "Allow once"');
+    // "Allow always" is the connector card's alone; "Allow for this chat" is kept off this one.
+    expect(src).toMatch(/\{#if req\.kind === "connector"\}\s*<button[^>]*data-act="always"/);
+    expect(src).toContain('req.kind !== "remember" && req.kind !== "home_write"}');
+  });
+  it("the phone's card offers Allow once and Deny only", () => {
+    const src = fs.readFileSync(new URL("../../remote/Remote.svelte", import.meta.url), "utf8");
+    const i = src.indexOf('{:else if req.kind === "home_write"}\n                <button');
+    expect(i).toBeGreaterThan(0);
+    const branch = src.slice(i, src.indexOf("{:else", i + 10));
+    expect(branch).toContain("Allow once");
+    expect(branch).toContain('answer(req, "deny")');
+    expect(branch).not.toContain("always");
+  });
+});

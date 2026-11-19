@@ -440,6 +440,9 @@ pub fn apply(
         return;
     }
     spec.claude_ai_connectors = true;
+    // Item 845 (846 §7 step 5): its mail and calendar writers ask him, one
+    // card per call, in place of the read-only chat's refusal.
+    spec.home_gated_writes = true;
     for name in config.map(off).unwrap_or_default() {
         if !spec.claude_ai_blocked.contains(&name) {
             spec.claude_ai_blocked.push(name);

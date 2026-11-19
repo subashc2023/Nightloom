@@ -104,6 +104,65 @@ macro_rules! card_body {
     };
 }
 
+/// Home's gated writers (item 845; 846 §5 #3, §7 step 5): the mail and
+/// calendar actions Home's views propose — label, archive (a label off),
+/// draft; an event made, moved or answered — on a server whose name says
+/// Gmail or Calendar. In Home's read-only chat each asks him on a card,
+/// once per call (Allow once / Deny / Not now; never Allow always), where
+/// every other chat refuses them. Sending mail stays refused everywhere.
+macro_rules! home_gated_tools {
+    () => {
+        "label_message|label_thread|unlabel_message|unlabel_thread|update_message_labels|create_draft|update_draft|create_event|update_event|respond_to_event"
+    };
+}
+
+/// The server part of a gated writer's name: one holding Gmail or Calendar.
+macro_rules! home_gated_server {
+    () => {
+        "(?:(?!__).)*(?:[Gg]mail|[Cc]alendar)(?:(?!__).)*__"
+    };
+}
+
+/// The gated writers' asking entry's matcher, served only in Home's
+/// read-only chat (`AgentSpec::home_gated_writes`).
+pub const HOME_GATED_MATCHER: &str = concat!(
+    "^mcp__",
+    home_gated_server!(),
+    "(?:",
+    home_gated_tools!(),
+    ")$"
+);
+
+/// [`KNOWN_WRITES_MATCHER`] less the gated writers, for Home's read-only
+/// chat — one call never meets the refusal and the card both.
+pub const KNOWN_WRITES_MATCHER_HOME: &str = concat!(
+    "^mcp__(?!",
+    home_gated_server!(),
+    "(?:",
+    home_gated_tools!(),
+    ")$)(?:",
+    known_write_body!(),
+    ".*)"
+);
+
+/// The gated tools, as words.
+pub const HOME_GATED_TOOLS: &str = home_gated_tools!();
+
+/// Whether `name` is one of Home's gated writers — [`HOME_GATED_MATCHER`]
+/// in Rust.
+pub fn home_gated(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("mcp__") else {
+        return false;
+    };
+    let Some(i) = rest.find("__") else {
+        return false;
+    };
+    let server = rest[..i].to_ascii_lowercase();
+    let tool = &rest[i + 2..];
+    (server.contains("gmail") || server.contains("calendar"))
+        && HOME_GATED_TOOLS.split('|').any(|t| t == tool)
+}
+
 /// Nightloom's `remember`, by its own name.
 pub const REMEMBER: &str = "remember";
 
@@ -538,6 +597,75 @@ mod tests {
             // refused ones (non-MCP names never match it).
             assert_eq!(asks, name.starts_with("mcp__") && !w, "ask on {name}");
         }
+    }
+
+    /// Item 845: in Home's read-only chat the gated mail and calendar
+    /// writers leave the refusal for their own card, and nothing else moves:
+    /// sending, trashing, deleting stay refused; reads stay reads. Run
+    /// through `node` like the CLI's own pattern, and against [`home_gated`].
+    #[test]
+    fn homes_gated_writers_ask_and_every_other_write_stays_refused() {
+        let mut names: Vec<&str> = TABLE.iter().map(|(_, n, _)| *n).collect();
+        let extra = [
+            "mcp__claude_ai_Google_Calendar__update_event",
+            "mcp__claude_ai_Google_Calendar__respond_to_event",
+            "mcp__claude_ai_Google_Calendar__delete_event",
+            "mcp__claude_ai_Gmail__label_messages_everywhere",
+            "mcp__claude_ai_Drive__create_event",
+            "mcp__nightloom__move_notes",
+        ];
+        names.extend(extra);
+        for n in &names {
+            let gated = home_gated(n);
+            if gated {
+                assert!(
+                    known_write(n),
+                    "a gated writer is a known write elsewhere: {n}"
+                );
+            }
+        }
+        assert!(home_gated("mcp__claude_ai_Gmail__label_message"));
+        assert!(home_gated("mcp__claude_ai_Google_Calendar__update_event"));
+        assert!(!home_gated("mcp__claude_ai_Gmail__send_message"));
+        assert!(!home_gated(
+            "mcp__claude_ai_Gmail__label_messages_everywhere"
+        ));
+        assert!(!home_gated("mcp__claude_ai_Drive__create_event"));
+        assert!(!home_gated("mcp__claude_ai_Google_Calendar__delete_event"));
+        let script = format!(
+            "const g=new RegExp({g});const k=new RegExp({k});const n={n};\
+             console.log(JSON.stringify(n.map(x=>[g.test(x),k.test(x)])));",
+            g = serde_json::to_string(HOME_GATED_MATCHER).unwrap(),
+            k = serde_json::to_string(KNOWN_WRITES_MATCHER_HOME).unwrap(),
+            n = serde_json::to_string(&names).unwrap(),
+        );
+        let out = match std::process::Command::new("node")
+            .arg("-e")
+            .arg(&script)
+            .output()
+        {
+            Ok(o) if o.status.success() => o,
+            Ok(o) => panic!("node failed: {}", String::from_utf8_lossy(&o.stderr)),
+            Err(e) => {
+                eprintln!("SKIPPED: node not runnable here ({e})");
+                return;
+            }
+        };
+        let got: Vec<(bool, bool)> = serde_json::from_slice(&out.stdout).unwrap();
+        let mut gated_seen = 0;
+        for (name, (gated, refused)) in names.iter().zip(got) {
+            assert_eq!(gated, home_gated(name), "gated matcher on {name}");
+            assert_eq!(
+                refused,
+                known_write(name) && !gated,
+                "Home's refusal on {name}"
+            );
+            gated_seen += usize::from(gated);
+        }
+        assert!(
+            gated_seen >= 9,
+            "the table's Gmail and Calendar writers: {gated_seen}"
+        );
     }
 
     /// Item 783's finish: every write the table names is a *known* write

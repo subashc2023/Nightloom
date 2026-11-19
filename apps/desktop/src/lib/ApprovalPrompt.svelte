@@ -568,6 +568,9 @@
       {:else if req.kind === "remember"}
         <!-- Item 783: a read-only chat proposes a memory; he approves it. -->
         <span data-card-kind="remember">Remember this?</span>
+      {:else if req.kind === "home_write"}
+        <!-- Item 845 (846 §5 #3): one of Home's mail or calendar changes — asked every time, never allowed always. -->
+        <span data-card-kind="home_write">Let Home <code>{connectorWords(req.name)}</code>?</span>
       {:else if req.kind === "connector"}
         <!-- Item 783: a connector action that is not a plain read, in a read-only chat. -->
         <span data-card-kind="connector">Let <code>{connectorWords(req.name)}</code> run?</span>
@@ -628,17 +631,19 @@
           <div class="why open" data-card-note>
             {req.kind === "remember"
               ? "This chat is read-only, so Claude asks before it adds to your memory."
-              : "This chat is read-only, and this connector action's name does not say whether it only reads or also changes something."}
+              : req.kind === "home_write"
+                ? "Home changes your mail or calendar only on your tap — this one change, once. The next one asks again."
+                : "This chat is read-only, and this connector action's name does not say whether it only reads or also changes something."}
           </div>
         </div>
       {/if}
       <div class="actions">
         <button class="ns-btn accent" data-act="allow" onclick={() => decide("allow")}
-          >{req.kind === "remember" ? "Remember it" : req.kind === "connector" ? "Allow once" : "Allow"}</button
+          >{req.kind === "remember" ? "Remember it" : req.kind === "connector" || req.kind === "home_write" ? "Allow once" : "Allow"}</button
         >
         {#if req.kind === "connector"}
           <button class="ns-btn" data-act="always" use:tip={ALWAYS_READ_TIP} onclick={() => decide("always")}>Allow always</button>
-        {:else if !addsFolder && req.kind !== "remember"}
+        {:else if !addsFolder && req.kind !== "remember" && req.kind !== "home_write"}
           <button
             class="ns-btn"
             use:tip={`every later ${req.name} in this chat runs unasked`}
