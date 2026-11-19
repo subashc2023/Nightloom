@@ -59,6 +59,11 @@ pub struct Group {
     /// When its first reply was seen (or the hold timed out), if it was.
     #[serde(default)]
     pub released_ms: Option<i64>,
+    /// Whether that release was the first reply, not the timeout — what a
+    /// follower released by another's look tells the model (review,
+    /// 2026-11-19: it said "reads the cached prompt" after a timeout).
+    #[serde(default)]
+    pub seen: bool,
 }
 
 /// What [`role`] makes of a spawn.
@@ -76,11 +81,12 @@ pub enum Role {
     },
 }
 
-/// Pure: a spawn's role, given its group's entry and the time.
-pub fn role(group: Option<&Group>, now_ms: i64) -> Role {
+/// Pure: a spawn's role, given its group's entry, the time and the
+/// longest hold.
+pub fn role(group: Option<&Group>, now_ms: i64, hold_max_ms: i64) -> Role {
     match group {
-        Some(g) if g.released_ms.is_none() && now_ms < g.since_ms + HOLD_MAX_MS => Role::Wait {
-            deadline_ms: g.since_ms + HOLD_MAX_MS,
+        Some(g) if g.released_ms.is_none() && now_ms < g.since_ms + hold_max_ms => Role::Wait {
+            deadline_ms: g.since_ms + hold_max_ms,
             before: g.before.clone(),
             leader: g.leader.clone(),
         },
@@ -310,14 +316,7 @@ pub fn hold(
     let role = with_groups(dir, |gs| {
         // Old groups go (a day's worth of turns would pile up otherwise).
         gs.retain(|_, g| now_ms - g.since_ms < WARM_MS + hold_max_ms);
-        let r = match role(gs.get(&key), now_ms) {
-            Role::Wait { before, leader, .. } => Role::Wait {
-                deadline_ms: gs.get(&key).map_or(now_ms, |g| g.since_ms) + hold_max_ms,
-                before,
-                leader,
-            },
-            r => r,
-        };
+        let r = role(gs.get(&key), now_ms, hold_max_ms);
         if r == Role::Lead {
             gs.insert(
                 key.clone(),
@@ -326,6 +325,7 @@ pub fn hold(
                     since_ms: now_ms,
                     before: agent_ids(&agents),
                     released_ms: None,
+                    seen: false,
                 },
             );
         }
@@ -354,9 +354,12 @@ pub fn hold(
         let released = std::fs::read_to_string(dir.join(STAGGER_FILE))
             .ok()
             .and_then(|s| serde_json::from_str::<BTreeMap<String, Group>>(&s).ok())
-            .and_then(|gs| gs.get(&key).and_then(|g| g.released_ms))
-            .is_some();
-        if released || first_reply_in(&agents, &before, &leader, &agent_type, model) {
+            .and_then(|gs| gs.get(&key).filter(|g| g.released_ms.is_some()).map(|g| g.seen));
+        if let Some(was_seen) = released {
+            seen = was_seen;
+            break;
+        }
+        if first_reply_in(&agents, &before, &leader, &agent_type, model) {
             seen = true;
             break;
         }
@@ -371,6 +374,7 @@ pub fn hold(
             && g.released_ms.is_none()
         {
             g.released_ms = Some(end);
+            g.seen = seen;
         }
     });
     set_held(dir, tool_use_id, None);
@@ -394,28 +398,29 @@ mod tests {
 
     #[test]
     fn roles_follow_the_group() {
-        assert_eq!(role(None, 1_000), Role::Lead);
+        assert_eq!(role(None, 1_000, HOLD_MAX_MS), Role::Lead);
         let g = Group {
             leader: "a".into(),
             since_ms: 1_000,
             before: vec![],
             released_ms: None,
+            seen: false,
         };
         assert!(matches!(
-            role(Some(&g), 2_000),
+            role(Some(&g), 2_000, HOLD_MAX_MS),
             Role::Wait {
                 deadline_ms: 11_000,
                 ..
             }
         ));
         // Timed out without a release: a new spawn leads afresh.
-        assert_eq!(role(Some(&g), 11_000), Role::Lead);
+        assert_eq!(role(Some(&g), 11_000, HOLD_MAX_MS), Role::Lead);
         let r = Group {
             released_ms: Some(3_000),
             ..g
         };
-        assert_eq!(role(Some(&r), 4_000), Role::Go);
-        assert_eq!(role(Some(&r), 3_000 + WARM_MS), Role::Lead);
+        assert_eq!(role(Some(&r), 4_000, HOLD_MAX_MS), Role::Go);
+        assert_eq!(role(Some(&r), 3_000 + WARM_MS, HOLD_MAX_MS), Role::Lead);
     }
 
     #[test]
@@ -589,6 +594,40 @@ mod tests {
         )
         .unwrap();
         assert!(t0.elapsed().as_millis() < 1_000);
+        assert!(note.contains("did not come in time"), "{note}");
+        // A follower that finds the group released by that timeout says
+        // so too, rather than claiming the cached prompt.
+        let again = chrono::Utc::now().timestamp_millis();
+        let _ = with_groups(&root, |gs| {
+            if let Some(g) = gs.values_mut().next() {
+                g.since_ms = again;
+                g.released_ms = None;
+            }
+        });
+        let writer_root = root.clone();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let _ = with_groups(&writer_root, |gs| {
+                if let Some(g) = gs.values_mut().next() {
+                    g.released_ms = Some(chrono::Utc::now().timestamp_millis());
+                    g.seen = false;
+                }
+            });
+        });
+        let note = hold(
+            &root,
+            Some(&transcript),
+            "",
+            &input,
+            None,
+            "t3",
+            again,
+            5_000,
+            10,
+        )
+        .unwrap();
+        releaser.join().unwrap();
+        assert!(t0.elapsed().as_millis() < 3_000);
         assert!(note.contains("did not come in time"), "{note}");
     }
 
