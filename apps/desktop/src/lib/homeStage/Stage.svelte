@@ -26,7 +26,8 @@
   import Research from "./views/Research.svelte";
   import { tasks, refreshTasks, closeTask, type HomeTask } from "./tasks.svelte";
   import { briefOf } from "./brief";
-  import { def, keep, stage, type ViewId } from "./stageState.svelte";
+  import { bag, def, keep, stage, type ViewId } from "./stageState.svelte";
+  import { step, secondOf, type FocusKept } from "./focus";
   import { lastExchange, type Ev } from "./steps";
   import { tabsFor, focusOf, type Tab } from "./tabs";
   import { setStageHost } from "./host";
@@ -51,6 +52,50 @@
   ]);
   const row = $derived(tabsFor({ blank, needs, more }));
   const focus = $derived(focusOf(row, stage.focus));
+  // The focus rules (focus.ts; 809 round 6's engine): Follow Home, split, and tabs that wait "ready →". Kept with the
+  // stage's state, so a restart neither forgets them nor makes old tabs new. Follow Home and Split are kind A.
+  // svelte-ignore state_referenced_locally
+  const fk = bag("stage:focus", { follow: true, split: false, primed: false, ready: [] as string[], seen: {} as Record<string, number> });
+  let note = $state<FocusKept["note"]>(null);
+  let lastTouch = Date.now();
+  let dragging = false;
+  let rootEl = $state<HTMLElement | null>(null);
+  const asked = (id: string) => !!taskOf(id)?.why;
+  // He is mid-typing in a view's own field, or holding a card: a switch would break it.
+  const busyHere = () => dragging || (!!rootEl && rootEl.contains(document.activeElement) && /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName ?? ""));
+  function rules() {
+    // The first read ever (the stage is new to this Mac): what is already there is not new — no tab pulses for it.
+    if (!fk.primed && tasks.loaded) {
+      fk.seen = Object.fromEntries(row.filter((t) => t.view !== "watch" && t.view !== "chat").map((t) => [t.id, t.needs]));
+      fk.primed = true;
+    }
+    const k: FocusKept = { focus: stage.focus, follow: fk.follow, split: fk.split, ready: [...fk.ready], seen: { ...fk.seen }, note };
+    step(k, row, { now: Date.now(), lastTouch, busy: busyHere() }, asked, tasks.loaded);
+    if (k.focus !== stage.focus) stage.focus = k.focus; // a switch the stage makes is instant (see viewIn)
+    if (k.ready.join("|") !== fk.ready.join("|")) fk.ready = k.ready;
+    if (JSON.stringify(k.seen) !== JSON.stringify(fk.seen)) fk.seen = k.seen;
+    note = k.note;
+  }
+  $effect(() => {
+    void row;
+    untrack(rules);
+  });
+  $effect(() => {
+    const t = setInterval(() => untrack(rules), 1000);
+    const touch = () => (lastTouch = Date.now());
+    const drag = (on: boolean) => () => ((dragging = on), touch());
+    const on = drag(true);
+    const off = drag(false);
+    for (const e of ["pointerdown", "keydown", "wheel"]) window.addEventListener(e, touch, { passive: true, capture: true });
+    window.addEventListener("dragstart", on, true);
+    window.addEventListener("dragend", off, true);
+    return () => {
+      clearInterval(t);
+      for (const e of ["pointerdown", "keydown", "wheel"]) window.removeEventListener(e, touch, { capture: true });
+      window.removeEventListener("dragstart", on, true);
+      window.removeEventListener("dragend", off, true);
+    };
+  });
   const last = $derived(lastExchange(app.events as unknown as Ev[], isScanMessage));
   const focusTask = $derived(taskOf(focus.id));
   const doing = $derived(focusTask ? (focusTask.state === "live" ? focusTask.doing || def(focusTask.view as ViewId).doing : `Done — ${focusTask.name}`) : focus.view === "brief" ? (brief?.writing ? "Writing your morning brief" : def("brief").doing) : app.busy && focus.view !== "chat" ? "Working on what you sent" : def(focus.view).doing);
@@ -59,6 +104,12 @@
   // WebKit reads a container query at width × the page zoom (stage.css, fold.ts).
   let bodyW = $state(1200);
   const viewW = $derived(bodyW - 28);
+  // Split needs room for two views (each at least ~540 px); on a narrower stage it is off without forgetting his choice.
+  const roomy = $derived(viewW >= 1090);
+  const second = $derived(roomy ? secondOf({ focus: focus.id, split: fk.split } as FocusKept, row) : undefined);
+  const secondTask = $derived(second ? taskOf(second.id) : undefined);
+  // What .narrow and .tiny are set from: one view's width (half the stage when split).
+  const oneW = $derived(secondTask ? (viewW - 10) / 2 : viewW);
 
   // A new send opens the strip again (he closed it on an older message).
   $effect(() => {
@@ -106,6 +157,8 @@
   function pick(id: string) {
     if (stage.focus === id && focus.id === id) return;
     picked = true;
+    fk.ready = fk.ready.filter((x) => x !== id);
+    note = null;
     stage.focus = id;
     setTimeout(() => (picked = false), 0);
   }
@@ -115,48 +168,67 @@
   }
 </script>
 
-<div class="h9-stage real" class:classic={classic()} class:blank class:narrow={viewW <= 760} class:tiny={viewW <= 480} data-home-stage>
+<div class="h9-stage real" class:classic={classic()} class:blank class:narrow={oneW <= 760} class:tiny={oneW <= 480} data-home-stage bind:this={rootEl}>
   <div class="h9-bar">
     <span class="h9-home"><i class="h9-dot" class:idle={!app.busy} aria-hidden="true"></i>HOME</span>
     {#key doing}<span class="h9-doing h9-stagein">{doing}</span>{/key}
     <span class="h9-grow"></span>
+    <button class="ns-switch" class:on={fk.follow} aria-pressed={fk.follow} onclick={() => (fk.follow = !fk.follow)} use:tip={"Focus follows Home's tasks\nOnly after 10 s without your touch"}><i></i>Follow Home</button>
+    {#if roomy}<Btn small icon="cols" on={fk.split} tip={"Two live tasks side by side\nThe newest beside the one in focus"} onclick={() => (fk.split = !fk.split)}>Split</Btn>{/if}
     {#if home.info?.scan_words}<span class="h9-ms ns-mono" use:tip={"The morning scan's schedule\nChange it in Settings → Home"}>scan {home.info.scan_words.toLowerCase()}</span>{/if}
   </div>
   <div class="h9-tabs" role="tablist">
     {#each row as t (t.id)}
-      <button class="h9-tab" class:on={focus.id === t.id} role="tab" aria-selected={focus.id === t.id} bind:this={chips[t.id]} onclick={() => pick(t.id)} use:tip={`${t.name}\n${t.needs > 0 ? `${t.needs} need${t.needs === 1 ? "s" : ""} you` : `${def(t.view).name} view`}`}>
+      {@const ready = fk.ready.includes(t.id) && focus.id !== t.id}
+      <button class="h9-tab" class:on={focus.id === t.id} class:ready class:two={second?.id === t.id} role="tab" aria-selected={focus.id === t.id} bind:this={chips[t.id]} onclick={() => pick(t.id)} use:tip={`${t.name}\n${t.needs > 0 ? `${t.needs} need${t.needs === 1 ? "s" : ""} you` : `${def(t.view).name} view`}`}>
         <Icon name={def(t.view).icon} size={13} /><span class="tn">{t.name}</span>
         {#if t.live}<i class="pulse" class:amber={t.needs > 0}></i>{/if}
         {#if t.needs > 0}<span class="cnt" aria-label="{t.needs} need you">{t.needs}</span>{/if}
+        {#if ready}<span class="rdy">{def(t.view).name} ready →</span>{/if}
         {#if focus.id === t.id && taskOf(t.id)}<!-- svelte-ignore a11y_click_events_have_key_events --><span class="h9-x" role="button" tabindex="-1" aria-label="Close this tab" use:tip={"Close this tab\nHome's work goes on; only the tab goes"} onclick={(e) => (e.stopPropagation(), void close(taskOf(t.id)!))}>×</span>{/if}
       </button>
     {/each}
     <span class="sep"></span>
   </div>
-  <div class="h9-body" bind:clientWidth={bodyW}>
+  {#snippet taskView(t: HomeTask)}
+    {#if t.view === "timeline"}<Timeline task={t} />
+    {:else if t.view === "todo"}<Todo task={t} />
+    {:else if t.view === "triage"}<Triage task={t} />
+    {:else if t.view === "browse"}<Browse task={t} />
+    {:else if t.view === "run"}<Run task={t} />
+    {:else if t.view === "research"}<Research task={t} />{/if}
+  {/snippet}
+  <div class="h9-body" class:split={!!secondTask} bind:clientWidth={bodyW}>
     {#key focus.id}
       <div class="h9-view" class:chatview={focus.view === "chat"} in:viewIn|global={{ anchor: chips[focus.id] }} out:viewOut|global>
         {#if focus.view === "chat"}
           <div class="h9-chat">{@render children()}</div>
         {:else if focus.view === "brief"}
           <Brief />
-        {:else if focusTask && focusTask.view === "timeline"}
-          <Timeline task={focusTask} />
-        {:else if focusTask && focusTask.view === "todo"}
-          <Todo task={focusTask} />
-        {:else if focusTask && focusTask.view === "triage"}
-          <Triage task={focusTask} />
-        {:else if focusTask && focusTask.view === "browse"}
-          <Browse task={focusTask} />
-        {:else if focusTask && focusTask.view === "run"}
-          <Run task={focusTask} />
-        {:else if focusTask && focusTask.view === "research"}
-          <Research task={focusTask} />
+        {:else if focusTask && TASK_VIEWS.includes(focusTask.view)}
+          {@render taskView(focusTask)}
         {:else}
           <Watch />
         {/if}
       </div>
     {/key}
+    {#if secondTask}
+      {#key secondTask.id}
+        <div class="h9-view second">{@render taskView(secondTask)}</div>
+      {/key}
+    {/if}
+    {#if note && row.some((t) => t.id === note?.to)}
+      {@const to = row.find((t) => t.id === note?.to)!}
+      {@const from = row.find((t) => t.id === note?.from)}
+      <div class="h9-note hud-m">
+        <span class="hud-head">Switched to {to.name}</span>
+        <span class="h9-note-why">{to.needs > 0 ? "It needs you" : asked(to.id) ? "You asked for it" : "Home started it, and you were away from the stage"}</span>
+        <span class="h9-note-acts">
+          {#if from}<Btn small onclick={() => pick(from.id)}>Back to {from.name}</Btn>{/if}
+          <Btn small onclick={() => ((fk.follow = false), (note = null))}>Stay here</Btn>
+        </span>
+      </div>
+    {/if}
   </div>
   {#if last && stage.strip === "open" && focus.view !== "chat"}
     {#key last.at}

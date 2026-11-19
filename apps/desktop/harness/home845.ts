@@ -89,6 +89,10 @@ async function run() {
   sessionStorage.clear();
   const TASK_TAB: Record<string, string> = { timeline: "task:moving-the-review", todo: "task:working-your-list", triage: "task:sorting-what-arrived", browse: "task:renewing-the-permit", run: "task:merge-round-t", research: "task:cache-pricing" };
   Object.assign(kept, { focus: s === "chat" ? "chat" : s === "brief" ? "brief" : TASK_TAB[s] ?? "watch", strip: "open", stripFor: "", ui: {} });
+  // focus=1 (batch 4): the stage has seen only the task in focus, so the others arrive as new while he is at the stage —
+  // they wait "ready →"; split=1 also turns Split on (the newest task beside the one in focus).
+  if (q.get("focus") === "1") kept.ui["stage:focus"] = { follow: true, split: q.get("split") === "1", primed: true, ready: [], seen: { [TASK_TAB[s] ?? "watch"]: 0 } };
+  else kept.ui["stage:focus"] = { follow: true, split: false, primed: false, ready: [], seen: {} };
   if (q.get("classic") === "1") setLayout("classic");
   let root = mount(App, { target: document.getElementById("app")! });
   flushSync();

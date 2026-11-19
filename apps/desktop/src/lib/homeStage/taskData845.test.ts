@@ -111,7 +111,7 @@ describe("the stage (sources)", () => {
       expect(read(f).length, f).toBeGreaterThan(0);
       expect(read(f), f).not.toMatch(/^\s*@container/m);
     }
-    expect(read("Stage.svelte")).toMatch(/class:narrow=\{viewW <= 760\}/);
+    expect(read("Stage.svelte")).toMatch(/class:narrow=\{oneW <= 760\}/); // one view's width: half the stage when split (batch 4)
   });
   it("animates a view switch only on his pick (no exit left to wait on behind the new view)", () => {
     const s = read("Stage.svelte");
