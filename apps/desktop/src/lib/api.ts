@@ -2410,7 +2410,8 @@ export function nightshiftWatch(projectId: string): Promise<null> {
 
 /**
  * Item 869: watch this window's project notes and the knowledge base; an
- * outside add, remove or rename emits `notes-changed` (the scope). Kept
+ * outside add, remove or rename emits `notes-changed` (`NotesChanged` in
+ * notesFollow.ts: the scope and the batch's paths). Kept
  * when the folders are unchanged; refused while one does not exist yet.
  */
 export function watchNotes(): Promise<null> {

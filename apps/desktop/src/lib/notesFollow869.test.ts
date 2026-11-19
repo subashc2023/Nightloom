@@ -1,7 +1,7 @@
 // Item 869: the Notes list follows its folders when they change outside
 // Nightloom, and a note whose file vanished says so plainly.
 import { describe, expect, it, vi } from "vitest";
-import { coalesced, noteVanished, stillThere, vanishedMessage, watchWhenMoved } from "./notesFollow";
+import { coalesced, noteVanished, stillThere, touchesNote, vanishedMessage, watchWhenMoved } from "./notesFollow";
 
 describe("869: following the notes folders", () => {
   it("a burst of changes is at most one re-read now and one after", async () => {
@@ -77,5 +77,22 @@ describe("869: following the notes folders", () => {
     expect(m).toContain("moved or deleted outside Nightloom");
     expect(m).not.toMatch(/os error|No such file/);
     expect(vanishedMessage("a.md", true)).toContain("unsaved edits");
+  });
+
+  it("review: the open note re-reads only for its own file, a folder above it, or a rescan", () => {
+    const name = "files/lectures/MIPS.pdf";
+    const batch = (paths: string[], scope: "project" | "knowledge" = "project") => ({ scope, paths });
+    // A sync landing hundreds of other files: no read of the open PDF.
+    const others = Array.from({ length: 300 }, (_, i) => `files/other/${i}.md`);
+    expect(touchesNote(batch(others), "project", name)).toBe(false);
+    expect(touchesNote(batch([name]), "project", name)).toBe(true);
+    expect(touchesNote(batch(["files/lectures"]), "project", name)).toBe(true);
+    expect(touchesNote(batch(["files/lect"]), "project", name)).toBe(false);
+    expect(touchesNote(batch([""]), "project", name)).toBe(true);
+    expect(touchesNote(batch(["/Users/x/elsewhere/MIPS.pdf"]), "project", name)).toBe(true);
+    // The other folder's batch never concerns this note.
+    expect(touchesNote(batch([name], "knowledge"), "project", name)).toBe(false);
+    // An older payload without paths: check, as before.
+    expect(touchesNote(undefined, "project", name)).toBe(true);
   });
 });

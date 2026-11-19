@@ -45,7 +45,14 @@
   import { isHtmlPath } from "./htmlPage";
   import { splitExt, whoFoldKey } from "./noteHead";
   import { exactTime, relativeTime } from "./time";
-  import { coalesced, noteVanished, stillThere, vanishedMessage } from "./notesFollow";
+  import {
+    coalesced,
+    noteVanished,
+    stillThere,
+    touchesNote,
+    vanishedMessage,
+    type NotesChanged,
+  } from "./notesFollow";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
   /**
@@ -369,7 +376,9 @@
       if (there === false) gone = true;
       else if (there === true && error === null) gone = false;
     });
-    listen("notes-changed", () => void check())
+    listen<NotesChanged>("notes-changed", (e) => {
+      if (touchesNote(e.payload, target.scope, target.name)) void check();
+    })
       .then((s) => {
         if (alive) stop = s;
         else s();

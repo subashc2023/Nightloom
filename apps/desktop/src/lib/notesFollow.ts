@@ -64,6 +64,25 @@ export async function stillThere(read: () => Promise<unknown>): Promise<boolean 
   }
 }
 
+/** The `notes-changed` payload: which folder, and the batch's paths
+ *  relative to it (`""` is the folder itself — a rescan; an absolute path
+ *  is one the OS named outside the folder's real path). */
+export type NotesChanged = { scope: "project" | "knowledge"; paths: string[] };
+
+/**
+ * Review of 869: whether a batch can concern the open note `name` in
+ * `scope` — its own path, a folder above it (a folder moved or deleted
+ * whole), the folder itself (a rescan) or a path the OS gave outside the
+ * folder (cannot tell, so yes). Anything else — a sync landing hundreds of
+ * other files — is no reason to read the open file again, which for a PDF
+ * is the whole file over the bridge.
+ */
+export function touchesNote(e: NotesChanged | null | undefined, scope: string, name: string): boolean {
+  if (!e || !Array.isArray(e.paths)) return true;
+  if (e.scope !== scope) return false;
+  return e.paths.some((p) => p === "" || p.startsWith("/") || p === name || name.startsWith(`${p}/`));
+}
+
 /** Whether a read failed because the file is no longer there. */
 export function noteVanished(error: string): boolean {
   return /\(os error 2\)|No such file or directory|cannot find the (file|path)/i.test(error);

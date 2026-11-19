@@ -1,7 +1,7 @@
 //! Item 869: the Notes list follows its folders when they change outside
 //! Nightloom. `watch_notes` subscribes to the window's open project's notes
 //! folder and to the knowledge base (`nightloom_service::notes_watch`); a
-//! change emits `notes-changed` (the scope) to that window, which re-reads.
+//! change emits `notes-changed` (the scope and paths) to that window, which re-reads.
 
 use crate::AppState;
 use crate::commands::notes::{NoteScope, scope_dir_in};
@@ -9,6 +9,15 @@ use nightloom_service::nightshift::watch::ChangeWatcher;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::{Emitter, State, Window};
+
+/// The payload of `notes-changed`: which folder, and the batch's paths
+/// relative to it (review of 869: the open note re-reads itself only when
+/// its own file, or a folder above it, is among them).
+#[derive(serde::Serialize, Clone)]
+pub struct NotesChanged {
+    pub scope: &'static str,
+    pub paths: Vec<String>,
+}
 
 /// The live notes watches, keyed `<window label>:<scope>`, each with the
 /// folder it watches so an unchanged one is kept rather than re-subscribed.
@@ -46,8 +55,12 @@ pub async fn watch_notes(
         }
         let w = window.clone();
         let label = window.label().to_string();
-        let watcher = nightloom_service::notes_watch::watch_notes(&dir, move || {
-            let _ = w.emit_to(label.as_str(), "notes-changed", word);
+        let watcher = nightloom_service::notes_watch::watch_notes(&dir, move |paths| {
+            let _ = w.emit_to(
+                label.as_str(),
+                "notes-changed",
+                NotesChanged { scope: word, paths },
+            );
         });
         match watcher {
             Ok(watcher) => {

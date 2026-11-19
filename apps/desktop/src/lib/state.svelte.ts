@@ -1082,7 +1082,7 @@ export async function init(): Promise<void> {
   // re-reading — a change event for anything else could not reach here.
   // Item 869: a notes folder changed (outside Nightloom or in); one
   // coalesced re-read, so a burst is never a re-read storm.
-  await listen<string>("notes-changed", () => void followNotesNow());
+  await listen("notes-changed", () => void followNotesNow());
   await listen<NightshiftChange>("nightshift-change", (e) => {
     // The bell's morning and blocker counts follow the watched root.
     void refreshCentre();
