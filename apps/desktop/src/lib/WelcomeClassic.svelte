@@ -238,7 +238,6 @@
             class="unsaved"
             role="img"
             aria-label={UNSAVED_TIP}
-            title={UNSAVED_TIP}
           ></span>{/if}
       </button>
     {/each}
