@@ -174,7 +174,7 @@ import { stillRunningAsked, injectIntoTurn, nudgeInjects, openChatKey, takeQueue
 import { peekNew, viewMark, sameView, adoptOpen, settleTurnView, openSession, compactSession, deleteSession, moveSession, remoteSend, remoteNewChat } from "./state/sessions.svelte";
 import { loadLastProject, saveLastProject, loadDreamPrefs, loadPalette, loadLayout, viewport, loadReadPages, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY, type Palette, type DreamPrefs, type Layout } from "./state/prefs.svelte";
 import { runMenuCommand, menuInterceptors, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits } from "./state/menu.svelte";
-import { rewindTo, setAsideRewound, keepRewound } from "./state/rewind.svelte";
+import { rewindTo, setAsideRewound, keepRewound, restoreRewound, keepRewindFiles, undoRestore } from "./state/rewind.svelte";
 import { addToast, TOAST_MS, ACTION_TOAST_MS, dismissToast, runToastAction } from "./state/toasts.svelte";
 import { turnMissToast } from "./cacheCost";
 import { inViewLane } from "./viewLane";
@@ -182,7 +182,7 @@ import { pickDocuments } from "./pick";
 import { withNote } from "./asideNotes";
 import { restoreAsideNotes, takeAsideNote } from "./asideNotes.svelte";
 export { TOAST_MS, ACTION_TOAST_MS, addToast, dismissToast, runToastAction };
-export { rewindTo, setAsideRewound, keepRewound };
+export { rewindTo, setAsideRewound, keepRewound, restoreRewound, keepRewindFiles, undoRestore };
 export { menuInterceptors, runMenuCommand, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits };
 export { saveLastProject, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY };
 export type { DreamPrefs, Palette, Layout };
@@ -458,6 +458,9 @@ export const app = $state({
   /** The files the last rewind's turns wrote, offered to be set aside
    *  (item 259); null when it removed none, or once he chose. */
   rewoundWrites: null as import("./rewoundFiles").RewoundWrites | null,
+  /** Item 765: the last rewind's restore card — the files its turns
+   *  changed, read off the hidden snapshots; null without them. */
+  rewindRestore: null as import("./rewindRestore").RewindRestore | null,
   /** The connected chat's *newer version exists* marks (backlog 174). */
   promptPending: null as import("./types").PendingView | null,
   /** Settings: take changed layers at the next cold moment (backlog 174). */
