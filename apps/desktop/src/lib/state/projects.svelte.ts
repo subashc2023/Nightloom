@@ -474,7 +474,11 @@ export async function importFromClaude(): Promise<void> {
 export async function renameProject(id: string, name: string): Promise<void> {
   try {
     const project = await api.renameProject(id, name);
-    if (app.project?.id === id) app.project = project;
+    if (app.project?.id === id) {
+      app.project = project;
+      // Item 865: the launch screen says the kept name before the list lands.
+      saveLastProject(id, project.name);
+    }
     // The row renamed in place; the re-read follows (backlog 211).
     app.projects = withProject(app.projects, project);
     void refreshWithin("renaming " + name, [refreshProjects]);
