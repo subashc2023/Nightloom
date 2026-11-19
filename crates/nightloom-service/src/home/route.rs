@@ -1181,6 +1181,9 @@ async fn finish(host: &dyn Host, config: &Path, mut route: Route, now: DateTime<
     route.summary = Some(summary.clone());
     let _ = record(config, &route);
     let kind = if ok { "route_done" } else { "route_failed" };
+    // Item 872: Home's next turn reads the end with his clicks, not only
+    // by asking `chat_status` (846 §7 step 7). Best-effort like the feed.
+    let _ = super::tasks::record_route_end(config, &route.place(), ok, &summary, now);
     feed(config, &route, kind, summary, now);
     super::job_run_ended(&chat);
 }

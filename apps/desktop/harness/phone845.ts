@@ -102,6 +102,8 @@ async function run() {
   applyLook(q.get("classic") === "1" ? "classic" : "filament");
   const TAB: Record<string, string> = { brief: "brief", timeline: "task:moving-the-review", todo: "task:working-your-list", triage: "task:sorting-what-arrived", browse: "task:renewing-the-permit", run: "task:merge-round-t", research: "task:cache-pricing" };
   Object.assign(kept, { focus: TAB[s] ?? "watch", strip: "open", stripFor: "", ui: {} });
+  // runctl=1 (item 872): Run after Stop now (its chat stopped, Resume shown) with a done step open (Run this step again).
+  if (q.get("runctl") === "1") kept.ui["task:merge-round-t"] = { stop: false, halted: true, open: "merge", again: ["merge"] };
   const target = document.getElementById("app")!;
   let root = mount(HomeFirst, { target, props: props() });
   flushSync();

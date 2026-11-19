@@ -83,6 +83,14 @@ export function phoneStageHost(d: PhoneStageDeps): StageHost {
       await d.client().writeNote("project", name, text, p);
     },
     openChat: (chat, project) => d.open(chat, project),
+    stopChat: async (chat) => {
+      try {
+        await d.client().cancel(chat);
+      } catch (e) {
+        d.note(e instanceof Unreachable ? "The Mac is not answering — the chat was not stopped." : clickNotSent(e));
+        throw e;
+      }
+    },
     toast: (text) => d.note(text),
     liveBrowser: () => null,
     watchBrowser: () => {},

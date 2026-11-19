@@ -53,6 +53,8 @@ export interface StageHost {
   saveNote(name: string, text: string): Promise<unknown>;
   /** Open a chat (Run's Open chat). */
   openChat(chat: string, project: string | null): void;
+  /** Stop the turn running in a chat now (Run's Stop now, item 872); what already landed stays. */
+  stopChat(chat: string): Promise<unknown>;
   /** A short notice. */
   toast(text: string): void;
   /** The chat whose app-owned browser is live now, or null (Browse's live picture; the Mac only). */
@@ -78,6 +80,9 @@ const none: StageHost = {
     throw new Error("Notes are not reachable here");
   },
   openChat: () => {},
+  stopChat: async () => {
+    throw new Error("Chats cannot be stopped from here");
+  },
   toast: () => {},
   liveBrowser: () => null,
   watchBrowser: () => {},
