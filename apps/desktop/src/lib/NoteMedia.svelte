@@ -14,6 +14,7 @@
   import { fmtSize } from "./cards";
   // Item 879: a transparent PNG/GIF/WebP with dark ink sits on white paper, as an SVG does.
   import { paperIfDarkInk } from "./rasterBacking";
+  import { svgBacking } from "./diagramBlock";
   import { noteMediaShape } from "./noteMedia";
   import { viewGet, viewSet } from "./viewState";
 
@@ -28,6 +29,16 @@
   $effect(() => viewSet(untrack(() => fullKey), full, false));
   const shape = $derived(noteMediaShape(file));
   const src = $derived(file.data ? `data:${file.media_type};base64,${file.data}` : null);
+  // Item 879: an SVG in the notes folder is its own document as an <img>; unless it paints its own background
+  // (`svgBacking` "own") it sits on white paper, so default-black lines read on the dark looks.
+  const svgPaper = $derived.by(() => {
+    if (!file.data || !/^image\/svg\+xml\b/i.test(file.media_type ?? "")) return false;
+    try {
+      return svgBacking(new TextDecoder().decode(Uint8Array.from(atob(file.data), (c) => c.charCodeAt(0)))) !== "own";
+    } catch {
+      return false;
+    }
+  });
 
   async function reveal(): Promise<void> {
     try {
@@ -69,6 +80,7 @@
       <img
         class="img"
         class:full
+        class:nl-paper={svgPaper}
         {src}
         alt={name}
         use:paperIfDarkInk
