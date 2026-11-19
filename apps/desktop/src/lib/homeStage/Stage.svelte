@@ -75,8 +75,11 @@
     note = r.note;
     if (tasks.loaded) foldDone(fk, all, isDone, focusOf(all, stage.focus).id, now, (t) => holdsHim(t, stage.ui[t.id]));
   }
+  // Item 874: rerun on the row's content, not its identity — `row` is a fresh array whenever `fk.folded` is written,
+  // and rules() itself may write it; keyed on identity this looped and froze the window.
+  const rowKey = $derived(all.map((t) => `${t.id}:${t.needs}:${t.live ? 1 : 0}:${t.view}`).join("|") + "/" + fk.folded.join("|"));
   $effect(() => {
-    void row;
+    void rowKey;
     untrack(rules);
   });
   $effect(() => {

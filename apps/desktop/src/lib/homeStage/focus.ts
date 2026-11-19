@@ -174,9 +174,14 @@ export function foldDone(fk: FocusBag, row: readonly Tab[], done: (id: string) =
     folded.delete(focus);
   }
   for (const [id, at] of Object.entries(seen)) if (id !== focus && !held.has(id) && now - at >= FOLD_AFTER_MS) folded.add(id);
-  fk.doneSeen = seen;
-  fk.folded = [...folded];
-  return JSON.stringify([fk.doneSeen, fk.folded]) !== before;
+  // Item 874: write only what changed. The stage's `row` is derived from `fk.folded` and its rules effect reruns when
+  // `row` does, so a fresh (equal) array on every pass looped the effect (effect_update_depth_exceeded) and Svelte
+  // stopped drawing — the whole window went click-dead.
+  const nextFolded = [...folded];
+  const old = fk.folded ?? [];
+  if (nextFolded.length !== old.length || nextFolded.some((id, i) => id !== old[i])) fk.folded = nextFolded;
+  if (JSON.stringify(seen) !== JSON.stringify(fk.doneSeen ?? {})) fk.doneSeen = seen;
+  return JSON.stringify([fk.doneSeen ?? {}, fk.folded ?? []]) !== before;
 }
 
 /** His click on "N done": the folded tabs come back (and fold again once he has looked and left). */
