@@ -56,10 +56,11 @@ export const MAX_DOCUMENT_BASE64 = 32 * 1024 * 1024;
 // failure can be made loud. Images near their own cap went through.
 export const MAX_AGENT_DOCUMENT_BASE64 = 20 * 1024 * 1024;
 export const encodedLimit = (n: number) => Math.floor((n / 4) * 3);
-// The API's pages per PDF (item 868): a deck past it is split into parts.
-// The Claude Code engine reads a long PDF by path (item 491), so no page
-// limit there.
-export const MAX_API_PDF_PAGES = 100;
+// No page limit is passed for a deck (868 review): the API's PDF pages are
+// counted per request (600 on the 1M-context models, 100 on 200k ones),
+// so parts sent in one message carry the same pages as the whole and
+// splitting by pages only cost a conversion per part; and the Claude Code
+// engine reads a long PDF by path (item 491). Only the size cap splits.
 
 /** Exported for a dropped zip (item 414). */
 export function readBase64(file: File): Promise<string> {
@@ -294,12 +295,9 @@ async function attachOffice(chatKey: string, file: File, addToast: (text: string
     try {
       const data = await readBase64(file);
       const cap = capFor("document");
-      // Item 868: over the cap or the API's pages, the backend shrinks the
-      // pictures, then splits a deck into parts; text is its last resort.
-      let out = await prepareOfficeAttachment(chip.name, data, false, {
-        maxBase64: cap,
-        ...(engineNow() === "api" ? { maxPages: MAX_API_PDF_PAGES } : {}),
-      });
+      // Item 868: over the cap, the backend shrinks the pictures, then
+      // splits a deck into parts; text is its last resort.
+      let out = await prepareOfficeAttachment(chip.name, data, false, { maxBase64: cap });
       if (out.note) addToast(`${chip.name}: ${out.note}${out.via === "text" ? " — sending its text instead (no slides)" : ""}`);
       if (out.via === "pdf" && out.data.length > cap) {
         addToast(
