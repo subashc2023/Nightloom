@@ -382,6 +382,11 @@ fn export_filter(name: &str) -> &'static str {
 /// pages 1–100 went from ~3.2 MB to 2.2 MB, 2026-11-19).
 const SHRUNK_DPI: u32 = 150;
 
+/// How many of one file's timeouts the shrink-then-split may take in all
+/// (868 review): his 184-slide deck, whole then in two parts, is ~3 of
+/// its own conversions; 4 leaves room and still ends.
+const SPLIT_BUDGET: u32 = 4;
+
 /// `--convert-to` for a page range and/or smaller pictures.
 fn export_options(name: &str, pages: Option<(usize, usize)>, shrink: bool) -> String {
     let mut opts = Vec::new();
@@ -448,6 +453,11 @@ fn page_ranges(pages: usize, n: usize) -> Vec<(usize, usize)> {
 /// split into parts by page range (`deck (part 1 of 2).pptx` …), each
 /// under both limits; part 1 is the result, the rest in `more`. Text is
 /// the last resort, and its `note` says why in plain words.
+///
+/// All of it ends within [`SPLIT_BUDGET`] × `timeout` (868 review): each
+/// part re-reads the whole deck, and n doubles on a part that does not
+/// fit, so without a cap the conversions in a row had no end while Send
+/// waits on them.
 pub async fn prepare_office_within(
     name: &str,
     bytes: &[u8],
@@ -455,6 +465,20 @@ pub async fn prepare_office_within(
     timeout: Duration,
     limits: PdfLimits,
 ) -> Result<Prepared, String> {
+    let started = std::time::Instant::now();
+    let budget = timeout * SPLIT_BUDGET;
+    // What the next conversion may take: its own timeout, or what is left
+    // of the whole budget; `None` once it is spent.
+    let left = || {
+        let rest = budget.saturating_sub(started.elapsed()).min(timeout);
+        (rest >= Duration::from_secs(1)).then_some(rest)
+    };
+    let too_long = || {
+        format!(
+            "making its PDF fit took longer than {} min, so it stopped",
+            (budget.as_secs() + 59) / 60
+        )
+    };
     let whole = prepare_office(name, bytes, soffice, timeout).await?;
     let pages = whole.count.unwrap_or(0);
     let (Some(soffice), "pdf") = (soffice, whole.via) else {
@@ -474,15 +498,10 @@ pub async fn prepare_office_within(
     };
     // Smaller pictures first, when the size is what binds.
     if over_size {
-        match convert_to_pdf_as(
-            soffice,
-            name,
-            bytes,
-            timeout,
-            &export_options(name, None, true),
-        )
-        .await
-        {
+        let Some(t) = left() else {
+            return as_text(too_long()).await;
+        };
+        match convert_to_pdf_as(soffice, name, bytes, t, &export_options(name, None, true)).await {
             Ok(pdf) => {
                 let p = pdf_prepared(
                     name,
@@ -498,7 +517,8 @@ pub async fn prepare_office_within(
                 }
                 size = p.data.len();
             }
-            Err(e) => return as_text(e).await,
+            // Cut short by the budget: say that, not the converter's words.
+            Err(e) => return as_text(if t < timeout { too_long() } else { e }).await,
         }
     }
     let slides = export_filter(name) == "impress_pdf_Export";
@@ -523,9 +543,12 @@ pub async fn prepare_office_within(
         let mut all_fit = true;
         for (i, range) in page_ranges(pages, n).into_iter().enumerate() {
             let opts = export_options(name, Some(range), over_size);
-            let pdf = match convert_to_pdf_as(soffice, name, bytes, timeout, &opts).await {
+            let Some(t) = left() else {
+                return as_text(too_long()).await;
+            };
+            let pdf = match convert_to_pdf_as(soffice, name, bytes, t, &opts).await {
                 Ok(pdf) => pdf,
-                Err(e) => return as_text(e).await,
+                Err(e) => return as_text(if t < timeout { too_long() } else { e }).await,
             };
             let mut p = pdf_prepared(
                 &part_name(name, i + 1, n),
@@ -2082,6 +2105,50 @@ i=$a; while [ $i -le $b ]; do printf '%s 0 obj << /Type /Page >> endobj\n' "$i" 
         assert_eq!(page_ranges(184, 2), vec![(1, 92), (93, 184)]);
         assert_eq!(page_ranges(7, 3), vec![(1, 3), (4, 5), (6, 7)]);
         assert_eq!(part_name("a.b.pptx", 2, 3), "a.b (part 2 of 3).pptx");
+    }
+
+    /// 868 review: the shrink-then-split ends within its budget (4 × the
+    /// timeout) however many parts it tries, and says so in plain words —
+    /// Send waits on it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn splitting_stops_at_its_budget_and_sends_the_text() {
+        let d = scratch("budget");
+        let soffice = fake_soffice(
+            &d,
+            r#"conv=""; while [ $# -gt 0 ]; do case "$1" in --convert-to) conv="$2"; shift;; --outdir) out="$2"; shift;; esac; shift; done
+sleep 1.5
+a=1; b=6
+r=$(printf '%s' "$conv" | sed -n 's/.*"PageRange":{"type":"string","value":"\([0-9]*\)-\([0-9]*\)".*/\1 \2/p')
+[ -n "$r" ] && set -- $r && a=$1 && b=$2
+f="$out/input.pdf"; printf '%%PDF-1.4\n' > "$f"
+i=$a; while [ $i -le $b ]; do printf '%s 0 obj << /Type /Page >> endobj\n' "$i" >> "$f"; i=$((i+1)); done"#,
+        );
+        let started = std::time::Instant::now();
+        let p = prepare_office_within(
+            "deck.pptx",
+            &fixture("lecture.pptx"),
+            Some(&soffice),
+            Duration::from_secs(2),
+            PdfLimits {
+                max_base64: None,
+                max_pages: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(p.via, "text");
+        assert!(
+            p.note.as_deref().unwrap_or("").contains("took longer"),
+            "{:?}",
+            p.note
+        );
+        let _ = std::fs::remove_dir_all(d);
     }
 
     fn count_convert_dirs() -> usize {
