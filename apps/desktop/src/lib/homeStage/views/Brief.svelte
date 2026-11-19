@@ -6,6 +6,7 @@
   // "Keep as a note" writes the page into Home's notes as a new file (never over one he has); once kept, it says so.
   import { onDestroy } from "svelte";
   import { clock, dateLabel, factsWords, scanFacts } from "../../home";
+  import { tip } from "../../tip";
   import Panel from "../Panel.svelte";
   import Btn from "../Btn.svelte";
   import Steps from "../Steps.svelte";
@@ -71,7 +72,7 @@
     {#if brief && brief.sections.length}
       <div class="b-counts">
         {#each brief.sections as s, i (s.key)}
-          <button class="b-count" class:on={isOpen(s.key, i)} onclick={() => toggle(s.key, i)}><b class="h9-num">{s.lines || "·"}</b><span data-ellipsis title={s.title}>{s.title}</span></button>
+          <button class="b-count" class:on={isOpen(s.key, i)} onclick={() => toggle(s.key, i)}><b class="h9-num">{s.lines || "·"}</b><span data-ellipsis use:tip={s.title}>{s.title}</span></button>
         {/each}
       </div>
     {/if}

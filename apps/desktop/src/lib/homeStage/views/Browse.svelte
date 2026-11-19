@@ -7,6 +7,7 @@
   //   Allow once / Not now / I'll do it myself — kind C: an answer to the hold, kept here at once and told to Home.
   //   Undo on an answer — kind B. Opening a field — kind A.
   import Icon from "../../Icon.svelte";
+  import { tip } from "../../tip";
   import Panel from "../Panel.svelte";
   import Steps from "../Steps.svelte";
   import Btn from "../Btn.svelte";
@@ -63,7 +64,7 @@
         <div class="w-live"><BrowserView {session} /></div>
       {:else}
         <div class="w-chrome">
-          <span class="w-url"><Icon name="lock" size={11} /><span data-ellipsis title={b.url || undefined}>{b.url || "no page yet"}</span></span>
+          <span class="w-url"><Icon name="lock" size={11} /><span data-ellipsis use:tip={b.url || null}>{b.url || "no page yet"}</span></span>
           <span class="ns-pill {task.state === 'live' ? 'live' : 'done'}"><span class="dot"></span>{task.state === "live" ? "Home" : "done"}</span>
         </div>
         <div class="w-page">
