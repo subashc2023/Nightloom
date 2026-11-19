@@ -7,6 +7,8 @@
   import { attachmentBytes, closeAttachment, opening } from "./attachments.svelte";
   import { VIEW_MARGIN, ZOOM_MS, fitRect, zoomCss, zoomTransform, type Rect } from "./attachmentView";
   import { escapeClosesPanel } from "./search";
+  // Item 879: a transparent PNG/GIF/WebP with dark ink sits on white paper, readable on the dark looks.
+  import { paperIfDarkInk } from "./rasterBacking";
 
   /**
    * The floating attachment tab (nightshift backlog 145, 2026-09-17).
@@ -188,6 +190,7 @@
             class="attach-img"
             class:full
             {src}
+            use:paperIfDarkInk
             alt={bytes.name}
             use:tip={full ? "Click to fit the screen" : "Click for the image's own size"}
             onclick={() => (full = !full)}

@@ -66,7 +66,7 @@ A command for the user to run themselves goes in its own ```bash block, one comm
 
 A page inside a reply: a fenced block opened with ```html page is drawn in the reply as a live, sandboxed page with no network at all. Use one when a figure or something to click beats prose — a chart, a diagram, a sortable table, a small simulation; use a saved picture file for a photo or a plot a script made, and plain text when a sentence does. Four libraries ship in the app and load by name, nothing else loads: <script src=\"kit:vega-lite\"></script> (then nightloom.chart(element, spec)), kit:mermaid (diagram in <pre class=\"mermaid\">), kit:katex ($…$ in the page is typeset), kit:three (THREE, with OrbitControls). The app's colours are CSS variables (--ink, --dim, --line, --accent, --series-1 to --series-8) on a transparent ground: set no background or text colour. Inline script and style only. A plain ```html block stays code.
 
-Diagram blocks: a fenced ```mermaid block is drawn as its diagram in any reply or note (with a Source toggle), and a fenced ```svg block holding one <svg> element is drawn as a picture (scripts, handlers and outside links in it are stripped); for a static diagram prefer either to an ```html page.
+Diagram blocks: a fenced ```mermaid block is drawn as its diagram in any reply or note (with a Source toggle), and a fenced ```svg block holding one <svg> element is drawn as a picture (scripts, handlers and outside links in it are stripped); for a static diagram prefer either to an ```html page. In an svg, draw lines and text in currentColor, never black, so it reads on dark themes.
 
 Drawing tools on this Mac: Graphviz dot (dot -Tpng g.dot -o g.png), and ~/.nightloom/draw-env/bin/python with matplotlib, seaborn, pandas, sympy, networkx and manim (~/.nightloom/draw-env/bin/manim -ql scene.py Name writes media/videos/scene/480p15/Name.mp4). Name each saved picture or video by its absolute path in the reply and it is shown under it.
 
@@ -1063,7 +1063,7 @@ pub const PAGE_NOTE: &str = "A page inside a reply: a fenced block opened with `
 /// markdown surface draws (`apps/desktop/src/lib/diagramBlock.ts`) — Mermaid
 /// from 770's kit, SVG as a sanitised picture. One sentence beside
 /// [`PAGE_NOTE`], in the same places.
-pub const DIAGRAM_NOTE: &str = "Diagram blocks: a fenced ```mermaid block is drawn as its diagram in any reply or note (with a Source toggle), and a fenced ```svg block holding one <svg> element is drawn as a picture (scripts, handlers and outside links in it are stripped); for a static diagram prefer either to an ```html page.";
+pub const DIAGRAM_NOTE: &str = "Diagram blocks: a fenced ```mermaid block is drawn as its diagram in any reply or note (with a Source toggle), and a fenced ```svg block holding one <svg> element is drawn as a picture (scripts, handlers and outside links in it are stripped); for a static diagram prefer either to an ```html page. In an svg, draw lines and text in currentColor, never black, so it reads on dark themes.";
 
 /// The drawing toolchain on his Mac (nightshift item 822, 2026-11-18):
 /// Graphviz from Homebrew and the uv env `~/.nightloom/draw-env` (checked by
@@ -3304,6 +3304,8 @@ As of now — the front.
     fn every_chat_is_told_the_two_diagram_fences() {
         assert!(DIAGRAM_NOTE.contains("```mermaid"));
         assert!(DIAGRAM_NOTE.contains("```svg"));
+        // Item 879: svg drawn in the theme's colour, not black on a dark card.
+        assert!(DIAGRAM_NOTE.contains("currentColor"));
         assert!(
             DEFAULT_IDENTITY.contains(DIAGRAM_NOTE),
             "{DEFAULT_IDENTITY}"

@@ -48,6 +48,7 @@ import { toggleInline, toggleTaskAt, type Command } from "./noteFormat";
 import { renderMarkdown, renderMathHtml } from "./markdown";
 import { diagramFence } from "./diagramBlock";
 import { toggleComment } from "./codeBlockKeys";
+import { paperIfDarkInk } from "./rasterBacking";
 
 /** The same one-line `[[target|alias]]` shape `links.ts` parses. */
 const WIKILINK = /\[\[([^\[\]\n]{1,200})\]\]/g;
@@ -292,6 +293,8 @@ export class ImageWidget extends WidgetType {
     el.className = "cm-nimage";
     el.alt = this.alt;
     el.addEventListener("load", () => view.requestMeasure());
+    // Item 879: a transparent picture with dark ink is drawn on white paper, readable on the dark looks.
+    paperIfDarkInk(el);
     // Only what an <img> may load; anything else (`javascript:`) is left raw
     // by `noteDecorations`, never reaches here.
     const resolve = view.state.facet(imageSource);

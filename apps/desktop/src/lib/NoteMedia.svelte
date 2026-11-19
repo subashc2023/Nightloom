@@ -12,6 +12,8 @@
   import * as api from "./api";
   import { addToast } from "./state.svelte";
   import { fmtSize } from "./cards";
+  // Item 879: a transparent PNG/GIF/WebP with dark ink sits on white paper, as an SVG does.
+  import { paperIfDarkInk } from "./rasterBacking";
   import { noteMediaShape } from "./noteMedia";
   import { viewGet, viewSet } from "./viewState";
 
@@ -69,6 +71,7 @@
         class:full
         {src}
         alt={name}
+        use:paperIfDarkInk
         use:tip={full ? "Click to fit the pane" : "Click for the image's own size"}
         onclick={() => (full = !full)}
       />

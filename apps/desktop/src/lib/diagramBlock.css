@@ -92,3 +92,17 @@
   user-select: none;
   -webkit-user-select: none;
 }
+/* Item 879: an SVG with default (black) lines and no background of its own, on white paper — the picture is its
+   own document, so its black cannot follow the theme (the reply strip shows every SVG this way). */
+.md-diagram-paper {
+  display: inline-block;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 10px;
+  border-radius: 6px;
+  background: #fff;
+  vertical-align: top;
+}
+.md-diagram-paper > .md-diagram-img {
+  display: block;
+}

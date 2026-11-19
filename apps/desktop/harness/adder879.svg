@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 260" width="760" height="260" font-family="Helvetica, Arial, sans-serif" font-size="14">
+<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="black"/></marker></defs>
+<rect x="60" y="100" width="120" height="80" fill="none" stroke="black" stroke-width="1.5"/>
+<text x="120" y="145" text-anchor="middle" fill="black">FA3</text>
+<text x="95" y="30" text-anchor="middle" fill="black">A3</text>
+<line x1="95" y1="40" x2="95" y2="98" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<text x="145" y="30" text-anchor="middle" fill="black">B3</text>
+<line x1="145" y1="40" x2="145" y2="98" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<line x1="120" y1="180" x2="120" y2="225" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<text x="120" y="250" text-anchor="middle" fill="black">S3</text>
+<line x1="240" y1="140" x2="182" y2="140" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<text x="210" y="130" text-anchor="middle" fill="black">c3</text>
+<rect x="240" y="100" width="120" height="80" fill="none" stroke="black" stroke-width="1.5"/>
+<text x="300" y="145" text-anchor="middle" fill="black">FA2</text>
+<text x="275" y="30" text-anchor="middle" fill="black">A2</text>
+<line x1="275" y1="40" x2="275" y2="98" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<text x="325" y="30" text-anchor="middle" fill="black">B2</text>
+<line x1="325" y1="40" x2="325" y2="98" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<line x1="300" y1="180" x2="300" y2="225" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<text x="300" y="250" text-anchor="middle" fill="black">S2</text>
+<line x1="420" y1="140" x2="362" y2="140" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<text x="390" y="130" text-anchor="middle" fill="black">c2</text>
+<rect x="420" y="100" width="120" height="80" fill="none" stroke="black" stroke-width="1.5"/>
+<text x="480" y="145" text-anchor="middle" fill="black">FA1</text>
+<text x="455" y="30" text-anchor="middle" fill="black">A1</text>
+<line x1="455" y1="40" x2="455" y2="98" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<text x="505" y="30" text-anchor="middle" fill="black">B1</text>
+<line x1="505" y1="40" x2="505" y2="98" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<line x1="480" y1="180" x2="480" y2="225" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<text x="480" y="250" text-anchor="middle" fill="black">S1</text>
+<line x1="600" y1="140" x2="542" y2="140" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<text x="570" y="130" text-anchor="middle" fill="black">c1</text>
+<rect x="600" y="100" width="120" height="80" fill="none" stroke="black" stroke-width="1.5"/>
+<text x="660" y="145" text-anchor="middle" fill="black">FA0</text>
+<text x="635" y="30" text-anchor="middle" fill="black">A0</text>
+<line x1="635" y1="40" x2="635" y2="98" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<text x="685" y="30" text-anchor="middle" fill="black">B0</text>
+<line x1="685" y1="40" x2="685" y2="98" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<line x1="660" y1="180" x2="660" y2="225" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<text x="660" y="250" text-anchor="middle" fill="black">S0</text>
+<line x1="20" y1="140" x2="58" y2="140" stroke="black" stroke-width="1.5" marker-start="url(#ar)" transform="rotate(180 39 140)"/>
+<text x="30" y="128" text-anchor="middle" fill="black">Cout</text>
+<line x1="745" y1="140" x2="722" y2="140" stroke="black" stroke-width="1.5" marker-end="url(#ar)"/>
+<text x="735" y="128" text-anchor="middle" fill="black">Cin</text>
+</svg>
