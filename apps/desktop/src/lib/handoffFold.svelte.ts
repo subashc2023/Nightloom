@@ -97,3 +97,21 @@ export function dragCard(start: CardSize, dy: number, step: number = CARD_STEP_P
   }
   return { size: start, rest: 0 };
 }
+
+/** The − / + of the card's mark stepper: by 5, to the nearest 5, within 1–100. */
+export function steppedMark(pct: number, dir: 1 | -1): number {
+  const to = dir > 0 ? Math.floor(pct / 5) * 5 + 5 : Math.ceil(pct / 5) * 5 - 5;
+  return Math.min(100, Math.max(1, to));
+}
+
+/**
+ * The mark typed into the stepper, as the percent kept (1–100, whole), or
+ * null for no number. Item 705 review: an emptied box is null — `Number("")`
+ * is 0, which had set the mark to 1%.
+ */
+export function typedMark(v: string): number | null {
+  if (v.trim() === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(100, Math.max(1, Math.round(n)));
+}

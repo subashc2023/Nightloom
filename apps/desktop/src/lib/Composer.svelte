@@ -105,7 +105,7 @@
     noteCodeProject,
     neverHandsOff,
   } from "./handoff.svelte";
-  import { cardSize, dragCard, fold, noteStay, setCardSize, unfold, type CardSize } from "./handoffFold.svelte";
+  import { cardSize, dragCard, fold, noteStay, setCardSize, steppedMark, typedMark, unfold, type CardSize } from "./handoffFold.svelte";
   // Item 705 (option A, Console): the themed selects, and the next chat's model.
   import HudSelect from "./HudSelect.svelte";
   import { nextModelLabel, nextModelMenu, nextModelRows, setNextModel } from "./nextChatModel.svelte";
@@ -1052,9 +1052,7 @@
   const nextLabel = $derived(nextModelLabel(app.activeSessionId));
   /** The − / + of the mark's stepper: by 5, to the nearest 5. */
   function stepMark(dir: 1 | -1): void {
-    const v = handoffThresholdPct;
-    const to = dir > 0 ? Math.floor(v / 5) * 5 + 5 : Math.ceil(v / 5) * 5 - 5;
-    setChatThreshold(String(Math.min(100, Math.max(1, to))));
+    setChatThreshold(String(steppedMark(handoffThresholdPct, dir)));
   }
 
   /** **Wrap up now**: the message as it stands, as a turn of its own. */
@@ -1078,10 +1076,19 @@
 
   /** The per-chat mark on the notice: raising it above the fill puts the notice away. */
   function setChatThreshold(v: string): void {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return;
-    setThreshold(app.activeSessionId, Math.min(100, Math.max(1, Math.round(n))) / 100);
+    // Item 705 review: an emptied box is no number (`Number("")` is 0, which
+    // set the mark to 1%); it changes nothing.
+    const pct = typedMark(v);
+    if (pct === null) return;
+    setThreshold(app.activeSessionId, pct / 100);
     reconsider(app.activeSessionId);
+  }
+  /** Item 705 review: the typed mark, then the box shows the mark as kept —
+   *  a value clamped (150 → 100), rounded or refused (empty) would otherwise
+   *  stay typed in the box while the mark is something else. */
+  function typeMark(input: HTMLInputElement): void {
+    setChatThreshold(input.value);
+    input.value = String(handoffThresholdPct);
   }
 
   /*
@@ -3901,7 +3908,7 @@
               step="1"
               value={handoffThresholdPct}
               aria-label="This chat's hand-off threshold, percent of the context window"
-              onchange={(e) => setChatThreshold((e.currentTarget as HTMLInputElement).value)}
+              onchange={(e) => typeMark(e.currentTarget as HTMLInputElement)}
             /><small aria-hidden="true">%</small>
             <button type="button" aria-label="Raise the mark by 5%" onclick={() => stepMark(1)}>+</button>
           </span>

@@ -4,7 +4,7 @@
 // card's wiring is read from source, and what needs a page is shot in WebKit
 // (nightshift-code notes/runner-design/705-build-report-2026-11-19.md).
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { CARD_STEP_PX, cardSize, dragCard, fold, isFolded, noteStay, setCardSize, unfold } from "./handoffFold.svelte";
+import { CARD_STEP_PX, cardSize, dragCard, fold, isFolded, noteStay, setCardSize, steppedMark, typedMark, unfold } from "./handoffFold.svelte";
 import { nextModel, nextModelLabel, nextModelMenu, nextModelRows, setNextModel } from "./nextChatModel.svelte";
 import { resetViewState, viewGet } from "./viewState";
 import { clearMessage, hasOwnMessage, message, setMessage } from "./handoff.svelte";
@@ -106,7 +106,7 @@ describe("705: every control of today's card is on option A", () => {
     ["Reset the message", "onclick={() => clearMessage(app.activeSessionId)}>Reset the message"],
     ["the stepper's −", "stepMark(-1)"],
     ["the stepper's +", "stepMark(1)"],
-    ["the typed mark", "onchange={(e) => setChatThreshold("],
+    ["the typed mark", "onchange={(e) => typeMark("],
     ["the themed thread pick", "<ThreadPicker menu />"],
     ["the next chat's model", "onpick={(id) => setNextModel(app.activeSessionId, id)}"],
     ["the goal (full)", "<HandoffGoal chat={app.activeSessionId} />"],
@@ -114,8 +114,28 @@ describe("705: every control of today's card is on option A", () => {
     expect(card).toContain(needle);
   });
   it("the stepper steps by 5 to the nearest 5, within 1–100", () => {
-    expect(composerSrc).toMatch(/Math\.floor\(v \/ 5\) \* 5 \+ 5/);
-    expect(composerSrc).toMatch(/Math\.ceil\(v \/ 5\) \* 5 - 5/);
+    expect(steppedMark(72, 1)).toBe(75);
+    expect(steppedMark(72, -1)).toBe(70);
+    expect(steppedMark(75, 1)).toBe(80);
+    expect(steppedMark(75, -1)).toBe(70);
+    expect(steppedMark(98, 1)).toBe(100);
+    expect(steppedMark(100, 1)).toBe(100);
+    expect(steppedMark(5, -1)).toBe(1);
+    expect(steppedMark(1, -1)).toBe(1);
+    expect(steppedMark(1, 1)).toBe(5);
+    expect(composerSrc).toContain("setChatThreshold(String(steppedMark(handoffThresholdPct, dir)))");
+  });
+  it("a typed mark: clamped and rounded; an emptied box or no number changes nothing (review)", () => {
+    expect(typedMark("")).toBeNull();
+    expect(typedMark("  ")).toBeNull();
+    expect(typedMark("abc")).toBeNull();
+    expect(typedMark("0")).toBe(1);
+    expect(typedMark("150")).toBe(100);
+    expect(typedMark("72.6")).toBe(73);
+    expect(typedMark("40")).toBe(40);
+    // The box shows the mark as kept after a clamp or a refusal.
+    expect(composerSrc).toContain("onchange={(e) => typeMark(e.currentTarget as HTMLInputElement)}");
+    expect(composerSrc).toMatch(/setChatThreshold\(input\.value\);\s*input\.value = String\(handoffThresholdPct\);/);
   });
   it("the thread pick is the themed button and the shared menu, not the native select", () => {
     expect(pickerSrc).toMatch(/\{:else if menu\}\s*<HudSelect/);
