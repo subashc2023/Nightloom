@@ -16,7 +16,9 @@
     showNote,
     stopCapture,
     stopDream,
+    noteDraftKey,
   } from "./state.svelte";
+  import { UNSAVED_IN_FOLDER_TIP, UNSAVED_TIP, folderUnsaved, isUnsaved } from "./unsavedCue";
   import type { NoteScope } from "./types";
   import { relativeTime } from "./time";
   import * as api from "./api";
@@ -816,7 +818,10 @@
        editor in proposal mode, and nothing is applied until Load and Save. -->
   <div class="item pinned" class:active={isOpen(scope, AGENTS_MD)}>
     <button class="row" onclick={() => showNote(scope, AGENTS_MD)} use:tip={hint}>
-      <span class="name">{label}</span>
+      <span class="line">
+        <span class="name" class:cued={isUnsaved(app.noteDrafts, noteDraftKey(scope, AGENTS_MD))}>{label}</span>
+        {#if isUnsaved(app.noteDrafts, noteDraftKey(scope, AGENTS_MD))}{@render unsavedCue(UNSAVED_TIP)}{/if}
+      </span>
       <span class="summary">{hint}</span>
       <span class="meta">
         {AGENTS_MD} ·
@@ -837,6 +842,12 @@
       >
     {/if}
   </div>
+{/snippet}
+
+{#snippet unsavedCue(words: string)}
+  <!-- Item 867: edits not yet written to disk — the tab strip's hollow
+       draft ring (backlog 221), lit under Jarvis. -->
+  <span class="unsaved" role="img" aria-label={words} use:tip={words}></span>
 {/snippet}
 
 {#snippet fileGlyph(kind: ReturnType<typeof fileIcon>)}
@@ -899,6 +910,8 @@
         {#if editing && editing.scope === scope && editing.what === "rename" && editing.path === r.path}
           {@render nameBox(r.depth, "folder name", true)}
         {:else}
+          <!-- Item 867: a shut folder shows the cue for the note it hides. -->
+          {@const dirUnsaved = !r.open && folderUnsaved(app.noteDrafts, noteDraftKey(scope, `${r.path}/`))}
           <div
             class="item dir-row"
             class:drop-on={dropOn === `${scope}:${r.path}` || (held && scope === "project" && fileOn === r.path)}
@@ -923,7 +936,8 @@
               <span class="line">
                 <span class="caret" class:shut={!r.open}>▾</span>
                 {@render folderGlyph(r.open)}
-                <span class="name">{r.name}</span>
+                <span class="name" class:cued={dirUnsaved}>{r.name}</span>
+                {#if dirUnsaved}{@render unsavedCue(UNSAVED_IN_FOLDER_TIP)}{/if}
                 <span class="n">{r.count}</span>
               </span>
             </button>
@@ -948,6 +962,7 @@
         {@render nameBox(r.depth, "note name", false)}
       {:else}
         {@const n = r.note}
+        {@const unsaved = isUnsaved(app.noteDrafts, noteDraftKey(scope, n.name))}
         <div
           class="item"
           class:active={isOpen(scope, n.name)}
@@ -979,7 +994,8 @@
           >
             <span class="line">
               {@render fileGlyph(fileIcon(n))}
-              <span class="name">{r.label}</span>
+              <span class="name" class:cued={unsaved}>{r.label}</span>
+              {#if unsaved}{@render unsavedCue(UNSAVED_TIP)}{/if}
             </span>
             {#if n.summary}<span class="summary">{n.summary}</span>{/if}
             <span class="meta">{size(n.bytes)} · {relativeTime(n.modified)}</span>
@@ -1915,6 +1931,21 @@
     flex: 1;
     min-width: 0;
   }
+  /* Item 867: the unsaved cue sits just after the name — the name gives up
+     its fill so the ring is beside it, and the ring takes the slack so a
+     folder's count stays at the right. */
+  .line .name.cued {
+    flex: 0 1 auto;
+  }
+  .unsaved {
+    box-sizing: border-box;
+    width: 6px;
+    height: 6px;
+    margin-right: auto;
+    border-radius: 50%;
+    border: 1.5px solid var(--accent);
+    flex-shrink: 0;
+  }
   .row .summary,
   .row .meta {
     padding-left: calc(14px + 0.4rem);
@@ -2469,5 +2500,12 @@
   :global(:where(:root:not([data-layout="classic"]))) .drop-toast {
     background: var(--raised);
     border-radius: var(--r2);
+  }
+  /* Item 867: the unsaved ring is lit, in his amber (Jarvis's colour rule:
+     amber is his, blue is Claude working); Calm's --glow-accent is none. */
+  :global(:where(:root:not([data-layout="classic"]))) .unsaved {
+    width: 7px;
+    height: 7px;
+    box-shadow: var(--glow-accent, none);
   }
 </style>
