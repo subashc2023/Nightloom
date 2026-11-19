@@ -2006,6 +2006,9 @@ mod tests {
         s.record_user("second message, past the budget");
         s.record_user("third");
         let path = unfiled.join(format!("{}.jsonl", s.id));
+        // Closed before the listing: Windows' directory listing (where the
+        // size is read) shows an open file's old size (item 864).
+        drop(s);
         // Seen before (a watermark at 0), so not "first", and fresh, so not
         // settled: the two ways the old rule let a short excerpt through.
         let mut state = CaptureState::default();

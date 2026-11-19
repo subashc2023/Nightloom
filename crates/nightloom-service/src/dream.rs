@@ -2676,6 +2676,9 @@ mod tests {
         git(&["init", "-q"]);
         git(&["config", "user.email", "dream@test"]);
         git(&["config", "user.name", "dream"]);
+        // Byte-for-byte checkouts: Windows runners set core.autocrlf, which
+        // would revert to "\r\n" line ends (item 864).
+        git(&["config", "core.autocrlf", "false"]);
         fs::write(workspace.join("src.rs"), "fn main() {}").unwrap();
         let memory = workspace.join(AGENTS_DIR).join(crate::project::MEMORY_DIR);
         fs::create_dir_all(&memory).unwrap();
@@ -2733,6 +2736,9 @@ mod tests {
         git(&["init", "-q"]);
         git(&["config", "user.email", "dream@test"]);
         git(&["config", "user.name", "dream"]);
+        // Byte-for-byte checkouts: Windows runners set core.autocrlf, which
+        // would revert to "\r\n" line ends (item 864).
+        git(&["config", "core.autocrlf", "false"]);
         let project_file = workspace.join(INSTRUCTION_FILE);
         let user_file = config.join(INSTRUCTION_FILE);
         fs::write(&project_file, "# Lanternfish\n\nUse cargo.\n").unwrap();

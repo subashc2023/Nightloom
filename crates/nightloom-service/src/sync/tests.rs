@@ -713,7 +713,10 @@ fn a_fork_leaves_the_original_byte_identical() {
     let parsed = cli_session::CliSession::parse(&fs::read_to_string(&copy).unwrap()).unwrap();
     assert_eq!(parsed.id(), new_sid);
     let text = fs::read_to_string(&copy).unwrap();
-    assert!(text.contains(&*server_ws.to_string_lossy()));
+    // The copy is JSON: the folder is there as a JSON string, which on
+    // Windows doubles its backslashes (item 864).
+    let ws_json = serde_json::to_string(&*server_ws.to_string_lossy()).unwrap();
+    assert!(text.contains(ws_json.trim_matches('"')), "{text}");
     assert!(!text.contains(mac_ws));
     // It is in the outbox, so it comes home beside the original.
     let outbox = sync.outbox().unwrap();

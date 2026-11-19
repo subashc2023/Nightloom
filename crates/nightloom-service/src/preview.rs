@@ -833,8 +833,11 @@ pub(crate) async fn stop_group(pgid: Option<u32>) {
 /// so a stop takes it too.
 #[cfg(unix)]
 pub(crate) fn spawn_watchdog(pgid: u32, watch: u32) {
-    let script =
-        format!("while kill -0 {watch} 2>/dev/null; do sleep 2; done; kill -KILL -- -{pgid}");
+    // No `--` before the group: dash (Debian and Ubuntu's /bin/sh) reads it
+    // as a pid and fails "Illegal number", so the group outlived its app
+    // there (item 864). `kill -KILL -<pgid>` means the group in dash, bash
+    // and zsh alike.
+    let script = format!("while kill -0 {watch} 2>/dev/null; do sleep 2; done; kill -KILL -{pgid}");
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.arg("-c")
         .arg(script)

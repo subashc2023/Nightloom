@@ -2274,7 +2274,10 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
     /// makes it again — five times over, each a deferral like
     /// [`stand_in_deferring`]'s and each refusal the result the CLI hands
     /// back for a denied call — then ends. Each process notes the result
-    /// count it reached in `<root>/refused`.
+    /// count it reached in `<root>/refused`, before it prints that result:
+    /// the runaway guard interrupts the process on the third refusal's
+    /// line, and a note written after it could be cut off (item 864: empty
+    /// on Linux CI).
     fn stand_in_refusing(root: &Path, _ask_dir: &Path, tool: &str) -> String {
         let reason = crate::agent::ask::UNATTENDED_REASON;
         let body = format!(
@@ -2283,8 +2286,8 @@ D="{d}"
 printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}}'
 N=$(cat "$D/n" 2>/dev/null || echo 0)
 if [ "$N" -gt 0 ]; then
-  printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_'"$N"'","content":"{reason}","is_error":true}}]}},"parent_tool_use_id":null}}'
   echo "$N" > "$D/refused"
+  printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_'"$N"'","content":"{reason}","is_error":true}}]}},"parent_tool_use_id":null}}'
 fi
 if [ "$N" -ge 5 ]; then
   printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"gave up"}}]}},"parent_tool_use_id":null}}'
