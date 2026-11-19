@@ -501,7 +501,15 @@ function openMenu(btn: HTMLButtonElement, read: () => NextChat | null | undefine
     const at = items.indexOf(document.activeElement as HTMLElement);
     items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
   };
+  // Item 705 review: the menu is on <body>, so a card redrawn or gone (a chat
+  // switch by key, the reply re-rendered) would leave it floating over
+  // another chat, its rows still writing the old chat's pick; it closes when
+  // its button leaves the page.
+  const gone = window.setInterval(() => {
+    if (!btn.isConnected) close();
+  }, 250);
   function close(): void {
+    window.clearInterval(gone);
     window.removeEventListener("pointerdown", away, true);
     menu.removeEventListener("keydown", keys);
     menu.remove();

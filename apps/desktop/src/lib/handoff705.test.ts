@@ -143,6 +143,10 @@ describe("705: every control of today's card is on option A", () => {
 });
 
 describe("705: the next chat's model", () => {
+  it("the reply card's menu closes when its button leaves the page (review: no menu left over another chat)", () => {
+    expect(buttonSrc).toMatch(/const gone = window\.setInterval\(\(\) => \{\s*if \(!btn\.isConnected\) close\(\);/);
+    expect(buttonSrc).toMatch(/function close\(\): void \{\s*window\.clearInterval\(gone\);/);
+  });
   beforeEach(() => {
     resetViewState(null);
     nextModelMenu.chatName = "Opus 5.5";
