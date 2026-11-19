@@ -60,13 +60,16 @@
     const t = text.trim();
     if (!t) return;
     ui.ans[cd.id] = t;
-    delete ui.drafts[cd.id];
+    // Only sending his own words drops them; picking an option keeps a half-typed answer (845 review, (c)).
+    if ((ui.drafts[cd.id] ?? "").trim() === t) delete ui.drafts[cd.id];
     ui.asking = null;
     void tell(task, `you answered “${cd.from}: ${cd.title}”: ${t}`);
   }
   function unanswer(cd: Card) {
     const was = ui.ans[cd.id];
     delete ui.ans[cd.id];
+    // His words come back to the box, never lost to an Undo (845 review, (c)).
+    if (was && !(ui.drafts[cd.id] ?? "").trim() && !cd.options.includes(was)) ui.drafts[cd.id] = was;
     void tell(task, `you took back your answer (“${was}”) to “${cd.from}: ${cd.title}” — wait for a new one`);
   }
   const needsN = $derived(cards.filter((cd) => pileOf(cd) === "needs" && !ui.ans[cd.id]).length);

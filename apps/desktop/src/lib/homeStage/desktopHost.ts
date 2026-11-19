@@ -18,7 +18,12 @@ export const desktopHost: StageHost = {
   brief: () => briefOf(app.events as unknown as Ev[], isScanMessage, app.busy),
   scanWords: () => home.info?.scan_words ?? null,
   homeTasks: () => api.homeTasks(),
-  taskEvent: (task, view, line) => api.homeTaskEvent(task, view, line),
+  // A click that could not be kept for Home says so (845 review, (c)): the view still shows it, Home would not.
+  taskEvent: (task, view, line) =>
+    api.homeTaskEvent(task, view, line).catch((e) => {
+      addToast(`Home will not see that click — ${String(e)}`);
+      throw e;
+    }),
   taskClose: (id) => api.homeTaskClose(id),
   focus: (view, task) => api.homeStageFocus(view, task),
   nudge: (text, fallback) => {
