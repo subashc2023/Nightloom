@@ -37,6 +37,7 @@ import {
   updateAttachment,
 } from "./drafts.svelte";
 import type { Attachment } from "./types";
+import { chipStep, type ChipTag } from "./chipSteps";
 import { scheduledFileIds } from "./scheduled.svelte";
 import { FEEDBACK_DRAFT_KEY, feedbackFileIdsIn } from "./feedbackText";
 import { pickDocuments } from "./pick";
@@ -207,8 +208,51 @@ export function conversionJobs(key: string): Promise<void>[] {
     .filter((j): j is Promise<void> => !!j);
 }
 
-/** Item 868: a split deck's parts 2..n, by its first chip's id. */
+/** Item 868: a split deck's parts 2..n, by its first chip's id; and each
+ *  part as it last left a box, to put back when part 1 comes back. */
 const partsOf = new Map<number, number[]>();
+const partStore = new Map<number, Attachment>();
+/** Parts that left a box with part 1 (or settled while it was out): only
+ *  these come back with it — one he removed by its own × stays out. */
+const followedOut = new Set<number>();
+
+/**
+ * Item 868: a split deck's parts move with part 1. After a chip step on
+ * `firstId` (an undo or redo of its attach or its removal): part 1 out →
+ * its parts out too, remembered as they were; part 1 in → its parts back
+ * right after it. One ⌘Z takes the whole deck, one ⌘⇧Z brings it back.
+ * A part he removed by its own × is his own step, not touched here.
+ */
+export function followParts(firstId: number, chips: readonly Attachment[]): Attachment[] {
+  const ids = partsOf.get(firstId);
+  if (!ids) return [...chips];
+  const at = chips.findIndex((c) => c.id === firstId);
+  if (at < 0) {
+    for (const c of chips)
+      if (ids.includes(c.id)) {
+        partStore.set(c.id, c);
+        followedOut.add(c.id);
+      }
+    return chips.filter((c) => !ids.includes(c.id));
+  }
+  const back = ids
+    .filter((id) => followedOut.has(id) && !chips.some((c) => c.id === id))
+    .map((id) => partStore.get(id))
+    .filter((c): c is Attachment => !!c);
+  for (const id of ids) followedOut.delete(id);
+  return [...chips.slice(0, at + 1), ...back, ...chips.slice(at + 1)];
+}
+
+/** One undo/redo of a chip step on the box's chips (item 458), with what
+ *  ended while a chip was out landing on it (`settleRestored`) and a split
+ *  deck's parts moving with part 1 (`followParts`, item 868). */
+export function stepChips(tag: ChipTag, dir: "undo" | "redo", chips: readonly Attachment[]): Attachment[] {
+  const stepped = chipStep(tag, dir, [...chips]).chips.flatMap((c) => {
+    const back = settleRestored(c);
+    return back ? [back] : [];
+  });
+  return followParts(tag.chip.id, stepped);
+}
 
 /** The chips of a split deck's parts 2..n in `key`'s box — what Keep keeps
  *  beside part 1 (item 868). Empty for a file that was not split. */
@@ -243,6 +287,7 @@ async function attachOffice(chatKey: string, file: File, addToast: (text: string
     data: "",
     label: convertingLabel(file.name, canPdf),
     pending: true,
+    converting: { since: Date.now(), to: canPdf ? "pdf" : "text" },
   };
   addAttachment(chatKey, chip);
   const job = (async () => {
@@ -269,32 +314,41 @@ async function attachOffice(chatKey: string, file: File, addToast: (text: string
         data: out.data,
         label: convertedLabel(out.name || chip.name, out.via, out.count),
         pending: false,
+        converting: undefined,
         ...(out.source_sha256 ? { source_sha256: out.source_sha256 } : {}),
         // Its pages route it (item 491): a deck that became a long PDF goes
         // by path on the Claude Code engine, as a dropped one does.
         ...(out.via === "pdf" && out.count ? { pages: out.count } : {}),
       };
-      if (!updateAttachment(chatKey, chip.id, done)) settledWhileOut.set(chip.id, done);
-      else {
+      // Parts 2..n of a split deck: chips of their own beside part 1.
+      const parts: Attachment[] = (out.more ?? []).map((m) => ({
+        id: nextAttachmentId(),
+        kind: "document",
+        name: m.name,
+        media_type: m.media_type,
+        data: m.data,
+        label: convertedLabel(m.name, m.via, m.count),
+        ...(m.source_sha256 ? { source_sha256: m.source_sha256 } : {}),
+        ...(m.via === "pdf" && m.count ? { pages: m.count } : {}),
+      }));
+      if (parts.length) {
+        partsOf.set(
+          chip.id,
+          parts.map((p) => p.id),
+        );
+        for (const p of parts) partStore.set(p.id, p);
+      }
+      if (!updateAttachment(chatKey, chip.id, done)) {
+        // Out of the box (undone, or ×): the parts wait with part 1 and
+        // come back with it (`followParts`).
+        settledWhileOut.set(chip.id, done);
+        for (const p of parts) followedOut.add(p.id);
+      } else {
         stashLong(chatKey, { ...chip, ...done });
-        // Parts 2..n of a split deck: chips of their own beside part 1.
-        const parts: number[] = [];
-        for (const m of out.more ?? []) {
-          const part: Attachment = {
-            id: nextAttachmentId(),
-            kind: "document",
-            name: m.name,
-            media_type: m.media_type,
-            data: m.data,
-            label: convertedLabel(m.name, m.via, m.count),
-            ...(m.source_sha256 ? { source_sha256: m.source_sha256 } : {}),
-            ...(m.via === "pdf" && m.count ? { pages: m.count } : {}),
-          };
-          addAttachment(chatKey, part);
-          stashLong(chatKey, part);
-          parts.push(part.id);
+        for (const p of parts) {
+          addAttachment(chatKey, p);
+          stashLong(chatKey, p);
         }
-        if (parts.length) partsOf.set(chip.id, parts);
       }
     } catch (e) {
       removeAttachment(chatKey, chip.id);
