@@ -13,6 +13,8 @@
   import AsideNoteChip from "./AsideNoteChip.svelte";
   import HandoffBubbleCard from "./HandoffBubbleCard.svelte";
   import { userBubbleLogic, type UserBubbleLogicProps } from "./userBubble/logic.svelte";
+  // Item 879: a transparent PNG/GIF/WebP with dark ink sits on white paper, readable on the dark looks.
+  import { paperIfDarkInk } from "./rasterBacking";
 
   // Item 856: the behaviour lives once, in `userBubble/logic.svelte.ts`; this file is the look.
   const props: UserBubbleLogicProps = $props();
@@ -40,10 +42,10 @@
               );
             }}
           >
-            <img class="user-image" src={`data:${img.media_type};base64,${img.data}`} alt="attachment" />
+            <img class="user-image" src={`data:${img.media_type};base64,${img.data}`} alt="attachment" use:paperIfDarkInk />
           </button>
         {:else}
-          <img class="user-image" src={`data:${img.media_type};base64,${img.data}`} alt="attachment" />
+          <img class="user-image" src={`data:${img.media_type};base64,${img.data}`} alt="attachment" use:paperIfDarkInk />
         {/if}
         {#if img.data}
           <KeepButton

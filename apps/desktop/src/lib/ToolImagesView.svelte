@@ -4,6 +4,8 @@
   // full size over the window, a click or Esc closes it.
   import { tip } from "./tip";
   import { imageSrc, toolImages } from "./toolImages.svelte";
+  // Item 879: a transparent PNG/GIF/WebP with dark ink sits on white paper, readable on the dark looks.
+  import { paperIfDarkInk } from "./rasterBacking";
 
   let { session, id, name }: { session: string | null; id: string; name: string } = $props();
 
@@ -40,7 +42,7 @@
         aria-label={`Enlarge image ${k + 1} from ${name}`}
         onclick={() => (big = src)}
       >
-        <img {src} alt={`What ${name} returned, image ${k + 1}`} />
+        <img {src} alt={`What ${name} returned, image ${k + 1}`} use:paperIfDarkInk />
       </button>
     {/each}
   </div>
@@ -54,7 +56,7 @@
 {#if big}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="ti-over" use:portal role="dialog" aria-modal="true" aria-label="Image, full size" tabindex="-1" onclick={() => (big = null)}>
-    <img src={big} alt="Full size" />
+    <img src={big} alt="Full size" use:paperIfDarkInk />
     <span class="ti-hint">Click or press Esc to close</span>
   </div>
 {/if}

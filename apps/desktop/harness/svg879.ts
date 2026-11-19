@@ -64,7 +64,48 @@ const b64 = btoa(unescape(encodeURIComponent(adder)));
 
 installDiagrams();
 
-if (surface === "phone") {
+// His 2:54 PM report: a transparent PNG of black lines (hw5-q1-alu-boxes.png) on the strip and in a file tab.
+// His files are copied beside this harness as his-*.png and never committed; without them a drawn stand-in is used.
+async function png(name: string, draw: (c: CanvasRenderingContext2D) => void): Promise<Blob> {
+  const r = await fetch(`./${name}`).catch(() => null);
+  if (r?.ok && (r.headers.get("content-type") ?? "").startsWith("image/")) return r.blob();
+  const cv = document.createElement("canvas");
+  cv.width = 490;
+  cv.height = 245;
+  draw(cv.getContext("2d")!);
+  return new Promise((ok) => cv.toBlob((b) => ok(b!), "image/png"));
+}
+const standIn = (opaque: boolean) => (c: CanvasRenderingContext2D) => {
+  if (opaque) (c.fillStyle = "#fff"), c.fillRect(0, 0, 490, 245);
+  c.strokeStyle = "#000";
+  c.lineWidth = 1.5;
+  for (let i = 0; i < 6; i++) (c.fillStyle = "#fff"), c.fillRect(40 + i * 70, 60, 40, 80), c.strokeRect(40 + i * 70, 60, 40, 80);
+  c.beginPath();
+  c.moveTo(10, 200);
+  c.lineTo(480, 200);
+  c.stroke();
+};
+const b64of = async (b: Blob) => btoa(String.fromCharCode(...new Uint8Array(await b.arrayBuffer())));
+
+if (surface === "pngstrip") {
+  const alu = await png("his-alu879.png", standIn(false));
+  const table = await png("his-optable879.png", standIn(true));
+  setMediaLoader(async (path: string) => {
+    const b = /alu/.test(path) ? alu : table;
+    return { kind: "image", mediaType: "image/png", size: b.size, bytes: b };
+  });
+  const items = ["hw5-q1-optable.png", "hw5-q1-alu-boxes.png"].map((n) => ({ written: n, path: `/tmp/${n}`, kind: "image", explicit: true }));
+  mount(ReplyMedia, { target: root, props: { items, chat: null } as never });
+} else if (surface === "pngfile") {
+  const alu = await png("his-alu879.png", standIn(false));
+  const data = await b64of(alu);
+  (window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string) => Promise<unknown> } }).__TAURI_INTERNALS__.invoke = (cmd: string) =>
+    cmd === "read_file_tab"
+      ? Promise.resolve({ path: "/tmp/hw5-q1-alu-boxes.png", kind: "image", media_type: "image/png", size: alu.size, text: null, data, via: "written" })
+      : Promise.resolve(null);
+  root.style.height = "560px";
+  mount(FileView, { target: root, props: { content: { kind: "file", path: "/tmp/hw5-q1-alu-boxes.png" } } as never });
+} else if (surface === "phone") {
   root.classList.add("phone");
   const d = document.createElement("div");
   d.className = "md markdown";
@@ -92,6 +133,6 @@ setTimeout(() => {
   for (const img of imgs) {
     const bg = getComputedStyle(img.parentElement!).backgroundColor + " / img " + getComputedStyle(img).backgroundColor;
     const inked = /color%3A|color:/.test(img.src.slice(0, 2000)) ? "inked" : "-";
-    say(`  ${img.className || "(img)"} backing=${img.dataset.backing ?? (img.classList.contains("paper") ? "paper" : "-")} ${inked} bg ${bg} ${img.naturalWidth}x${img.naturalHeight}`);
+    say(`  ${img.className || "(img)"} nl-paper=${img.classList.contains("nl-paper")} backing=${img.dataset.backing ?? (img.classList.contains("paper") ? "paper" : "-")} ${inked} bg ${bg} ${img.naturalWidth}x${img.naturalHeight}`);
   }
 }, Number(q.get("wait") ?? 4000));

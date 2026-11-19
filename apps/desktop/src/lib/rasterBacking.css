@@ -1,0 +1,8 @@
+/* Item 879: a transparent picture with dark ink (black lines on nothing) on white paper, so its lines read on
+   the dark looks — the raster twin of `.md-diagram-paper`. Set by `paperIfDarkInk` (rasterBacking.ts). */
+img.nl-paper {
+  background: #fff;
+  padding: 10px;
+  border-radius: 6px;
+  box-sizing: border-box;
+}

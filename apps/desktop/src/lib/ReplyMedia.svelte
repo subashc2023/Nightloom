@@ -11,6 +11,8 @@
   import { fmtSize } from "./cards";
   import type { MediaCandidate } from "./replyMedia";
   import { forgetMedia, mediaState } from "./replyMediaStore.svelte";
+  // Item 879: a transparent picture with dark ink sits on white paper (the SVGs here already do).
+  import { paperIfDarkInk } from "./rasterBacking";
 
   let {
     items,
@@ -57,7 +59,7 @@
           <div class="rm-wait">Loading {nameOf(c.written)}…</div>
         {:else if s.status === "done" && s.kind === "image"}
           <button class="rm-thumb" use:tip={"Click to see it full size"} aria-label={`Show ${nameOf(c.written)} full size`} onclick={() => (big = { url: s.url, c })}>
-            <img src={s.url} alt={label(c)} loading="lazy" decoding="async" />
+            <img src={s.url} alt={label(c)} loading="lazy" decoding="async" use:paperIfDarkInk />
           </button>
         {:else if s.status === "done"}
           <!-- svelte-ignore a11y_media_has_caption -->
@@ -87,7 +89,7 @@
 {#if big}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="rm-over" use:portal role="dialog" aria-modal="true" aria-label="Picture, full size" tabindex="-1" onclick={() => (big = null)}>
-    <img class:svg={/\.svg$/i.test(big.c.path)} src={big.url} alt={label(big.c)} />
+    <img class:svg={/\.svg$/i.test(big.c.path)} src={big.url} alt={label(big.c)} use:paperIfDarkInk />
     <span class="rm-hint">
       {label(big.c)} · Click or press Esc to close
       {#if onopen}

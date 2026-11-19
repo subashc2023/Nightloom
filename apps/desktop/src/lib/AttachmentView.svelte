@@ -4,6 +4,8 @@
   import { attachmentBytes, type AttachmentContent } from "./attachments.svelte";
   import * as tabs from "./tabs";
   import { viewGet, viewSet } from "./viewState";
+  // Item 879: a transparent PNG/GIF/WebP with dark ink sits on white paper, readable on the dark looks.
+  import { paperIfDarkInk } from "./rasterBacking";
 
   /**
    * An attachment kept as an ordinary tab (nightshift backlog 145 pass 2):
@@ -69,6 +71,7 @@
       class="attach-view-img"
       class:full
       {src}
+      use:paperIfDarkInk
       alt={bytes.name}
       use:tip={full ? "Click to fit the pane" : "Click for the image's own size"}
       onclick={() => setFull(!full)}

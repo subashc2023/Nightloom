@@ -25,6 +25,8 @@
   import { fileFind } from "./fileFind.svelte";
   import { utf16Range } from "./evidenceBlock";
   import { svgBacking, withInk, type SvgBacking } from "./diagramBlock";
+  // Item 879: a transparent PNG/GIF/WebP with dark ink sits on white paper, as an SVG does.
+  import { paperIfDarkInk } from "./rasterBacking";
   import { readKitTheme } from "./pageTheme";
 
   let { content }: { content: Extract<TabContent, { kind: "file" }> } = $props();
@@ -248,6 +250,7 @@
         class:full
         class:paper={svgShown?.backing === "paper"}
         {src}
+        use:paperIfDarkInk
         alt={content.path}
         use:tip={full ? "Click to fit the pane" : "Click for the image's own size"}
         onclick={() => (full = !full)}
