@@ -74,6 +74,8 @@ export interface ReachAccount {
   on: boolean;
   claude_ai: boolean;
   in_scan: boolean;
+  /** Item 845: when it was last checked on its own (Watch's per-source Check now), RFC 3339. */
+  checked_at?: string | null;
 }
 
 export interface HomeReach {

@@ -70,6 +70,7 @@
     type NeedRow,
   } from "./homeFirst";
   import type { HostRole } from "./hosts";
+  import HomeStage from "./HomeStage.svelte";
 
   interface Props {
     client: Client;
@@ -99,6 +100,8 @@
 
   // Home covers the page's dock, so its notes show here.
   let msg = $state<string | null>(null);
+  /** Item 845: the stage's Watching tab is in focus (Home's own sections show); a task's tab draws its view instead. */
+  let watching = $state(true);
   function onnote(text: string) {
     msg = text;
     setTimeout(() => {
@@ -394,12 +397,16 @@
   function typedTell() {
     saveDraft(tellKey, tell);
   }
+  // The phone's view in focus (its stage's tab), told to the Mac just before a Tell Home message so Home reads where
+  // he typed from (846 §7 step 3). Best-effort: an older Mac or the away server sends the words without it.
+  let stageWhere = $state({ view: "watch", task: "" });
   async function sendTell() {
     const text = tell.trim();
     if (!text || tellBusy) return;
     const target = homeTarget(home);
     tellBusy = true;
     try {
+      await client.homeStageFocus(stageWhere.view, stageWhere.task).catch(() => {});
       if (target && "chat" in target) {
         if (await sendInto(target.chat, home.project, text)) {
           tell = afterSend(tell, text);
@@ -501,6 +508,11 @@
     </button>
   {/if}
 
+  <!-- Item 845: Home's stage — the bar, the tab row (Watching, the brief, Home's tasks, Chat); a task's tab draws its
+       view here in place of Home's own sections. Tell Home stays under every tab. -->
+  <HomeStage {client} {home} {scan} needs={needs.length + cards.length} {fil} tick={bump} bind:watching bind:where={stageWhere} onopen={(c, p) => onopen(c, p)} {onnote} />
+
+  {#if watching}
   <!-- 1. Needs you -->
   <div class="h-sec" data-home-section="needs">
     {@render head("needs", "Needs you", needs.length + cards.length)}
@@ -636,6 +648,8 @@
     {/if}
   </div>
 
+  {/if}
+
   <!-- 5. Tell Home, and the Jobs row -->
   <div class="h-sec tell" data-home-section="tell">
     <label class="h-tell-label" for="h-tell">Tell Home…</label>
@@ -645,6 +659,7 @@
       <button class="h-btn primary" disabled={tellBusy || !tell.trim()} onclick={sendTell}>Send</button>
     </div>
   </div>
+  {#if watching}
   <button class="h-row link jobs" onclick={onjobs} data-home-jobs>
     <span class="h-row-top">
       <span class="h-row-title">Jobs</span>
@@ -659,6 +674,7 @@
       {@render head("sources", "Home on this Mac", null)}
       {#if !folded("sources")}<HomeSources {client} />{/if}
     </div>
+  {/if}
   {/if}
   <div class="h-foot"></div>
   {#if msg || queued > 0}

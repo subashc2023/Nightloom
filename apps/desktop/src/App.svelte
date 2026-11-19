@@ -92,6 +92,7 @@
   import NoteView from "./lib/NoteView.svelte";
   import GraphView from "./lib/GraphView.svelte";
   import Welcome from "./lib/Welcome.svelte";
+  import HomeStage from "./lib/homeStage/Stage.svelte";
   import WaitingChat from "./lib/WaitingChat.svelte";
   import { scheduledFor } from "./lib/scheduled.svelte";
   import { chatPage } from "./lib/waitingChat";
@@ -895,7 +896,19 @@
               </div>
             {:else if liveTab?.id === t.id}
               <div class="content">
-                {#if waiting && app.activeSessionId}
+                {#if isHome(app.project)}
+                  <!-- Item 845: Home opens on its stage — its own new-chat page (Watch) and its own
+                       chat screen (the transcript inside the stage's Chat tab), in both layouts. -->
+                  <HomeStage blank={blank && !waiting}>
+                    {#if waiting && app.activeSessionId}
+                      <WaitingChat key={app.activeSessionId} />
+                    {:else if classic()}
+                      <TranscriptClassic />
+                    {:else}
+                      <Transcript />
+                    {/if}
+                  </HomeStage>
+                {:else if waiting && app.activeSessionId}
                   <WaitingChat key={app.activeSessionId} />
                 {:else if blank}
                   <Welcome />
@@ -910,7 +923,7 @@
                      rather than in any of them. -->
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
-              {#if !blank || waiting}
+              {#if !blank || waiting || isHome(app.project)}
                 <!-- Item 780: a recurring job's chat carries its approval card. -->
                 {#if app.activeSessionId}
                   <div class="job-card-dock">

@@ -184,10 +184,62 @@ pub(crate) async fn home_reach_check(binary: Option<String>) -> Result<HomeReach
     .map_err(|e| format!("the check did not finish: {e}"))
 }
 
+/// Item 845: Watch's per-source Check now — ask Claude Code about one
+/// connector (`claude mcp get`: no model request), keep it, return the rows.
+#[tauri::command]
+pub(crate) async fn home_reach_check_one(
+    connector: String,
+    binary: Option<String>,
+) -> Result<HomeReach, String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    let bin = crate::commands::cli::cli_binary(binary);
+    tokio::task::spawn_blocking(move || {
+        home::reach::check_one(&config, &bin, &connector, chrono::Utc::now())?;
+        Ok(reach_of(&config))
+    })
+    .await
+    .map_err(|e| format!("the check did not finish: {e}"))?
+}
+
 /// Turn one of his connectors on or off for Home; the rows after.
 #[tauri::command]
 pub(crate) fn home_reach_set(connector: String, on: bool) -> Result<HomeReach, String> {
     let config = project::config_dir().ok_or("no Nightloom home")?;
     home::reach::set_on(&config, &connector, on)?;
     Ok(reach_of(&config))
+}
+
+/// Item 845: the tasks on Home's stage, oldest first.
+#[tauri::command]
+pub(crate) fn home_tasks() -> Result<Vec<home::tasks::Task>, String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    Ok(home::tasks::read(&config, chrono::Utc::now()))
+}
+
+/// Item 845: one click of his on the stage that Home should know (a
+/// "kind B" control) — a line Home reads at its next look.
+#[tauri::command]
+pub(crate) fn home_task_event(task: String, view: String, line: String) -> Result<(), String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    home::tasks::record(&config, &task, &view, &line, chrono::Utc::now())
+}
+
+/// Item 845 (846 §7 step 3): the view in focus on the stage, for the
+/// header on his next message to Home.
+#[tauri::command]
+pub(crate) fn home_stage_focus(view: String, task: Option<String>) -> Result<(), String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    home::tasks::set_focus(
+        &config,
+        &view,
+        task.as_deref().unwrap_or(""),
+        chrono::Utc::now(),
+    )
+}
+
+/// Item 845: his × on a task's tab. The work is not stopped by this.
+#[tauri::command]
+pub(crate) fn home_task_close(id: String) -> Result<(), String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    home::tasks::close(&config, &id, chrono::Utc::now())
 }

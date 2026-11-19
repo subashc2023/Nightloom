@@ -3146,6 +3146,56 @@ mod tests {
             .unwrap();
         assert!(feed["rows"].as_array().unwrap().is_empty());
         assert!(feed["seen_at"].is_string(), "{feed}");
+
+        // Item 845: Home's stage on the phone — the tasks, a click Home reads at its next look, and the tab's ×.
+        let cfg = host.nightshift.join("home-config");
+        crate::home::tasks::update(
+            &cfg,
+            &serde_json::json!({ "task": "Sorting what arrived", "view": "triage", "doing": "Reading mail" }),
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let tasks: serde_json::Value = c
+            .get(format!("{base}/api/home/tasks"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(tasks[0]["id"], "sorting-what-arrived", "{tasks}");
+        assert_eq!(tasks[0]["view"], "triage");
+        let r = c
+            .post(format!("{base}/api/home/tasks/event"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "task": "Sorting what arrived", "view": "triage", "line": "you moved Mom's message to Needs you" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let pending = crate::home::tasks::pending(&cfg);
+        assert_eq!(pending.len(), 1, "the click is kept for Home's next look");
+        let r = c
+            .post(format!("{base}/api/home/tasks/sorting-what-arrived/close"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let tasks: serde_json::Value = c
+            .get(format!("{base}/api/home/tasks"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            tasks.as_array().unwrap().is_empty(),
+            "the closed tab is gone: {tasks}"
+        );
         server.stop().await;
     }
 

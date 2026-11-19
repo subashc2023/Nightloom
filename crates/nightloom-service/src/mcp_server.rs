@@ -227,6 +227,10 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     (crate::home::route::START_TOOL, Effect::Session),
     (crate::home::route::SEND_TOOL, Effect::Session),
     (crate::home::route::STATUS_TOOL, Effect::ReadOnly),
+    // Home's stage (item 845): its own task files, and the mark on the
+    // list of his clicks.
+    (crate::home::tasks::TOOL, Effect::Session),
+    (crate::home::tasks::EVENTS_TOOL, Effect::Session),
     // Runs a command of the model's (nightshift item 430): what Bash is.
     ("preview", Effect::Mutating),
     // The note organisers (item 472), served with `--notes`.
@@ -319,6 +323,13 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
         .any(|t| t.def().name == crate::home::route::START_TOOL)
     {
         out.push_str(crate::home::route::INSTRUCTION);
+    }
+    // Item 845: the stage's tools, Home's chats only.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::home::tasks::TOOL)
+    {
+        out.push_str(crate::home::tasks::INSTRUCTION);
     }
     // Item 472: present only when the organisers are served.
     if tools
@@ -450,6 +461,8 @@ pub fn tools_in_chat(
     // chat but Home can start chats. (An incognito server drops them.)
     if is_home && remember {
         tools.extend(crate::home::route::tools(config, current));
+        // Item 845: the stage — what Home is doing, and what he did on it.
+        tools.extend(crate::home::tasks::tools(config));
     }
     // The image tool that is not built yet (item 823, stage 1): every
     // chat, incognito too — it only counts the call, and a chat that
@@ -2873,6 +2886,7 @@ mod tests {
         crate::chain::ensure(&config, "c").unwrap();
         served.extend(crate::chain::tools(&config, Some("c")));
         served.extend(crate::home::route::tools(&config, None));
+        served.extend(crate::home::tasks::tools(&config));
         for tool in &served {
             let name = tool.def().name;
             assert_eq!(

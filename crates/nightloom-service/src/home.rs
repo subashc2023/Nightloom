@@ -37,6 +37,8 @@ pub mod reach;
 pub mod route;
 /// Item 808: Messages, Contacts, Reminders and the Calendar app, read once he allows them.
 pub mod sources;
+/// Item 845: the stage's tasks and his clicks on it.
+pub mod tasks;
 
 /// The registry `source` that marks Home's project.
 pub const SOURCE: &str = "nightloom:home";
