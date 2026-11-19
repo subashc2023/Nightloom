@@ -440,6 +440,20 @@ function mdCell(s: string): string {
   return s.replace(/\s+/g, " ").trim().replace(/\|/g, "\\|");
 }
 
+/**
+ * Item 860: the paste as a note's Markdown — `htmlPasteText`'s walk with
+ * tables as Markdown tables (item 684) and headings as `#` lines. Null on
+ * any failure, so the paste goes in as it always did.
+ */
+export function htmlNoteText(html: string, onImage: (img: El) => string | null): string | null {
+  if (!html) return null;
+  try {
+    return convert(wrapRows(html), onImage, true, true, true);
+  } catch {
+    return null;
+  }
+}
+
 export function htmlPasteText(html: string, onImage: (img: El) => string | null): string | null {
   if (!html) return null;
   try {
@@ -463,7 +477,13 @@ export function quoteText(html: string): string | null {
   }
 }
 
-function convert(html: string, onImage?: (img: El) => string | null, tables = false, always = false): string | null {
+function convert(
+  html: string,
+  onImage?: (img: El) => string | null,
+  tables = false,
+  always = false,
+  headings = false,
+): string | null {
   const root = parseHtml(html);
   // MathJax v2 pairs: frame id `MathJax-Element-3-Frame` ↔ script id `MathJax-Element-3`.
   const scripts = new Map<string, El>();
@@ -605,6 +625,8 @@ function convert(html: string, onImage?: (img: El) => string | null, tables = fa
       }
       const block = PARA.has(c.tag) ? 2 : LINE.has(c.tag) ? 1 : 0;
       if (block) nl(block);
+      // Item 860: a note keeps the copy's headings as Markdown headings.
+      if (headings && /^h[1-6]$/.test(c.tag)) put(`${"#".repeat(Number(c.tag[1]))} `);
       if (c.tag === "li") {
         const list = c.parent;
         if (list?.tag === "ol") {

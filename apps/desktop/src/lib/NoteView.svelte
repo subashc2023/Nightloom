@@ -29,6 +29,8 @@
   import { loadNoteMarkdown, saveNoteMarkdown } from "./noteMode";
   import { attachmentsFolder, imageAlt, imageNoteName, insertImage, linkPath, relativeToNote } from "./noteFormat";
   import { readBase64 } from "./attachFiles.svelte";
+  import { planFilePaste, planNotePaste, saveNotePasteImages, type NotePastePlan } from "./notePaste";
+  import { fetchPasteImage, rasterize } from "./pasteImages";
   import NoteEditPanel from "./NoteEditPanel.svelte";
   import { noteEditUi, onLanded, runningTurn } from "./noteEdit.svelte";
   import { changedLines, editBlock, jumpTarget } from "./noteEdit";
@@ -574,6 +576,88 @@
     }
   }
 
+  /**
+   * Item 860: copied text with images pasted into a note (`notePaste.ts`):
+   * the text and a link per image go in at once, as one paste; the images
+   * are saved into `attachments/` behind it, a one-line count showing while
+   * they do. Only where `addImage` works; elsewhere the paste is the
+   * editor's own (the text alone).
+   */
+  let pasting = $state<{ done: number; total: number; failed: number } | null>(null);
+  function onNotePaste(e: ClipboardEvent): boolean {
+    const target = open;
+    const key = bufferKey;
+    const cd = e.clipboardData;
+    if (!target || !key || !canImage || !cd || !formatted) return false;
+    const html = cd.getData("text/html");
+    const plan = planNotePaste(html, target.name);
+    if (plan) {
+      expectLanding(plan, target);
+      formatted.insertAtCaret(plan.text, true);
+      void landPaste(plan, target, key);
+      return true;
+    }
+    // A bare image (a screenshot copied, an image file copied in Finder).
+    const files = [...cd.files].filter((f) => f.type.startsWith("image/"));
+    if (files.length === 0 || cd.getData("text/plain").trim() !== "") return false;
+    void (async () => {
+      try {
+        const got = await Promise.all(
+          files.map(async (f) => ({ name: f.name || "image.png", src: `data:${f.type};base64,${await readBase64(f)}` })),
+        );
+        if (bufferKey !== key || !formatted) return;
+        const p = planFilePaste(got, target.name);
+        expectLanding(p, target);
+        formatted.insertAtCaret(p.text, true);
+        await landPaste(p, target, key);
+      } catch (err) {
+        addToast(`Could not paste the image: ${String(err)}`);
+      }
+    })();
+    return true;
+  }
+  /** Item 860: images of a paste still landing, by `scope:name`; the editor
+   *  waits for one before drawing it, so its link draws once its file is there. */
+  const landing = new Map<string, { done: Promise<void>; settle: () => void }>();
+  function landingKey(target: NonNullable<typeof open>, file: string, folder: string): string {
+    return `${target.scope}:${folder}/${file}`;
+  }
+  /** Before the links go in: each one's drawing waits for its file. */
+  function expectLanding(plan: NotePastePlan, target: NonNullable<typeof open>): void {
+    for (const img of plan.images) {
+      let settle = () => {};
+      const done = new Promise<void>((r) => (settle = r));
+      landing.set(landingKey(target, img.file, plan.folder), { done, settle });
+    }
+  }
+  async function landPaste(plan: NotePastePlan, target: NonNullable<typeof open>, key: string): Promise<void> {
+    let stale = 0;
+    const { saved, failed } = await saveNotePasteImages(plan, target.name, {
+      fetch: fetchPasteImage,
+      convert: rasterize,
+      keep: async (folder, file, mediaType, data) => {
+        const kept = await api.keepNoteFile(target.scope, folder, file, mediaType, data);
+        if (kept.kind !== "kept") throw new Error(`${kept.rel} is taken`);
+        return kept.rel;
+      },
+      relink: (from, to) => {
+        // The note was switched away from: its link cannot be moved here.
+        if (bufferKey !== key || !formatted || !formatted.replaceFirst(from, to)) stale++;
+      },
+      settled: (img) => {
+        const k = landingKey(target, img.file, plan.folder);
+        landing.get(k)?.settle();
+        landing.delete(k);
+      },
+      progress: (done, total, lost) => {
+        if (bufferKey === key) pasting = done < total ? { done, total, failed: lost } : null;
+      },
+    });
+    pasting = null;
+    if (failed > 0) addToast(`${failed} of ${saved + failed} pasted images could not be saved; each one's place says why`);
+    if (stale > 0) addToast(`${stale} pasted image links need fixing in ${target.name}: it was closed while they saved`);
+  }
+
   /** A relative image link drawn from the file beside the note: its bytes
    *  as a `data:` URL (the way an image tab draws one), kept per note. */
   const images = new Map<string, Promise<string | null>>();
@@ -585,8 +669,10 @@
     const k = `${target.scope}:${name}`;
     const have = images.get(k);
     if (have) return have;
-    const p = api
-      .readNoteMedia(target.scope, name)
+    // Item 860: a pasted image still being saved draws once it is.
+    const wait = landing.get(k)?.done ?? Promise.resolve();
+    const p = wait
+      .then(() => api.readNoteMedia(target.scope, name))
       .then((m) => (m?.kind === "image" && m.data ? `data:${m.media_type};base64,${m.data}` : null))
       .catch(() => null);
     // A miss is not kept: the file may land a moment later.
@@ -1000,6 +1086,13 @@
       <HtmlPage html={text} place={`note:${open?.scope}:${open?.name}`} title={open?.name ?? ""} />
     </div>
   {:else}
+    {#if pasting}
+      <div class="paste-progress" role="status">
+        Saving {pasting.total} pasted images… {pasting.done} of {pasting.total}{pasting.failed
+          ? ` (${pasting.failed} could not be saved)`
+          : ""}
+      </div>
+    {/if}
     {#key `${bufferKey}#${jump}`}
       <NoteEditor
         bind:this={formatted}
@@ -1007,6 +1100,7 @@
         {caret}
         {markdown}
         {imageSource}
+        onpaste={onNotePaste}
         placeholder={isVault
           ? "Yours, and readable from every project. Link another note with [[name]]."
           : isModel
@@ -1119,6 +1213,25 @@
     flex-direction: column;
   }
   /* Item 819: an HTML note's page fills the column under the head. */
+  /* Item 860: a pill over the bottom of the note while a paste's images save. */
+  .note {
+    position: relative;
+  }
+  .paste-progress {
+    position: absolute;
+    left: 50%;
+    bottom: 4.2rem;
+    transform: translateX(-50%);
+    z-index: 6;
+    padding: 0.3rem 0.8rem;
+    font-size: 0.8rem;
+    color: var(--ink, var(--text));
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    white-space: nowrap;
+    pointer-events: none;
+  }
   .page-wrap {
     flex: 1;
     min-height: 0;
