@@ -45,7 +45,6 @@ export const WEIGHT_HI = 1.45;
 export const ANGLE_HALF = 0.55;
 export const RETURN_MID = 0.862;
 export const RETURN_LO = 0.35;
-export const RETURN_HI = 2.55;
 /** The out spring: stiffness (1/s²) and damping (1/s), just under critical — a dot is shoved aside in a few frames. */
 export const SPRING_K = 240;
 export const SPRING_C = 2 * Math.sqrt(SPRING_K) * 0.95;

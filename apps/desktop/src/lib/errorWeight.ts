@@ -53,16 +53,6 @@ export function errorWeight(result: { content: string; is_error: boolean } | nul
   return softKind(result.content) ? "soft" : "hard";
 }
 
-/** Hard errors only — what every red mark asks. */
-export function isHardError(result: { content: string; is_error: boolean } | null | undefined): boolean {
-  return errorWeight(result) === "hard";
-}
-
-/** Soft errors only — what every amber mark asks. */
-export function isSoftError(result: { content: string; is_error: boolean } | null | undefined): boolean {
-  return errorWeight(result) === "soft";
-}
-
 const LINE: Record<SoftKind, string> = {
   auto: "auto mode could not check this call — not run",
   unread: "the file was not read first — not run",
