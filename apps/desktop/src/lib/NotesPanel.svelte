@@ -1,6 +1,7 @@
 <script lang="ts">
   import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
+  import { recoveredDrafts } from "./recoveredDrafts";
   import {
     app,
     openProjectFolder,
@@ -808,6 +809,16 @@
     if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${bytes} B`;
   }
+  // Item 871: kept drafts whose note is gone (`recoveredDrafts.ts`).
+  const recovered = $derived(
+    recoveredDrafts(app.noteDrafts, {
+      projectId: app.project?.id ?? null,
+      notes: app.notes,
+      vault: app.vault,
+      listed: app.notesListed,
+      complete: app.notesComplete,
+    }),
+  );
 </script>
 
 {#snippet pinned(scope: "instructions" | "memory", label: string, hint: string)}
@@ -1139,6 +1150,12 @@
 
 <!-- Item 495: its scroll comes back with it, per project (tabPlace's store). -->
 <div class="panel" bind:this={panelEl} use:tabPlace={`notes-panel:${app.project?.id ?? "unfiled"}`} use:dragScroll>
+  {#if recovered.length > 0}
+    <!-- Item 871: kept drafts whose note is gone — a quiet way back to them. -->
+    <button class="recovered-row" onclick={() => (app.showRecoveredDrafts = true)}
+      >{recovered.length === 1 ? "1 recovered draft" : `${recovered.length} recovered drafts`}</button
+    >
+  {/if}
   <!-- Item 415: narrows both sections as he types; the pinned rows stay. -->
   <div class="find-bar">
     <input autocorrect="off" autocapitalize="off" spellcheck="false"
@@ -1435,6 +1452,29 @@
 <InboxSortSheet />
 
 <style>
+  /* Item 871: the way back to recovered drafts — one quiet line. */
+  .recovered-row {
+    display: block;
+    width: calc(100% - 1rem);
+    margin: 0.4rem 0.5rem 0;
+    padding: 0.3rem 0.5rem;
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    color: var(--dim);
+    font-family: inherit;
+    font-size: 0.76rem;
+    text-align: left;
+    cursor: pointer;
+  }
+  .recovered-row:hover {
+    color: var(--text);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .recovered-row {
+    border-color: var(--line2);
+    border-radius: var(--r1);
+    font-size: 12px;
+  }
   .panel {
     flex: 1;
     min-height: 0;
