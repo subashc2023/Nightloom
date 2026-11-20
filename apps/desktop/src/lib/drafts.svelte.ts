@@ -89,6 +89,7 @@ import type { Attachment, ChatMode } from "./types";
 import type { EditState } from "./edit";
 import type { BoxPlace } from "./boxPlace";
 import { copyComments, readComments, type CommentSource, type PassageComment } from "./passageComments";
+import { sentComments } from "./sentComments";
 
 export interface Draft {
   text: string;
@@ -573,6 +574,31 @@ export function removeComment(key: string, id: number): void {
   schedule();
 }
 
+/**
+ * Item 892: a sent message's comments back in `key`'s box as chips (a
+ * rewind, a failed send, a held row taken back) — before any already
+ * there, as its chips go before his; fresh ids. Returns the ids given.
+ */
+export function restoreComments(key: string, list: readonly PassageComment[]): number[] {
+  if (list.length === 0) return [];
+  const back = copyComments([...list]).map((c) => ({ ...c, id: ++commentSeq }));
+  const d = draftFor(key);
+  d.comments = [...back, ...(d.comments ?? [])];
+  schedule();
+  return back.map((c) => c.id);
+}
+
+/** Item 892: the chips `restoreComments` gave, taken out again (a rewind's
+ *  Undo) — silently, since the message they came with is back in the thread. */
+export function withdrawComments(key: string, ids: readonly number[]): void {
+  const d = drafts[key];
+  if (!d?.comments || ids.length === 0) return;
+  d.comments = d.comments.filter((c) => !ids.includes(c.id));
+  if (d.comments.length === 0) delete d.comments;
+  if (!d.text && d.attachments.length === 0 && d.queue.length === 0 && !d.comments) delete drafts[key];
+  schedule();
+}
+
 /** The comments in `key`'s box, oldest first; empty when none. */
 export function draftComments(key: string): PassageComment[] {
   return drafts[key]?.comments ?? [];
@@ -825,8 +851,13 @@ export function takeBackQueued(key: string, id?: number): QueuedMessage | null {
   const i = id === undefined ? d.queue.length - 1 : d.queue.findIndex((q) => q.id === id);
   if (i < 0) return null;
   const [q] = d.queue.splice(i, 1);
-  d.text = d.text ? (q!.text ? `${q!.text}\n${d.text}` : d.text) : q!.text;
+  // Item 892: a held message that carried comments comes back as its
+  // typed text and its chips, not the comments flattened into the text.
+  const sc = sentComments(q!.text);
+  const words = sc ? sc.typed : q!.text;
+  d.text = d.text ? (words ? `${words}\n${d.text}` : d.text) : words;
   d.attachments.push(...q!.attachments);
+  if (sc) restoreComments(key, sc.comments);
   schedule();
   return q!;
 }
