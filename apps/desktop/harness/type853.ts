@@ -128,7 +128,7 @@ async function run() {
     // tab-switch-*: to the chat's tab and back to the aside's, as a Ctrl+Tab or two clicks on the strip do.
     if (sc.startsWith("tab-switch")) {
       const p = app.tabs.panes[0];
-      const asideTab = p.tabs[p.active];
+      const asideTab = p.tabs.find((t) => t.id === p.active)!;
       const other = p.tabs.find((t) => t.id !== asideTab.id);
       if (other) {
         await activateTab(other.id);
