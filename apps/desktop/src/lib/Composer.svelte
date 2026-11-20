@@ -2646,7 +2646,7 @@
    *  { text, keys }; adding a string to it showed "[object Object]" (his
    *  report, 2026-11-11). */
   function withEstimate(t: { text: string; keys?: string }): { text: string; keys?: string } {
-    return shown && Number(rowFold) >= 2 ? { ...t, text: `${t.text} · ${shown.long}` } : t;
+    return shown && Number(rowFold) >= 5 ? { ...t, text: `${t.text} · ${shown.long}` } : t;
   }
   async function submit() {
     if (aside) return asideSubmit();
@@ -3178,6 +3178,8 @@
   // its icon; 4 the pickers' values at 72 px; 5 at 48 px; 6 the floor —
   // pickers on row one at the left, the actions on row two at the right,
   // both rows the same height.
+  // 2026-11-19 (his "why does it not say how many tokens are in my msg anymore"): the token
+  // estimate now folds last before the floor (level 5); Attach/Ask aside/Council shrink at 2.
   const ROW_FOLD_MAX = 6;
   let rowEl = $state<HTMLElement | null>(null);
   let rowFold = $state("0");
@@ -5497,18 +5499,18 @@
   .row:not([data-fold="0"]) .pick-k {
     display: none;
   }
-  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .draft-tokens {
+  .row:is([data-fold="5"], [data-fold="6"]) .draft-tokens {
     display: none;
   }
   /* Item 716: Council's icon and the Attach square — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
-  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .fold-word,
-  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-word {
+  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .fold-word,
+  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-word {
     display: none;
   }
-  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .short-word {
+  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .short-word {
     display: inline;
   }
-  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-ico {
+  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-ico {
     display: inline-flex;
   }
   .row:is([data-fold="4"]) .pick-name {
