@@ -1,34 +1,20 @@
 <script lang="ts">
   // A tool result's images under its row (nightshift backlog 434): what a
   // browser screenshot showed the model, as thumbnails; a click opens one
-  // full size over the window, a click or Esc closes it.
+  // full size over the window (PictureViewer, item 885); a click outside it, Esc or Close closes it.
   import { tip } from "./tip";
   import { imageSrc, toolImages } from "./toolImages.svelte";
   // Item 879: a transparent PNG/GIF/WebP with dark ink sits on white paper, readable on the dark looks.
   import { paperIfDarkInk } from "./rasterBacking";
+  // Item 885: full size is the shared viewer (click zooms at the spot, pinch zooms; outside/Esc/Close leaves).
+  import PictureViewer from "./PictureViewer.svelte";
 
   let { session, id, name }: { session: string | null; id: string; name: string } = $props();
 
   const info = $derived(toolImages(session, id));
   let big = $state<string | null>(null);
 
-  // Drawn on <body>: a row's entrance animation leaves a transform on an
-  // ancestor, and a fixed layer inside a transform is fixed to it.
-  function portal(node: HTMLElement) {
-    document.body.appendChild(node);
-    return { destroy: () => node.remove() };
-  }
-
-  function onkey(e: KeyboardEvent): void {
-    if (big && e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      big = null;
-    }
-  }
 </script>
-
-<svelte:window onkeydown={onkey} />
 
 {#if info.status === "loading"}
   <div class="ti-wait">Loading the image…</div>
@@ -54,11 +40,7 @@
 {/if}
 
 {#if big}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="ti-over" use:portal role="dialog" aria-modal="true" aria-label="Image, full size" tabindex="-1" onclick={() => (big = null)}>
-    <img src={big} alt="Full size" use:paperIfDarkInk />
-    <span class="ti-hint">Click or press Esc to close</span>
-  </div>
+  <PictureViewer src={big} alt={`What ${name} returned, full size`} label={name} onclose={() => (big = null)} />
 {/if}
 
 <style>
@@ -91,28 +73,5 @@
     margin: 0 12px 8px 40px;
     font-size: 0.75rem;
     color: var(--dim);
-  }
-  .ti-over {
-    position: fixed;
-    inset: 0;
-    z-index: 1000;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    background: color-mix(in srgb, black 78%, transparent);
-    cursor: zoom-out;
-  }
-  .ti-over img {
-    max-width: calc(100vw - 80px);
-    max-height: calc(100vh - 100px);
-    object-fit: contain;
-    border-radius: 6px;
-    box-shadow: 0 10px 40px rgb(0 0 0 / 0.5);
-  }
-  .ti-hint {
-    font-size: 0.75rem;
-    color: rgb(255 255 255 / 0.7);
   }
 </style>

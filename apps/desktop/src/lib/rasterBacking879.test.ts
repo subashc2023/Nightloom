@@ -4,6 +4,8 @@ import replyMedia from "./ReplyMedia.svelte?raw";
 import fileView from "./FileView.svelte?raw";
 import noteMedia from "./NoteMedia.svelte?raw";
 import toolImages from "./ToolImagesView.svelte?raw";
+// Item 885: the full-size overlay of ReplyMedia and ToolImagesView is now this one shared viewer.
+import pictureViewer from "./PictureViewer.svelte?raw";
 import attachmentView from "./AttachmentView.svelte?raw";
 import attachmentLayer from "./AttachmentLayer.svelte?raw";
 import userBubble from "./UserBubble.svelte?raw";
@@ -57,9 +59,12 @@ describe("rasterBackingOf (item 879)", () => {
   });
 
   it("is wired into every surface a picture shows on, and the paper is white", () => {
-    const files = { replyMedia, fileView, noteMedia, toolImages, attachmentView, attachmentLayer, userBubble, userBubbleClassic };
+    const files = { replyMedia, pictureViewer, fileView, noteMedia, toolImages, attachmentView, attachmentLayer, userBubble, userBubbleClassic };
     for (const [name, src] of Object.entries(files)) expect(src, name).toMatch(/use:paperIfDarkInk/);
-    expect(replyMedia.match(/use:paperIfDarkInk/g)).toHaveLength(2);
+    // The strip's thumbnail here; its full-size picture is PictureViewer's (item 885).
+    expect(replyMedia.match(/use:paperIfDarkInk/g)).toHaveLength(1);
+    expect(replyMedia).toMatch(/<PictureViewer/);
+    expect(toolImages).toMatch(/<PictureViewer/);
     expect(noteEditor).toMatch(/paperIfDarkInk\(el\)/);
     expect(fs.readFileSync(new URL("./rasterBacking.css", import.meta.url), "utf8")).toMatch(/img\.nl-paper\s*{[^}]*background:\s*#fff/);
   });

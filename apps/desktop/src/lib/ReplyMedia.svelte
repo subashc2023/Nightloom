@@ -4,8 +4,8 @@
   // an SVG included — is drawn by <img> (an SVG from a data: URL, the rest
   // from a blob URL; replyMediaStore says why), never as markup
   // in the page, so an SVG's scripts never run; a video is a player with
-  // controls. A click on a picture shows it full size over the window;
-  // Esc or a click closes it. The Mac and the phone share this component;
+  // controls. A click on a picture shows it full size over the window
+  // (PictureViewer, item 885); Esc, Close or a click outside it closes it. The Mac and the phone share this component;
   // the loader behind `mediaState` is each one's own.
   import { tip } from "./tip";
   import { fmtSize } from "./cards";
@@ -13,6 +13,8 @@
   import { forgetMedia, mediaState } from "./replyMediaStore.svelte";
   // Item 879: a transparent picture with dark ink sits on white paper (the SVGs here already do).
   import { paperIfDarkInk } from "./rasterBacking";
+  // Item 885: full size is the shared viewer — a click on the picture zooms there, pinch zooms, only outside/Esc/Close leaves.
+  import PictureViewer from "./PictureViewer.svelte";
 
   let {
     items,
@@ -36,23 +38,8 @@
   const shown = $derived(rows.filter(({ c, s }) => s.status !== "failed" || c.explicit));
   let big = $state<{ url: string; c: MediaCandidate } | null>(null);
 
-  function portal(node: HTMLElement) {
-    document.body.appendChild(node);
-    return { destroy: () => node.remove() };
-  }
-
-  function onkey(e: KeyboardEvent): void {
-    if (big && e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      big = null;
-    }
-  }
-
   const nameOf = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 </script>
-
-<svelte:window onkeydown={onkey} />
 
 {#if shown.length > 0}
   <div class="rm-strip" class:inline data-reply-media={inline ? "inline" : "strip"}>
@@ -90,13 +77,10 @@
 {/if}
 
 {#if big}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="rm-over" use:portal role="dialog" aria-modal="true" aria-label="Picture, full size" tabindex="-1" onclick={() => (big = null)}>
-    <img class:svg={/\.svg$/i.test(big.c.path)} src={big.url} alt={label(big.c)} use:paperIfDarkInk />
-    <span class="rm-hint">
-      {label(big.c)} · Click or press Esc to close
+  {@const p = big.c.path}
+  <PictureViewer src={big.url} alt={label(big.c)} label={label(big.c)} svg={/\.svg$/i.test(p)} onclose={() => (big = null)}>
+    {#snippet actions()}
       {#if onopen}
-        {@const p = big.c.path}
         <button
           class="ns-btn small"
           onclick={(e) => {
@@ -106,8 +90,8 @@
           }}>Open as a tab</button
         >
       {/if}
-    </span>
-  </div>
+    {/snippet}
+  </PictureViewer>
 {/if}
 
 <style>
@@ -141,8 +125,7 @@
   }
   /* A plot's SVG is usually drawn on no background at all: on the dark
      look its black axes would vanish, so it sits on paper. */
-  .rm-item.svg .rm-thumb,
-  .rm-over img.svg {
+  .rm-item.svg .rm-thumb {
     background: #fff;
   }
   .rm-thumb:hover {
@@ -184,31 +167,5 @@
     display: flex;
     align-items: center;
     gap: 8px;
-  }
-  .rm-over {
-    position: fixed;
-    inset: 0;
-    z-index: 1000;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    background: color-mix(in srgb, black 78%, transparent);
-    cursor: zoom-out;
-  }
-  .rm-over img {
-    max-width: calc(100vw - 80px);
-    max-height: calc(100vh - 110px);
-    object-fit: contain;
-    border-radius: 6px;
-    box-shadow: 0 10px 40px rgb(0 0 0 / 0.5);
-  }
-  .rm-hint {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 0.75rem;
-    color: rgb(255 255 255 / 0.75);
   }
 </style>
