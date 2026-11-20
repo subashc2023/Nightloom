@@ -7,7 +7,7 @@ import * as api from "./api";
 import { app } from "./state.svelte";
 import { browsers, resetBrowsers } from "./claudeBrowser.svelte";
 import { DRIVE_TOOL } from "./drive";
-import { driveNote, driveTook, handBack, pendingDrive, releasePage, setDriveNote, takePage } from "./driveAsk.svelte";
+import { driveNote, driveTook, handBack, pendingDrive, releasePage, setDriveNote, settleTook, takePage } from "./driveAsk.svelte";
 import { resetViewState } from "./viewState";
 import * as tabs from "./tabs";
 import type { ApprovalRequest } from "./types";
@@ -145,6 +145,41 @@ describe("the drive card's actions (872 step 5)", () => {
     await releasePage(r);
     expect(api.claudeBrowserHold).toHaveBeenLastCalledWith("s1", false);
     expect(browsers.byChat.s1?.held_by).toBe("model");
+  });
+});
+
+describe("the kept took flag after the browser is given back (872 leftover)", () => {
+  it("take, Not now, the same ask again: it opens untaken, his note kept", async () => {
+    const r = ask();
+    await takePage(r);
+    expect(driveTook(r)).toBe(true);
+    setDriveNote(r, "half signed in");
+    await releasePage(r);
+    const again = req({ id: "toolu_d3" });
+    expect(driveTook(again)).toBe(false);
+    expect(driveNote(again)).toBe("half signed in");
+  });
+
+  it("Decline clears it even when the browser was already given back", async () => {
+    const r = ask();
+    await takePage(r);
+    status = { ...LIVE, held_by: "model" };
+    browsers.byChat.s1 = status;
+    await releasePage(r);
+    expect(driveTook(req({ id: "toolu_d4" }))).toBe(false);
+  });
+
+  it("a kept flag holds only while the browser is his (Give back in the tab, a stopped turn)", async () => {
+    const r = ask();
+    await takePage(r);
+    expect(settleTook(r, true)).toBe(true);
+    expect(settleTook(r, false)).toBe(false);
+    expect(driveTook(req({ id: "toolu_d5" }))).toBe(false);
+  });
+
+  it("the card settles its flag against the browser and drops it on Not now and Decline", () => {
+    expect(cardSrc).toContain('if (known && took && !done) took = settleTook(req, status?.held_by === "user");');
+    expect(cardSrc.match(/await releasePage\(req\);\n\s+took = false;/g)).toHaveLength(2);
   });
 });
 

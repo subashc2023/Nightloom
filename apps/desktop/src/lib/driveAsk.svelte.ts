@@ -38,6 +38,16 @@ function setTook(req: ApprovalRequest, took: boolean): void {
   viewSet(driveKey(driveChat(req), req.input, "took"), took, false);
 }
 
+/**
+ * The kept "took" flag, checked against the browser: when it is not held for
+ * him (given back in the browser tab, the turn stopped, a relaunch), the ask
+ * is untaken again. Returns whether he still has the page.
+ */
+export function settleTook(req: ApprovalRequest, heldByHim: boolean): boolean {
+  if (!heldByHim && driveTook(req)) setTook(req, false);
+  return driveTook(req);
+}
+
 /** The ask is over: nothing of it is kept. */
 export function forgetDrive(req: ApprovalRequest): void {
   setDriveNote(req, "");
@@ -68,9 +78,13 @@ export async function takePage(req: ApprovalRequest): Promise<string | null> {
   return null;
 }
 
-/** Give the browser back without answering (Not now, Decline). */
+/**
+ * Give the browser back without answering (Not now, Decline). He no longer
+ * has the page, so the same ask made again opens untaken (his note stays).
+ */
 export async function releasePage(req: ApprovalRequest): Promise<void> {
   const chat = driveChat(req);
+  setTook(req, false);
   if (browsers.byChat[chat]?.held_by !== "user") return;
   try {
     await setHold(chat, false);
