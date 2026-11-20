@@ -72,7 +72,7 @@
   import { filledBody, loadSaved, saved } from "./savedPromptsStore.svelte";
   import { watchSelection } from "./selectionMemory";
   import { isMac } from "./platform";
-  import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
+  import { boxHistoryFor, editKind, historyInput, historyKey } from "./boxHistory";
   import TypedMathBar from "./TypedMathBar.svelte";
   import { applyTypedMath, findTypedMath, rebaseTypedMath, wrapTypedMath, type TypedMathSpan } from "./typedMath";
   import { clearDenied, deniedFor, denyTypedMath, typedMathPrefs } from "./typedMathPrefs.svelte";
@@ -1965,7 +1965,11 @@
    * is seen here and recorded as a step of its own, or starts a fresh
    * history for a new chat or after a send.
    */
-  const hist = new BoxHistory(untrack(() => text));
+  // Item 886: the history is the draft's (`boxHistoryFor`), so it outlives a
+  // tab switch (this box unmounts) and a chat switch (its key changes) —
+  // the chat's box and an aside's alike. ~~`new BoxHistory(text)` per box,
+  // `hist.reset(t)` on a new key~~.
+  let hist = boxHistoryFor(untrack(() => key), untrack(() => text));
   let histKey = untrack(() => key);
   $effect(() => {
     const k = key;
@@ -1973,7 +1977,7 @@
     untrack(() => {
       if (k !== histKey) {
         histKey = k;
-        hist.reset(t);
+        hist = boxHistoryFor(k, t);
         composing = false;
       } else if (t !== hist.current.text) {
         if (t === "") hist.reset("");
@@ -5103,14 +5107,33 @@
     --q-ground: var(--aside-well, var(--sheet));
     border-style: dashed;
     background: var(--aside-well, var(--sheet));
+  }
+  /* ~~Every aside's card 8 px × 10 px, gap 6, its row 5 px under it~~ —
+     item 886 (his "the main chat text box seems to sit slightly higher than
+     the aside textbox … the spacing is like slightly different"): an aside
+     tab's and the side panel's box take the chat's padding, gap and row
+     gap; only a floating card in the chat (`compact`) keeps the tight ones. */
+  .composer.aside.compact .card {
     padding: 8px 10px;
     gap: 6px;
+  }
+  .composer.aside.compact .bottom-row {
+    margin-top: 5px;
+  }
+  /* Item 886: the chat's row is taller than an aside's — its Send carries
+     the ▾ (Send later), which an aside has not — so the aside's text sat
+     lower by the difference (5.8 px Jarvis, 3.9 px Classic, measured at
+     1440×900 in the 886 harness). The row keeps the chat's height. */
+  :global(:where(:root:not([data-layout="classic"]))) .composer.aside:not(.compact) .row {
+    min-height: 33.8px;
+  }
+  :global(:where([data-layout="classic"])) .composer.aside:not(.compact) .row {
+    min-height: 36.8px;
   }
   .composer.aside .card:focus-within {
     border-style: solid;
   }
   .composer.aside .bottom-row {
-    margin-top: 5px;
     /* ~~space-between~~ (item 833): wrapped, it spread the chips of each
        later line apart (Format alone at the left in his shots); the line
        grows and the spacer pushes, so flex-end reads as the chat's row. */

@@ -26,3 +26,25 @@ export const INPUT_MS = 450;
 export function foldAnimates(reduced: boolean, held: boolean, sinceInputMs: number): boolean {
   return !reduced && (held || sinceInputMs < INPUT_MS);
 }
+
+/**
+ * Item 886 (his "asides … inconsistently save the position of where … I'm
+ * scrolled … when I flip to another tab and go back"): the header card's
+ * full height, kept per thread for the app's life. An aside tab unmounts
+ * when another tab is shown; on its return the card's height was 0 until
+ * measured, so the thread's room (`.aside-head-room`) was missing while the
+ * transcript put its place back, and the room arriving a frame later pushed
+ * the thread down by its height — 94 px measured at 1440×900 (scrollTop 300
+ * left, 394 back). Starting from the kept height, the room is there before
+ * the place is put back. A thread never measured takes the last height seen.
+ */
+const heads = new Map<string, number>();
+let lastHead = 0;
+export function keptHead(key: string): number {
+  return heads.get(key) ?? lastHead;
+}
+export function keepHead(key: string, height: number): void {
+  if (!(height > 0)) return;
+  heads.set(key, height);
+  lastHead = height;
+}

@@ -59,6 +59,9 @@
         </button>
       {/if}
     </div>
+  {:else if T.aside && T.asideRunSign !== "idle"}
+    <!-- Item 886: an aside's bar says it runs, with the chat's own sign. -->
+    <div class="left"><ChatRunSign aside={T.aside} session={T.asideChat} /></div>
   {/if}
 
   <div class="right" bind:this={T.rightEl}>

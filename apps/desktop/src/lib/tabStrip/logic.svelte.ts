@@ -1,7 +1,7 @@
 // Item 856 (2026-11-19): the behaviour of TabStrip, once. `TabStrip.svelte` (Jarvis) and
 // `TabStripClassic.svelte` mount this and keep only their markup and CSS; `logic.test.ts` beside it fails when
 // one look binds to something the other does not. Moved verbatim from TabStrip.svelte's script.
-import { app, closeTab, dropContent, droppedContent, moveTab, noteDraftKey, renameSession, splitTab } from "../state.svelte";
+import { app, asideAsking, asideOf, asideTabThread, closeTab, dropContent, droppedContent, moveTab, noteDraftKey, renameSession, splitTab } from "../state.svelte";
 import { renamedTo } from "../renameField";
 import { hasBoxDraft, newDraftKey } from "../drafts.svelte";
 import * as tabs from "../tabs";
@@ -72,6 +72,9 @@ export function tabStripLogic(props: () => TabStripLogicProps) {
   function running(t: tabs.Tab): boolean {
     // A chat running in the background (backlog 159, A2) keeps its mark.
     if (t.content.kind === "chat" && t.content.session && app.background[t.content.session]) return true;
+    // Item 886: an aside's tab carries the dot while its thread asks — the
+    // same mark as a chat's, from the same state its card and bar read.
+    if (t.content.kind === "aside") return asideAsking(asideOf(t.content.session, asideTabThread(t.content) ?? null)) !== null;
     if (!app.busy) return false;
     if (app.parked) return t.content.kind === "chat" && t.content.session === app.parked.session;
     return live?.id === t.id;

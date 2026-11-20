@@ -258,3 +258,40 @@ export class BoxHistory {
     while (chars > MAX_CHARS && this.past.length > 1) chars -= this.past.shift()!.after.text.length;
   }
 }
+
+/**
+ * Item 886 (his "command z and undos and redos … don't seem to save when I
+ * switch to another tab and switch back"): a box's history is its draft's,
+ * not the box's. The box unmounts when its tab is not the shown one (the
+ * chat's under an aside or a note tab, an aside's under the chat), and a
+ * chat switch changes its key; each took a fresh history, so ⌘Z after a
+ * switch did nothing. Kept here per draft key — a chat's id, a pending
+ * chat's `new:…` key, an aside's `aside:<uid>` (`Composer`'s `key`) — for
+ * the app's life, so the main chat's box and every aside's box get one
+ * rule. Memory only: a relaunch starts fresh, as the native fields do. The
+ * last `KEPT_HISTORIES` keys used are kept.
+ */
+export const KEPT_HISTORIES = 64;
+const kept = new Map<string, BoxHistory>();
+
+/** The history of draft `key`, whose text is `text` now. A kept history
+ *  whose text is not that (the draft changed while its box was away) takes
+ *  the change as a step of its own; an emptied draft starts fresh. */
+export function boxHistoryFor(key: string, text: string, now?: () => number): BoxHistory {
+  let h = kept.get(key);
+  if (h) {
+    kept.delete(key);
+    if (h.current.text !== text) {
+      if (text === "") h.reset("");
+      else h.external(text);
+    }
+  } else h = new BoxHistory(text, now);
+  kept.set(key, h);
+  while (kept.size > KEPT_HISTORIES) kept.delete(kept.keys().next().value as string);
+  return h;
+}
+
+/** Tests: forget every kept history. */
+export function forgetHistories(): void {
+  kept.clear();
+}
