@@ -27,6 +27,8 @@
   import { svgBacking, withInk, type SvgBacking } from "./diagramBlock";
   // Item 879: a transparent PNG/GIF/WebP with dark ink sits on white paper, as an SVG does.
   import { paperIfDarkInk } from "./rasterBacking";
+  // Item 885: a click zooms in at that spot (again: back to fit), pinch / ctrl-wheel zoom, a drag pans; kept per file.
+  import { zoomable } from "./pictureZoomAction";
   import { readKitTheme } from "./pageTheme";
 
   let { content }: { content: Extract<TabContent, { kind: "file" }> } = $props();
@@ -41,12 +43,9 @@
     plain = viewGet(plainKey, false);
   });
   $effect(() => viewSet(untrack(() => plainKey), plain, false));
-  const fullKey = $derived(`file.full:${content.path}`);
-  let full = $state(false);
-  $effect.pre(() => {
-    full = viewGet(fullKey, false);
-  });
-  $effect(() => viewSet(untrack(() => fullKey), full, false));
+  // Item 495, as a zoom since item 885: a picture's zoom and pan, kept per file past this view.
+  const zoomKey = $derived(`file.zoom:${content.path}`);
+  const kept = $derived(viewGet(zoomKey, ""));
   let reads = $state(0);
 
   $effect(() => {
@@ -242,18 +241,15 @@
   {:else if !file}
     <p class="dim">Reading…</p>
   {:else if file.kind === "image" && src}
-    <div class="media" class:scroll={full}>
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="media" data-picture-viewer use:zoomable={{ initial: kept, onchange: (v) => viewSet(zoomKey, v, "") }}>
       <img
         class="img"
-        class:full
         class:paper={svgShown?.backing === "paper"}
         {src}
         use:paperIfDarkInk
         alt={content.path}
-        use:tip={full ? "Click to fit the pane" : "Click for the image's own size"}
-        onclick={() => (full = !full)}
+        draggable="false"
+        use:tip={"Click to zoom in there (again to fit) · pinch to zoom · drag to pan"}
       />
     </div>
   {:else if file.kind === "pdf" && src}
@@ -367,10 +363,6 @@
     background: var(--well);
     overflow: hidden;
   }
-  .media.scroll {
-    display: block;
-    overflow: auto;
-  }
   .img {
     max-width: 100%;
     max-height: 100%;
@@ -384,11 +376,6 @@
     padding: 10px;
     border-radius: 6px;
     box-sizing: border-box;
-  }
-  .img.full {
-    max-width: none;
-    max-height: none;
-    cursor: zoom-out;
   }
   .pdf {
     width: 100%;

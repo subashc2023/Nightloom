@@ -101,3 +101,20 @@ export function clickVerdict(p: Pt, picture: Box, dragged: boolean): "zoom" | "c
 
 /** Esc closes the viewer; nothing else on the keyboard does. */
 export const keyCloses = (key: string): boolean => key === "Escape";
+
+/**
+ * A tab's zoom kept past leaving it (item 885 over item 495's kept state): ""
+ * at fit, else "s|x|y" with the pan as a fraction of the fit size, so a pane
+ * that changed size in between still opens on the same part of the picture.
+ */
+export function saveZoom(z: Zoom, fit: Box): string {
+  if (!isZoomed(z) || fit.width <= 0 || fit.height <= 0) return "";
+  const r = (n: number) => Math.round(n * 10000) / 10000;
+  return `${r(z.s)}|${r(z.x / fit.width)}|${r(z.y / fit.height)}`;
+}
+/** The inverse of `saveZoom` for the fit size now; anything unreadable is fit. */
+export function loadZoom(saved: string, fit: Box): Zoom {
+  const [s, x, y] = saved.split("|").map(Number);
+  if (!saved || ![s, x, y].every(Number.isFinite) || s <= 1) return { ...FIT };
+  return { s, x: x * fit.width, y: y * fit.height };
+}

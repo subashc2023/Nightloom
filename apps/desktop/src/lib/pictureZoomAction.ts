@@ -7,12 +7,17 @@
 //  - two-finger pinch: ctrl-wheel (Chrome, WebKit on a trackpad), WebKit's
 //    gesture* events, and two touch pointers (the phone) — around the fingers;
 //  - zoomed: a drag or a plain two-finger scroll pans;
-//  - a resize keeps the zoom, clamped to the new size; a new mount is fit.
-import { FIT, DRAG_SLOP, MAX_SCALE, clamp, clickVerdict, clickZoom, isZoomed, pinch, wheelFactor, zoomAt, zoomCss, type Box, type Pt, type Zoom } from "./pictureZoom";
+//  - a resize keeps the zoom, clamped to the new size; a new mount is fit,
+//    or a tab's kept zoom (`initial`/`onchange`, item 495's kept state).
+import { FIT, DRAG_SLOP, MAX_SCALE, clamp, clickVerdict, clickZoom, isZoomed, loadZoom, pinch, saveZoom, wheelFactor, zoomAt, zoomCss, type Box, type Pt, type Zoom } from "./pictureZoom";
 
 export interface ZoomableOptions {
   /** A click on the stage outside the picture. Absent: such a click does nothing. */
   onoutside?: () => void;
+  /** A tab's kept zoom (`saveZoom`'s string; "" = fit), applied once the picture has its size. */
+  initial?: string;
+  /** Each change of zoom or pan, as `saveZoom`'s string — for a tab to keep (item 495). */
+  onchange?: (saved: string) => void;
 }
 
 export function zoomable(stage: HTMLElement, opts: ZoomableOptions = {}) {
@@ -42,8 +47,30 @@ export function zoomable(stage: HTMLElement, opts: ZoomableOptions = {}) {
   function set(next: Zoom, glide = false): void {
     const el = img();
     if (!el) return;
-    z = clamp(next, fitBox(el), stageSize());
+    const fit = fitBox(el);
+    z = clamp(next, fit, stageSize());
     paint(glide);
+    const saved = saveZoom(z, fit);
+    if (saved !== lastSaved) {
+      lastSaved = saved;
+      options.onchange?.(saved);
+    }
+  }
+  /** The last state handed to `onchange` (or applied from `initial`). */
+  let lastSaved = "";
+  /** Apply a kept zoom once the picture is laid out (now, or at its load). */
+  function restore(saved: string | undefined): void {
+    const el = img();
+    if (saved === undefined || !el) return;
+    if (!el.complete || el.offsetWidth === 0) return; // the load listener does it
+    lastSaved = saved;
+    z = clamp(loadZoom(saved, fitBox(el)), fitBox(el), stageSize());
+    paint(false);
+  }
+  function loaded(): void {
+    // A tab's kept zoom; with none (the over-the-window viewer), a zoom already taken is re-fitted.
+    if (options.initial !== undefined) restore(options.initial);
+    else if (isZoomed(z)) set(z);
   }
 
   // Pointers: one = a press that may become a drag (pan); two touches = a pinch.
@@ -174,12 +201,16 @@ export function zoomable(stage: HTMLElement, opts: ZoomableOptions = {}) {
   stage.addEventListener("gesturechange", gchange);
   stage.addEventListener("gestureend", gend);
   stage.addEventListener("dragstart", dragstart);
+  stage.addEventListener("load", loaded, true); // the <img>'s load (does not bubble; caught on the way down)
   window.addEventListener("resize", resize);
   paint(false);
+  restore(options.initial);
 
   return {
     update(next: ZoomableOptions = {}) {
       options = next;
+      // Another tab's kept zoom (the same view drawing a different file).
+      if (next.initial !== undefined && next.initial !== lastSaved) restore(next.initial);
     },
     destroy() {
       stage.removeEventListener("pointerdown", down);
@@ -192,6 +223,7 @@ export function zoomable(stage: HTMLElement, opts: ZoomableOptions = {}) {
       stage.removeEventListener("gesturechange", gchange);
       stage.removeEventListener("gestureend", gend);
       stage.removeEventListener("dragstart", dragstart);
+      stage.removeEventListener("load", loaded, true);
       window.removeEventListener("resize", resize);
     },
   };

@@ -1,6 +1,6 @@
 // Item 885: the full-size picture viewer's zoom maths and its close rules.
 import { describe, expect, it } from "vitest";
-import { CLICK_SCALE, FIT, MAX_SCALE, clamp, clickVerdict, clickZoom, isZoomed, keyCloses, pinch, wheelFactor, zoomAt, zoomCss } from "./pictureZoom";
+import { CLICK_SCALE, FIT, MAX_SCALE, clamp, clickVerdict, clickZoom, isZoomed, keyCloses, loadZoom, pinch, saveZoom, wheelFactor, zoomAt, zoomCss } from "./pictureZoom";
 
 // A 1000×800 stage with a 600×800 picture centred in it at fit.
 const stage = { width: 1000, height: 800 };
@@ -109,5 +109,22 @@ describe("close rules (885)", () => {
     expect(keyCloses("Escape")).toBe(true);
     expect(keyCloses("Enter")).toBe(false);
     expect(keyCloses(" ")).toBe(false);
+  });
+});
+
+describe("a tab keeps its zoom (885 over 495)", () => {
+  it("fit saves as nothing, and nothing loads as fit", () => {
+    expect(saveZoom(FIT, fit)).toBe("");
+    expect(loadZoom("", fit)).toEqual(FIT);
+    expect(loadZoom("junk", fit)).toEqual(FIT);
+  });
+  it("a zoom and pan round-trip", () => {
+    const z = { s: 3, x: -600, y: -400 };
+    expect(loadZoom(saveZoom(z, fit), fit)).toEqual(z);
+  });
+  it("the pan scales with a pane that changed size in between", () => {
+    const saved = saveZoom({ s: 2, x: -300, y: -200 }, fit);
+    const half = { left: 100, top: 0, width: 300, height: 400 };
+    expect(loadZoom(saved, half)).toEqual({ s: 2, x: -150, y: -100 });
   });
 });
