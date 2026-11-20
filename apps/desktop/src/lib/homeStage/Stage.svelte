@@ -257,7 +257,7 @@
       {/key}
     {/if}
     <!-- Item 894: a failed read of Home's tasks says so; the last rows stay drawn. -->
-    {#if tasks.problem}<div class="h9-stale" role="status">{STALE_WORDS}</div>{/if}
+    {#if tasks.problem}<div class="h9-stale over" role="status">{STALE_WORDS}</div>{/if}
     {#if note && row.some((t) => t.id === note?.to)}
       {@const to = row.find((t) => t.id === note?.to)!}
       {@const from = row.find((t) => t.id === note?.from)}
