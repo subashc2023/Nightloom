@@ -321,6 +321,11 @@ pub fn check(tool: &str, text: &str) -> Result<(), String> {
     if tool == crate::mcp_server::mcp_name(crate::secret::TOOL_NAME) {
         return Err("Asking for a secret always shows its card; a rule cannot answer it.".into());
     }
+    if tool == crate::mcp_server::mcp_name(crate::home::drive::TOOL) {
+        return Err(
+            "Asking you to take the page always shows its card; a rule cannot answer it.".into(),
+        );
+    }
     if tool.starts_with("mcp__") {
         return Ok(());
     }
@@ -766,6 +771,7 @@ mod tests {
             ("mcp__playwright__browser_click", "its own switch"),
             ("mcp__nightloom__add_folder", "always shows its card"),
             ("mcp__nightloom__request_secret", "always shows its card"),
+            ("mcp__nightloom__ask_user_to_drive", "always shows its card"),
             ("Ba*", "Only a connector's tools"),
             ("", "Name the tool"),
         ] {

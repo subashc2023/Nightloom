@@ -649,12 +649,11 @@ fn ask_mcp_less(browser: bool) -> String {
 /// Playwright's tools stay out too, as in [`ask::MATCHER`] (backlog 367).
 /// The preview's tool stays out too (item 430): the policy's own deny
 /// entry refuses it, and an Ask card for it would be backlog 147's bug.
-const ASK_MCP_LESS_BROWSER: &str = "mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret).*";
+const ASK_MCP_LESS_BROWSER: &str = "mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|nightloom__ask_user_to_drive).*";
 
 /// The same without the Browser: every MCP tool but Playwright's and the
 /// preview's.
-const ASK_MCP_LESS_PREVIEW: &str =
-    "mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret).*";
+const ASK_MCP_LESS_PREVIEW: &str = "mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|nightloom__ask_user_to_drive).*";
 
 /// The deny hook's command line. Single-quoted for the POSIX shell the CLI
 /// runs hooks through on macOS and Linux. On Windows, `cmd.exe`'s `echo`
@@ -706,6 +705,10 @@ pub const FOLDER_GATE_FAIL_CLOSED: &str =
 /// hook that could not run never lets the call through unasked.
 pub const SECRET_GATE_FAIL_CLOSED: &str =
     "|| { echo 'Nothing was asked: the secret card could not be shown.' >&2; exit 2; }";
+
+/// What follows `ask_user_to_drive`'s gate (item 872): fails closed, so a
+/// hook that could not run never lets the call through unasked.
+pub const DRIVE_GATE_FAIL_CLOSED: &str = "|| { echo 'Nothing was asked: the card that hands you the page could not be shown.' >&2; exit 2; }";
 
 /// What the Ask position adds to the command line.
 ///
@@ -876,6 +879,13 @@ impl AgentSpec {
     /// on [`crate::secret::GATE_MATCHER`], failing closed.
     pub fn secret_gate_entry(&self) -> Option<serde_json::Value> {
         self.own_gate_entry(crate::secret::GATE_MATCHER, SECRET_GATE_FAIL_CLOSED)
+    }
+
+    /// `ask_user_to_drive`'s `PreToolUse` entry (item 872): the same hook
+    /// on the same directory, on [`crate::home::drive::GATE_MATCHER`],
+    /// failing closed.
+    pub fn drive_gate_entry(&self) -> Option<serde_json::Value> {
+        self.own_gate_entry(crate::home::drive::GATE_MATCHER, DRIVE_GATE_FAIL_CLOSED)
     }
 
     fn own_gate_entry(&self, matcher: &str, fail_closed: &str) -> Option<serde_json::Value> {
@@ -1781,9 +1791,14 @@ impl AgentSpec {
         // the chat's directory is known (the tool is served there,
         // `--budget-dir`).
         // `request_secret`'s gate (item 766) beside it, the same way.
-        for entry in [self.folder_gate_entry(), self.secret_gate_entry()]
-            .into_iter()
-            .flatten()
+        // `ask_user_to_drive`'s (item 872) after them, the same way.
+        for entry in [
+            self.folder_gate_entry(),
+            self.secret_gate_entry(),
+            self.drive_gate_entry(),
+        ]
+        .into_iter()
+        .flatten()
         {
             let hooks = settings
                 .entry("hooks")
@@ -3982,7 +3997,7 @@ mod tests {
         assert_eq!(
             asks,
             [format!(
-                "WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|{}).*",
+                "WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|nightloom__ask_user_to_drive|{}).*",
                 connector_writes::ASK_EXCLUSION_WITH_CARD
             )],
             "{pre:?}"
@@ -4003,7 +4018,7 @@ mod tests {
             pre.iter()
                 .any(|e| e["matcher"]
                     == format!(
-                        "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|{}).*",
+                        "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|nightloom__ask_user_to_drive|{}).*",
                         connector_writes::ASK_EXCLUSION_WITH_CARD
                     )),
             "{pre:?}"
@@ -4775,7 +4790,7 @@ mod tests {
         assert_eq!(
             narrowed,
             format!(
-                "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|{}).*",
+                "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|nightloom__ask_user_to_drive|{}).*",
                 connector_writes::ASK_EXCLUSION_WITH_CARD
             )
         );
@@ -5261,14 +5276,25 @@ mod tests {
         );
         let a = agent.spec().args("hi");
         assert_eq!(brief_entries(&a), 1);
-        // Beside it only `add_folder`'s and `request_secret`'s own gates
-        // (items 613, 766): no Ask hook.
-        assert_eq!(entries(&a).len(), 3, "no Ask hook in Auto");
+        // Beside it only `add_folder`'s, `request_secret`'s and
+        // `ask_user_to_drive`'s own gates (items 613, 766, 872): no Ask hook.
+        assert_eq!(entries(&a).len(), 4, "no Ask hook in Auto");
         assert_eq!(
             entries(&a)[1]["matcher"],
             crate::tools::add_folder::GATE_MATCHER
         );
         assert_eq!(entries(&a)[2]["matcher"], crate::secret::GATE_MATCHER);
+        assert_eq!(entries(&a)[3]["matcher"], crate::home::drive::GATE_MATCHER);
+        // The drive gate fails closed, on the same hook and directory.
+        let gate = entries(&a)[3]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            gate.starts_with(&format!("'hook' '--permission-hook' '{}'", dir.display())),
+            "{gate}"
+        );
+        assert!(gate.ends_with(DRIVE_GATE_FAIL_CLOSED), "{gate}");
         let cmd = entries(&a)[0]["hooks"][0]["command"].clone();
         assert_eq!(cmd, format!("'hook' '--subagent-hook' '{}'", dir.display()));
         // Nightshift 561: the same command on each user message, no matcher.
@@ -5285,11 +5311,12 @@ mod tests {
         agent.set_ask_dir(dir.clone());
         let a = agent.spec().args("hi");
         let e = entries(&a);
-        assert_eq!(e.len(), 4, "{e:?}");
+        assert_eq!(e.len(), 5, "{e:?}");
         assert_eq!(e[0]["matcher"], ask::MATCHER);
         assert_eq!(e[1]["matcher"], brief::BRIEF_MATCHER);
         assert_eq!(e[2]["matcher"], crate::tools::add_folder::GATE_MATCHER);
         assert_eq!(e[3]["matcher"], crate::secret::GATE_MATCHER);
+        assert_eq!(e[4]["matcher"], crate::home::drive::GATE_MATCHER);
         // The aside of that chat carries no hook at all.
         let mut s = asking(AskMode::Ask);
         s.brief = Some(brief.clone());
@@ -5310,8 +5337,8 @@ mod tests {
         assert_eq!(brief_entries(&a), 1);
         assert_eq!(
             entries(&a).len(),
-            6,
-            "the policy's own entry, the preview's deny (item 430), the connector writes' (759), the budget's, add_folder's gate (613) and request_secret's (766)"
+            7,
+            "the policy's own entry, the preview's deny (item 430), the connector writes' (759), the budget's, add_folder's gate (613), request_secret's (766) and ask_user_to_drive's (872)"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5440,6 +5467,74 @@ mod tests {
                 .any(|e| e["matcher"] == connector_writes::HOME_GATED_MATCHER),
             "{pre:?}"
         );
+    }
+
+    /// Item 872 step 5: `ask_user_to_drive` meets one decider — its own
+    /// gate — in every position, Home's held read-only chat included: the
+    /// Ask hook's `mcp__` alternative, the read-only chat's refusals and
+    /// its asking entries all leave it out. Every `PreToolUse` matcher on
+    /// the line is run through `node`, as the CLI runs them; the brief's
+    /// hook (every tool, the budget's) is the one other entry it meets.
+    #[test]
+    fn the_drive_ask_meets_only_its_own_gate_in_every_position() {
+        let tool = "mcp__nightloom__ask_user_to_drive";
+        let brief = BriefSpec {
+            hook: vec!["hook".into(), "--subagent-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-3"),
+            text: "x".into(),
+        };
+        let mut bypass = spec();
+        bypass.permission_mode = Some("bypassPermissions".into());
+        let mut chat = asking(AskMode::Ask);
+        chat.chat_policy = true;
+        let mut held = asking(AskMode::Ask);
+        held.chat_policy = true;
+        held.home_chat = true;
+        held.home_gated_writes = true;
+        let mut home_open = asking(AskMode::Ask);
+        home_open.home_chat = true;
+        for (name, mut s) in [
+            ("bypass", bypass),
+            ("auto", asking(AskMode::Auto)),
+            ("ask", asking(AskMode::Ask)),
+            ("plan", asking(AskMode::Plan)),
+            ("a read-only chat", chat),
+            ("Home's read-only chat", held),
+            ("a chat of Home's not held", home_open),
+            ("with Playwright", with_playwright(asking(AskMode::Ask))),
+        ] {
+            s.brief = Some(brief.clone());
+            let pre = pre_entries(&s);
+            let matchers: Vec<String> = pre
+                .iter()
+                .map(|e| e["matcher"].as_str().unwrap_or(".*").to_string())
+                .collect();
+            let script = format!(
+                "const m={m};console.log(JSON.stringify(m.map(x=>new RegExp('^(?:'+x+')$').test({t})||new RegExp(x).test({t}))));",
+                m = serde_json::to_string(&matchers).unwrap(),
+                t = serde_json::to_string(tool).unwrap(),
+            );
+            let out = match std::process::Command::new("node")
+                .arg("-e")
+                .arg(&script)
+                .output()
+            {
+                Ok(o) if o.status.success() => o,
+                Ok(o) => panic!("node failed: {}", String::from_utf8_lossy(&o.stderr)),
+                Err(e) => {
+                    eprintln!("SKIPPED: node not runnable here ({e})");
+                    return;
+                }
+            };
+            let hit: Vec<bool> = serde_json::from_slice(&out.stdout).unwrap();
+            let met: Vec<&str> = matchers
+                .iter()
+                .zip(hit)
+                .filter(|(m, hit)| *hit && m.as_str() != brief::BRIEF_MATCHER)
+                .map(|(m, _)| m.as_str())
+                .collect();
+            assert_eq!(met, [crate::home::drive::GATE_MATCHER], "{name}");
+        }
     }
 
     fn pre_entries(s: &AgentSpec) -> Vec<serde_json::Value> {
