@@ -271,8 +271,17 @@ async function run() {
   const g0 = ghost();
   await wait(1500);
   const g1 = ghost();
+  // moreat=1 (item 895): scroll the list holding the "N more … not shown" line to its foot, and name the line drawn.
+  let moreAt = "";
+  if (q.get("moreat") === "1") {
+    const m = document.querySelector<HTMLElement>(".h9-more");
+    for (let p = m?.parentElement; p; p = p.parentElement) if (p.scrollHeight > p.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(p).overflowY)) p.scrollTop = p.scrollHeight;
+    await wait(200);
+    const mr = m?.getBoundingClientRect();
+    moreAt = ` more="${m?.textContent ?? "MISSING"}"@${mr ? `${Math.round(mr.top)}+${Math.round(mr.height)}` : "-"}`;
+  }
   const r = stage?.getBoundingClientRect();
-  document.title = `845 s=${s} stage=${r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} views=${g0}→${g1} welcome=${document.querySelector(".welcome") ? "yes" : "no"} composer=${document.querySelector(".composer") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""}${restart}${clicks}${alive} cq=${(() => { const v = document.querySelector<HTMLElement>(".h9-view"); const wd = document.querySelector<HTMLElement>(".h9-wide"); return `${v ? Math.round(v.getBoundingClientRect().width) : 0}/${wd ? getComputedStyle(wd).display : "-"}/vw${innerWidth}/dpr${devicePixelRatio}`; })()}`;
+  document.title = `845 s=${s}${moreAt} stage=${r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} views=${g0}→${g1} welcome=${document.querySelector(".welcome") ? "yes" : "no"} composer=${document.querySelector(".composer") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""}${restart}${clicks}${alive} cq=${(() => { const v = document.querySelector<HTMLElement>(".h9-view"); const wd = document.querySelector<HTMLElement>(".h9-wide"); return `${v ? Math.round(v.getBoundingClientRect().width) : 0}/${wd ? getComputedStyle(wd).display : "-"}/vw${innerWidth}/dpr${devicePixelRatio}`; })()}`;
   if (q.get("cap") === "1") (window as unknown as { __capset: (m: string) => void }).__capset(document.title);
 }
 if (document.readyState === "loading") addEventListener("DOMContentLoaded", () => void run());
