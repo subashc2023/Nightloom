@@ -27,6 +27,7 @@
     answerAsideDiscard,
     setPaneWidth,
     splitTab,
+    tabOpening,
     syncUndoMenu,
     setSidebarWidth,
     sidebarColumn,
@@ -246,6 +247,22 @@
   /** The tab whose chat is the open one; its pane draws the transcript. */
   const liveTab = $derived(tabs.liveTab(app.tabs, app.activeSessionId));
   /**
+   * Item 882: the tab that draws the open chat's view (transcript, composer, top bar, the chat column). Most of the
+   * time the live tab; while a tab click opens another chat in the same pane (`tabOpening`), that tab — so the view
+   * stays mounted and its transcript and composer turn to the opened chat in place when its log lands (what a click
+   * on the chat in the sidebar always did), instead of the pane drawing a stand-in transcript, then building the
+   * whole view (transcript, composer, rail, top bar) afresh. Another pane's click keeps the old rule: one view at a time.
+   */
+  const liveDraw = $derived.by(() => {
+    const opening = tabOpening.chat;
+    if (opening && liveTab) {
+      const p = tabs.paneOf(app.tabs, liveTab.id);
+      const front = p ? tabs.activeTab(p) : null;
+      if (front && front.id !== liveTab.id && front.content.kind === "chat" && front.content.session === opening) return front;
+    }
+    return liveTab;
+  });
+  /**
    * The pane that carries the top bar: the bar describes the open chat, so
    * it sits over the pane whose *active* tab is that chat, and over the
    * focused pane when no pane shows it but a note is in front there (the
@@ -254,9 +271,9 @@
    * is a chat's (backlog 140).
    */
   const barPane = $derived.by(() => {
-    if (liveTab) {
-      const p = tabs.paneOf(app.tabs, liveTab.id);
-      if (p && p.active === liveTab.id) return p.id;
+    if (liveDraw) {
+      const p = tabs.paneOf(app.tabs, liveDraw.id);
+      if (p && p.active === liveDraw.id) return p.id;
     }
     const focused = tabs.focusedPane(app.tabs);
     return tabs.activeTab(focused).content.kind === "note" ? focused.id : null;
@@ -292,8 +309,8 @@
       !app.asidePanel &&
       !blank &&
       splitWidth >= RAIL_MIN_SPLIT &&
-      !!liveTab &&
-      app.tabs.panes.some((p) => p.active === liveTab?.id),
+      !!liveDraw &&
+      app.tabs.panes.some((p) => p.active === liveDraw?.id),
   );
   /**
    * Item 605 (his "shouldn't asides still have cost, context, all of the
@@ -910,7 +927,7 @@
                   <WebView tabId={t.id} content={t.content} />
                 {/key}
               </div>
-            {:else if liveTab?.id === t.id}
+            {:else if liveDraw?.id === t.id}
               <div class="content">
                 {#if isHome(app.project)}
                   <!-- Item 845: Home opens on its stage — its own new-chat page (Watch) and its own
@@ -967,9 +984,11 @@
               {@const session = t.content.session}
               {@const v = paneChat(session)}
               <div class="content">
-                {#key session}
-                  {#if classic()}<TranscriptClassic chat={session} />{:else}<Transcript chat={session} />{/if}
-                {/key}
+                {#if tabOpening.chat !== session}
+                  {#key session}
+                    {#if classic()}<TranscriptClassic chat={session} />{:else}<Transcript chat={session} />{/if}
+                  {/key}
+                {/if}
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
               <div class="pane-line" class:waiting={(v?.approvals.length ?? 0) > 0} class:running={!!v?.running} role="status">
