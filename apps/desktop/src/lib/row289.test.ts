@@ -16,9 +16,10 @@ describe("the composer's row folds before it splits (289)", () => {
     expect(composerSrc).toMatch(/\.row\[data-fold="6"\]::after/);
     expect(composerSrc).not.toMatch(/\.row\[data-fold="4"\]::after/);
   });
-  it("hides the token estimate at 2 and turns Council to its icon at 3, before the floor", () => {
-    expect(composerSrc).toMatch(/\[data-fold="2"\][^{]*\.draft-tokens \{\s*display: none;/);
-    expect(composerSrc).toMatch(/\[data-fold="3"\][^{]*\.council-ico \{\s*display: inline-flex;/);
+  it("turns Council to its icon at 2 and keeps the token estimate until 5 (889), before the floor", () => {
+    expect(composerSrc).toMatch(/\.row:is\(\[data-fold="5"\], \[data-fold="6"\]\) \.draft-tokens \{\s*display: none;/);
+    expect(composerSrc).not.toMatch(/\[data-fold="2"\][^{]*\.draft-tokens \{/);
+    expect(composerSrc).toMatch(/\[data-fold="2"\][^{]*\.council-ico \{\s*display: inline-flex;/);
     expect(composerSrc).toMatch(/class="council-word">Council</);
   });
   it("at the floor the actions go to row two (pickers stay left on row one)", () => {
