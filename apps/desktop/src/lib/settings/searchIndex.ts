@@ -69,6 +69,7 @@ const PANES: SettingEntry[] = [
 /** Every card and control of the fixed panes. */
 export const CARDS: SettingEntry[] = [
   { pane: "appearance", section: "Layout", help: "Classic puts every screen back the way it was before Jarvis — the chat, the composer, the sidebar, the tabs, the top bar, the terminal strip — with its four palettes (A is charcoal & amber again). Applies at once and is remembered; switch back any time." },
+  { pane: "appearance", section: "Zoom", help: "Your default zoom: ⌘0 returns here, and the top bar's zoom chip shows only when the app is zoomed to something else.", terms: "zoom default size scale bigger smaller actual size" },
   { pane: "appearance", section: "Accent", help: "The colour of what you press — buttons, Send, the selected row, the brackets. It does not change the motion colour (below)." },
   { pane: "appearance", section: "Instrument light", terms: "glow light lamp" },
   { pane: "appearance", section: "New-chat page", terms: "new chat start page empty wheel" },
