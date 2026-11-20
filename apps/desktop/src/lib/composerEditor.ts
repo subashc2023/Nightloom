@@ -28,7 +28,7 @@ import { renderMathHtml, renderReply } from "./markdown";
 import { quoteLine, quoteNeedsRender, quoteRuns } from "./replyQuote.svelte";
 import { crossesLine } from "./emphasisLines";
 import { findBoxLinks, openHint } from "./boxLinks";
-import { GridBackWidget, TableGridWidget, showGridSource, sourceShown, tableBlocks, tableGridSupport, tablePicked } from "./tableGrid";
+import { GridBackWidget, TableGridWidget, focusGridAt, gridEdit, showGridSource, sourceShown, tableBlocks, tableGridSupport, tablePicked } from "./tableGrid";
 
 /**
  * What the box draws (item 689): "all" with the Format switch on; "plain"
@@ -1108,6 +1108,27 @@ export class LiveBoxHandle implements ComposerBox {
       userEvent: ed.insert === "" && to > from ? "delete.backward" : "input.type",
       scrollIntoView: true,
     });
+  }
+  /** Item 890: a slash insert as one undo step of its own, past the grid's
+   *  input filter (it is a whole block, not typing against a table); a
+   *  table's first cell focused once its grid is drawn. */
+  insertBlock(ed: { from: number; to: number; insert: string; anchor: number; head: number; tableAt?: number }): void {
+    const len = this.view.state.doc.length;
+    const from = Math.max(0, Math.min(ed.from, len));
+    const to = Math.max(from, Math.min(ed.to, len));
+    const after = len - (to - from) + ed.insert.length;
+    const clamp = (p: number) => Math.max(0, Math.min(p, after));
+    this.view.focus();
+    this.view.dispatch({
+      changes: { from, to, insert: ed.insert },
+      selection: EditorSelection.range(clamp(ed.anchor), clamp(ed.head)),
+      userEvent: "input",
+      annotations: [isolateHistory.of("full"), gridEdit.of(true)],
+      scrollIntoView: true,
+    });
+    const at = ed.tableAt;
+    if (at === undefined) return;
+    if (!focusGridAt(this.view, at)) requestAnimationFrame(() => focusGridAt(this.view, at));
   }
   getBoundingClientRect(): DOMRect {
     return this.view.dom.getBoundingClientRect();

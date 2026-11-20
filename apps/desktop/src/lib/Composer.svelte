@@ -69,6 +69,7 @@
   import LiveBox from "./LiveBox.svelte";
   // Item 800: saved message prompts with blanks, offered after a `/`.
   import { insertAt, matching, nextBlank, slashToken, type MessagePrompt } from "./savedPrompts";
+  import { insertEdit, insertLabel, insertMatches, insertToken, type BoxInsert } from "./boxInserts";
   import { filledBody, loadSaved, saved } from "./savedPromptsStore.svelte";
   import { watchSelection } from "./selectionMemory";
   import { isMac } from "./platform";
@@ -906,19 +907,61 @@
   const savedToken = $derived(saved.list.length ? slashToken(text, text.length) : null);
   const savedMatches = $derived(savedToken ? matching(saved.list, savedToken.query) : []);
   const wholeSlash = $derived(slashNames.length > 0 && /^\/[A-Za-z0-9_-]*$/.test(text));
-  const slashOpen = $derived((wholeSlash || savedMatches.length > 0) && !slashDismissed);
+  /*
+   * Item 890 (his "like a /table or something"): the box's own inserts —
+   * /table, /math, /code, /quote, /list, /numbered (`boxInserts.ts`) — in
+   * the same list, on either engine, wherever a `/word` ends at the caret
+   * (the box's start, a line's start, or after a space; never inside
+   * `and/or` or a path). After the saved prompts, before the CLI's names;
+   * a name both have shows both rows, each saying what it is.
+   */
+  /** null: not read yet (the end of the box); -1: a selection, no token. */
+  let caretAt = $state<number | null>(null);
+  const insTok = $derived(caretAt === -1 ? null : insertToken(text, caretAt === null || caretAt > text.length ? text.length : caretAt));
+  /** Esc on a token keeps the list closed for that token (its start, and the text before it). */
+  let insDismissed = $state<string | null>(null);
+  const insSig = $derived(insTok ? `${insTok.start}:${text.slice(0, insTok.start)}` : null);
+  $effect(() => {
+    if (insSig === null && insDismissed !== null) untrack(() => (insDismissed = null));
+  });
+  const insMatches = $derived(insSig !== null && insSig === insDismissed ? [] : insertMatches(insTok));
+  const slashOpen = $derived((wholeSlash || savedMatches.length > 0 || insMatches.length > 0) && !slashDismissed);
   const slashMatches = $derived.by(() => {
     if (!slashOpen) return [];
-    const mine = savedMatches.map((p) => ({ name: p.name, kind: "saved prompt", prompt: p as MessagePrompt | null }));
-    if (!wholeSlash) return mine;
+    const none = { prompt: null as MessagePrompt | null, insert: null as BoxInsert | null };
+    const mine = savedMatches.map((p) => ({ name: p.name, kind: "saved prompt", ...none, prompt: p as MessagePrompt | null }));
+    const ours = insMatches.map((i) => ({ name: i.name, kind: insertLabel(i, insTok), ...none, insert: i as BoxInsert | null }));
+    if (!wholeSlash) return [...mine, ...ours];
     const q = text.slice(1).toLowerCase();
     const taken = new Set(mine.map((m) => m.name.toLowerCase()));
     const theirs = slashNames
       .filter((s) => s.name.toLowerCase().startsWith(q) && !taken.has(s.name.toLowerCase()))
-      .map((s) => ({ ...s, prompt: null as MessagePrompt | null }));
-    return [...mine, ...theirs].slice(0, 12);
+      .map((s) => ({ ...s, ...none }));
+    return [...mine, ...ours, ...theirs].slice(0, 12);
   });
+  /** Put an insert in place of its token, one undo step; a table goes in
+   *  through the grid editor (the box a table is drawn in), its first cell
+   *  focused, so ⌘Z takes the whole table back out. */
+  async function pickInsert(ins: BoxInsert): Promise<void> {
+    const tok = insTok;
+    if (!tok || !ta) return;
+    const ed = insertEdit(text, tok, ins);
+    slashDismissed = true;
+    if (ed.tableAt !== undefined && !(ta instanceof LiveBoxHandle)) {
+      formatCaret = tok.end;
+      gridKey = key;
+      await tick();
+    }
+    if (ta instanceof LiveBoxHandle) {
+      ta.insertBlock(ed);
+      autogrow();
+      return;
+    }
+    ta.focus();
+    applyBoxEdit(ed);
+  }
   const savedShown = $derived(slashMatches.some((m) => m.prompt));
+  const insertShown = $derived(slashMatches.some((m) => m.insert));
   /** A saved prompt went in and its blanks are Tab's until the box empties. */
   let blanksLive = $state(false);
   $effect(() => {
@@ -952,7 +995,11 @@
     if (!/^\//.test(text)) slashDismissed = false;
     slashIndex = 0;
   });
-  function pickSlash(name: string, prompt: MessagePrompt | null = null): void {
+  function pickSlash(name: string, prompt: MessagePrompt | null = null, insert: BoxInsert | null = null): void {
+    if (insert) {
+      void pickInsert(insert);
+      return;
+    }
     if (prompt) {
       void pickSaved(prompt);
       return;
@@ -1336,6 +1383,8 @@
   let pointerDown = false;
   function recordCaret(): void {
     keeper.record(key, ta, text);
+    // Item 890: the caret the slash inserts' token ends at (none for a selection).
+    caretAt = ta && ta.selectionStart === ta.selectionEnd ? ta.selectionEnd : -1;
   }
   /*
    * Backlog 355: a draft taller than its box keeps its scroll place. The
@@ -1654,14 +1703,17 @@
         slashIndex = (slashIndex - 1 + slashMatches.length) % slashMatches.length;
         return;
       }
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+      // Item 890: never while an input method is composing (its Enter is the IME's).
+      const imeKey = composing || e.isComposing || e.keyCode === 229;
+      if (!imeKey && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
         e.preventDefault();
-        pickSlash(slashMatches[slashIndex].name, slashMatches[slashIndex].prompt);
+        pickSlash(slashMatches[slashIndex].name, slashMatches[slashIndex].prompt, slashMatches[slashIndex].insert);
         return;
       }
-      if (e.key === "Escape") {
+      if (!imeKey && e.key === "Escape") {
         e.preventDefault();
         slashDismissed = true;
+        insDismissed = insSig;
         return;
       }
     }
@@ -3995,11 +4047,11 @@
     <ClipPanel entries={clips.ring} index={clipIndex} onpick={pickClip} />
   {/if}
   {#if slashOpen}
-    <div class="slash hud-m" role="listbox" aria-label={savedShown ? "Saved prompts, skills and slash commands" : "Skills and slash commands"} in:hudIn|global out:hudOut|global>
+    <div class="slash hud-m" role="listbox" aria-label={savedShown ? "Saved prompts, inserts, skills and slash commands" : insertShown ? "Inserts, skills and slash commands" : "Skills and slash commands"} in:hudIn|global out:hudOut|global>
       {#if slashMatches.length === 0}
         <div class="slash-row dim">No skill or command starts with “{text.slice(1)}” — ↵ sends the text as typed</div>
       {:else}
-        {#each slashMatches as m, i (m.name)}
+        {#each slashMatches as m, i (m.kind + "\u0000" + m.name)}
           <button
             type="button"
             role="option"
@@ -4007,7 +4059,7 @@
             class:on={i === slashIndex}
             aria-selected={i === slashIndex}
             onmousedown={(e) => e.preventDefault()}
-            onclick={() => pickSlash(m.name, m.prompt)}
+            onclick={() => pickSlash(m.name, m.prompt, m.insert)}
           >
             <span class="mono">/{m.name}</span>
             <span class="dim">{m.kind}</span>
@@ -4015,6 +4067,8 @@
         {/each}
         {#if savedShown}
           <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close · a saved prompt's blanks: Tab to the next</div>
+        {:else if insertShown && !wholeSlash}
+          <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close, the text stays as typed</div>
         {:else}
           <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close · the CLI runs a skill named in the message</div>
         {/if}
