@@ -135,6 +135,24 @@ export function tabStripLogic(props: () => TabStripLogicProps) {
    *  nothing is over it. */
   let dropAt = $state<number | null>(null);
   let stripEl = $state<HTMLElement | null>(null);
+  /** Item 877 (2026-11-19): a band under the strip that takes a drop as the
+   *  strip does. macOS opens Mission Control when a drag (any drag, not only
+   *  a window's) is pushed against the top of the screen, and a zoomed or
+   *  full-screen window's strip sits at or near that edge: aimed at the
+   *  strip, the pointer overshoots into the system's title bar and the menu
+   *  bar, gets no drop marker there, and is pushed on into the edge. The
+   *  band shows the strip's marker a hand's width before the strip, so the
+   *  drop is caught well short of the edge. Only for the drags the system
+   *  carries (a note, a thread, a chat; a terminal's shell) — a tab's own
+   *  drag is a pointer drag and never reaches the OS. */
+  const BAND_PX = 56;
+  let catchEl = $state<HTMLElement | null>(null);
+  const catching = $derived(!!app.draggingContent || app.draggingTerm);
+  /** The band's top: the strip's foot, in the pane's box (the pane is the
+   *  strip's offset parent). */
+  function catchTop(): number {
+    return stripEl ? stripEl.offsetTop + stripEl.offsetHeight : 0;
+  }
 
   // ---- item 603: closing tabs as Chrome does (`tabFreeze.ts`) ----
   // A close from the strip holds every tab at the width it had, so the next
@@ -254,8 +272,18 @@ export function tabStripLogic(props: () => TabStripLogicProps) {
     dropAt = app.draggingTerm ? null : indexAt(e);
   }
   function onDragLeave(e: DragEvent) {
-    if (stripEl && e.relatedTarget instanceof Node && stripEl.contains(e.relatedTarget)) return;
+    const to = e.relatedTarget;
+    if (to instanceof Node && (stripEl?.contains(to) || catchEl?.contains(to))) return;
     dropAt = null;
+  }
+  /** Item 877: the band's dragover is the strip's, except that it bubbles —
+   *  the pane sees a target in `.strip-catch` and takes down its *open
+   *  beside* half, which a drag coming up from the content had drawn. */
+  function onCatchDragOver(e: DragEvent) {
+    if (!catching) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = app.draggingContent ? "copy" : "move";
+    dropAt = app.draggingTerm ? null : indexAt(e);
   }
   function onDrop(e: DragEvent) {
     const at = dropAt ?? indexAt(e);
@@ -387,6 +415,17 @@ export function tabStripLogic(props: () => TabStripLogicProps) {
     set chooser(v) {
       chooser = v;
     },
+    BAND_PX,
+    get catchEl() {
+      return catchEl;
+    },
+    set catchEl(v) {
+      catchEl = v;
+    },
+    catchTop,
+    get catching() {
+      return catching;
+    },
     closeFromStrip,
     closeOthers,
     commitTabRename,
@@ -437,6 +476,7 @@ export function tabStripLogic(props: () => TabStripLogicProps) {
       menuFor = v;
     },
     needsYou,
+    onCatchDragOver,
     onDragLeave,
     onDragOver,
     onDrop,

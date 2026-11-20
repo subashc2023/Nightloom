@@ -421,6 +421,12 @@
     // Over the strip the strip answers (it stops the event); this guard
     // is for a strip that has not — a synthetic event, say.
     if (e.target instanceof Element && e.target.closest(".tab-strip")) return;
+    // Item 877: the band under the strip is the strip's drop too; the half
+    // a drag up from the content drew comes down as it reaches the band.
+    if (e.target instanceof Element && e.target.closest(".strip-catch")) {
+      if (dropHalf?.pane === paneId) dropHalf = null;
+      return;
+    }
     const el = e.currentTarget as HTMLElement;
     const r = el.getBoundingClientRect();
     e.preventDefault();
@@ -436,7 +442,7 @@
   function onPaneDrop(e: DragEvent, paneId: string) {
     const half = dropHalf;
     dropHalf = null;
-    if (e.target instanceof Element && e.target.closest(".tab-strip")) return;
+    if (e.target instanceof Element && e.target.closest(".tab-strip, .strip-catch")) return;
     // A terminal's shell (backlog 113's 12b; blocker 155, 2026-09-22):
     // into this pane's dock — a second dock if it has none, the dock
     // itself if it was its only shell; the shells run on.

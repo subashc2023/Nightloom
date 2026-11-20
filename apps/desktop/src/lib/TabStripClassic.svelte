@@ -144,6 +144,20 @@
        bar drawn over every view. -->
   {#if T.lastPane}<NeedsYouBadge /><RunningBadge />{/if}
 </div>
+{#if T.catching}
+  <!-- Item 877: the strip's drop, reached before the strip (and before the
+       top of the screen, where macOS opens Mission Control). -->
+  <div
+    class="strip-catch"
+    aria-hidden="true"
+    bind:this={T.catchEl}
+    style:top="{T.catchTop()}px"
+    style:height="{T.BAND_PX}px"
+    ondragover={T.onCatchDragOver}
+    ondragleave={T.onDragLeave}
+    ondrop={T.onDrop}
+  ></div>
+{/if}
 {#if T.ghost}
   <!-- The dragged tab under the pointer (backlog 195); after a drag that
        does nothing it flies back to its tab (`home`), then goes. -->
@@ -186,6 +200,14 @@
 {/if}
 
 <style>
+  /* Item 877: invisible; the strip's own drop marker is its cue. Over the
+     pane's open-beside zone (z-index 8), under menus. */
+  .strip-catch {
+    position: absolute;
+    left: 0;
+    right: 0;
+    z-index: 9;
+  }
   .tab-strip {
     display: flex;
     align-items: stretch;
