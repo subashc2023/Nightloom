@@ -844,7 +844,7 @@ pub fn reply_in(events: &[serde_json::Value], text: &str) -> Option<String> {
     events[sent + 1..]
         .iter()
         .rev()
-        .filter(|e| e["event"] == "assistant_message")
+        .filter(|e| e["event"] == "assistant_message" && stand_in_why(e).is_none())
         .find_map(|e| {
             let said: Vec<&str> = e["blocks"]
                 .as_array()?
@@ -855,6 +855,40 @@ pub fn reply_in(events: &[serde_json::Value], text: &str) -> Option<String> {
                 .collect();
             (!said.is_empty()).then(|| said.join("\n"))
         })
+}
+
+/// Item 896: why a run ended with no reply, from Nightloom's own stand-in
+/// under the sent text ("No reply: <why>", backlog 361) — the connection
+/// error a dead run's process printed. `None` when there is none. Pure.
+pub fn failure_in(events: &[serde_json::Value], text: &str) -> Option<String> {
+    let sent = events.iter().rposition(|e| {
+        e["event"] == "user_message" && e["text"].as_str().is_some_and(|t| t.contains(text.trim()))
+    })?;
+    events[sent + 1..].iter().rev().find_map(stand_in_why)
+}
+
+/// The reason in a stand-in reply (backlog 361): its words after "No
+/// reply: ", or "it was stopped" for a stopped one. Read from the log's
+/// JSON like [`reply_in`]; the stop reason marks it as Nightloom's own.
+fn stand_in_why(e: &serde_json::Value) -> Option<String> {
+    if e["event"] != "assistant_message" {
+        return None;
+    }
+    let ended = e["stop_reason"]
+        .as_str()
+        .is_some_and(|r| r == "stopped" || r.starts_with("error: "));
+    let [block] = e["blocks"].as_array()?.as_slice() else {
+        return None;
+    };
+    let text = block["text"]
+        .as_str()
+        .filter(|_| ended && block["type"] == "text")?;
+    if text == nightloom_core::STOPPED_BEFORE_REPLY {
+        return Some("it was stopped before any reply".into());
+    }
+    text.strip_prefix(nightloom_core::NO_REPLY_PREFIX)
+        .map(|why| why.trim().to_string())
+        .filter(|why| !why.is_empty())
 }
 
 /// The guard's Stop line in a run's reply (item 784): from its prefix on.
@@ -1765,9 +1799,13 @@ impl Jobs {
                             cut(stopped_reply(&reply).unwrap_or_default()),
                         ),
                         Some(reply) => (Outcome::Done, cut(&reply)),
+                        // Item 896: the stand-in's reason, when there is one.
                         None => (
                             Outcome::Failed,
-                            "the run ended with no reply — open its chat".to_string(),
+                            match failure_in(&events, &job.text) {
+                                Some(why) => cut(&format!("the run failed: {why} — open its chat")),
+                                None => "the run ended with no reply — open its chat".to_string(),
+                            },
                         ),
                     }
                 }

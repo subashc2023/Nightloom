@@ -3205,7 +3205,13 @@ impl ClaudeCodeAgent {
         // arrived is kept, and the reply says it was cut off and why,
         // rather than ending silently mid-word with no usage.
         if !outcome.result_seen && any_line {
-            let reason = cut_off_reason(read_error.as_deref(), &status.to_string());
+            let mut reason = cut_off_reason(read_error.as_deref(), &status.to_string());
+            // Item 896: the CLI's own last error line ("Connection error
+            // (… ENOTFOUND …)") is the only word on why; it rides along.
+            if let Some(why) = last_error_line(&stderr) {
+                reason.push_str(": ");
+                reason.push_str(&why);
+            }
             outcome.notices.push(format!("cut off — {reason}"));
             outcome.cut_off = Some(reason);
         }
@@ -3343,6 +3349,21 @@ fn cut_off_reason(read_error: Option<&str>, status: &str) -> String {
         Some(e) => format!("reading Claude Code's output failed ({e})"),
         None => format!("Claude Code's output ended before the reply finished ({status})"),
     }
+}
+
+/// The last non-empty line of the CLI's stderr tail, cut to a sentence's
+/// length (item 896): what a run that died mid-stream said on its way out.
+fn last_error_line(stderr: &str) -> Option<String> {
+    let line = stderr
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())?;
+    let mut out: String = line.chars().take(200).collect();
+    if line.chars().count() > 200 {
+        out.push('…');
+    }
+    Some(out)
 }
 
 /// The CLI's stdout, line by line, never failing on a byte that is not
