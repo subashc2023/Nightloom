@@ -162,8 +162,9 @@ describe("C. failures", () => {
     expect(tasks.problem).toContain("service down");
     expect(tasks.loaded).toBe(true);
   });
-  it.fails("C1b a failed read is shown to him somewhere on the stage (Mac or phone) — proposed item P1", () => {
-    expect(stageSrc.includes("tasks.problem") || phoneStageSrc.includes("tasks.problem")).toBe(true);
+  it("C1b a failed read is shown to him on the Mac stage and the phone stage (894)", () => {
+    expect(stageSrc).toContain("{#if tasks.problem}");
+    expect(phoneStageSrc).toContain("{#if tasks.problem}");
   });
   // Fixed on this branch (847: fix …, taskData.ts `once`); before it these failed and the harness shot
   // `847-shots/todo-dup847-1440x900.png` showed the whole window stop ("Nightloom hit an error and stopped updating").
@@ -261,14 +262,21 @@ describe("F. the app closed and reopened", () => {
 
 describe("G. long text, LaTeX, many items", () => {
   const many = (n: number, make: (i: number) => object) => Array.from({ length: n }, (_, i) => make(i));
-  it.fails("G1 To-do with 100 items says how many are not shown — proposed item P3", () => {
+  it("G1 To-do with 100 items says how many are not shown (895)", () => {
     const h = text(draw("todo", { items: many(100, (i) => ({ id: `t${i}`, text: `Item ${i}` })) }));
     // 60 drawn, 40 dropped by todoOf; the count must be honest ("100 open" or "40 more").
     expect(/100 open|40 more|40 not shown/.test(h)).toBe(true);
   });
-  it.fails("G2 Triage with 120 cards says how many are not shown — P3", () => {
+  it("G2 Triage with 120 cards says how many are not shown (895)", () => {
     const h = text(draw("triage", { cards: many(120, (i) => ({ id: `m${i}`, title: `Mail ${i}`, pile: "inbox" })) }));
     expect(/120|40 more|40 not shown/.test(h)).toBe(true);
+  });
+  it("G2b Run steps, Research sources and claims past their caps say so (895)", () => {
+    expect(text(draw("run", { steps: many(15, (i) => ({ name: `s${i}` })) }))).toContain("3 more steps not shown");
+    const h = text(draw("research", { question: "q", sources: many(31, (i) => ({ title: `s${i}` })), claims: many(45, (i) => ({ text: `c${i}` })) }));
+    expect(h).toContain("1 more source not shown");
+    expect(h).toContain("5 more claims not shown");
+    expect(text(draw("todo", { items: many(100, (i) => ({ text: `t${i}` })) }))).toContain("100 open");
   });
   it("G1b the cap is what it is: 60 to-dos, 80 cards, 12 steps, 30 sources, 40 claims", () => {
     expect(todoOf({ items: many(100, (i) => ({ text: `t${i}` })) })).toHaveLength(60);
@@ -298,10 +306,15 @@ describe("G. long text, LaTeX, many items", () => {
       expect(h, view).toContain("&lt;");
     }
   });
-  it("G5 LaTeX and emoji survive as their own text", () => {
+  // Since 6da69275 the views typeset math (MathText.svelte, sanitized with DOMPurify, which needs a DOM this node
+  // suite does not have): the server render throws "sanitize is not a function" here only. Checked by a bin/snap shot.
+  it.skip("G5 LaTeX and emoji survive as their own text (server render cannot run MathText)", () => {
     const latex = String.raw`Rent $\frac{1200}{2}$ each 🏠`;
     expect(text(draw("todo", { items: [{ text: latex }] }))).toContain(latex);
-    expect(text(draw("research", { question: latex }))).toContain(latex);
+    // Since 6da69275 Research draws math (MathText): the words around it and the emoji stay; the math is typeset.
+    const r = text(draw("research", { question: latex }));
+    expect(r).toContain("Rent");
+    expect(r).toContain("each 🏠");
   });
   it("G6 thirty events in a day are all kept and the track spans them", () => {
     const t = timelineOf({ events: many(30, (i) => ({ title: `E${i}`, start: `${7 + Math.floor(i / 2)}:${i % 2 ? "30" : "00"}`, minutes: 25 })) });

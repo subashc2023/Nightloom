@@ -91,7 +91,8 @@ const notes: string[] = [];
       return [];
     case "named_files": case "for_you_files": case "search_backends": case "centre_proposals": case "centre_dream_commits": case "turn_usage": case "list_threads": case "nightshift_projects": case "tidy_memory": case "tidy_threads":
       return [];
-    case "home_tasks": return homeTasks;
+    // stale847=1 (item 894): Home's tasks cannot be read.
+    case "home_tasks": if (q.get("stale847") === "1") throw new Error("the service is not answering"); return homeTasks;
     case "home_task_event": told.push(String((a as { line?: string })?.line ?? "")); return null;
     case "home_task_close": return null;
     case "home_stage_focus": return null;
@@ -130,6 +131,11 @@ async function run() {
     const ce = console.error.bind(console);
     console.error = (...m: unknown[]) => (errs++, ce(...m));
     addEventListener("error", () => errs++);
+  }
+  // many847=1 (item 895): Home sent 70 to-dos; the view draws 60.
+  if (q.get("many847") === "1") {
+    const t = (homeTasks as { id: string; data: { items: { id: string; text: string }[] } }[]).find((x) => x.id === "working-your-list");
+    if (t) for (let i = 0; i < 64; i++) t.data.items.push({ id: `extra-${i}`, text: `Extra item ${i + 1}` });
   }
   let root = mount(App, { target: document.getElementById("app")! });
   flushSync();

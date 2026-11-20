@@ -15,11 +15,13 @@
   import Loading from "../Loading.svelte";
   import { bag } from "../stageState.svelte";
   import { tell, nudge, type HomeTask } from "../tasks.svelte";
-  import { todoOf, type TodoItem, type Rows } from "../taskData";
+  import { todoOf, moreWords, type TodoItem, type Rows } from "../taskData";
   import MathText from "../../MathText.svelte";
 
   let { task }: { task: HomeTask } = $props();
   const items = $derived(todoOf(task.data));
+  // Item 895: the list draws 60; the count and a line under it say the rest.
+  const more = $derived(Math.max(0, todoOf(task.data, Infinity).length - items.length));
   // svelte-ignore state_referenced_locally
   const ui = bag(`task:${task.id}`, { mine: {} as Record<string, boolean>, handed: {} as Record<string, boolean>, back: {} as Record<string, boolean>, open: null as string | null });
 
@@ -56,7 +58,7 @@
 <div class="h9-grid">
   <div class="h9-row">
     <div class="h9-col h9-fill" style="flex:1.5">
-      <Panel title="To do" sub="{open.length} open · click a row for more" live={task.state === "live"}>
+      <Panel title="To do" sub="{open.length + more} open · click a row for more" live={task.state === "live"}>
         {#if task.why}<div class="h9-why"><b>YOU ASKED</b><span>{task.why}</span></div>{/if}
         {#if items.length === 0}<Loading label={task.doing || "Home is reading your list — which of these can it do itself?"} lines={2} />{/if}
         {#each open as i (i.id)}
@@ -89,6 +91,7 @@
             {#if ui.open === i.id}<Detail rows={rowsOf(i)} />{/if}
           </div>
         {/each}
+        {#if more}<div class="h9-more">{moreWords(more, more === 1 ? "item" : "items")}</div>{/if}
       </Panel>
     </div>
     <div class="h9-col h9-fill">

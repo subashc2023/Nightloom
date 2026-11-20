@@ -23,7 +23,7 @@
   import Browse from "../lib/homeStage/views/Browse.svelte";
   import Run from "../lib/homeStage/views/Run.svelte";
   import Research from "../lib/homeStage/views/Research.svelte";
-  import { tasks, refreshTasks, closeTask } from "../lib/homeStage/tasks.svelte";
+  import { tasks, refreshTasks, closeTask, STALE_WORDS } from "../lib/homeStage/tasks.svelte";
   import { bag, def, keep, stage, type ViewId } from "../lib/homeStage/stageState.svelte";
   import Btn from "../lib/homeStage/Btn.svelte";
   import Steps from "../lib/homeStage/Steps.svelte";
@@ -198,6 +198,8 @@
     {#if fk.folded.length}<button class="h9-tab h9-folded" onclick={() => unfold(fk)}><Icon name="check" size={13} /><span class="tn">{fk.folded.length} done</span></button>{/if}
     <span class="sep"></span>
   </div>
+  <!-- Item 894: a failed read of Home's tasks (the Mac not answering) says so; the last rows stay drawn. -->
+  {#if tasks.problem}<div class="h9-stale" role="status">{STALE_WORDS}</div>{/if}
   {#if note && row.some((t) => t.id === note?.to)}
     {@const to = row.find((t) => t.id === note?.to)!}
     {@const from = row.find((t) => t.id === note?.from)}

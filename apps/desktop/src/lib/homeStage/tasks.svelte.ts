@@ -9,6 +9,9 @@ export type { HomeTask };
 
 export const tasks = $state({ rows: [] as HomeTask[], loaded: false, problem: null as string | null });
 
+/** Item 894: what the stage shows while Home's tasks cannot be read (the rows drawn are the last ones read). */
+export const STALE_WORDS = "Could not read Home's tasks — showing the last ones. Trying again.";
+
 let reading = false;
 let again = false;
 /** Re-read the stage's tasks. A backend without them leaves the list empty, quietly. */

@@ -20,7 +20,7 @@
   import { bag } from "../stageState.svelte";
   import { tell, nudge, type HomeTask } from "../tasks.svelte";
   import { stageHost } from "../host";
-  import { runOf, type RunStep, type Rows } from "../taskData";
+  import { runOf, moreWords, type RunStep, type Rows } from "../taskData";
   import { stopThenTell, resumeLine, againLine } from "../runControls";
   import MathText from "../../MathText.svelte";
 
@@ -98,6 +98,7 @@
             {#if s.state === "live" && s.progress !== null}<span class="h9-meter" style:--p={s.progress}><i></i></span>{/if}
           </button>
         {/each}
+        {#if r.stepsMore}<div class="h9-more">{moreWords(r.stepsMore, r.stepsMore === 1 ? "step" : "steps")}</div>{/if}
       </div>
       {#if task.why}<div class="h9-why" style="margin-top:8px"><b>YOU ASKED</b><span><MathText text={task.why} /></span></div>{/if}
       {#if openStep}<div class="r-det"><Detail rows={stepRows(openStep)} />{#if openStep.state === "done" || openStep.state === "failed"}<div class="r-again">{#if ui.again.includes(openStep.id)}<span class="h9-dim">Home was asked to run it again</span>{/if}<Btn small icon="refresh" tip={"Ask Home to run this step again\nIt is told now"} onclick={() => openStep && again(openStep)}>Run this step again</Btn></div>{/if}</div>{/if}

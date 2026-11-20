@@ -329,3 +329,10 @@
 .h9-stage.classic .r-link.live::after { display: none; }
 .h9-stage.classic .r-node.live .r-mark { animation: none; }
 .h9-tab.h9-folded { color: var(--dim); }
+
+/* Item 894: Home's tasks could not be read — one quiet line under the tabs. */
+.h9-stale { margin: 6px 16px 0; padding: 4px 10px; font-size: 12px; color: var(--amber, #e8a33d); border: 1px solid color-mix(in srgb, var(--amber, #e8a33d) 40%, transparent); border-radius: 4px; }
+/* Item 895: the line under a list Home sent more of than the view draws. */
+.h9-more { padding: 6px 10px; font-size: 12px; color: var(--dim, #8a93a3); }
+/* Item 894: on the Mac the views fill the stage area, so the line floats over its foot, above the views. */
+.h9-stale.over { position: absolute; left: 16px; bottom: 12px; margin: 0; z-index: 21; background: var(--bg, #0d1117); }

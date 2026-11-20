@@ -24,7 +24,7 @@
   import Browse from "./views/Browse.svelte";
   import Run from "./views/Run.svelte";
   import Research from "./views/Research.svelte";
-  import { tasks, refreshTasks, closeTask, type HomeTask } from "./tasks.svelte";
+  import { tasks, refreshTasks, closeTask, STALE_WORDS, type HomeTask } from "./tasks.svelte";
   import { briefOf } from "./brief";
   import { bag, def, keep, stage, type ViewId } from "./stageState.svelte";
   import { rulesPass, foldDone, unfold, holdsHim, secondOf, type FocusKept } from "./focus";
@@ -256,6 +256,8 @@
         <div class="h9-view second">{@render taskView(secondTask)}</div>
       {/key}
     {/if}
+    <!-- Item 894: a failed read of Home's tasks says so; the last rows stay drawn. -->
+    {#if tasks.problem}<div class="h9-stale over" role="status">{STALE_WORDS}</div>{/if}
     {#if note && row.some((t) => t.id === note?.to)}
       {@const to = row.find((t) => t.id === note?.to)!}
       {@const from = row.find((t) => t.id === note?.from)}
