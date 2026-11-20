@@ -150,6 +150,12 @@ function nextSaid(node: HTMLElement): string | null {
   return null;
 }
 
+/** Item 884: the answer number a key press names (1–9, no modifier), else 0. */
+export function numberKey(e: { key: string; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean }): number {
+  if (e.metaKey || e.ctrlKey || e.altKey || !/^[1-9]$/.test(e.key)) return 0;
+  return Number(e.key);
+}
+
 /** The action on a reply's Markdown: settles its `<ask>` boxes once he has answered. */
 export function askSettled(node: HTMLElement) {
   let frame = 0;
@@ -200,11 +206,17 @@ export function askSettled(node: HTMLElement) {
   // message through the transcript (ASK_ANSWER_EVENT); greyed until his message lands, or 5 s if refused.
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const pick = (e: Event) => {
-    const li = (e.target as HTMLElement | null)?.closest?.<HTMLElement>(".nl-ask-o > li");
+    let li = (e.target as HTMLElement | null)?.closest?.<HTMLElement>(".nl-ask-o > li");
     const box = li?.closest<HTMLElement>(".nl-ask");
     if (!li || !box || !node.contains(box)) return;
     if (box.dataset.state !== "open" && box.dataset.state !== "closed") return;
-    if (e instanceof KeyboardEvent && e.key !== "Enter" && e.key !== " ") return;
+    // Item 884: each answer shows its number key, so 1–9 on a focused answer sends that numbered answer.
+    const digit = e instanceof KeyboardEvent ? numberKey(e) : 0;
+    if (digit) {
+      const nth = box.querySelectorAll<HTMLElement>(".nl-ask-o > li")[digit - 1];
+      if (!nth) return;
+      li = nth;
+    } else if (e instanceof KeyboardEvent && e.key !== "Enter" && e.key !== " ") return;
     e.preventDefault();
     if (box.dataset.sending) return;
     const options = Array.from(box.querySelectorAll<HTMLElement>(".nl-ask-o > li")).map((x) => (x.textContent ?? "").trim());

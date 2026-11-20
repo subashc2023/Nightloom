@@ -146,4 +146,42 @@
     font-size: 12px;
     color: var(--dim);
   }
+  /* Item 884 (option B, Console rows): in Jarvis the card is the question box's and the hand-off card's
+     glass — the amber-tinted top and thin amber edge — and Send answer is the hand-off's Wrap up now (the
+     terminal fill, the amber edge and glow), not a tan pill. Classic keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask {
+    border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line2));
+    border-radius: var(--r2);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 6%, var(--raised)), var(--raised) 64%);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--accent) 24%, transparent),
+      0 10px 28px -8px rgba(0, 0, 0, 0.5);
+    /* The sticky header strip's fill: the glass's tinted top, so no band shows under it. */
+    --aq-bg: color-mix(in srgb, var(--accent) 6%, var(--raised));
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ta-send {
+    min-height: 28px;
+    padding: 3px 12px;
+    border-radius: var(--r1);
+    border: 1px solid color-mix(in srgb, var(--accent) 70%, var(--line2));
+    background: var(--term);
+    color: var(--accent-ink);
+    font-weight: 500;
+    box-shadow:
+      inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
+      var(--glow-main, none);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ta-send:hover:not(:disabled) {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ta-send:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ta-send:disabled {
+    box-shadow: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ta-note {
+    font: 11px var(--mono);
+  }
 </style>
