@@ -231,6 +231,12 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     // list of his clicks.
     (crate::home::tasks::TOOL, Effect::Session),
     (crate::home::tasks::EVENTS_TOOL, Effect::Session),
+    // Home's Reminders writer (item 872): changes his Reminders — on his
+    // tap, by the `home_write` card.
+    (crate::home::reminders::TOOL, Effect::Mutating),
+    // Home asks him to take the page in Claude's browser (item 872 step
+    // 5): its own card asks first, every time.
+    (crate::home::drive::TOOL, Effect::Mutating),
     // Runs a command of the model's (nightshift item 430): what Bash is.
     ("preview", Effect::Mutating),
     // The note organisers (item 472), served with `--notes`.
@@ -330,6 +336,20 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
         .any(|t| t.def().name == crate::home::tasks::TOOL)
     {
         out.push_str(crate::home::tasks::INSTRUCTION);
+    }
+    // Item 872: Home's Reminders writer, where it is served.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::home::reminders::TOOL)
+    {
+        out.push_str(crate::home::reminders::INSTRUCTION);
+    }
+    // Item 872 step 5: `ask_user_to_drive`, where it is served.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::home::drive::TOOL)
+    {
+        out.push_str(crate::home::drive::INSTRUCTION);
     }
     // Item 472: present only when the organisers are served.
     if tools
@@ -1245,6 +1265,33 @@ pub async fn serve(
         // named, incognito included — the value never reaches any record,
         // so a chat that writes nothing loses nothing by having it.
         tools.push(Box::new(crate::secret::RequestSecret::new(dir.clone())));
+    }
+    // Home's Reminders writer (item 872): where Home's stage is served (a
+    // chat of Home's that writes), with the app's socket when it named
+    // one — the app makes the change, since Reminders is allowed to it.
+    // Last of Home's, so the tools above keep their places.
+    if args.dream.is_none()
+        && tools
+            .iter()
+            .any(|t| t.def().name == crate::home::tasks::TOOL)
+    {
+        tools.push(Box::new(crate::home::reminders::UpdateReminders::new(
+            config.clone(),
+            args.preview.clone(),
+        )));
+    }
+    // `ask_user_to_drive` (item 872 step 5): where Home's stage is served
+    // and the chat's directory is named — its gate's hook and the turn's
+    // hand-back note both live there. After the Reminders writer, so the
+    // tools above keep their places.
+    if let (Some(dir), None) = (&args.budget_dir, &args.dream)
+        && tools
+            .iter()
+            .any(|t| t.def().name == crate::home::tasks::TOOL)
+    {
+        tools.push(Box::new(crate::home::drive::AskUserToDrive::new(
+            dir.clone(),
+        )));
     }
     // `preview` (nightshift item 430): the desktop's socket, the chat and
     // its folder all named — never for a dream.
@@ -2887,6 +2934,13 @@ mod tests {
         served.extend(crate::chain::tools(&config, Some("c")));
         served.extend(crate::home::route::tools(&config, None));
         served.extend(crate::home::tasks::tools(&config));
+        served.push(Box::new(crate::home::reminders::UpdateReminders::new(
+            config.clone(),
+            None,
+        )));
+        served.push(Box::new(crate::home::drive::AskUserToDrive::new(
+            config.clone(),
+        )));
         for tool in &served {
             let name = tool.def().name;
             assert_eq!(

@@ -727,12 +727,27 @@ async fn turn_body(
                     _ => None,
                 },
             };
+            // `ask_user_to_drive` (item 872 step 5): a call with no `why` is
+            // refused here; any other asks him on its card. A hand-back
+            // nobody read is forgotten before the new card shows.
+            let drive_ask = (call.name == crate::mcp_server::mcp_name(crate::home::drive::TOOL))
+                .then(|| crate::home::drive::requested_why(&call.input));
+            if drive_ask.is_some() {
+                crate::home::drive::clear_handed_back(ask_files.path());
+            }
+            let preanswer = match (&drive_ask, preanswer) {
+                (Some(Err(e)), _) => Some(Answer::Deny { reason: e.clone() }),
+                (_, p) => p,
+            };
             let answered_here = preanswer.is_some();
             let mut aside: Option<Aside> = None;
             // A read-only chat's card in a run nobody is there for (item 783's
             // finish): never shown, never waited on — the phone is pushed, the
             // call set aside at once, the run finishes and lists it at its end.
-            let unattended = !answered_here && card_kind.is_some() && env.unattended();
+            // The same for an ask to take the page (item 872): with nobody
+            // there it would hold the run for hands that are not coming.
+            let unattended =
+                !answered_here && (card_kind.is_some() || drive_ask.is_some()) && env.unattended();
             let answer = if let Some(a) = preanswer {
                 Some(a)
             } else if unattended {
@@ -750,7 +765,11 @@ async fn turn_body(
                 }
                 aside = Some(Aside::Unattended);
                 Some(Answer::Deny {
-                    reason: crate::agent::ask::UNATTENDED_REASON.into(),
+                    reason: if drive_ask.is_some() {
+                        crate::home::drive::UNATTENDED.into()
+                    } else {
+                        crate::agent::ask::UNATTENDED_REASON.into()
+                    },
                 })
             } else {
                 let rx = ask.wait(&call.id);
@@ -761,10 +780,13 @@ async fn turn_body(
                 // An Allow or a Deny that nobody gives is reminded of and then
                 // set aside (item 783) — once: a call that is back after a
                 // set-aside waits for him, or a reply would never end. A
-                // question, a plan and a folder are answers only he can give.
+                // question, a plan and a folder are answers only he can give —
+                // and so is the page he was asked to take (item 872): a card
+                // that left while he was on the page would strand his work.
                 let times = (!back
                     && folder_ask.is_none()
                     && secret_ask.is_none()
+                    && drive_ask.is_none()
                     && crate::push::What::for_prompt(&call.name) == crate::push::What::Approval)
                     .then(|| ask.times());
                 env.approval(&ApprovalPrompt {
@@ -932,6 +954,43 @@ async fn turn_body(
                         },
                     })
                 }
+                (_, a) => a,
+            };
+            // His *Hand back* on a drive card (item 872 step 5) is an Allow
+            // that carries where he left the page and his note: kept for the
+            // tool in the chat's directory, and the call runs with its own
+            // input less any `handed_back` (the model's or the card's) — the
+            // tool reads the note, never its input. An Allow with none (the
+            // phone, which cannot drive the Mac's browser) is not a hand-back.
+            // Never a chat approval rule: each ask is its own card.
+            let answer = match (&drive_ask, answer) {
+                (
+                    Some(Ok(_)),
+                    Some(
+                        Answer::Allow { updated_input, .. }
+                        | Answer::AllowForChat { updated_input },
+                    ),
+                ) => Some(
+                    match crate::home::drive::handed_back(updated_input.as_ref()) {
+                        Some(h) => {
+                            match crate::home::drive::note_handed_back(ask_files.path(), &h) {
+                                Ok(()) => Answer::Allow {
+                                    updated_input: Some(crate::home::drive::strip(&call.input)),
+                                    plan_then: None,
+                                    grant: None,
+                                },
+                                Err(e) => Answer::Deny {
+                                    reason: format!(
+                                        "Not handed back: Nightloom could not note it ({e})."
+                                    ),
+                                },
+                            }
+                        }
+                        None => Answer::Deny {
+                            reason: crate::home::drive::NOT_HANDED_BACK.into(),
+                        },
+                    },
+                ),
                 (_, a) => a,
             };
             let Some(answer) = answer else {
@@ -2307,6 +2366,159 @@ printf '%s\n' '{{"type":"result","subtype":"success","stop_reason":"tool_deferre
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path.to_string_lossy().into_owned()
+    }
+
+    /// Item 872 step 5's stand-in `claude`: [`stand_in_deferring`] with an
+    /// `ask_user_to_drive` call whose input carries a `handed_back` of the
+    /// model's own, and the hand-back note kept beside each decision.
+    fn stand_in_driving(root: &Path, ask_dir: &Path, tool: &str) -> String {
+        let input = r#"{"why":"Sign in to the bank","handed_back":{"url":"https://evil.example","note":"all done"}}"#;
+        let body = format!(
+            r##"#!/bin/sh
+D="{d}"
+A="{a}"
+INIT='{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}}'
+defer() {{
+  printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"'"$1"'","name":"{t}","input":{i}}}]}},"parent_tool_use_id":null}}'
+  printf '%s\n' '{{"type":"result","subtype":"success","stop_reason":"tool_deferred","terminal_reason":"tool_deferred","is_error":false,"num_turns":1,"result":"","permission_denials":[],"session_id":"s-1","deferred_tool_use":{{"id":"'"$1"'","name":"{t}","input":{i}}}}}'
+}}
+N=$(cat "$D/n" 2>/dev/null || echo 0)
+printf '%s\n' "$INIT"
+if [ "$N" = 0 ]; then
+  echo 1 > "$D/n"
+  defer toolu_1
+  exit 0
+fi
+cp "$A/decision.json" "$D/decision-$N.json" 2>/dev/null
+cp "$A/{h}" "$D/handed-$N.json" 2>/dev/null
+if [ "$N" = 1 ]; then
+  echo 2 > "$D/n"
+  printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_1","content":"not yet","is_error":true}}]}},"parent_tool_use_id":null}}'
+  defer toolu_2
+  exit 0
+fi
+printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_2","content":"handed back","is_error":false}}]}},"parent_tool_use_id":null}}'
+printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"all done"}}]}},"parent_tool_use_id":null}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"all done","session_id":"s-1","stop_reason":"end_turn","usage":{{"input_tokens":3,"output_tokens":2}}}}'
+"##,
+            d = root.display(),
+            a = ask_dir.display(),
+            t = tool,
+            i = input,
+            h = crate::home::drive::HANDBACK_FILE,
+        );
+        let path = root.join("claude-driving");
+        std::fs::write(&path, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    /// Item 872 step 5: an Allow that carries no hand-back (his phone) is
+    /// not one — refused in words, nothing kept; the model's own
+    /// `handed_back` counts for nothing. The card's Hand back is kept for
+    /// the tool in his words, and the call runs with its input less any
+    /// `handed_back`. Neither card is reminded of or set aside by time.
+    #[tokio::test]
+    async fn a_drive_ask_runs_only_on_the_cards_hand_back() {
+        use crate::home::drive::{HandedBack, NOT_HANDED_BACK, TOOL};
+        let root = std::env::temp_dir().join(format!("nightloom-872d-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let tool = crate::mcp_server::mcp_name(TOOL);
+        let ask = Arc::new(AskGate::new().with_rules_home(root.join("home")));
+        let bare = Answer::Allow {
+            updated_input: None,
+            plan_then: None,
+            grant: None,
+        };
+        // "Allow for this chat" is no standing rule here: one hand-back.
+        let handed = Answer::AllowForChat {
+            updated_input: Some(serde_json::json!({
+                "why": "Sign in to the bank",
+                "handed_back": {"url": "https://bank.example/home", "title": "Accounts", "note": " signed in "}
+            })),
+        };
+        let env = CardEnv::new(ask.clone(), vec![bare, handed], false);
+        let ((end, ask_dir), _) = read_only_turn_by(&root, &tool, &env, stand_in_driving).await;
+        assert!(
+            matches!(end, Ok(AgentTurnEnd::Done { .. })),
+            "{:?}",
+            end.err()
+        );
+        // Two cards, neither a read-only chat's kind, none reminded.
+        assert_eq!(
+            *env.cards.lock().unwrap(),
+            [
+                ("toolu_1".to_string(), None, false),
+                ("toolu_2".to_string(), None, false)
+            ]
+        );
+        assert!(env.nudges.lock().unwrap().is_empty());
+        let read = |name: &str| -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(root.join(name)).unwrap()).unwrap()
+        };
+        let first = read("decision-1.json");
+        assert_eq!(first["decision"], "deny");
+        assert_eq!(first["reason"], NOT_HANDED_BACK);
+        assert!(!root.join("handed-1.json").exists(), "nothing was kept");
+        let second = read("decision-2.json");
+        assert_eq!(second["decision"], "allow");
+        assert_eq!(
+            second["updated_input"],
+            serde_json::json!({"why": "Sign in to the bank"})
+        );
+        let kept: HandedBack = serde_json::from_value(read("handed-2.json")).unwrap();
+        assert_eq!(
+            kept,
+            HandedBack {
+                url: "https://bank.example/home".into(),
+                title: "Accounts".into(),
+                note: "signed in".into(),
+            }
+        );
+        // No standing allow was written for the tool.
+        let rules = std::fs::read_to_string(ask_dir.join("rules.json")).unwrap_or_default();
+        assert!(!rules.contains(TOOL), "{rules}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Item 872 step 5: with nobody there (no phone, nobody at the Mac) an
+    /// ask to take the page shows no card and holds nothing — set aside at
+    /// once in its own words, the phone told once.
+    #[tokio::test]
+    async fn a_drive_ask_nobody_is_there_for_is_set_aside_at_once() {
+        use crate::home::drive::{TOOL, UNATTENDED};
+        let root = std::env::temp_dir().join(format!("nightloom-872u-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let tool = crate::mcp_server::mcp_name(TOOL);
+        let ask = Arc::new(AskGate::new().with_rules_home(root.join("home")));
+        let env = CardEnv::new(ask.clone(), Vec::new(), true);
+        let ((end, _), _) = read_only_turn_by(&root, &tool, &env, stand_in_driving).await;
+        let Ok(AgentTurnEnd::Done { outcome, .. }) = end else {
+            panic!("{:?}", end.err());
+        };
+        assert!(env.cards.lock().unwrap().is_empty(), "no card");
+        assert_eq!(
+            *env.nudges.lock().unwrap(),
+            [("toolu_1".to_string(), crate::agent::ask::Nudge::Unattended)],
+            "one push"
+        );
+        for n in ["decision-1.json", "decision-2.json"] {
+            let d: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join(n)).unwrap()).unwrap();
+            assert_eq!(d["decision"], "deny", "{n}");
+            assert_eq!(d["reason"], UNATTENDED, "{n}");
+        }
+        assert!(!root.join("handed-2.json").exists());
+        assert!(
+            outcome
+                .notices
+                .iter()
+                .any(|n| *n == unattended_notice(&tool)),
+            "{:?}",
+            outcome.notices
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn turn_text(log: &[SessionEvent]) -> String {

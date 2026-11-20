@@ -23,6 +23,9 @@
   import { isStuck } from "./stuck";
   import SecretCard from "./SecretCard.svelte";
   import { isSecretRequest } from "./secret";
+  // Item 872 step 5: Home asks him to take the page.
+  import DriveCard from "./DriveCard.svelte";
+  import { isDriveRequest } from "./drive";
   import { trackCard } from "./waitingNotice.svelte";
 
   let { req }: { req: ApprovalRequest } = $props();
@@ -410,6 +413,9 @@
 {:else if deferred && isSecretRequest(req.name)}
   <!-- 766: the chat asks for a secret; typed here, never in the chat. -->
   <SecretCard {req} />
+{:else if deferred && isDriveRequest(req.name)}
+  <!-- 872: Home asks him to take the page in Claude's browser, then hand it back. -->
+  <DriveCard {req} />
 {:else if deferred && isPlaywright(req.name)}
   <!-- Playwright, Claude's own browser (backlog 367): its own card. -->
   <PlaywrightCard {req} />
@@ -632,7 +638,7 @@
             {req.kind === "remember"
               ? "This chat is read-only, so Claude asks before it adds to your memory."
               : req.kind === "home_write"
-                ? "Home changes your mail or calendar only on your tap — this one change, once. The next one asks again."
+                ? "Home changes your mail, calendar or reminders only on your tap — this one change, once. The next one asks again."
                 : "This chat is read-only, and this connector action's name does not say whether it only reads or also changes something."}
           </div>
         </div>

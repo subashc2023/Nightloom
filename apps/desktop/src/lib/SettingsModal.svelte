@@ -3885,7 +3885,7 @@
             <button class="ns-btn ghost" disabled={home.checking} onclick={() => void checkReach()}>{home.checking ? "Checking…" : "Check again"}</button>
           </div>
           <p class="note small">
-            Your connectors, one row per account. Home only reads them: it cannot send, change or delete anything through them.
+            Your connectors, one row per account. Home reads them; a label, draft or calendar event it proposes changes only when you tap Allow on that one change, and it cannot send or delete anything through them.
             {reachSummary(home.reach)}
           </p>
           {#if home.reach?.error}
@@ -3952,7 +3952,7 @@
           {#if home.sources !== null}
             <div class="reach-group" data-testid="home-sources">
               <div class="reach-title">On this Mac</div>
-              <p class="note small src-lead">{sourcesSummary(home.sources)} Nothing here is read until you allow it, and Home only reads: it never adds, changes or sends.</p>
+              <p class="note small src-lead">{sourcesSummary(home.sources)} Nothing here is read until you allow it. Home only reads these, except that it adds a reminder or marks one done when you tap Allow on that one change; it never sends anything.</p>
               {#each home.sources as s (s.id)}
                 {@const button = sourceButton(s)}
                 <div class="reach-row" class:off={!isRead(s)} class:asked={home.sourceAsked === s.id} id={`home-source-${s.id}`}>

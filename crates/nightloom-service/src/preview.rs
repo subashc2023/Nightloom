@@ -872,6 +872,13 @@ pub enum Request {
     Status {
         chat: String,
     },
+    /// Item 872: one change to his Reminders, already answered on its
+    /// card — made by the app, which is where Reminders is allowed
+    /// ([`crate::home::reminders::apply`]). Not a preview; it rides the
+    /// one socket the tool's server has to the app.
+    Reminder {
+        change: crate::home::reminders::Change,
+    },
 }
 
 /// The desktop's answer, as one JSON line.
@@ -882,6 +889,9 @@ pub struct Reply {
     pub preview: Option<Snapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// What a request that is not a preview's did, in words (item 872).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// The socket's path for this app process, under the config dir. Per
@@ -1057,6 +1067,7 @@ pub async fn serve_socket(listener: std::os::unix::net::UnixListener, previews: 
                     ok: false,
                     preview: None,
                     error: Some(format!("not a preview request: {e}")),
+                    text: None,
                 },
             };
             let mut out = serde_json::to_string(&reply).unwrap_or_default();
@@ -1079,17 +1090,20 @@ pub async fn answer(previews: &Arc<Previews>, req: Request) -> Reply {
                 ok: true,
                 preview: Some(snap),
                 error: None,
+                text: None,
             },
             Err(e) => Reply {
                 ok: false,
                 preview: None,
                 error: Some(e),
+                text: None,
             },
         },
         Request::Stop { chat } => Reply {
             ok: true,
             preview: previews.stop(&chat).await,
             error: None,
+            text: None,
         },
         Request::Status { chat } => {
             let preview = previews.status(&chat);
@@ -1098,6 +1112,32 @@ pub async fn answer(previews: &Arc<Previews>, req: Request) -> Reply {
                 ok: true,
                 preview,
                 error: None,
+                text: None,
+            }
+        }
+        Request::Reminder { change } => {
+            let done = tokio::task::spawn_blocking(move || {
+                let Some(config) = crate::project::config_dir() else {
+                    return Err("no Nightloom home".to_string());
+                };
+                let stores = crate::home::sources::installed();
+                crate::home::reminders::apply(&config, stores.as_deref(), &change)
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("the change did not finish: {e}")));
+            match done {
+                Ok(text) => Reply {
+                    ok: true,
+                    preview: None,
+                    error: None,
+                    text: Some(text),
+                },
+                Err(e) => Reply {
+                    ok: false,
+                    preview: None,
+                    error: Some(e),
+                    text: None,
+                },
             }
         }
     }

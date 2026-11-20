@@ -31,8 +31,12 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Item 872 step 5: `ask_user_to_drive` — he takes the page, then hands it back.
+pub mod drive;
 pub mod guard;
 pub mod reach;
+/// Item 872: the Reminders writer — add one, mark one done, on his tap.
+pub mod reminders;
 /// Item 763 H5: routing work into project chats.
 pub mod route;
 /// Item 808: Messages, Contacts, Reminders and the Calendar app, read once he allows them.

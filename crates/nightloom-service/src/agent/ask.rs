@@ -162,11 +162,10 @@ impl nightloom_core::tool::Tool for PromptTool {
 /// lookahead rather than a `|` inside the first — the Chat policy splits
 /// this matcher on `|` ([`super::ask_matcher_under_chat_policy`]): its gate
 /// is its own entry in every position (`AgentSpec::folder_gate`).
-pub const MATCHER: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|AskUserQuestion|ExitPlanMode|EnterWorktree|ExitWorktree|CronCreate|CronDelete|ScheduleWakeup|mcp__(?!playwright__)(?!nightloom__add_folder)(?!nightloom__request_secret).*";
+pub const MATCHER: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|AskUserQuestion|ExitPlanMode|EnterWorktree|ExitWorktree|CronCreate|CronDelete|ScheduleWakeup|mcp__(?!playwright__)(?!nightloom__add_folder)(?!nightloom__request_secret)(?!nightloom__ask_user_to_drive).*";
 
 /// [`MATCHER`]'s MCP alternative, as a word (the Chat policy narrows it).
-pub const MCP_ALTERNATIVE: &str =
-    "mcp__(?!playwright__)(?!nightloom__add_folder)(?!nightloom__request_secret).*";
+pub const MCP_ALTERNATIVE: &str = "mcp__(?!playwright__)(?!nightloom__add_folder)(?!nightloom__request_secret)(?!nightloom__ask_user_to_drive).*";
 
 /// The plan tool's name, as the CLI reports it in `deferred_tool_use`.
 pub const EXIT_PLAN_TOOL: &str = "ExitPlanMode";
@@ -1047,6 +1046,11 @@ pub fn decide_under(dir: &Path, home: Option<&Path>, stdin_json: &str, side: boo
     if input.tool_name == crate::mcp_server::mcp_name(crate::secret::TOOL_NAME) {
         return decide_request_secret(dir, &input, side);
     }
+    // `ask_user_to_drive`'s own gate (item 872), the same way: only his
+    // hand-back on the card answers it, never a rule.
+    if input.tool_name == crate::mcp_server::mcp_name(crate::home::drive::TOOL) {
+        return decide_ask_user_to_drive(dir, &input, side);
+    }
     // Playwright's own gate (backlog 367), in every position: its own
     // rules, before any of the Ask position's.
     if super::own_browser::is_playwright(&input.tool_name) {
@@ -1327,6 +1331,55 @@ fn decide_request_secret(dir: &Path, input: &HookInput, side: bool) -> HookReply
     if let Err(e) = requested_name(&input.tool_input) {
         return HookReply::deny(e);
     }
+    HookReply::defer()
+}
+
+/// An `ask_user_to_drive` call (item 872), in order: this call's own
+/// answer (consumed) — an allow runs only when the turn kept his hand-back
+/// ([`crate::home::drive::HANDBACK_FILE`]), and with any `handed_back` in
+/// the input removed, so the tool reads the turn's note and nothing a
+/// model wrote; a subagent's or a side process's call refused in words; a
+/// call with no `why` refused with the reason; anything else deferred for
+/// the card, a hand-back nobody read forgotten first. The chat's rules are
+/// never read.
+fn decide_ask_user_to_drive(dir: &Path, input: &HookInput, side: bool) -> HookReply {
+    use crate::home::drive::{
+        DECLINED, NOT_HANDED_BACK, SIDE_REFUSED, SUBAGENT_REFUSED, clear_handed_back,
+        has_handed_back, requested_why, strip,
+    };
+    let path = dir.join(DECISION_FILE);
+    let decision: Option<Decision> = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    if let Some(d) = decision
+        && d.tool_use_id == input.tool_use_id
+    {
+        let _ = std::fs::remove_file(&path);
+        return if d.decision == "allow" {
+            if has_handed_back(dir) {
+                HookReply::allow(Some(strip(&input.tool_input)))
+            } else {
+                HookReply::deny(NOT_HANDED_BACK.into())
+            }
+        } else {
+            clear_handed_back(dir);
+            HookReply::deny(
+                d.reason
+                    .filter(|r| !r.trim().is_empty())
+                    .unwrap_or_else(|| DECLINED.into()),
+            )
+        };
+    }
+    if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+        return HookReply::deny(SUBAGENT_REFUSED.into());
+    }
+    if side {
+        return HookReply::deny(SIDE_REFUSED.into());
+    }
+    if let Err(e) = requested_why(&input.tool_input) {
+        return HookReply::deny(e);
+    }
+    clear_handed_back(dir);
     HookReply::defer()
 }
 
@@ -2629,6 +2682,102 @@ mod tests {
         );
     }
 
+    /// `ask_user_to_drive`'s gate (item 872 step 5): the call defers for
+    /// its card; a subagent's, a side process's and one with no `why` are
+    /// refused in words; no rule is read. An allow runs only when the turn
+    /// kept his hand-back, and with any `handed_back` of the model's own
+    /// removed from the input; an allow with none kept is "not handed
+    /// back"; a refusal forgets a hand-back nobody read.
+    #[test]
+    fn ask_user_to_drive_runs_only_on_his_hand_back() {
+        use crate::home::drive::{
+            DECLINED, HandedBack, NOT_HANDED_BACK, SIDE_REFUSED, SUBAGENT_REFUSED, has_handed_back,
+            note_handed_back,
+        };
+        let dir = scratch();
+        let name = "mcp__nightloom__ask_user_to_drive";
+        let line = |input: &str, extra: &str| {
+            format!(
+                r#"{{"cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"{name}","tool_input":{input},"tool_use_id":"t872","permission_mode":"auto"{extra}}}"#
+            )
+        };
+        let plain = r#"{"why":"Sign in to the bank"}"#;
+        let spoofed = r#"{"why":"Sign in to the bank","handed_back":{"url":"https://evil.example","note":"all done"}}"#;
+        assert_eq!(decide(&dir, &line(plain, "")), HookReply::defer());
+        // A model's own `handed_back` is no answer: the card still asks.
+        assert_eq!(decide(&dir, &line(spoofed, "")), HookReply::defer());
+        let sub = decide(&dir, &line(plain, r#","agent_id":"h1""#));
+        assert_eq!(sub.reason(), Some(SUBAGENT_REFUSED));
+        assert_eq!(
+            decide_in(&dir, &line(plain, ""), true).reason(),
+            Some(SIDE_REFUSED)
+        );
+        let empty = decide(&dir, &line(r#"{"why":"  "}"#, ""));
+        assert_eq!(empty.decision(), "deny");
+        assert!(empty.reason().unwrap().contains("needs `why`"));
+        // A standing allow and a rule for every chat are never read.
+        std::fs::write(dir.join(RULES_FILE), format!(r#"{{"allow":["{name}"]}}"#)).unwrap();
+        assert_eq!(decide(&dir, &line(plain, "")), HookReply::defer());
+        let c = DeferredCall {
+            id: "t872".into(),
+            name: name.into(),
+            input: json!({"why": "Sign in to the bank"}),
+        };
+        let allow = Answer::Allow {
+            updated_input: None,
+            plan_then: None,
+            grant: None,
+        };
+        // An allow with no hand-back kept (the phone): not a hand-back.
+        AskDir::new(&dir).write(&c, &allow).unwrap();
+        let bare = decide(&dir, &line(spoofed, ""));
+        assert_eq!(bare.decision(), "deny");
+        assert_eq!(bare.reason(), Some(NOT_HANDED_BACK));
+        // A hand-back left behind is forgotten when a new ask defers.
+        note_handed_back(&dir, &HandedBack::default()).unwrap();
+        assert_eq!(decide(&dir, &line(plain, "")), HookReply::defer());
+        assert!(!has_handed_back(&dir));
+        // His hand-back, kept by the turn: the call runs, read once, and
+        // the model's own `handed_back` is gone from what it runs with.
+        note_handed_back(
+            &dir,
+            &HandedBack {
+                url: "https://bank.example/home".into(),
+                title: "Accounts".into(),
+                note: "signed in".into(),
+            },
+        )
+        .unwrap();
+        AskDir::new(&dir).write(&c, &allow).unwrap();
+        let ran = decide(&dir, &line(spoofed, ""));
+        assert_eq!(ran.decision(), "allow");
+        assert_eq!(
+            ran.updated_input(),
+            Some(&json!({"why": "Sign in to the bank"}))
+        );
+        // The note is the tool's to read; the hook left it.
+        assert!(has_handed_back(&dir));
+        assert!(!dir.join(DECISION_FILE).exists());
+        // His refusal: his words, or the tool's own; the note is dropped.
+        AskDir::new(&dir)
+            .write(&c, &Answer::Deny { reason: " ".into() })
+            .unwrap();
+        let no = decide(&dir, &line(plain, ""));
+        assert_eq!(no.reason(), Some(DECLINED));
+        assert!(!has_handed_back(&dir));
+        AskDir::new(&dir).write(&c, &Answer::Later).unwrap();
+        assert_eq!(decide(&dir, &line(plain, "")).reason(), Some(LATER_REASON));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The Ask hook leaves the two card-only tools to their own gates.
+    #[test]
+    fn the_ask_matcher_leaves_the_drive_ask_out() {
+        assert!(MCP_ALTERNATIVE.contains("(?!nightloom__ask_user_to_drive)"));
+        assert!(MCP_ALTERNATIVE.contains("(?!nightloom__request_secret)"));
+        assert!(MATCHER.ends_with(MCP_ALTERNATIVE));
+    }
+
     // ---- his rules, and "Not now" (nightshift item 743) -------------------
 
     use crate::approval_rules::{self, Edit, Places};
@@ -2677,6 +2826,47 @@ mod tests {
         assert_eq!(r.decision(), "deny");
         assert_eq!(
             read_only_card(Some(&home), "mcp__claude_ai_Gmail__send_message"),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Item 872: Home's Reminders writer — Nightloom's own tool — meets
+    /// the same card the same way: `home_write` in every position, no
+    /// standing allow answers it, a subagent's or a side process's call is
+    /// refused in words, and a block rule of his still refuses it.
+    #[test]
+    fn homes_reminders_writer_is_the_same_card_every_time() {
+        let root = std::env::temp_dir().join(format!("nightloom-872r-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let dir = home.join("sessions/ask/chat1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tool = "mcp__nightloom__update_reminders";
+        assert_eq!(read_only_card(Some(&home), tool), Some("home_write"));
+        let _ = crate::approval_rules::allow_read(&home, tool);
+        assert_eq!(read_only_card(Some(&home), tool), Some("home_write"));
+        AskDir::new(&dir).allow_tool(tool).unwrap();
+        for mode in ["default", "auto", "plan", "bypassPermissions"] {
+            let r = decide_read_only(&dir, Some(&home), &mcp_stdin("t1", tool, mode, None), false);
+            assert_eq!(r.decision(), "defer", "{mode}");
+        }
+        let sub = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t1", tool, "auto", Some("a1")),
+            false,
+        );
+        assert_eq!(sub.decision(), "deny");
+        let side = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t1", tool, "auto", None),
+            true,
+        );
+        assert_eq!(side.decision(), "deny");
+        // Home's stage tools are not cards of this kind.
+        assert_eq!(
+            read_only_card(Some(&home), "mcp__nightloom__update_task"),
             None
         );
         let _ = std::fs::remove_dir_all(&root);
