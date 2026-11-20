@@ -150,7 +150,8 @@ export interface TodoItem {
   detail: Rows;
 }
 
-export function todoOf(data: unknown): TodoItem[] {
+/** Item 895: `cap` is how many the view draws; `todoOf(d, Infinity).length` is the true total. */
+export function todoOf(data: unknown, cap = 60): TodoItem[] {
   const out: TodoItem[] = [];
   arr(obj(data).items).forEach((x, i) => {
     const t = obj(x);
@@ -168,7 +169,7 @@ export function todoOf(data: unknown): TodoItem[] {
       detail: rowsOf(t.detail),
     });
   });
-  return once(out).slice(0, 60);
+  return once(out).slice(0, cap);
 }
 
 // ---- Triage ----
@@ -199,7 +200,7 @@ export interface Card {
   detail: Rows;
 }
 
-export function triageOf(data: unknown): Card[] {
+export function triageOf(data: unknown, cap = 80): Card[] {
   const out: Card[] = [];
   arr(obj(data).cards).forEach((x, i) => {
     const c = obj(x);
@@ -220,7 +221,7 @@ export function triageOf(data: unknown): Card[] {
       detail: rowsOf(c.detail),
     });
   });
-  return once(out).slice(0, 80);
+  return once(out).slice(0, cap);
 }
 
 // ---- Browse ----
@@ -300,6 +301,8 @@ export interface Run {
   project: string;
   /** What it will ask of him at the end. */
   asks: string;
+  /** Item 895: steps past the 12 drawn. */
+  stepsMore: number;
 }
 
 export function runOf(data: unknown): Run {
@@ -324,6 +327,7 @@ export function runOf(data: unknown): Run {
     chat: str(o.chat, 80),
     project: str(o.project, 80),
     asks: str(o.asks, 160),
+    stepsMore: Math.max(0, steps.length - 12),
   };
 }
 
@@ -357,6 +361,9 @@ export interface Research {
   open: { text: string; answered: string }[];
   confidence: string;
   done: boolean;
+  /** Item 895: sources past the 30 drawn, claims past the 40. */
+  sourcesMore: number;
+  claimsMore: number;
 }
 
 export function researchOf(data: unknown): Research {
@@ -390,6 +397,8 @@ export function researchOf(data: unknown): Research {
       .slice(0, 10),
     confidence: str(o.confidence, 200),
     done: o.done === true,
+    sourcesMore: Math.max(0, sources.length - 30),
+    claimsMore: Math.max(0, claims.length - 40),
   };
 }
 
@@ -415,3 +424,6 @@ export function researchNote(r: Research, dropped: Record<string, boolean>): str
   if (kept.length) out.push("## Sources", "", ...kept.map((s) => `- ${s.title}${s.site ? ` (${s.site})` : ""}${s.own ? " — your own note" : ""}`), "");
   return out.join("\n");
 }
+
+/** Item 895: the line under a cut list. */
+export const moreWords = (n: number, what: string) => `${n} more ${what} not shown`;

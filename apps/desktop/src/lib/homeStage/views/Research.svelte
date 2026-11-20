@@ -15,7 +15,7 @@
   import { bag } from "../stageState.svelte";
   import { tell, type HomeTask } from "../tasks.svelte";
   import { stageHost } from "../host";
-  import { noteName, researchNote, researchOf, type ResearchSource } from "../taskData";
+  import { noteName, researchNote, researchOf, moreWords, type ResearchSource } from "../taskData";
   import MathText from "../../MathText.svelte";
 
   let { task }: { task: HomeTask } = $props();
@@ -91,6 +91,7 @@
               </Detail>
             {/if}
           {/each}
+          {#if r.sourcesMore}<div class="h9-more">{moreWords(r.sourcesMore, r.sourcesMore === 1 ? "source" : "sources")}</div>{/if}
         </Panel>
         <Panel title="What Home is keeping" sub="{claims.length} claim{claims.length === 1 ? '' : 's'}">
           {#each claims as c, i (c.id)}
@@ -109,6 +110,7 @@
               {/if}
             </div>
           {/each}
+          {#if r.claimsMore}<div class="h9-more">{moreWords(r.claimsMore, r.claimsMore === 1 ? "claim" : "claims")}</div>{/if}
           {#if claims.length === 0}<p class="h9-dim s-none">Nothing kept yet — a claim lands here with its source.</p>{/if}
         </Panel>
       </div>

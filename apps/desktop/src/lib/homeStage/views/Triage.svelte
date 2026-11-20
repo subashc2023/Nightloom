@@ -20,11 +20,13 @@
   import Loading from "../Loading.svelte";
   import { bag } from "../stageState.svelte";
   import { tell, type HomeTask } from "../tasks.svelte";
-  import { triageOf, PILES, pileName, type Card, type Pile, type Rows } from "../taskData";
+  import { triageOf, moreWords, PILES, pileName, type Card, type Pile, type Rows } from "../taskData";
   import MathText from "../../MathText.svelte";
 
   let { task }: { task: HomeTask } = $props();
   const cards = $derived(triageOf(task.data));
+  // Item 895: 80 cards are drawn; a line says the rest.
+  const more = $derived(Math.max(0, triageOf(task.data, Infinity).length - cards.length));
   // svelte-ignore state_referenced_locally
   const ui = bag(`task:${task.id}`, { moved: {} as Record<string, Pile>, was: {} as Record<string, Pile>, open: null as string | null, ans: {} as Record<string, string>, drafts: {} as Record<string, string>, asking: null as string | null });
   let drag = $state<string | null>(null);
@@ -139,6 +141,7 @@
           </Panel>
         </div>
       {/each}
+    {#if more}<div class="h9-more">{moreWords(more, more === 1 ? "card" : "cards")}</div>{/if}
     </div>
     <div class="g-dock">
       <span class="g-dock-l"><Icon name="checklist" size={12} />To-do list</span>
