@@ -132,7 +132,9 @@
         <button class="continued-open" onclick={() => void openSession(T.continuedFrom!.id)}>open the earlier chat</button>
       </div>
     {/if}
-    {#each T.items as item, i (i)}
+    <!-- Item 882: only the drawn window is walked (keyed by the item's index in the chat), as in Transcript.svelte. -->
+    {#each T.items.slice(T.drawFrom) as item, k (k + T.drawFrom)}
+      {@const i = k + T.drawFrom}
       {#if i >= T.drawFrom && T.dividerPlaces.before.has(i)}<ChatDividers dividers={T.dividerPlaces.before.get(i) ?? []} foldKey={(ix) => T.turnFold(ix, "hand_off")} classic />{/if}
       {#if i >= T.drawFrom && T.chapterPlaces.before.has(i)}<ChapterRule chapters={T.chapterPlaces.before.get(i) ?? []} chat={T.chapterScope} classic />{/if}
       {#if i >= T.drawFrom && T.cutPlaces.before.has(i)}<SessionCutNotice cuts={T.cutPlaces.before.get(i) ?? []} resumed />{/if}

@@ -135,7 +135,10 @@
         <button class="continued-open" onclick={() => void openSession(T.continuedFrom!.id)}>open the earlier chat</button>
       </div>
     {/if}
-    {#each T.items as item, i (i)}
+    <!-- Item 882: the each walks only the drawn window (keyed by the item's index in the chat, so a batch drawn
+         above keeps the rows below), not every item of a long chat — 600 empty rows cost a switch ~40 ms. -->
+    {#each T.items.slice(T.drawFrom) as item, k (k + T.drawFrom)}
+      {@const i = k + T.drawFrom}
       {#if i >= T.drawFrom && T.dividerPlaces.before.has(i)}<ChatDividers dividers={T.dividerPlaces.before.get(i) ?? []} foldKey={(ix) => T.turnFold(ix, "hand_off")} />{/if}
       {#if i >= T.drawFrom && T.chapterPlaces.before.has(i)}<ChapterRule chapters={T.chapterPlaces.before.get(i) ?? []} chat={T.chapterScope} />{/if}
       {#if i >= T.drawFrom && T.cutPlaces.before.has(i)}<SessionCutNotice cuts={T.cutPlaces.before.get(i) ?? []} resumed />{/if}
