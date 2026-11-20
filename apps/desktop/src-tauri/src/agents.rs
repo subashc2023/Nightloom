@@ -47,6 +47,12 @@ struct Inner {
     generation: u64,
     /// The newest connection's spec; `None` is "not on the agent engine".
     spec: Option<AgentSpec>,
+    /// The chat that spec was built for (`connect`'s `focus`); `None` is
+    /// New chat. Item 893: the keep-warm ping of a chat with no agent of
+    /// its own took the newest spec because its chat was focused, and the
+    /// newest spec was a New chat's — no thread, the notes index fresh, no
+    /// `--system-prompt-snapshot off` — so the ping read 0 of 201,671.
+    spec_chat: Option<String>,
     /// New chat's agent, until its first turn names the chat.
     pending: Option<Entry>,
     per_chat: HashMap<String, Entry>,
@@ -128,6 +134,7 @@ impl Agents {
         inner.generation += 1;
         let generation = inner.generation;
         inner.spec = Some(agent.spec().clone());
+        inner.spec_chat = focus.map(str::to_string);
         let entry = Entry {
             generation,
             slot: Arc::new(AsyncMutex::new(agent)),
@@ -154,6 +161,7 @@ impl Agents {
         let mut inner = self.inner();
         inner.generation += 1;
         inner.spec = None;
+        inner.spec_chat = None;
         prune(&mut inner);
     }
 
@@ -223,7 +231,10 @@ impl Agents {
         let inner = self.inner();
         match inner.per_chat.get(chat) {
             Some(e) => e.slot.try_lock().ok().map(|a| a.spec().clone()),
-            None if focused => inner.spec.clone(),
+            // Only a spec built for this chat (item 893): the focus alone
+            // does not say the newest connection was — at a launch, the
+            // first connect can be New chat's while the chat is on screen.
+            None if focused && inner.spec_chat.as_deref() == Some(chat) => inner.spec.clone(),
             None => None,
         }
     }
@@ -586,6 +597,21 @@ mod tests {
         // One kept before stays when there is nothing newer to take.
         agents.connect(agent("third"), Some("c"));
         assert!(agents.reserve("b", false), "the earlier one stays");
+    }
+
+    /// Item 893: a keep-warm ping takes the newest spec for the chat on
+    /// screen only when that spec was built for it — never New chat's,
+    /// which a launch can connect first while the chat is focused.
+    #[tokio::test]
+    async fn the_keep_warm_spec_is_never_another_connections() {
+        let agents = Agents::default();
+        agents.connect(agent("new-chat"), None);
+        assert!(agents.spec_of("a", true).is_none(), "New chat's spec");
+        agents.connect(agent("a-own"), Some("a"));
+        let own = agents.spec_of("a", true).expect("a's own agent");
+        assert_eq!(own.model.as_deref(), Some("a-own"));
+        agents.connect(agent("b-own"), Some("b"));
+        assert!(agents.spec_of("c", true).is_none(), "built for b");
     }
 
     #[tokio::test]

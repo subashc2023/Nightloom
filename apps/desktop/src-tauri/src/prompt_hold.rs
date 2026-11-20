@@ -457,30 +457,72 @@ pub fn resolve(fresh: &SystemPrompt, hold: Option<&Hold>, has_cli: bool, ask: &A
     }
 }
 
-/// Whether `session`'s own log says its cache is still warm at `now_ms`
-/// (item 725): its newest live reply recorded when it was sent and the
-/// lifetime it left, and that lifetime has not run out. A lower bound —
-/// a keep-warm ping or an aside only lengthens it — so a connect that
-/// believes it over the window's "cold" never takes a layer on a warm
-/// cache, and one that does not still takes on a truly cold one.
-pub fn log_warm(session: &nightloom_core::Session, now_ms: i64) -> bool {
-    let live = session.live_events();
-    let Some((
-        _,
-        nightloom_core::SessionEvent::AssistantMessage {
-            sent_at: Some(sent),
-            cache_ttl: Some(ttl),
-            ..
-        },
-    )) = live
+/// The newest live reply that went to the cache: its send, the lifetime it
+/// recorded, and its context. A reply with no send time, no lifetime or no
+/// usage — a turn stopped before its answer, or cut by a quit (item 893:
+/// the 4:12 PM install cut one, and the connect after it read the chat as
+/// cold under a 1-hour cache 16 minutes old) — is passed over for the one
+/// before it, which is a lower bound: whatever the cut request did to the
+/// cache only kept it warmer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CachedReply {
+    pub sent_ms: i64,
+    pub ttl_ms: i64,
+    pub context: u64,
+}
+
+pub fn cached_reply(session: &nightloom_core::Session) -> Option<CachedReply> {
+    session
+        .live_events()
         .iter()
         .rev()
-        .find(|(_, e)| matches!(e, nightloom_core::SessionEvent::AssistantMessage { .. }))
-    else {
-        return false;
-    };
-    let ttl_ms = i64::try_from(ttl.duration().as_millis()).unwrap_or(i64::MAX);
-    sent.timestamp_millis().saturating_add(ttl_ms) > now_ms
+        .find_map(|(_, e)| match e {
+            nightloom_core::SessionEvent::AssistantMessage {
+                sent_at: Some(sent),
+                cache_ttl: Some(ttl),
+                usage,
+                ..
+            } if usage.input_tokens + usage.output_tokens > 0 => Some(CachedReply {
+                sent_ms: sent.timestamp_millis(),
+                ttl_ms: i64::try_from(ttl.duration().as_millis()).unwrap_or(i64::MAX),
+                context: usage.input_tokens + usage.output_tokens,
+            }),
+            _ => None,
+        })
+}
+
+/// Whether `session`'s own log says its cache is still warm at `now_ms`
+/// (item 725): its newest live reply that went to the cache
+/// ([`cached_reply`]) recorded when it was sent and the lifetime it left,
+/// and that lifetime has not run out. A lower bound — a keep-warm ping or
+/// an aside only lengthens it ([`touched_warm`] reads those) — so a
+/// connect that believes it over the window's "cold" never takes a layer
+/// on a warm cache, and one that does not still takes on a truly cold one.
+pub fn log_warm(session: &nightloom_core::Session, now_ms: i64) -> bool {
+    cached_reply(session).is_some_and(|r| r.sent_ms.saturating_add(r.ttl_ms) > now_ms)
+}
+
+/// Whether the chat's keep-warm pings or its newest aside kept `reply`'s
+/// cache warm to `now_ms` (item 893): the chat's `ask/<id>` folder, read
+/// by the rule `hand_off::cold_at` uses — a ping that hit holds it an hour
+/// from its send; an aside that read at least half the reply's context,
+/// the reply's lifetime from its send. Measured: the ICS 51 chat's 2:36 PM
+/// ping held its cache, its last reply was 1:41 PM, and the 2:46 PM
+/// connect took the changed file list as if cold — 13,136 of 167,028 read.
+pub fn touched_warm(reply: &CachedReply, ask_dir: &Path, now_ms: i64) -> bool {
+    let mut cold = reply.sent_ms.saturating_add(reply.ttl_ms);
+    for p in nightloom_service::keep_warm::read_pings(ask_dir) {
+        if p.hit && p.sent_ms > reply.sent_ms {
+            cold = cold.max(p.sent_ms + nightloom_service::keep_warm::TTL_MS);
+        }
+    }
+    if let Some(a) = nightloom_service::hand_off::last_aside_read(ask_dir)
+        && a.sent_ms > reply.sent_ms
+        && a.cache_read.saturating_mul(2) >= reply.context
+    {
+        cold = cold.max(a.sent_ms.saturating_add(reply.ttl_ms));
+    }
+    cold > now_ms
 }
 
 /// Record a click on a pending layer's mark in `hold`. `Auto` clears both.
@@ -1024,6 +1066,92 @@ mod tests {
         );
         assert!(!log_warm(&none, now));
         assert!(!log_warm(&Session::new(), now));
+    }
+
+    /// Item 893, the 4:13 PM miss: an install quit the app mid-turn, the
+    /// cut reply recorded no usage, and the connect after it read the
+    /// chat as cold under a 1-hour cache 16 minutes old. The cut reply is
+    /// passed over for the one before it.
+    #[test]
+    fn a_cut_reply_does_not_make_a_warm_chat_read_cold() {
+        use nightloom_core::{CacheTtl, Session, Usage};
+        let usage = Usage {
+            input_tokens: 170_000,
+            output_tokens: 500,
+            cache_read_tokens: Some(160_000),
+            ..Usage::default()
+        };
+        let now = chrono::Utc::now();
+        let mut s = Session::new();
+        s.record_user("hi");
+        s.record_assistant_timed(
+            "m",
+            Vec::new(),
+            None,
+            usage,
+            None,
+            now - chrono::Duration::minutes(16),
+            Some(CacheTtl::OneHour),
+        );
+        s.record_user("again");
+        s.record_assistant_timed(
+            "m",
+            Vec::new(),
+            Some("stopped".into()),
+            Usage::default(),
+            None,
+            now - chrono::Duration::minutes(1),
+            Some(CacheTtl::OneHour),
+        );
+        let ms = now.timestamp_millis();
+        assert!(log_warm(&s, ms));
+        assert!(!log_warm(&s, ms + 45 * 60_000));
+    }
+
+    /// Item 893, the 2:46 PM miss: the last reply was 65 minutes old, but
+    /// the chat's keep-warm ping 10 minutes before had read its cache —
+    /// warm for the hour after the ping. An aside that read at least half
+    /// the context counts the same way; one that read less, or a ping that
+    /// missed, does not.
+    #[test]
+    fn a_ping_or_an_aside_since_the_reply_keeps_the_chat_warm() {
+        let dir = std::env::temp_dir().join(format!(
+            "nightloom-893-touch-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let min = 60_000;
+        let now = 1_795_128_389_220_i64;
+        let reply = CachedReply {
+            sent_ms: now - 65 * min,
+            ttl_ms: 60 * min,
+            context: 167_000,
+        };
+        assert!(!touched_warm(&reply, &dir, now), "no ping, no aside");
+        let ping = |sent: i64, hit: bool| {
+            format!(
+                "{{\"sent_ms\":{sent},\"cache_read\":167026,\"cache_write\":0,\"input\":4,\"output\":4,\"context\":168993,\"hit\":{hit}}}\n"
+            )
+        };
+        let pings = dir.join(nightloom_service::keep_warm::PINGS_FILE);
+        std::fs::write(&pings, ping(now - 10 * min, false)).unwrap();
+        assert!(!touched_warm(&reply, &dir, now), "a missed ping");
+        std::fs::write(&pings, ping(now - 10 * min, true)).unwrap();
+        assert!(touched_warm(&reply, &dir, now), "the 2:36 PM ping");
+        assert!(
+            !touched_warm(&reply, &dir, now + 51 * min),
+            "its hour ran out"
+        );
+        std::fs::remove_file(&pings).unwrap();
+        nightloom_service::hand_off::note_aside_read(&dir, now - 5 * min, 50_000);
+        assert!(
+            !touched_warm(&reply, &dir, now),
+            "an aside that read little"
+        );
+        nightloom_service::hand_off::note_aside_read(&dir, now - 4 * min, 160_000);
+        assert!(touched_warm(&reply, &dir, now), "an aside that read it");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 
