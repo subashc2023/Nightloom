@@ -21,6 +21,7 @@
   import { requestChapterJump } from "./chapterJump.svelte";
   import { keptGet, keptSet } from "./keptFolds.svelte";
   import type { SessionEvent } from "./types";
+  import { contentsButtons } from "./topRightButtons.svelte";
 
   let {
     chapters,
@@ -120,6 +121,18 @@
   }
 
   let box = $state<HTMLElement | null>(null);
+  let btn = $state<HTMLElement | null>(null);
+  // Item 887: tell the asides pill where this button is, so it sits beside
+  // it rather than on it.
+  $effect(() => {
+    const vp = viewport;
+    const b = btn;
+    if (!vp || !b) return;
+    contentsButtons.set(vp, b);
+    return () => {
+      if (contentsButtons.get(vp) === b) contentsButtons.delete(vp);
+    };
+  });
   const onDown = (e: PointerEvent) => {
     if (open && box && !box.contains(e.target as Node)) {
       if (editing) {
@@ -143,6 +156,7 @@
   <div class="contents" class:classic class:open bind:this={box}>
     <button
       class="ct-btn"
+      bind:this={btn}
       aria-expanded={open}
       aria-label="Contents: this chat's chapters"
       use:tip={open ? "" : `${shown.length} chapter${shown.length === 1 ? "" : "s"}${chain.length ? ` · ${chain.length} earlier chat${chain.length === 1 ? "" : "s"}` : ""}\nJump to a phase of the chat`}

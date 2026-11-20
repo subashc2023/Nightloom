@@ -13,6 +13,7 @@
   import { asideLabel } from "./asides";
   import AsideNameEdit from "./AsideNameEdit.svelte";
   import { viewGet, viewSet } from "./viewState";
+  import { contentsButtons, pillPlace } from "./topRightButtons.svelte";
 
   /**
    * A chat's asides at a glance (nightshift item 229, night batch B,
@@ -66,17 +67,23 @@
     }
     const r = vp.getBoundingClientRect();
     // 26 px in from the viewport's right: the Navigator strip (16 px at
-    // right 3) and the scroll bar stay clear.
-    pos = { top: r.top + 8, right: Math.max(8, window.innerWidth - r.right + 26) };
+    // right 3) and the scroll bar stay clear. Item 887: beside the chapters'
+    // Contents button when it is shown (under it when too narrow).
+    const c = contentsButtons.get(vp)?.getBoundingClientRect() ?? null;
+    pos = pillPlace(r, c, pill?.offsetWidth ?? 0, pill?.offsetHeight ?? 26, window.innerWidth);
   }
 
   $effect(() => {
     const vp = viewport;
+    const ct = vp ? contentsButtons.get(vp) : undefined;
+    const p = pill;
     void shown;
     measure();
     if (!vp || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(measure);
     ro.observe(vp);
+    if (ct) ro.observe(ct);
+    if (p) ro.observe(p);
     return () => ro.disconnect();
   });
   // The list closes itself when the chat changes or has no asides left.
