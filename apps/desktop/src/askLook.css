@@ -1,0 +1,168 @@
+/* Item 884: the question box's Jarvis look, in its own file after app.css (main.ts) so it wins the ties with
+   app.css's .nl-ask rules — app.css's last section (item 646, what can be selected) must stay ungated by
+   layout, and every rule here is Jarvis-only. */
+/* Item 884 (his words: "these button choices look ugly as hell … this panel
+   just looks disastrous compared to the rest of the theme"; option B,
+   Console rows — the options page is nightshift-code
+   notes/runner-design/884-options/): in Jarvis the box drops the tan pills,
+   the amber left rule and the filled chip. It takes the hand-off card's
+   glass (an amber-tinted top, a thin amber edge, a mono kicker, a mono
+   status with a lit dot) and its answers are the live question card's rows:
+   a number key (1–9 answer from the keyboard too, askSettled.ts), the
+   answer, hairline rules; hover or focus draws the lock-on's amber edge and
+   wash and shows SEND ↵. Answered keeps 851's green pick and ✓ Answered.
+   Classic keeps the rules above. */
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) {
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line2));
+  border-radius: var(--r2);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 6%, var(--raised)), var(--raised) 64%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 24%, transparent),
+    0 10px 28px -8px rgba(0, 0, 0, 0.5);
+  padding: 0;
+  counter-reset: nl-ask;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="closed"], [data-answered]) {
+  border-color: var(--line2);
+  background: var(--raised);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.16),
+    0 8px 22px -12px rgba(0, 0, 0, 0.45);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-h {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px 0;
+  font: 500 10px var(--mono);
+  letter-spacing: 0.14em;
+  color: var(--accent-ink);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="closed"], [data-answered]) .nl-ask-h {
+  color: var(--dim);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-h::after {
+  margin-left: auto;
+  font: 500 10px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border-radius: 0;
+  padding: 0 0 0 13px;
+  background: none;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-state="open"] .nl-ask-h::after {
+  color: var(--accent-ink);
+  background: radial-gradient(circle at 4px 50%, var(--accent) 3px, transparent 3.6px) no-repeat;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 50%, transparent));
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-state="closed"] .nl-ask-h::after {
+  content: "Closed · not answered";
+  color: var(--dim);
+  background: radial-gradient(circle at 4px 50%, var(--dim) 3px, transparent 3.6px) no-repeat;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-answered] .nl-ask-h::after {
+  color: var(--done);
+  padding-left: 0;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-q {
+  margin: 6px 14px 0;
+  color: var(--ink);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o {
+  list-style: none;
+  display: block;
+  margin: 10px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o > li {
+  counter-increment: nl-ask;
+  position: relative;
+  display: block;
+  margin: 0;
+  padding: 9px 80px 9px 44px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: none;
+  color: var(--ink);
+  font-size: 0.95em;
+  line-height: 1.4;
+  filter: none;
+  overflow-wrap: anywhere;
+  outline: none;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o > li:last-child {
+  border-bottom: 0;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o > li::before {
+  content: counter(nl-ask);
+  position: absolute;
+  left: 14px;
+  top: 10px;
+  width: auto;
+  height: auto;
+  padding: 0 5px;
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  background: none;
+  font: 10.5px/16px var(--mono);
+  font-weight: 400;
+  color: var(--dim);
+  opacity: 1;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li::after {
+  content: "Send ↵";
+  position: absolute;
+  right: 14px;
+  top: 11px;
+  font: 10px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+  opacity: 0;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:is(:hover, :focus-visible) {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 11%, transparent), transparent 75%);
+  box-shadow: inset 2px 0 0 var(--accent);
+  color: var(--accent-ink);
+  filter: none;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:is(:hover, :focus-visible)::before {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line2));
+  color: var(--accent-ink);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:is(:hover, :focus-visible)::after {
+  opacity: 1;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-note] .nl-ask-o {
+  border-bottom: 1px solid var(--line);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-note]::after {
+  margin: 0;
+  padding: 8px 14px 11px;
+  font: 11px var(--mono);
+  color: var(--dim);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-said]::after {
+  margin: 10px 14px 12px;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-answered] .nl-ask-o > li {
+  padding-right: 14px;
+  color: var(--dim);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-answered] .nl-ask-o > li[data-picked] {
+  color: var(--ink);
+  background: var(--done-soft);
+  box-shadow: inset 2px 0 0 var(--done);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-answered] .nl-ask-o > li[data-picked]::before {
+  content: "✓";
+  left: 14px;
+  top: 10px;
+  border-color: transparent;
+  color: var(--done);
+  font-size: 12px;
+  font-weight: 700;
+}

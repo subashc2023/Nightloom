@@ -18,6 +18,8 @@ import "@fontsource/ibm-plex-mono/latin-500.css";
 // draw them; before app.css, where the scoped rules sat in the bundle, so app.css keeps its ties.
 import "./composerControls.css";
 import "./app.css";
+// Item 884: the question box in Jarvis, right after app.css so it wins the ties with app.css's .nl-ask rules.
+import "./askLook.css";
 // Item 618b: the composer row's looks, after app.css (the designs harness's order, so app.css never wins a tie).
 import "./composerRow.css";
 // Item 596: the cache on the message box's frame, after the row's looks.
