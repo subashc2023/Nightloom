@@ -860,6 +860,11 @@ pub(crate) struct OpenChat {
     /// `prompt_hold::log_warm`): a connect does not take a changed layer
     /// then, whatever the window's timer read.
     pub(crate) log_warm: bool,
+    /// The chat's newest reply that went to the cache and its keep-warm
+    /// folder (item 893): when the log alone reads cold, [`open_chat`]
+    /// asks the folder whether a ping or an aside kept it warm since.
+    warm_reply: Option<crate::prompt_hold::CachedReply>,
+    ask_dir: Option<PathBuf>,
     /// The Claude Code session to `--resume`.
     pub(crate) resume: Option<String>,
 }
@@ -901,6 +906,12 @@ pub(crate) fn open_chat_of(
         log_warm: session.is_some_and(|s| {
             crate::prompt_hold::log_warm(s, chrono::Utc::now().timestamp_millis())
         }),
+        warm_reply: session.and_then(crate::prompt_hold::cached_reply),
+        ask_dir: session.and_then(|s| {
+            s.log_path()
+                .and_then(|p| p.parent())
+                .map(|d| d.join("ask").join(&s.id))
+        }),
         resume: session.and_then(resume_of),
     }
 }
@@ -924,16 +935,27 @@ pub(crate) async fn open_chat(
     stage.set("the chat's folders on disk (a stat of each; a slow disk)");
     let candidates = std::mem::take(&mut open.candidates);
     let kind_workspace = open.kind_workspace.take();
+    // Item 893: a cache the log reads as cold may have been held warm by
+    // the chat's keep-warm pings or an aside — two small files, read here
+    // with the stats rather than in the pure `open_chat_of`.
+    let touched = (!open.log_warm)
+        .then(|| open.warm_reply.zip(open.ask_dir.clone()))
+        .flatten();
     let checked = blocking(move || -> Result<_, String> {
+        let warm = touched.is_some_and(|(reply, dir)| {
+            crate::prompt_hold::touched_warm(&reply, &dir, chrono::Utc::now().timestamp_millis())
+        });
         Ok((
             existing_folders(candidates),
             kind_workspace.filter(|p| p.is_dir()),
+            warm,
         ))
     })
     .await;
-    if let Ok((granted, kind_workspace)) = checked {
+    if let Ok((granted, kind_workspace, warm)) = checked {
         open.granted = granted;
         open.kind_workspace = kind_workspace;
+        open.log_warm |= warm;
     }
     open
 }
