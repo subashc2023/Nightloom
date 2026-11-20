@@ -21,7 +21,7 @@
   import Detail from "../Detail.svelte";
   import Loading from "../Loading.svelte";
   import { bag } from "../stageState.svelte";
-  import { sourceRows, sourceGroups } from "../watch";
+  import { sourceRows, sourceGroups, feedKeys } from "../watch";
   import { tip } from "../../tip";
   import { nudge } from "../tasks.svelte";
   import MathText from "../../MathText.svelte";
@@ -51,6 +51,8 @@
   const needs = $derived(needsNow().filter((r) => r.state !== "working"));
   const since = $derived(homeDone());
   const handled = $derived<FeedRow[]>((since.length ? since : home.rows.slice(-12)).slice().reverse());
+  // Item 896: two identical rows in one millisecond must not share a key.
+  const handledKeys = $derived(feedKeys(handled));
   /** Item 873: a feed row's project is its id; his name for it, "Home" when none. */
   const placeName = (id: string | null) => (id ? (app.projects.find((p) => p.id === id)?.name ?? (app.project?.id === id ? app.project.name : id)) : "Home");
   const feedLight = (kind: string) =>
@@ -153,8 +155,8 @@
       </Panel>
       <Panel title="Handled" sub={since.length ? `${since.length} since you looked` : "latest"}>
         {#snippet tools()}{#if since.length}<Btn small icon="check" disabled={home.marking} onclick={() => void markHomeSeen()}>Mark all seen</Btn>{/if}{/snippet}
-        {#each handled as f (f.at + f.line)}
-          {@const k = "f" + f.at + f.line}
+        {#each handled as f, i (handledKeys[i])}
+          {@const k = "f" + handledKeys[i]}
           {@const where = placeName(f.project)}
           <!-- Item 873: what each one was — its chat's title (the row's label) and where — not "Finished" alone. -->
           <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->

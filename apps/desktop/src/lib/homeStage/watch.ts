@@ -126,3 +126,16 @@ export function sourceRows(
   }
   return rows;
 }
+
+/** Item 896: a key per Handled row, unique even when two feed rows share their time and words (Svelte throws on a
+ *  repeated key in a keyed each, in production too, which stops the window drawing — item 847's P2). The second and
+ *  later copies get "#n", so the first keeps its key (and an open row stays open) as rows arrive. */
+export function feedKeys(rows: readonly { at: string; line: string }[]): string[] {
+  const seen = new Map<string, number>();
+  return rows.map((r) => {
+    const base = r.at + r.line;
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return n ? `${base}#${n}` : base;
+  });
+}

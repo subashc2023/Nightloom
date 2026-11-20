@@ -1292,7 +1292,7 @@ async fn turn_body(
                 (None, true, _) => "error".to_string(),
                 // Ended before its `result` (backlog 332): the footer
                 // says "cut off · <why>" instead of a silent "0 out".
-                (_, false, Some(why)) => format!("cut off: {why}"),
+                (_, false, Some(why)) => format!("cut off: {}", scrub.text(why)),
                 (_, false, None) => "end_turn".to_string(),
             };
             recorder.finish(Some(&reason));
@@ -1325,6 +1325,14 @@ async fn turn_body(
                 } else {
                     record_unanswered(session, model, Some(&why));
                 }
+            } else if let Some(why) = &outcome.cut_off {
+                // Item 896: a process that died after starting its session
+                // and before a word (the network dropped) left his message
+                // with nothing under it and a job reading "no reply"; the
+                // stand-in says why. A reply that did arrive is kept as is
+                // (the stand-in is only written under his message).
+                let model = outcome.model.clone().unwrap_or(seed_model);
+                record_unanswered(session, model, Some(&scrub.text(why)));
             }
             // After the turn: an id from a run that failed to start is a
             // handle to nothing.

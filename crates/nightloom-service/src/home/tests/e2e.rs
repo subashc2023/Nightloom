@@ -428,5 +428,26 @@ async fn a_scan_whose_model_dies_mid_run_fails_visibly_and_writes_no_page() {
         "a failure he can see in the feed: {kinds:?}"
     );
     assert!(ms < 30_000, "it ends promptly, not on a hang ({ms} ms)");
+    // Item 896: the row and the job's last run say why — the connection
+    // error the process printed — not only "no reply".
+    assert!(
+        rows.iter()
+            .any(|r| r.kind == "job_failed" && r.line.contains("Connection error")),
+        "the feed row names the connection error: {kinds:?}"
+    );
+    let last = last.expect("a last run");
+    assert_eq!(last.outcome, crate::jobs::Outcome::Failed);
+    assert!(
+        last.summary.contains("Connection error"),
+        "the job's last run names it: {}",
+        last.summary
+    );
+    // His message in the chat has a reply that says so too.
+    let events = host.transcript(None, "").await.unwrap();
+    assert!(
+        events.iter().any(|e| matches!(e, SessionEvent::AssistantMessage { blocks, .. }
+            if blocks.iter().any(|b| matches!(b, nightloom_core::ContentBlock::Text { text } if text.contains("Connection error"))))),
+        "the chat says why"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
