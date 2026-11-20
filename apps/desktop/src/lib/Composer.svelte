@@ -74,6 +74,8 @@
   import { isMac } from "./platform";
   import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
   import TypedMathBar from "./TypedMathBar.svelte";
+  import MathText from "./MathText.svelte";
+  import { renderReply } from "./markdown";
   import { applyTypedMath, findTypedMath, rebaseTypedMath, wrapTypedMath, type TypedMathSpan } from "./typedMath";
   import { clearDenied, deniedFor, denyTypedMath, typedMathPrefs } from "./typedMathPrefs.svelte";
   import {
@@ -3659,7 +3661,7 @@
         {#if classic()}
         <div class="queue-row" role="listitem" data-queue-id={q.id}>
           <span class="queue-n mono">{i + 1}</span>
-          <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
+          <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}<MathText text={firstLine(q.text) || "(no text)"} />{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
           {#if q.inject}{@const chip = injectChip(q.inject)}<span class="ns-chip mono" data-inject={chip.state} use:tip={chip.tip}>{chip.label}</span>{/if}
           {#if q.inject && q.inject.after === undefined && !q.inject.now}
             <button class="ns-btn ghost small" data-send-now use:tip={"Interrupt and send: stop what Claude is doing (a long answer, a long command) and give it this message at once — as Claude Code's own send now does. The reply so far stays and the turn goes on. Left alone, the message slips in at Claude's next gap."} onclick={() => void sendNowRow(key, q.id)}>interrupt and send</button>
@@ -3678,7 +3680,7 @@
             <span class="queue-n mono">{i + 1}</span>
             <span class="queue-text" data-find-text={q.text}
               >{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span>
-              {/if}{#if rowOpen[q.id]}<span class="queue-whole">{q.text}</span>{:else}{firstLine(q.text) || "(no text)"}{/if}{#if q.attachments.length > 0}
+              {/if}{#if rowOpen[q.id]}<span class="queue-whole"><MathText text={q.text} /></span>{:else}<MathText text={firstLine(q.text) || "(no text)"} />{/if}{#if q.attachments.length > 0}
                 <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span
             >
             {#if long}
@@ -4036,7 +4038,8 @@
               }}
             >
               {#if !classic()}<Icon name="pencil" size={11} />{/if}
-              <span class="comment-q">“{chipLabel(c)}”</span>
+              <!-- Item 880: the passage's maths typeset (a diff stays as written). -->
+              <span class="comment-q chip-math">“{#if c.source === "diff"}{chipLabel(c)}{:else}<MathText text={chipLabel(c, undefined, { math: true })} />{/if}”</span>
               {#if c.note.trim()}<span class="comment-n">{commentLabel(c.note, 28)}</span>{/if}
             </button>
             <button
@@ -4052,7 +4055,12 @@
       {#if openC}
         {@const oc = openC}
         <div class="comment-edit">
-          <div class="comment-quote" use:tip={`From ${commentWhere(oc)}`}>{shownQuote(oc)}</div>
+          <!-- Item 880: the passage as the reply drew it (its maths typeset); a diff as its lines. -->
+          {#if oc.source === "diff"}
+            <div class="comment-quote" use:tip={`From ${commentWhere(oc)}`}>{shownQuote(oc)}</div>
+          {:else}
+            <div class="comment-quote rendered markdown" use:tip={`From ${commentWhere(oc)}`}>{@html renderReply(oc.quote)}</div>
+          {/if}
           <textarea
             bind:this={commentTa}
             class="comment-ta"
@@ -4098,7 +4106,7 @@
       >
         {#if !classic()}<FilamentMark kind="aside" />{/if}
         <span class="held-k">About:</span>
-        <span class="held-q">“{heldLabel(heldShown.quote)}”</span>
+        <span class="held-q chip-math">“<MathText text={heldLabel(heldShown.quote, undefined, { math: true })} />”</span>
         <button
           type="button"
           class="held-x"
@@ -5749,6 +5757,29 @@
     -webkit-line-clamp: 3;
     line-clamp: 3;
     -webkit-box-orient: vertical;
+  }
+  /* Item 880: the passage rendered as the reply drew it — its maths
+     typeset — in the quote's small size, about three lines tall. */
+  .comment-quote.rendered {
+    display: block;
+    white-space: normal;
+    max-height: 6.2em;
+    line-height: 1.45;
+  }
+  .comment-quote.rendered :global(p) {
+    margin: 0.25em 0;
+  }
+  .comment-quote.rendered :global(.katex-display) {
+    margin: 0.2em 0;
+    padding: 0.1em 0;
+    text-align: left;
+  }
+  .comment-quote.rendered :global(.katex-display > .katex) {
+    text-align: left;
+  }
+  /* Item 880: a chip's formula at the chip's own size, on its one line. */
+  .chip-math :global(.user-math .katex) {
+    font-size: 1em;
   }
   .comment-ta {
     all: unset;

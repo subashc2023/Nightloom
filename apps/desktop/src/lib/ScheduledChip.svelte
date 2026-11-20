@@ -9,6 +9,7 @@
    * Edit and Cancel put them back in the box too (backlog 531).
    */
   import { tip } from "./tip";
+  import MathText from "./MathText.svelte";
   import { scheduleHead } from "./schedule";
   import { cancelScheduled, keepScheduled, scheduledFor, sendScheduledNow } from "./scheduled.svelte";
   import { trackPending } from "./attachFiles.svelte";
@@ -38,7 +39,7 @@
         >kept until you quit</span
       >
     {/if}
-    <span class="sched-text" use:tip={s.text}>{firstLine(s.text)}</span>
+    <span class="sched-text" use:tip={s.text}><MathText text={firstLine(s.text)} /></span>
     {#if files}<span class="ns-chip mono sched-files" data-sched-files use:tip={files.all}>{files.short}</span>{/if}
     <span class="sched-acts">
       {#if s.state !== "waiting" || s.note}

@@ -240,10 +240,12 @@ const RULE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
  * Item 814 (his "wtf is this whole \"about: \" section", 2026-11-17): a quoted passage as one short
  * line for a chip or a tip — each Markdown table in it as "Table · its first headers · N rows"
  * rather than its cells run together, maths without its `$…$`, whitespace as single spaces, cut to
- * `max` characters with an ellipsis. Pure.
+ * `max` characters with an ellipsis. Pure. Item 880: `math: true` keeps each formula as inline
+ * `$…$` (never cut inside) for a chip that typesets it with `MathText`; tips and dialogs stay plain.
  */
-export function quoteSummary(text: string, max: number): string {
-  const lines = text.split("\n");
+export function quoteSummary(text: string, max: number, opts: { math?: boolean } = {}): string {
+  const plain = opts.math ? (s: string) => s : unfence;
+  const lines = (opts.math ? inlineFence(text) : text).split("\n");
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (/^\s*\|/.test(lines[i]) && i + 1 < lines.length && RULE.test(lines[i + 1])) {
@@ -256,8 +258,35 @@ export function quoteSummary(text: string, max: number): string {
       i = j - 1;
       continue;
     }
-    out.push(unfence(lines[i]));
+    out.push(plain(lines[i]));
   }
   const one = out.join(" ").replace(/\s+/g, " ").trim();
+  // Item 880: formulas kept for `MathText`; the cut never splits one.
+  if (opts.math) return cutOutsideMath(one, max);
   return one.length > max ? `${one.slice(0, max).trimEnd()}…` : one;
+}
+
+/** Item 880: every formula as inline `$x$` on one line — `$$x$$`, `\[x\]`
+ *  and `\(x\)`, across lines too — since a chip has one line. */
+function inlineFence(s: string): string {
+  return s.replace(
+    /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)/g,
+    (_m, a: string | undefined, b: string | undefined, c: string | undefined) => `$${(a ?? b ?? c ?? "").replace(/\s+/g, " ").trim()}$`,
+  );
+}
+
+/** `one` cut to `max` characters, never inside a `$…$` formula: a cut that
+ *  would land in one cuts before it (after it, when it opens the line). */
+function cutOutsideMath(one: string, max: number): string {
+  if (one.length <= max) return one;
+  let at = max;
+  for (const m of one.matchAll(/(?<!\\)\$[^$]+\$/g)) {
+    const from = m.index;
+    const to = from + m[0].length;
+    if (from < at && at < to) {
+      at = from > 0 ? from : to;
+      break;
+    }
+  }
+  return at >= one.length ? one : `${one.slice(0, at).trimEnd()}…`;
 }
