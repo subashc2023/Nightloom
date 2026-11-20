@@ -246,6 +246,10 @@ export class TableGridWidget extends WidgetType {
       const v = values[Number(ta.dataset.r)][Number(ta.dataset.c)];
       if (ta.value === v) continue;
       const focused = document.activeElement === ta;
+      // 891 (his "why can't you put spaces inside the table"): the table's text drops a cell's
+      // edge spaces (they read as padding), so "hi " came back "hi" and the space he just typed
+      // vanished. The cell he is typing in keeps its own edge spaces; only a real change refills it.
+      if (focused && ta.value.trim() === v.trim()) continue;
       const caret = ta.selectionStart;
       ta.value = v;
       if (focused) ta.setSelectionRange(Math.min(caret, v.length), Math.min(caret, v.length));
