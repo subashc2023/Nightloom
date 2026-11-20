@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- Item 853 (fix 2): the real App on a chat over a stubbed backend; a click as WebKit on macOS does it (focus to the
+     nearest mouse-focusable ancestor — never a button — else the body), then a typed "h". Query (window.__h9q or
+     location.search): sc=<scenario>, classic=1, format=1 (the formatted box, item 276 — his setting), seed=1 (localStorage from a window.__seed script added to a built copy, never committed). The answer is window.__result, read by snapjs. Not shipped. -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>type-to-focus — 853</title>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      try { localStorage.clear(); if (/(^|[?&#])format=1/.test(location.hash + location.search)) localStorage.setItem("nightloom.composer.format", "1"); if (window.__seed && /(^|[?&#])seed=1/.test(location.hash + location.search)) for (const k in window.__seed) localStorage.setItem(k, window.__seed[k]); } catch {}
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => (window.__stub ? window.__stub(cmd, args) : Promise.resolve(null)),
+        transformCallback: () => 0,
+        unregisterCallback: () => {},
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+      window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+      window.cancelAnimationFrame = (id) => clearTimeout(id);
+      window.__errs = [];
+      window.addEventListener("error", (e) => window.__errs.push(String(e.message)));
+      window.addEventListener("unhandledrejection", (e) => window.__errs.push("rejection: " + String(e.reason)));
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./type853.ts"></script>
+  </body>
+</html>

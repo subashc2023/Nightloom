@@ -1,7 +1,7 @@
 import { EditorView } from "@codemirror/view";
 import { pasteToComposeEvent, pasteToComposeKeydown } from "./pasteToCompose";
 import { isMac } from "./platform";
-import { composerTarget, noteCardPress, typeToComposeKeydown } from "./typeToCompose";
+import { composerTarget, noteCardPress, noteFocusMove, typeToComposeKeydown } from "./typeToCompose";
 
 /**
  * ⌘L's ask (nightshift backlog 290): the open chat's composer takes the
@@ -95,9 +95,11 @@ function listenForTyping(on: boolean): void {
     window.addEventListener("keydown", onTyping, true);
     window.addEventListener("paste", pasteToComposeEvent, true);
     window.addEventListener("pointerdown", noteCardPress, true);
+    window.addEventListener("focusin", noteFocusMove, true);
   } else {
     window.removeEventListener("keydown", onTyping, true);
     window.removeEventListener("paste", pasteToComposeEvent, true);
     window.removeEventListener("pointerdown", noteCardPress, true);
+    window.removeEventListener("focusin", noteFocusMove, true);
   }
 }
