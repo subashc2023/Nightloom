@@ -212,7 +212,11 @@ impl Agents {
             .and_then(|e| e.slot.try_lock().ok().map(|a| a.spec().clone()));
         let spec = match own {
             Some(spec) => Some(spec),
-            None if focused => inner.spec.clone(),
+            // Only a spec built for this chat (item 893, as in `spec_of`):
+            // a launch can connect New chat first while the chat is on
+            // screen, and a send kept on that spec loses its thread and
+            // its held prompt.
+            None if focused && inner.spec_chat.as_deref() == Some(chat) => inner.spec.clone(),
             None => None,
         };
         match spec {
@@ -597,6 +601,27 @@ mod tests {
         // One kept before stays when there is nothing newer to take.
         agents.connect(agent("third"), Some("c"));
         assert!(agents.reserve("b", false), "the earlier one stays");
+    }
+
+    /// Item 893, the same rule for a scheduled send's kept spec: New
+    /// chat's or another chat's spec is never kept for the chat on screen;
+    /// one kept before stays.
+    #[tokio::test]
+    async fn reserve_never_keeps_another_connections_spec() {
+        let agents = Agents::default();
+        agents.connect(agent("new-chat"), None);
+        assert!(!agents.reserve("a", true), "New chat's spec");
+        assert!(agents.make_reserved("a", None).is_none());
+        agents.connect(agent("a-own"), Some("a"));
+        assert!(agents.reserve("a", true), "a's own");
+        agents.connect(agent("b-own"), Some("b"));
+        assert!(agents.reserve("a", true), "the one kept before stays");
+        let slot = agents.make_reserved("a", None).expect("a's kept spec");
+        assert_eq!(
+            slot.try_lock().unwrap().spec().model.as_deref(),
+            Some("a-own")
+        );
+        assert!(!agents.reserve("c", true), "built for b");
     }
 
     /// Item 893: a keep-warm ping takes the newest spec for the chat on
