@@ -3662,7 +3662,7 @@
         <div class="queue">
           {#each queue as q (q.id)}
             <div class="held" class:failed={!!q.failed} transition:fly={{ y: 8, duration: motion(180) }}>
-              <span class="held-text">{q.text}</span>
+              <span class="held-text"><MathText text={q.text} /></span>
               {#if heldAsk === q.id}
                 <span class="held-ask">
                   <button class="btn small" onclick={() => void editHeldInItsChat(q.id)}>Edit in its chat</button>

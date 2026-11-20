@@ -8,6 +8,8 @@
   import { tip } from "./tip";
   import { relativeTime, exactTime } from "./time";
   import { quoteSnippet, type PastAside } from "./asideHistory";
+  import { quoteSummary } from "./asideQuote";
+  import MathText from "./MathText.svelte";
   import { deletePastAside, pastAsides, pastOf, renamePast, reopenPast } from "./asideHistory.svelte";
   import { renameAside } from "./asides.svelte";
   import { asideLabel } from "./asides";
@@ -100,6 +102,11 @@
   function toggle(): void {
     now = Date.now();
     listOpen = !listOpen;
+  }
+
+  /** Item 880: the passage's one line with its formulas kept for `MathText` (`quoteSnippet`'s words otherwise). */
+  function asideQuoteLine(text: string | null | undefined): string {
+    return text ? quoteSummary(text, 60, { math: true }) : quoteSnippet(text);
   }
 
   function firstQuestion(a: { turns: { question: string }[] }): string {
@@ -208,8 +215,8 @@
           {:else}
             <button class="row" disabled={asideInTab(session, a.id)} onclick={() => bring(a)}>
               {#if a.name}<span class="nm">{a.name}</span>{/if}
-              <span class="q">{quoteSnippet(a.quote?.text)}</span>
-              <span class="ask">{firstQuestion(a)}</span>
+              <span class="q"><MathText text={asideQuoteLine(a.quote?.text)} /></span>
+              <span class="ask"><MathText text={firstQuestion(a)} /></span>
               <span class="meta">{openState(a)}</span>
             </button>
             <button class="del ren" aria-label="Rename this aside" use:tip={"Rename this aside"} onclick={() => (naming = a.id)}>
@@ -236,8 +243,8 @@
           {:else}
           <button class="row" onclick={() => reopen(p)} use:tip={`Reopen this aside under its passage, thread intact (closed ${exactTime(new Date(p.closedAt).toISOString())})`}>
             {#if p.thread.name}<span class="nm">{p.thread.name}</span>{/if}
-            <span class="q">{quoteSnippet(p.thread.quote?.text)}</span>
-            <span class="ask">{firstQuestion(p.thread)}</span>
+            <span class="q"><MathText text={asideQuoteLine(p.thread.quote?.text)} /></span>
+            <span class="ask"><MathText text={firstQuestion(p.thread)} /></span>
             <span class="meta"
               >closed {relativeTime(new Date(p.closedAt).toISOString(), now)}</span
             >

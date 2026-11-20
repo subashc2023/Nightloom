@@ -10,6 +10,7 @@
   import { app, showNote } from "./state.svelte";
   import { recoveredDrafts, preview, type Recovered } from "./recoveredDrafts";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import MathText from "./MathText.svelte";
 
   const list = $derived(
     recoveredDrafts(app.noteDrafts, {
@@ -49,7 +50,7 @@
           <div class="what">
             <span class="name">{d.name}</span>
             <span class="where">{d.scope === "knowledge" ? "Knowledge" : (app.project?.name ?? "Project")}</span>
-            <span class="pre">{preview(d.text)}</span>
+            <span class="pre"><MathText text={preview(d.text)} /></span>
           </div>
           <button class="ghost" onclick={() => open(d)}>Open</button>
           <button class="ghost revert" onclick={() => (discarding = d)}>Discard</button>

@@ -59,9 +59,9 @@ export function takeHeld(key: string): HeldPassage | null {
 
 /** The chip's words: the passage's first ~60 characters on one line. */
 export const HELD_CHARS = 60;
-export function heldLabel(q: AsideQuote, max = HELD_CHARS): string {
+export function heldLabel(q: AsideQuote, max = HELD_CHARS, opts: { math?: boolean } = {}): string {
   // Item 814: a table as "Table · z, .00, .05 · 8 rows", no raw `$…$` (`quoteSummary`).
-  return quoteSummary(q.text, max);
+  return quoteSummary(q.text, max, opts);
 }
 
 /** What `askAside` takes from the box (its quote and the anchor ridden in

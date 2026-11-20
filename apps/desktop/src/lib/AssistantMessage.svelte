@@ -4,6 +4,7 @@
   import { copyText } from "./clipRing.svelte";
   // Item 626: while streaming, the unfinished tail renders as it will once finished (streamingTail); item 830: by blocks.
   import { renderReply } from "./markdown";
+  import MathText from "./MathText.svelte";
   import { askSettled } from "./askSettled";
   import { renderStreamingParts } from "./streamBlocks";
   import { liveHtml } from "./liveHtml";
@@ -302,7 +303,7 @@
                   >
                     {@render stepHead(i, seg.done ? "done" : "running", "think")}
                     <span class="name" use:tip={T.thoughtLabel(seg)}>{seg.done ? "Thought" : "Thinking"}</span>
-                    <span class="arg" class:summary>{T.firstLine(seg.text)}</span>
+                    <span class="arg" class:summary><MathText text={T.firstLine(seg.text)} /></span>
                     {@render stepBar(i, seg.done ? "done" : "running")}
                     <span class="size">{T.thinkSize(i, seg)} <span class="open-mark">{T.isOpen(i, seg) ? "▾" : "▸"}</span></span>
                   </button>
@@ -311,7 +312,7 @@
                       class="thinking-text"
                       in:needleIn|global={{ on: T.births.settled }}
                       out:needleOut={{ on: T.births.settled }}
-                    >{seg.text}</div>
+                    ><MathText text={seg.text} /></div>
                   {/if}
                 </div>
               {/if}
@@ -585,7 +586,7 @@
               <pre class="tool-result" class:error={errorWeight(seg.call.result) === "hard"} class:soft={errorWeight(seg.call.result) === "soft"}>{seg.call.result.content}</pre>
             {/if}
           {:else}
-            <div class="removed-body">{seg.text}</div>
+            <div class="removed-body"><MathText text={seg.text} /></div>
           {/if}
         </details>
         {#if T.onrestore}

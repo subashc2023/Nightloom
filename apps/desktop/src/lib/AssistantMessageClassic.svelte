@@ -4,6 +4,7 @@
   import { copyText } from "./clipRing.svelte";
   // Item 626: while streaming, the unfinished tail renders as it will once finished (streamingTail); item 830: by blocks.
   import { renderReply } from "./markdown";
+  import MathText from "./MathText.svelte";
   import { askSettled } from "./askSettled";
   import { renderStreamingParts } from "./streamBlocks";
   // Item 820: pictures and video the reply names, drawn under its text.
@@ -231,7 +232,7 @@
                   >
                     <span class="ico"><Icon name="think" size={13} /></span>
                     <span class="name">{T.thoughtLabel(seg)}</span>
-                    {#if summary}<span class="arg summary">{T.firstLine(seg.text)}</span>{/if}
+                    {#if summary}<span class="arg summary"><MathText text={T.firstLine(seg.text)} /></span>{/if}
                     <!-- Item 856: the step's time (item 564's size column) before its fold mark. -->
                     <span class="size">{T.thinkSize(i, seg)}{#if seg.done}{" "}{T.isOpen(i, seg) ? "▾" : "▸"}{/if}</span>
                   </button>
@@ -240,7 +241,7 @@
                       class="thinking-text"
                       in:needleIn|global={{ on: T.births.settled }}
                       out:needleOut={{ on: T.births.settled }}
-                    >{seg.text}</div>
+                    ><MathText text={seg.text} /></div>
                   {/if}
                 </div>
               {/if}
@@ -493,7 +494,7 @@
               <pre class="tool-result" class:error={errorWeight(seg.call.result) === "hard"} class:soft={errorWeight(seg.call.result) === "soft"}>{seg.call.result.content}</pre>
             {/if}
           {:else}
-            <div class="removed-body">{seg.text}</div>
+            <div class="removed-body"><MathText text={seg.text} /></div>
           {/if}
         </details>
         {#if T.onrestore}

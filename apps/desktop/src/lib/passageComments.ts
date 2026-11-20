@@ -91,10 +91,11 @@ export function commentLabel(quote: string, max = COMMENT_CHARS): string {
 
 /** The chip's words for a comment: a diff's path header is skipped, so
  *  the chip shows the lines he picked. Pure. */
-export function chipLabel(c: Pick<PassageComment, "quote" | "source">, max = COMMENT_CHARS): string {
+export function chipLabel(c: Pick<PassageComment, "quote" | "source">, max = COMMENT_CHARS, opts: { math?: boolean } = {}): string {
   if (c.source === "diff") return commentLabel(shownQuote(c).replace(/\n/g, " "), max);
   // Item 814: a quoted table or formula reads as the held passage's chip does.
-  return quoteSummary(c.quote, max);
+  // Item 880: `math` keeps formulas as `$…$` for the chip's `MathText` (a diff is never maths).
+  return quoteSummary(c.quote, max, opts);
 }
 
 /** The passage as the open comment line shows it: a diff without its

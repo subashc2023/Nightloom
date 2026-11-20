@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fitToText } from "./boxGrow";
+  import MathText from "./MathText.svelte";
   import { isImeKey } from "./imeKey";
   import { tip } from "./tip";
   /**
@@ -426,12 +427,12 @@
       {:else if s.kind === "thinking"}
         <details class="thought" use:keptOpen={{ key: `${foldBase}|thought:${path}:${k}` }}>
           <summary><span class="t-no" aria-hidden="true">{String(stepNo(segs, k)).padStart(2, "0")}</span><span class="t-st t-done" aria-hidden="true">✓</span>thought{s.ms != null ? ` · ${Math.round(s.ms / 1000)} s` : ""}</summary>
-          <pre class="text">{s.text}</pre>
+          <pre class="text"><MathText text={s.text} /></pre>
         </details>
       {:else if s.kind === "redacted"}
         <p class="note small">redacted thinking</p>
       {:else if s.kind === "text"}
-        <pre class="words">{s.text}</pre>
+        <pre class="words"><MathText text={s.text} /></pre>
       {:else if s.kind === "notice"}
         <p class="note small">{s.text}</p>
       {/if}
