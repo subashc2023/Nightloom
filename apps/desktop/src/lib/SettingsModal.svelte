@@ -22,6 +22,9 @@
   import { setStopShape, stopPref } from "./stopShape.svelte";
   // Item 542: the layout, Filament IV or Classic (the look before item 525).
   import { LAYOUTS, classic, layout, setLayout } from "./layout.svelte";
+  // Item 876: his default zoom — what ⌘0 returns to and where the top bar's zoom chip hides.
+  import { ZOOM_STEPS, setZoomDefault, zoomLabel } from "./zoom";
+  import { zoomNow } from "./zoomLevel.svelte";
   // Filament IV's accent and instrument light (item 571, stage 7).
   import { ACCENTS, LIGHTS, look, setAccent, setLight, applyLook } from "./settings/look.svelte";
   // Item 629/630: the new-chat layout and the motion colour, their own choices.
@@ -1971,6 +1974,33 @@
                   use:tip={l.note}
                   onclick={() => pickLayout(l.id)}
                 >{l.name}</button>
+              {/each}
+            </div>
+          </div>
+        </div>
+      </section>
+      <!-- Item 876 (his words, 2026-11-19: 90 % "is kind of my default
+           zoom"): the default zoom. ⌘0 and the top bar's zoom chip return
+           to it, and the chip hides while the app sits at it. -->
+      <section class="card" data-zoom-default>
+        <div class="ch"><span class="t">Zoom</span></div>
+        <p class="note small">
+          Your default zoom: ⌘0 returns here, and the top bar's zoom chip
+          shows only when the app is zoomed to something else. If the app is
+          at the old default it moves to the new one. Now at
+          {zoomLabel(zoomNow.level)}.
+        </p>
+        <div class="type-rows">
+          <div class="type-row">
+            <span class="type-label">Default</span>
+            <div class="seg" role="radiogroup" aria-label="Default zoom">
+              {#each ZOOM_STEPS as z (z)}
+                <button
+                  class:on={zoomNow.def === z}
+                  role="radio"
+                  aria-checked={zoomNow.def === z}
+                  onclick={() => void setZoomDefault(z, "settings")}
+                >{zoomLabel(z)}</button>
               {/each}
             </div>
           </div>
