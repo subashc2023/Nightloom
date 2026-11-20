@@ -4021,6 +4021,8 @@
     <div class="comments-wrap" class:plain={classic()} data-passage-comments>
       <div class="comment-chips">
         <span class="comment-k">{comments.length === 1 ? "1 comment" : `${comments.length} comments`}</span>
+        <!-- Item 881: the chips wrap in a column of their own, so a second row lines up under the first chip, not under the label. -->
+        <span class="comment-list">
         {#each comments as c (c.id)}
           <span class="comment-chip" class:open={openComment === c.id} data-comment={c.id}>
             <button
@@ -4051,6 +4053,7 @@
             >
           </span>
         {/each}
+        </span>
       </div>
       {#if openC}
         {@const oc = openC}
@@ -5676,6 +5679,14 @@
     gap: 6px;
   }
   .comment-chips {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+  /* Item 881: the chips' own wrapping column beside the label. */
+  .comment-list {
+    flex: 1;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
