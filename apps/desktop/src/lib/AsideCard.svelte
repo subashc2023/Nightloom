@@ -37,6 +37,8 @@
   // 856 (it kept `AsideThread` until then, blocker 1989).
   import AsideTranscript from "./AsideTranscript.svelte";
   import { fmtTokens } from "./tokens";
+  // Item 886: the chat's running sign, given this aside.
+  import ChatRunSign from "./ChatRunSign.svelte";
   import { firstFit, onOneLine } from "./fold";
 
   /**
@@ -488,8 +490,13 @@
     <span class="aside-card-of" use:tip={"An aside: answered from this chat's context, never part of it"}
       >Aside of <em>{chatName}</em></span
     >
-    {#if folded && asking}
-      <span class="ns-chip mono">{waiting ? "waiting" : "asking…"}</span>
+    <!-- Item 886: while it asks, the head says so as a chat's bar does —
+         the same sign (Running · clock), folded or open; a question queued
+         behind the chat's turn keeps its "waiting" chip. -->
+    {#if asking && !waiting}
+      <ChatRunSign {aside} session={owner} />
+    {:else if folded && asking}
+      <span class="ns-chip mono">waiting</span>
     {/if}
     <!-- ~~"about ‹passage›"~~ — not in the head since backlog 283: under
          its passage the passage is marked right above, and the panel

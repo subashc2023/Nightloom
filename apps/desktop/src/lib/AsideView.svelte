@@ -25,7 +25,7 @@
   import AsideTranscript from "./AsideTranscript.svelte";
   import { classic } from "./layout.svelte";
   // Item 685: the header card folds to one line down the thread.
-  import { foldAnimates, nextFold } from "./asideHeadFold";
+  import { foldAnimates, keepHead, keptHead, nextFold } from "./asideHeadFold";
   import { reducedMotion } from "./sendMotion";
 
   /**
@@ -114,7 +114,10 @@
   // scroller's own place, so on coming back it follows the place put back.
   let folded = $state(false);
   let animate = $state(false);
-  let headFull = $state(0);
+  // Item 886: from the height this thread's card last had, so the room is
+  // there before the transcript puts the place back.
+  const headKey = $derived(`${session}:${aside?.uid ?? aside?.id ?? ""}`);
+  let headFull = $state(untrack(() => keptHead(headKey)));
   let fullEl = $state<HTMLDivElement | null>(null);
   let bodyEl = $state<HTMLDivElement | null>(null);
   let lastInput = -Infinity;
@@ -136,8 +139,13 @@
   $effect(() => {
     const el = fullEl;
     if (!el) return;
-    headFull = el.offsetHeight;
-    const ro = new ResizeObserver(() => (headFull = el.offsetHeight));
+    const key = headKey;
+    const read = () => {
+      headFull = el.offsetHeight;
+      keepHead(key, headFull);
+    };
+    read();
+    const ro = new ResizeObserver(read);
     ro.observe(el);
     return () => ro.disconnect();
   });
@@ -463,7 +471,10 @@
   }
   .aside-view-foot {
     flex: none;
-    padding: 2px 20px 18px;
+    /* ~~2 px 20 px 18 px~~ — item 886: the box at the chat's height (the
+       chat's composer: 12 px over, 22 px under; `.composer.aside` adds its
+       8 px over). */
+    padding: 4px 20px 22px;
     border-top: 1px dashed var(--aside-edge);
     background: var(--aside-tint);
   }

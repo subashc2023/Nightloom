@@ -21,7 +21,7 @@ import { forkLine } from "../edit";
 import { canMakeMain } from "../versions";
 import { versions } from "../versions.svelte";
 import { allRunning } from "../running.svelte";
-import { chatRun } from "../runGroups";
+import { asideRun, chatRun } from "../runGroups";
 import { threadChip } from "../thread";
 import { auth } from "../claudeAuth.svelte";
 import { chipWord } from "../claudeAuth";
@@ -56,6 +56,9 @@ export function topBarLogic(props: () => TopBarLogicProps) {
   const bell = $derived(props().bell ?? true);
   const POP_WIDTH = 340;
   const runSign = $derived(chatRun(allRunning(), app.activeSessionId).state);
+  /** Item 886: an aside's bar carries its own running sign at the left, as
+   *  the chat's bar carries the chat's (item 556). */
+  const asideRunSign = $derived(aside ? asideRun(allRunning(), asideChat, aside.id).state : "idle");
 
   /**
    * The chat top bar in the redesign (item 036, the mock-up's Chat artboard):
@@ -625,6 +628,9 @@ export function topBarLogic(props: () => TopBarLogicProps) {
     },
     get asideChat() {
       return asideChat;
+    },
+    get asideRunSign() {
+      return asideRunSign;
     },
     get asideChatName() {
       return asideChatName;
