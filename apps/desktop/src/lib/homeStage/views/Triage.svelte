@@ -21,6 +21,7 @@
   import { bag } from "../stageState.svelte";
   import { tell, type HomeTask } from "../tasks.svelte";
   import { triageOf, PILES, pileName, type Card, type Pile, type Rows } from "../taskData";
+  import MathText from "../../MathText.svelte";
 
   let { task }: { task: HomeTask } = $props();
   const cards = $derived(triageOf(task.data));
@@ -112,7 +113,7 @@
                   {#if p.id === "needs" && cd.question}
                     <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
                     <div class="nd" class:isopen={ui.asking === cd.id} class:ans={!!ans} onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.key === "Escape" && ui.asking === cd.id && (e.stopPropagation(), (ui.asking = null))}>
-                      <p class="nd-q">{cd.question}</p>
+                      <p class="nd-q"><MathText text={cd.question} /></p>
                       {#if ans}
                         <span class="nd-ans">You: {ans}</span>
                         <span class="h9-acts"><Btn small icon="revert" onclick={() => unanswer(cd)}>Undo</Btn></span>

@@ -15,6 +15,7 @@
   import { briefNote, speakable } from "../brief";
   import { stageHost } from "../host";
   import { noteName } from "../taskData";
+  import MathText from "../../MathText.svelte";
 
   const brief = $derived(stageHost.now.brief());
   const ui = bag("brief", { open: {} as Record<string, boolean>, touched: false, saved: {} as Record<string, string> });
@@ -92,7 +93,7 @@
           {@const open = isOpen(s.key, i)}
           <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
           <div class="h9-item h9-open h9-stagein b-sec" style:--i={i} class:isopen={open} onclick={() => toggle(s.key, i)}><span class="h9-chev">▸</span><span class="b-title">{s.title}</span>{#if s.lines}<span class="h9-mono h9-dim">{s.lines} line{s.lines === 1 ? "" : "s"}</span>{/if}</div>
-          {#if open}<div class="b-body" use:reveal>{s.body}</div>{/if}
+          {#if open}<div class="b-body" use:reveal><MathText text={s.body} /></div>{/if}
         {/each}
         {#if brief.writing}<Loading label="Home is still writing" lines={2} />{/if}
       {/if}
