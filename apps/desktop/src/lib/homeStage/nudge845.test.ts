@@ -82,6 +82,8 @@ describe("Home's gated writes (846 §5 #3)", () => {
     // "Allow always" is the connector card's alone; "Allow for this chat" is kept off this one.
     expect(src).toMatch(/\{#if req\.kind === "connector"\}\s*<button[^>]*data-act="always"/);
     expect(src).toContain('req.kind !== "remember" && req.kind !== "home_write"}');
+    // Item 872: the same card asks for a Reminders change, and says so.
+    expect(src).toContain("Home changes your mail, calendar or reminders only on your tap");
   });
   it("the phone's card offers Allow once and Deny only", () => {
     const src = fs.readFileSync(new URL("../../remote/Remote.svelte", import.meta.url), "utf8");
@@ -91,5 +93,6 @@ describe("Home's gated writes (846 §5 #3)", () => {
     expect(branch).toContain("Allow once");
     expect(branch).toContain('answer(req, "deny")');
     expect(branch).not.toContain("always");
+    expect(src).toContain("Home changes your mail, calendar or reminders only on your tap");
   });
 });

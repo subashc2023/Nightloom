@@ -736,6 +736,9 @@ impl ServeHost {
         // Item 804: a read-only chat of Home's gets his connectors, less
         // the ones he turned off for Home — only one that refuses the
         // connectors' writers, so there is no write path through them.
+        // Item 872: Home's chats are marked, held or not — its own
+        // Reminders writer is refused wherever no card gates it.
+        crate::home::reach::mark(project.map(|p| p.source.as_deref()), &mut spec);
         if spec.refuses_mcp_writers() {
             crate::home::reach::apply(
                 project.map(|p| p.source.as_deref()),

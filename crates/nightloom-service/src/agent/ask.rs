@@ -2682,6 +2682,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Item 872: Home's Reminders writer — Nightloom's own tool — meets
+    /// the same card the same way: `home_write` in every position, no
+    /// standing allow answers it, a subagent's or a side process's call is
+    /// refused in words, and a block rule of his still refuses it.
+    #[test]
+    fn homes_reminders_writer_is_the_same_card_every_time() {
+        let root = std::env::temp_dir().join(format!("nightloom-872r-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let dir = home.join("sessions/ask/chat1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tool = "mcp__nightloom__update_reminders";
+        assert_eq!(read_only_card(Some(&home), tool), Some("home_write"));
+        let _ = crate::approval_rules::allow_read(&home, tool);
+        assert_eq!(read_only_card(Some(&home), tool), Some("home_write"));
+        AskDir::new(&dir).allow_tool(tool).unwrap();
+        for mode in ["default", "auto", "plan", "bypassPermissions"] {
+            let r = decide_read_only(&dir, Some(&home), &mcp_stdin("t1", tool, mode, None), false);
+            assert_eq!(r.decision(), "defer", "{mode}");
+        }
+        let sub = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t1", tool, "auto", Some("a1")),
+            false,
+        );
+        assert_eq!(sub.decision(), "deny");
+        let side = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t1", tool, "auto", None),
+            true,
+        );
+        assert_eq!(side.decision(), "deny");
+        // Home's stage tools are not cards of this kind.
+        assert_eq!(
+            read_only_card(Some(&home), "mcp__nightloom__update_task"),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Item 783 (blocker 2033): in a read-only chat a connector action
     /// under a verb that is not a known read is a card, not a refusal;
     /// Allow once runs that one call; Allow always keeps it — the next

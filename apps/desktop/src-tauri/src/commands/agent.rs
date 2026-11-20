@@ -698,6 +698,9 @@ pub(crate) async fn connect_agent_body(
     // the rail's switch says, less the ones he turned off for Home — only
     // a chat that refuses the connectors' writers, so nothing can be sent
     // or changed through them.
+    // Item 872: Home's chats are marked, held or not — its own Reminders
+    // writer is refused wherever no card gates it.
+    nightloom_service::home::reach::mark(seen.map(|p| p.source.as_deref()), &mut spec);
     if spec.refuses_mcp_writers() {
         nightloom_service::home::reach::apply(
             seen.map(|p| p.source.as_deref()),

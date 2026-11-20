@@ -19,6 +19,11 @@
 //!   `msg_send!` (no new crate: `objc2-contacts` / `objc2-event-kit` are
 //!   not in the lockfile). Every Objective-C call sits inside
 //!   `exception::catch`, so a framework exception is an error, not a crash.
+//! - **One writer** (item 872, [`Mac::change_reminder`]): a reminder added
+//!   or marked done through the same EventKit store, only with Reminders
+//!   allowed in full — it reads the status and never asks. It runs when
+//!   `home::reminders::apply` calls it, which is after his tap on the
+//!   call's card.
 //! - The usage strings macOS shows in its dialogs are in `Info.plist`
 //!   beside `tauri.conf.json` (Tauri merges it into the bundle's).
 
@@ -212,6 +217,20 @@ impl MacStores for Mac {
             Source::Calendar => mac::events(w).map(Found::Calendar),
         }
     }
+
+    fn change_reminder(
+        &self,
+        change: &nightloom_service::home::reminders::Change,
+    ) -> Result<String, String> {
+        // Checked again here, beside the write: never a request, so never
+        // a dialog — a store that is not allowed is an error in words.
+        if self.access(Source::Reminders) != Access::Allowed {
+            return Err(
+                "Reminders is not allowed to Nightloom on this Mac. Nothing was changed.".into(),
+            );
+        }
+        mac::change_reminder(change)
+    }
 }
 
 fn config() -> Result<PathBuf, String> {
@@ -322,6 +341,11 @@ mod mac {
     pub fn request(_s: Source, _done: Box<dyn FnOnce() + Send>) -> Result<(), String> {
         Err("not on this Mac".into())
     }
+    pub fn change_reminder(
+        _c: &nightloom_service::home::reminders::Change,
+    ) -> Result<String, String> {
+        Err("not on this Mac".into())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -332,6 +356,7 @@ mod mac {
     use std::time::Duration;
 
     use block2::RcBlock;
+    use nightloom_service::home::reminders::{self, Action, Change};
     use nightloom_service::home::sources::{Birthday, Event, Reminder};
     use objc2::rc::{Allocated, Retained, autoreleasepool};
     use objc2::runtime::{AnyClass, AnyObject, Bool};
@@ -745,6 +770,206 @@ mod mac {
         drop(store);
         got
     }
+
+    /// The Reminders lists: each one's title, whether it takes changes,
+    /// and the list itself.
+    unsafe fn reminder_lists(store: &AnyObject) -> Vec<(String, bool, Retained<AnyObject>)> {
+        // SAFETY: the caller's: `store` is an EKEventStore; EventKit's
+        // public API, and each object is an EKCalendar.
+        unsafe {
+            let arr: Option<Retained<AnyObject>> =
+                msg_send![store, calendarsForEntityType: REMINDERS];
+            each(arr.as_deref())
+                .into_iter()
+                .map(|c| {
+                    let title = text(msg_send![&*c, title]);
+                    let open: bool = msg_send![&*c, allowsContentModifications];
+                    (title, open, c)
+                })
+                .collect()
+        }
+    }
+
+    /// Save `reminder` at once; EventKit's own words when it will not.
+    unsafe fn save_reminder(store: &AnyObject, reminder: &AnyObject) -> Result<(), String> {
+        let mut err: *mut AnyObject = std::ptr::null_mut();
+        // SAFETY: the caller's: an EKEventStore and an EKReminder of it;
+        // `(EKReminder *, BOOL, NSError **)` returning BOOL.
+        let ok: bool =
+            unsafe { msg_send![store, saveReminder: reminder, commit: true, error: &mut err] };
+        if ok {
+            return Ok(());
+        }
+        // SAFETY: a non-nil `err` is the NSError EventKit wrote.
+        let why = match unsafe { err.as_ref() } {
+            Some(e) => unsafe { text(msg_send![e, localizedDescription]) },
+            None => String::new(),
+        };
+        Err(if why.is_empty() {
+            "Reminders did not save it. Nothing was changed.".into()
+        } else {
+            format!("Reminders did not save it ({why}). Nothing was changed.")
+        })
+    }
+
+    /// One change to Reminders (item 872). Only ever called with
+    /// Reminders allowed in full; nothing here asks macOS for access.
+    pub fn change_reminder(change: &Change) -> Result<String, String> {
+        match change.action {
+            Action::Add => add_reminder(change),
+            Action::Complete => complete_reminder(change),
+        }
+    }
+
+    fn add_reminder(change: &Change) -> Result<String, String> {
+        guarded(|| {
+            let store = event_store()?;
+            // SAFETY: an EKEventStore.
+            let lists = unsafe { reminder_lists(&store) };
+            let rows: Vec<(String, bool)> = lists.iter().map(|(t, o, _)| (t.clone(), *o)).collect();
+            let list = match reminders::pick_list(&rows, change.list.as_deref())? {
+                Some(i) => lists[i].2.clone(),
+                None => {
+                    // SAFETY: public API; nil when there is no list at all.
+                    let d: Option<Retained<AnyObject>> =
+                        unsafe { msg_send![&*store, defaultCalendarForNewReminders] };
+                    d.ok_or(
+                        "Reminders has no default list on this Mac. Nothing was changed — name one of his lists.",
+                    )?
+                }
+            };
+            let cls = class(c"EKReminder")?;
+            // SAFETY: a public class method.
+            let r: Option<Retained<AnyObject>> =
+                unsafe { msg_send![cls, reminderWithEventStore: &*store] };
+            let r = r.ok_or("Reminders made no reminder")?;
+            let title = nsstring(&change.title)?;
+            // SAFETY: EKReminder's public setters, each handed its type.
+            unsafe {
+                let _: () = msg_send![&*r, setTitle: &*title];
+                let _: () = msg_send![&*r, setCalendar: &*list];
+                if let Some(notes) = &change.notes {
+                    let notes = nsstring(notes)?;
+                    let _: () = msg_send![&*r, setNotes: &*notes];
+                }
+                if let Some(due) = change.due {
+                    let comps_cls = class(c"NSDateComponents")?;
+                    let comps: Retained<AnyObject> = msg_send![comps_cls, new];
+                    let _: () = msg_send![&*comps, setYear: due.year as isize];
+                    let _: () = msg_send![&*comps, setMonth: due.month as isize];
+                    let _: () = msg_send![&*comps, setDay: due.day as isize];
+                    if let Some((h, m)) = due.time {
+                        let _: () = msg_send![&*comps, setHour: h as isize];
+                        let _: () = msg_send![&*comps, setMinute: m as isize];
+                    }
+                    let _: () = msg_send![&*r, setDueDateComponents: &*comps];
+                }
+                save_reminder(&store, &r)?;
+                let name = text(msg_send![&*list, title]);
+                Ok(reminders::added_words(change, &name))
+            }
+        })
+    }
+
+    fn complete_reminder(change: &Change) -> Result<String, String> {
+        let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+        // The store must outlive the fetch: kept here until the answer.
+        let store = guarded(|| {
+            let store = event_store()?;
+            let none: *mut AnyObject = std::ptr::null_mut();
+            // SAFETY: public API; every open reminder, whatever its date.
+            let pred: Option<Retained<AnyObject>> = unsafe {
+                msg_send![&*store, predicateForIncompleteRemindersWithDueDateStarting: none, ending: none, calendars: none]
+            };
+            let pred = pred.ok_or("no predicate")?;
+            let keep = store.clone();
+            let (title, list) = (change.title.clone(), change.list.clone());
+            let block = RcBlock::new(move |arr: *mut AnyObject| {
+                let done = guarded(|| {
+                    // SAFETY: EventKit hands an NSArray of EKReminder, each
+                    // of `keep`'s store.
+                    unsafe {
+                        let found = each(arr.as_ref());
+                        let rows: Vec<(String, String)> = found
+                            .iter()
+                            .map(|r| (text(msg_send![&**r, title]), calendar_of(r).0))
+                            .collect();
+                        let i = reminders::pick_reminder(&rows, &title, list.as_deref())?;
+                        let _: () = msg_send![&*found[i], setCompleted: true];
+                        save_reminder(&keep, &found[i])?;
+                        Ok(reminders::done_words(&rows[i].0, &rows[i].1))
+                    }
+                });
+                let _ = tx.send(done);
+            });
+            // SAFETY: the block matches `(NSArray *)`; EventKit copies it.
+            let _: Option<Retained<AnyObject>> = unsafe {
+                msg_send![&*store, fetchRemindersMatchingPredicate: &*pred, completion: &*block]
+            };
+            Ok(store)
+        })?;
+        let got = rx.recv_timeout(Duration::from_secs(20)).unwrap_or_else(|_| {
+            Err("Reminders did not answer in 20 s. Check Reminders before trying again: the change may still land.".into())
+        });
+        drop(store);
+        got
+    }
+
+    /// The classes and selectors the writer sends, as `(class, selector,
+    /// on the class itself)` — for the test that each one exists on this
+    /// macOS without making a store or touching a reminder.
+    #[cfg(test)]
+    pub fn writer_selectors_missing() -> Vec<String> {
+        let wants: [(&CStr, objc2::runtime::Sel, bool); 15] = [
+            (c"EKEventStore", sel!(calendarsForEntityType:), false),
+            (c"EKEventStore", sel!(defaultCalendarForNewReminders), false),
+            (c"EKEventStore", sel!(saveReminder:commit:error:), false),
+            (
+                c"EKEventStore",
+                sel!(predicateForIncompleteRemindersWithDueDateStarting:ending:calendars:),
+                false,
+            ),
+            (
+                c"EKEventStore",
+                sel!(fetchRemindersMatchingPredicate:completion:),
+                false,
+            ),
+            (c"EKCalendar", sel!(allowsContentModifications), false),
+            (c"EKCalendar", sel!(title), false),
+            (c"EKReminder", sel!(reminderWithEventStore:), true),
+            (c"EKReminder", sel!(setTitle:), false),
+            (c"EKReminder", sel!(setCalendar:), false),
+            (c"EKReminder", sel!(setNotes:), false),
+            (c"EKReminder", sel!(setDueDateComponents:), false),
+            (c"EKReminder", sel!(setCompleted:), false),
+            (c"NSDateComponents", sel!(setMinute:), false),
+            (c"NSError", sel!(localizedDescription), false),
+        ];
+        let mut missing = Vec::new();
+        for (cls, sel, on_class) in wants {
+            let Ok(c) = class(cls) else {
+                missing.push(format!("{} (class)", cls.to_string_lossy()));
+                continue;
+            };
+            // SAFETY: NSObject's public class methods; they read the
+            // class's method table and make nothing.
+            let has: bool = unsafe {
+                if on_class {
+                    msg_send![c, respondsToSelector: sel]
+                } else {
+                    msg_send![c, instancesRespondToSelector: sel]
+                }
+            };
+            if !has {
+                missing.push(format!(
+                    "{} {}",
+                    cls.to_string_lossy(),
+                    sel.name().to_string_lossy()
+                ));
+            }
+        }
+        missing
+    }
 }
 
 #[cfg(test)]
@@ -762,6 +987,32 @@ mod tests {
             }
             eprintln!("{}: {a:?}", s.name());
         }
+    }
+
+    /// Item 872: every class and selector the Reminders writer sends is
+    /// on this macOS. Reads the classes' method tables only — no store is
+    /// made, no reminder read or written, nothing asked.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_reminders_writers_selectors_exist() {
+        assert_eq!(mac::writer_selectors_missing(), Vec::<String>::new());
+    }
+
+    /// Item 872: the writer refuses in words where Reminders is not
+    /// allowed to this binary, and writes only where it is — which this
+    /// test never does: it stops unless the status says "not allowed".
+    #[test]
+    fn the_writer_refuses_without_access_and_never_asks() {
+        if Mac.access(Source::Reminders) == Access::Allowed {
+            eprintln!("SKIPPED: Reminders is allowed here; a write is not made from a test");
+            return;
+        }
+        let change = nightloom_service::home::reminders::parse(&serde_json::json!({
+            "action": "add", "title": "never written"
+        }))
+        .unwrap();
+        let e = Mac.change_reminder(&change).unwrap_err();
+        assert!(e.contains("not allowed"), "{e}");
     }
 
     #[test]

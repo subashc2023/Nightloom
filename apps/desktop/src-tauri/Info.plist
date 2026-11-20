@@ -7,9 +7,9 @@
 	<key>NSContactsUsageDescription</key>
 	<string>Home reads birthdays in the next week for your morning scan, and shows names instead of numbers for who texted you.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>Home reads what is due today and what is overdue for your morning scan. It never adds or changes a reminder.</string>
+	<string>Home reads what is due today and what is overdue for your morning scan. It adds a reminder or marks one done only when you tap Allow on that one change.</string>
 	<key>NSRemindersUsageDescription</key>
-	<string>Home reads what is due today and what is overdue for your morning scan. It never adds or changes a reminder.</string>
+	<string>Home reads what is due today and what is overdue for your morning scan. It adds a reminder or marks one done only when you tap Allow on that one change.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Home reads today's and tomorrow's events in the Calendar app for your morning scan. It never adds or changes an event.</string>
 	<key>NSCalendarsUsageDescription</key>

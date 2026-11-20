@@ -33,6 +33,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod guard;
 pub mod reach;
+/// Item 872: the Reminders writer — add one, mark one done, on his tap.
+pub mod reminders;
 /// Item 763 H5: routing work into project chats.
 pub mod route;
 /// Item 808: Messages, Contacts, Reminders and the Calendar app, read once he allows them.

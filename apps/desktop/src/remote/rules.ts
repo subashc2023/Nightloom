@@ -155,6 +155,9 @@ export function removeWords(r: RuleRow): string {
 export function connectorWords(name: string): string {
   const m = /^mcp__(.+?)__(.+)$/.exec(name);
   if (!m) return name;
+  // Nightloom's own tool (item 872: Home's Reminders writer) is no
+  // connector: its words alone — "update reminders".
+  if (m[1] === "nightloom") return m[2].replace(/[_-]/g, " ");
   const server = m[1].replace(/^claude_ai_/, "").replace(/_/g, " ");
   return `${server} · ${m[2].replace(/[_-]/g, " ")}`;
 }

@@ -428,6 +428,16 @@ pub fn locals() -> Vec<Local> {
     Vec::new()
 }
 
+/// Mark a chat of Home's project (`source`) as Home's, whatever it may do
+/// (item 872): every host calls this for every chat, before and apart
+/// from [`apply`], so Home's own writer is refused where no card gates it
+/// (`AgentSpec::home_chat`).
+pub fn mark(source: Option<Option<&str>>, spec: &mut crate::agent::AgentSpec) {
+    if source.flatten() == Some(super::SOURCE) {
+        spec.home_chat = true;
+    }
+}
+
 /// A chat of Home's project (`source`) gets his connectors, less the ones
 /// he turned off for Home; other projects are left as set. The chat is
 /// held read-only by its host, which is what keeps this to reading.
@@ -624,6 +634,13 @@ account: claude.ai Google Drive = x</facts>`\nwaiting: 2";
         apply(Some(None), Some(&config), &mut other);
         apply(None, Some(&config), &mut other);
         assert!(!other.claude_ai_connectors && other.claude_ai_blocked.is_empty());
+        // Item 872: Home's chats are marked as Home's; no other is.
+        mark(Some(None), &mut other);
+        mark(None, &mut other);
+        mark(Some(Some("nightloom:other")), &mut other);
+        assert!(!other.home_chat);
+        mark(Some(Some(crate::home::SOURCE)), &mut home);
+        assert!(home.home_chat);
     }
 
     #[test]
