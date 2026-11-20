@@ -10,6 +10,16 @@ const str = (v: unknown, max = 300): string => (typeof v === "string" ? v.replac
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 const idOf = (o: Record<string, unknown>, i: number, words: string) => str(o.id, 80) || `${i}:${words.slice(0, 40)}`;
+// Item 847: every view keys its rows on these ids, and Svelte throws on a repeated key (in production too), which
+// stopped the whole window drawing. Home's words may repeat an id: the second and later get "#n".
+function once<T extends { id: string }>(xs: T[]): T[] {
+  const seen = new Map<string, number>();
+  return xs.map((x) => {
+    const n = seen.get(x.id) ?? 0;
+    seen.set(x.id, n + 1);
+    return n ? { ...x, id: `${x.id}#${n}` } : x;
+  });
+}
 
 /** A detail as label → value rows: `{ "Who asked": "Priya" }` or `[["Who asked", "Priya"]]`. At most 8 rows. */
 export function rowsOf(v: unknown): Rows {
@@ -110,7 +120,7 @@ export function timelineOf(data: unknown, today = todayKey()): Timeline {
     const c = obj(x);
     const title = str(c.title, 80) || str(c.name, 80);
     const kind = c.kind === "add" || c.kind === "pick" ? c.kind : "move";
-    const slots = arr(c.slots).map(hoursOf).filter((h): h is number => h !== null).slice(0, 6);
+    const slots = arr(c.slots).map(hoursOf).filter((h): h is number => h !== null).filter((h, k, all) => all.indexOf(h) === k).slice(0, 6);
     const s = span(c) ?? (slots.length ? { h: slots[0], d: typeof c.minutes === "number" && c.minutes > 0 ? c.minutes / 60 : 0.5 } : null);
     if (!title || !s) return;
     changes.push({ id: `c:${idOf(c, i, title)}`, kind: kind === "pick" && slots.length === 0 ? "add" : kind, title, ...s, was: hoursOf(c.was), why: str(c.why, 160), slots, yours: c.yours === true, detail: rowsOf(c.detail) });
@@ -124,7 +134,7 @@ export function timelineOf(data: unknown, today = todayKey()): Timeline {
     if (z1 - z0 < 6 && z1 < 22) z1 += 1;
     if (z0 <= 7 && z1 >= 22) break;
   }
-  return { day: str(o.day, 60), today: str(o.date, 10) === today, events, changes, z0, z1 };
+  return { day: str(o.day, 60), today: str(o.date, 10) === today, events: once(events), changes: once(changes), z0, z1 };
 }
 
 // ---- To-do ----
@@ -158,7 +168,7 @@ export function todoOf(data: unknown): TodoItem[] {
       detail: rowsOf(t.detail),
     });
   });
-  return out.slice(0, 60);
+  return once(out).slice(0, 60);
 }
 
 // ---- Triage ----
@@ -205,12 +215,12 @@ export function triageOf(data: unknown): Card[] {
       reading: c.reading === true,
       source: str(c.source, 20).toLowerCase(),
       question: str(c.question, 300),
-      options: arr(c.options).map((s) => str(s, 60)).filter(Boolean).slice(0, 4),
+      options: [...new Set(arr(c.options).map((s) => str(s, 60)).filter(Boolean))].slice(0, 4),
       todo: str(c.todo, 120),
       detail: rowsOf(c.detail),
     });
   });
-  return out.slice(0, 80);
+  return once(out).slice(0, 80);
 }
 
 // ---- Browse ----
@@ -308,8 +318,8 @@ export function runOf(data: unknown): Run {
   });
   return {
     title: str(o.title, 80),
-    steps: steps.slice(0, 12),
-    agents: agents.slice(0, 12),
+    steps: once(steps).slice(0, 12),
+    agents: once(agents).slice(0, 12),
     log: arr(o.log).map((l) => str(l, 240)).filter(Boolean).slice(-40),
     chat: str(o.chat, 80),
     project: str(o.project, 80),
@@ -368,10 +378,10 @@ export function researchOf(data: unknown): Research {
   });
   return {
     question: str(o.question, 300),
-    sources: sources.slice(0, 30),
-    claims: claims.slice(0, 40),
+    sources: once(sources).slice(0, 30),
+    claims: once(claims).slice(0, 40),
     answer: arr(o.answer)
-      .map((x) => (typeof x === "string" ? { text: str(x, 600), cites: [] } : { text: str(obj(x).text, 600), cites: arr(obj(x).cites).map((c) => str(c, 80)).filter(Boolean) }))
+      .map((x) => (typeof x === "string" ? { text: str(x, 600), cites: [] } : { text: str(obj(x).text, 600), cites: [...new Set(arr(obj(x).cites).map((c) => str(c, 80)).filter(Boolean))] }))
       .filter((a) => a.text)
       .slice(0, 12),
     open: arr(o.open)
