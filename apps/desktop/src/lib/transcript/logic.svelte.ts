@@ -39,7 +39,7 @@ import { isMac } from "../platform";
 import { turnSizes } from "../tokens";
 import { loadReplyUsage, replyUsageOf } from "../replyUsage.svelte";
 import { cacheState } from "../cache";
-import { leaveScroll, moveScroll, recallScroll, rememberScroll, NEW_SCROLL_KEY } from "../scroll.svelte";
+import { holdWhileDrawing, leaveScroll, moveScroll, recallScroll, rememberScroll, NEW_SCROLL_KEY } from "../scroll.svelte";
 import { BUFFER_SCREENS, FILL_SCREENS, FIRST_ITEMS, firstWindow, grown, wantsMore, windowFor, windowWants } from "../transcriptWindow.svelte";
 import { presence, watchPresence } from "../away.svelte";
 import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "../attachFiles.svelte";
@@ -1707,6 +1707,8 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
     // must not go on scrolling this one (its aim re-reads the anchors each
     // frame, now this chat's) and overwrite the position restored below.
     if (from !== null && from !== key) cancelScroll();
+    // Item 883: the place being kept was the chat just left's.
+    stopKeeping();
     if (from === NEW_SCROLL_KEY && key !== NEW_SCROLL_KEY) {
       moveScroll(from, key);
       return;
@@ -1736,6 +1738,8 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
         // Item 504: the place left may still be the foot; then a reply
         // running here is followed, as when he never left.
         pinned = atBottom();
+        // Item 883: and kept there while the diagrams and pictures above it draw.
+        if (place) holdReturnPlace(place);
       } else if (pinned) {
         // Item 482: at the foot before the window is filled, so the fill
         // measures from where the view lands (the follow effect's scroll
@@ -1970,28 +1974,46 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
     return first;
   }
   const isLiveReply = (el: BlockEl) => !!el.closest(".assistant") && !el.closest("[data-turn]");
+  // Item 883: a hold's `top` is measured from the view's own top edge, not
+  // the window's — a bar over the view that is taller or shorter on the way
+  // back (a card, a banner) would otherwise move the line by its difference.
   function readingPlace(): Place | null {
     if (!viewport) return null;
-    const holds = proseHolds(
-      viewport.querySelectorAll<HTMLElement>(PROSE_BLOCKS),
-      viewport.getBoundingClientRect(),
-      isLiveReply,
-    );
+    const vr = viewport.getBoundingClientRect();
+    const holds = proseHolds(viewport.querySelectorAll<HTMLElement>(PROSE_BLOCKS), vr, isLiveReply);
     const walk = readingAnchor();
     if (walk) holds.push(walk);
-    return { holds, scrollTop: viewport.scrollTop };
+    return { holds: holds.map((h) => ({ ...h, top: h.top - vr.top })), scrollTop: viewport.scrollTop };
   }
   function holdPlace(place: Place): void {
     const vp = viewport;
     if (!vp) return;
+    const edge = vp.getBoundingClientRect().top;
     const to = settledTop(place.holds, place.scrollTop, vp.scrollTop, (h) =>
-      nearestDelta(h, vp.querySelectorAll<HTMLElement>(h.tag)),
+      nearestDelta({ ...h, top: h.top + edge }, vp.querySelectorAll<HTMLElement>(h.tag)),
     );
     if (to === null) return;
     scrollingSelf = true;
     vp.scrollTop = to;
     requestAnimationFrame(() => (scrollingSelf = false));
   }
+  // Item 883: the place put back on a switch back, held while what is above
+  // it draws (`holdWhileDrawing`) — until he scrolls, clicks or types, a
+  // reply here takes him to the foot, or 1.5 s has gone.
+  let keeping: (() => void) | null = null;
+  function holdReturnPlace(place: Place): void {
+    stopKeeping();
+    const vp = viewport;
+    if (!vp) return;
+    keeping = holdWhileDrawing(vp, () => {
+      if (viewport === vp && vp.isConnected && !pinned) holdPlace(place);
+    });
+  }
+  function stopKeeping(): void {
+    keeping?.();
+    keeping = null;
+  }
+  onDestroy(stopKeeping);
 
   // ---- The message navigator (nightshift backlog 065) ----
   //
