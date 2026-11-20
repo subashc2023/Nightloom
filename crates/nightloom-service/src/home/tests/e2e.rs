@@ -366,3 +366,67 @@ async fn the_scan_lands_in_homes_one_chat_and_the_chat_hands_off_in_place() {
     assert_eq!(s.agent_session(), Some(("claude-code", "s-3")));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Item 847, scenarios C14/E3: the network drops mid-scan — the stand-in
+/// `claude` starts its session, then dies with an error before any reply.
+/// The run must end as a failure he can see (a feed row), and no scan page
+/// may claim a scan happened.
+#[tokio::test]
+async fn a_scan_whose_model_dies_mid_run_fails_visibly_and_writes_no_page() {
+    let root = std::env::temp_dir().join(format!("nightloom-home-847-{}", uuid::Uuid::new_v4()));
+    let config = root.join("nightloom");
+    std::fs::create_dir_all(&config).unwrap();
+    super::ensure_folder(&config).unwrap();
+    let body = "#!/bin/sh\nhead -n 1 > /dev/null\nprintf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"x\",\"tools\":[],\"mcp_servers\":[],\"model\":\"claude-opus-5-5\",\"permissionMode\":\"default\",\"session_id\":\"s-1\"}'\necho 'API Error: Connection error (getaddrinfo ENOTFOUND api.anthropic.com)' >&2\nexit 1\n";
+    let bin = root.join("claude-dies");
+    std::fs::write(&bin, body).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut spec = AgentSpec::new(&root);
+    spec.binary = bin.to_string_lossy().into_owned();
+    let (tx, _) = broadcast::channel(8);
+    let host = Arc::new(E2eHost {
+        config: config.clone(),
+        jobs: Jobs::open_in(Jobs::dir_under(&config), Some("America/Los_Angeles".into())),
+        tx,
+        session: Mutex::new(None),
+        agent: Mutex::new(ClaudeCodeAgent::new(spec)),
+        push: crate::push::Push::open(crate::push::Push::dir_under(&config), "mac"),
+    });
+    assert!(
+        host.jobs
+            .ensure_home_scan("home-project", Utc::now() - chrono::Duration::days(1))
+    );
+    let eight = host.jobs.list().remove(0).job.next_run;
+    let t0 = std::time::Instant::now();
+    host.jobs.tick(host.as_ref(), eight).await;
+    host.jobs
+        .tick(host.as_ref(), eight + chrono::Duration::seconds(40))
+        .await;
+    let ms = t0.elapsed().as_millis();
+    let rows = super::read_feed(&config);
+    let kinds: Vec<String> = rows
+        .iter()
+        .map(|r| format!("{}: {}", r.kind, r.line))
+        .collect();
+    eprintln!("847 C14: feed after a dead scan ({ms} ms): {kinds:?}");
+    let last = host.jobs.list().remove(0).job.last;
+    eprintln!("847 C14: job's last run: {last:?}");
+    let scans: Vec<_> = std::fs::read_dir(super::dir_in(&config).join("scans"))
+        .map(|d| d.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    for p in &scans {
+        let text = std::fs::read_to_string(p).unwrap_or_default();
+        assert!(
+            text.contains("Skipped") || text.contains("failed") || text.contains("did not"),
+            "a page after a dead scan must not read as a scan: {text}"
+        );
+    }
+    assert!(
+        rows.iter()
+            .any(|r| r.kind != "scan" || r.line.contains("fail")),
+        "a failure he can see in the feed: {kinds:?}"
+    );
+    assert!(ms < 30_000, "it ends promptly, not on a hang ({ms} ms)");
+    let _ = std::fs::remove_dir_all(&root);
+}

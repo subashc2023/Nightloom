@@ -296,3 +296,4 @@ claude.ai Google Drive: u - ✔ Connected\n";
 }
 
 mod e2e;
+mod scenarios847;

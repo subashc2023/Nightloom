@@ -121,6 +121,16 @@ async function run() {
   // runctl=1 (item 872): Run after Stop now (its chat stopped, Resume shown) with a done step open (Run this step again).
   if (q.get("runctl") === "1") kept.ui["task:merge-round-t"] = { stop: false, halted: true, open: "r:merge", again: ["r:merge"] };
   if (q.get("classic") === "1") setLayout("classic");
+  // dup847=1 (item 847, scenario C3): Home's to-do list carries two items with one id, as a model could write it;
+  // the title then says whether the window still answers a click (alive=) and how many errors were logged (errs=).
+  let errs = 0;
+  if (q.get("dup847") === "1") {
+    const t = (homeTasks as { id: string; data: { items: { id: string; text: string }[] } }[]).find((x) => x.id === "working-your-list");
+    if (t) t.data.items.push({ ...t.data.items[1], text: "Decide on the lease renewal (again)" });
+    const ce = console.error.bind(console);
+    console.error = (...m: unknown[]) => (errs++, ce(...m));
+    addEventListener("error", () => errs++);
+  }
   let root = mount(App, { target: document.getElementById("app")! });
   flushSync();
   await wait(350);
@@ -233,6 +243,14 @@ async function run() {
     await wait(300);
   }
   void root;
+  let alive = "";
+  if (q.get("dup847") === "1") {
+    const follow = [...document.querySelectorAll<HTMLButtonElement>("button")].find((x) => /Follow Home/.test(x.textContent ?? ""));
+    const was = follow?.getAttribute("aria-pressed");
+    follow?.click();
+    await wait(300);
+    alive = ` alive=${follow && follow.getAttribute("aria-pressed") !== was ? "yes" : "no"} errs=${errs} rows=${document.querySelectorAll(".d-item").length}`;
+  }
   // What a script can read off the shot's page: the stage is there, and nothing on it is cut off or scrolls sideways.
   const stage = document.querySelector<HTMLElement>("[data-home-stage]");
   const bad: string[] = [];
@@ -248,7 +266,7 @@ async function run() {
   await wait(1500);
   const g1 = ghost();
   const r = stage?.getBoundingClientRect();
-  document.title = `845 s=${s} stage=${r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} views=${g0}→${g1} welcome=${document.querySelector(".welcome") ? "yes" : "no"} composer=${document.querySelector(".composer") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""}${restart}${clicks} cq=${(() => { const v = document.querySelector<HTMLElement>(".h9-view"); const wd = document.querySelector<HTMLElement>(".h9-wide"); return `${v ? Math.round(v.getBoundingClientRect().width) : 0}/${wd ? getComputedStyle(wd).display : "-"}/vw${innerWidth}/dpr${devicePixelRatio}`; })()}`;
+  document.title = `845 s=${s} stage=${r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} views=${g0}→${g1} welcome=${document.querySelector(".welcome") ? "yes" : "no"} composer=${document.querySelector(".composer") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""}${restart}${clicks}${alive} cq=${(() => { const v = document.querySelector<HTMLElement>(".h9-view"); const wd = document.querySelector<HTMLElement>(".h9-wide"); return `${v ? Math.round(v.getBoundingClientRect().width) : 0}/${wd ? getComputedStyle(wd).display : "-"}/vw${innerWidth}/dpr${devicePixelRatio}`; })()}`;
   if (q.get("cap") === "1") (window as unknown as { __capset: (m: string) => void }).__capset(document.title);
 }
 if (document.readyState === "loading") addEventListener("DOMContentLoaded", () => void run());
