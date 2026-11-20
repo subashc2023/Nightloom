@@ -24,7 +24,7 @@
     TAKE_TIP,
     driveWhy,
   } from "./drive";
-  import { driveChat, driveNote, driveTook, forgetDrive, handBack, releasePage, setDriveNote, takePage } from "./driveAsk.svelte";
+  import { driveChat, driveNote, driveTook, forgetDrive, handBack, releasePage, setDriveNote, settleTook, takePage } from "./driveAsk.svelte";
   import type { ApprovalRequest } from "./types";
 
   let { req }: { req: ApprovalRequest } = $props();
@@ -47,6 +47,12 @@
   // this chat.
   $effect(() => {
     void readStatus(chat).then(() => (known = true));
+  });
+  // A kept "took" holds only while the browser is his: given back any way
+  // but Hand back (the browser tab's Give back, a stopped turn, a relaunch),
+  // the card opens untaken — Take control, not Hand back.
+  $effect(() => {
+    if (known && took && !done) took = settleTook(req, status?.held_by === "user");
   });
   // Kept as he types.
   $effect(() => {
@@ -72,6 +78,7 @@
     if (done) return;
     done = true;
     await releasePage(req);
+    took = false;
     // His note stays for the same ask when it comes back.
     if (!(await resolveApproval(req.id, req.name, "later"))) done = false;
   }
@@ -80,6 +87,7 @@
     if (done) return;
     done = true;
     await releasePage(req);
+    took = false;
     const ok = await resolveApproval(req.id, req.name, "deny", note.trim() || DRIVE_DECLINED);
     if (ok) forgetDrive(req);
     else done = false;

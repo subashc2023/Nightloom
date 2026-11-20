@@ -22,6 +22,7 @@
   import { stageHost } from "../host";
   import { runOf, type RunStep, type Rows } from "../taskData";
   import { stopThenTell, resumeLine, againLine } from "../runControls";
+  import MathText from "../../MathText.svelte";
 
   let { task }: { task: HomeTask } = $props();
   const r = $derived(runOf(task.data));
@@ -92,15 +93,15 @@
           <button class="r-node {s.state}" class:sel={ui.open === s.id} class:h9-brk={s.state === "live"} onclick={() => toggle(s.id)} aria-expanded={ui.open === s.id}>
             {#if s.state === "live"}<i class="bk tl"></i><i class="bk tr"></i><i class="bk bl"></i><i class="bk br"></i>{/if}
             <span class="r-mark">{#if s.state === "done"}<Icon name="check" size={12} />{:else if s.state === "failed"}<Icon name="x" size={11} />{:else}{i + 1}{/if}</span>
-            <span class="r-name">{s.name}</span>
+            <span class="r-name"><MathText text={s.name} /></span>
             <span class="r-out">{s.state === "live" ? pct(s) || "running" : s.state === "wait" ? "queued" : s.out || (s.state === "done" ? "done" : "failed")}</span>
             {#if s.state === "live" && s.progress !== null}<span class="h9-meter" style:--p={s.progress}><i></i></span>{/if}
           </button>
         {/each}
       </div>
-      {#if task.why}<div class="h9-why" style="margin-top:8px"><b>YOU ASKED</b><span>{task.why}</span></div>{/if}
+      {#if task.why}<div class="h9-why" style="margin-top:8px"><b>YOU ASKED</b><span><MathText text={task.why} /></span></div>{/if}
       {#if openStep}<div class="r-det"><Detail rows={stepRows(openStep)} />{#if openStep.state === "done" || openStep.state === "failed"}<div class="r-again">{#if ui.again.includes(openStep.id)}<span class="h9-dim">Home was asked to run it again</span>{/if}<Btn small icon="refresh" tip={"Ask Home to run this step again\nIt is told now"} onclick={() => openStep && again(openStep)}>Run this step again</Btn></div>{/if}</div>{/if}
-      {#if r.asks}<p class="r-asks"><b>At the end</b>{r.asks}</p>{/if}
+      {#if r.asks}<p class="r-asks"><b>At the end</b><MathText text={r.asks} /></p>{/if}
     </Panel>
     <div class="h9-row h9-fill">
       <Panel title="Helpers" sub="{r.agents.filter((a) => a.state === 'live').length} running">
