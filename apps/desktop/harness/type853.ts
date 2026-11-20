@@ -101,8 +101,14 @@ async function run() {
   await wait(500);
   flushSync();
   const floating = sc.startsWith("card") || sc === "main-with-card";
+  // *-scroll (blocker 2204): no click — a wheel over the place, then the key.
+  const scrollCase = sc.endsWith("-scroll");
   // anchor-*: the card as his are — anchored to a passage (no `moved`), drawn beside it in the transcript.
-  const anchored = sc.startsWith("anchor") || sc === "main-with-anchor" || sc === "main-topbar";
+  const anchored = sc.startsWith("anchor") || sc === "main-with-anchor" || sc === "main-topbar" || sc === "main-scroll";
+  const wheel = () => {
+    if (!scrollCase || !target) return;
+    target.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 40 }));
+  };
   const finish = () => {
     // anchor-finish: the aside's reply ends between the click and the key.
     const t = (app as unknown as { asides: { turns: { answer: string }[] }[] }).asides[0]?.turns[0];
@@ -147,7 +153,8 @@ async function run() {
   // Where he clicks.
   let target: Element | null = null;
   if (sc === "main" || sc === "main-with-card" || sc === "main-with-anchor" || sc === "seed") target = textEl("MAINTEXT");
-  else if (sc.endsWith("-thread") || sc === "anchor-finish" || sc === "tab-switch") target = textEl("ASIDETEXT", card ?? view ?? document);
+  else if (sc === "main-scroll") target = textEl("MAINTEXT");
+  else if (sc.endsWith("-thread") || sc === "anchor-finish" || sc === "tab-switch" || (scrollCase && sc !== "main-scroll")) target = textEl("ASIDETEXT", card ?? view ?? document);
   else if (sc === "card-head" || sc === "anchor-head") target = card?.querySelector(".aside-card-head .aside-card-of") ?? card?.querySelector(".aside-card-head") ?? null;
   else if (sc === "card-border" || sc === "anchor-border") target = card;
   // main-topbar: the chat's top bar (its own text, no field), e.g. after reading the gauge.
@@ -185,7 +192,7 @@ async function run() {
   if (q.get("real") === "1") {
     // real=1: snapkeys sends a real AppKit click at __at and a real "h" (WebKit does the focus and the typing).
     let at: [number, number] = [-1, -1];
-    if (target) {
+    if (target && !scrollCase) {
       target.scrollIntoView({ block: "center" });
       await wait(100);
       const r = target.getBoundingClientRect();
@@ -200,6 +207,7 @@ async function run() {
     let afterClick = "";
     W.__afterClick = () => {
       afterClick = where(document.activeElement) + " hit=" + where(document.elementFromPoint(at[0], at[1]));
+      wheel();
       finish();
     };
     W.__report = () => report(afterClick);
@@ -207,7 +215,8 @@ async function run() {
     W.__ready = true;
     return;
   }
-  if (target) click(target);
+  if (target && !scrollCase) click(target);
+  wheel();
   flushSync();
   const afterClick = where(document.activeElement);
   finish();

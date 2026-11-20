@@ -124,7 +124,7 @@ function target(): PasteHandler | null {
     composer: found !== null && found.inPane,
     blocked: !!doc.querySelector(TYPE_BLOCKERS),
     // Item 853 fix 2: a focus his last press left behind is no field of his.
-    focus: isStaleFocus(pressedRegionNow(), found?.region ?? null, active, active === doc.body || active === doc.documentElement)
+    focus: isStaleFocus(pressedRegionNow(), found?.region ?? null, active, active === doc.body || active === doc.documentElement, active?.closest(ASIDE_SELECTOR) ?? null)
       ? "outside"
       : pasteFocusOf(active, active === doc.body || active === doc.documentElement, found?.card ?? null),
   };
