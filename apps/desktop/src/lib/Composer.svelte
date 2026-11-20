@@ -176,6 +176,7 @@
     requeueFront,
     restoreDraft,
     setDraftAttachments,
+    restoreComments,
     setDraftSelection,
     setDraftScroll,
     draftScroll,
@@ -189,7 +190,8 @@
     setCommentNote,
   } from "./drafts.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
-  import { chipLabel, shownQuote, commentLabel, commentsMessage, commentWhere, type PassageComment } from "./passageComments";
+  import { chipLabel, shownQuote, commentLabel, commentWhere, type PassageComment } from "./passageComments";
+  import { sendWithComments, sentComments } from "./sentComments";
   import { commentRequest, takeCommentFocus } from "./commentRequest.svelte";
   import type { Attachment } from "./types";
   import { isChipTag } from "./chipSteps";
@@ -2352,8 +2354,11 @@
       }
       const back = ranKey(from);
       if (!readDraft(back).text) {
-        setDraftText(back, typed);
+        // Item 892: words sent with comments come back as his text and the chips.
+        const sc = sentComments(typed);
+        setDraftText(back, sc ? sc.typed : typed);
         setDraftAttachments(back, chips.concat(readDraft(back).attachments));
+        if (sc) restoreComments(back, sc.comments);
       } else if (typed || chips.length > 0) {
         // The box holds new words: the failed message goes back to the
         // head of the queue rather than nowhere (backlog 158).
@@ -2507,7 +2512,7 @@
     // A held message carries finished chips only (item 277).
     if (!(await conversionsDone(key))) return;
     // Item 754: the comments go with it, as one message.
-    const held = enqueueMessage(key, commentsMessage(readDraft(key).comments, readDraft(key).text), readDraft(key).attachments.slice());
+    const held = enqueueMessage(key, sendWithComments(readDraft(key).comments, readDraft(key).text), readDraft(key).attachments.slice());
     clearDraft(key, true);
     if (aside) {
       afterSend(key);
@@ -2693,7 +2698,7 @@
     if (filesBlocked(attachments)) return;
     const pending = attachments.slice();
     // Item 754: each comment's passage quoted with his words, then the box's.
-    const typed = commentsMessage(comments, text);
+    const typed = sendWithComments(comments, text);
     // Where the words were, for the send motion (backlog 194): measured
     // before the box clears.
     launch("chat", boxElement(ta));
@@ -2722,7 +2727,7 @@
     if (filesBlocked(attachments)) return;
     noteActivity();
     const pending = attachments.slice();
-    const typed = commentsMessage(comments, text);
+    const typed = sendWithComments(comments, text);
     recordText("sent", typed);
     launch("chat", boxElement(ta));
     clearDraft(key, true);

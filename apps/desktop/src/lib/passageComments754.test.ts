@@ -164,7 +164,7 @@ describe("wiring", () => {
   it("the composer sends comments with Send, Queue and the council, and confirms a discard", () => {
     const s = read("Composer.svelte");
     expect(s.match(/clearDraft\(key, true\)/g)?.length).toBe(3);
-    expect(s).toContain("const typed = commentsMessage(comments, text);");
+    expect(s).toContain("const typed = sendWithComments(comments, text);");
     expect(s).toContain('title: "Discard this comment?"');
   });
 });

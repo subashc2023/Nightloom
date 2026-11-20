@@ -1,7 +1,9 @@
 // Moved out of state.svelte.ts by item 641 (pure move; state.svelte.ts re-exports every name it exported).
 import * as api from "../api";
 import { noteRewound } from "../handoff.svelte";
-import { bumpDraft, nextAttachmentId, readDraft, recordDraft, setDraftAttachments, setDraftText } from "../drafts.svelte";
+import { bumpDraft, nextAttachmentId, readDraft, recordDraft, restoreComments, setDraftAttachments, setDraftText, withdrawComments } from "../drafts.svelte";
+import { sentComments } from "../sentComments";
+import type { PassageComment } from "../passageComments";
 import { indexOfAim } from "../aim";
 import { dismissRewoundOffer, keepIn, keepsBox, offerRewound, requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "../rewindDraft.svelte";
 import { rewoundWrites, setAsideFiles } from "../rewoundFiles";
@@ -34,7 +36,7 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
   // offered when this list does not have that message.
   const here = typeof aim === "string" ? indexOfAim(app.events, { at: aim }, to) : to;
   // His message at `to`, read before the rewind supersedes it (backlog 247).
-  const back = here === null ? null : rewoundMessage(app.events, here, nextAttachmentId);
+  const back = here === null ? null : withComments(rewoundMessage(app.events, here, nextAttachmentId));
   // What the removed turns wrote, read before the rewind supersedes them
   // (item 259): offered to be set aside, since the next run reads them.
   const written = here === null ? [] : rewoundWrites(app.events, liveFlags(app.events), here);
@@ -96,6 +98,8 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
       if (swap && untouched(readDraft(key), swap)) {
         setDraftText(key, swap.before.text);
         setDraftAttachments(key, swap.before.attachments);
+        // Item 892: the comment chips the rewind put back go with it.
+        withdrawComments(key, swap.commentIds ?? []);
       }
     },
     redo: async () => {
@@ -111,7 +115,9 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
       : swap?.kept
         ? back.text.trim()
           ? "Rewound — your draft stayed; the message is in drafts, above the box"
-          : "Rewound — your draft stayed; the message's files joined it"
+          : back.comments.length > 0
+            ? "Rewound — your draft stayed; the message's comments joined it"
+            : "Rewound — your draft stayed; the message's files joined it"
         : "Rewound — your message is back in the box",
     handle,
   );
@@ -225,8 +231,11 @@ export function keepRewound(): void {
 /** A rewound message into the box (backlog 247, blocker 581): what was
  *  half-typed goes to the top of the draft history, with a toast saying
  *  so; its chips stay after the message's own. */
-function fillBox(key: string, back: { text: string; attachments: Attachment[] }, offer = true): BoxSwap {
+function fillBox(key: string, back: Back, offer = true): BoxSwap & { commentIds?: number[] } {
   const box = readDraft(key);
+  // Item 892: its comments come back as chips, before any in the box —
+  // into the box in both cases, as its file chips do (724's rule).
+  const commentIds = restoreComments(key, back.comments);
   // Item 724: a draft in the box stays there; the message goes to the
   // drafts, offered alone above the drafts button, and its chips join his.
   if (keepsBox(box)) {
@@ -236,7 +245,7 @@ function fillBox(key: string, back: { text: string; attachments: Attachment[] },
       bumpDraft(key, back.text);
       if (offer) offerRewound(key, back.text);
     }
-    return kept;
+    return { ...kept, commentIds };
   }
   const swap = swapIn(box, back);
   if (swap.stashed) {
@@ -246,7 +255,18 @@ function fillBox(key: string, back: { text: string; attachments: Attachment[] },
   setDraftText(key, swap.after.text);
   setDraftAttachments(key, swap.after.attachments);
   requestComposerFocus();
-  return swap;
+  return { ...swap, commentIds };
+}
+
+/** A rewound message as the box takes it back (item 892). */
+type Back = { text: string; attachments: Attachment[]; comments: PassageComment[] };
+
+/** Item 892: a message sent with passage comments comes back as what he
+ *  typed plus its comments (`sentComments.ts`); any other as it reads. */
+function withComments(m: { text: string; attachments: Attachment[] } | null): Back | null {
+  if (!m) return null;
+  const sc = sentComments(m.text);
+  return sc ? { text: sc.typed, attachments: m.attachments, comments: sc.comments } : { ...m, comments: [] };
 }
 
 /** The log index of the newest event of `kind` — the marker an operation
