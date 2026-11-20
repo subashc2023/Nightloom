@@ -17,6 +17,7 @@
  */
 import { dateWord, fillAuto, insertAt, matching, nextBlank, slashToken, wantsClipboard } from "../lib/savedPrompts";
 import { lastSelection, watchSelection } from "../lib/selectionMemory";
+import { applyInsert, insertEdit, insertMatches, insertToken, type BoxInsert } from "../lib/boxInserts";
 
 export interface PhonePrompt {
   name: string;
@@ -135,12 +136,27 @@ export function promptBox(node: HTMLTextAreaElement) {
     refresh();
   }
 
+  /** Item 890: the box's inserts (/table, /math, /code, …) under the caret. */
+  function inserts(): BoxInsert[] {
+    if (node !== document.activeElement || node.selectionStart !== node.selectionEnd) return [];
+    return insertMatches(insertToken(node.value, node.selectionEnd));
+  }
+
+  function pickInsert(ins: BoxInsert): void {
+    const tok = insertToken(node.value, node.selectionEnd);
+    if (!tok) return;
+    const ed = insertEdit(node.value, tok, ins);
+    put(node, applyInsert(node.value, ed), ed.anchor, ed.head);
+    refresh();
+  }
+
   function refresh(): void {
     const token = node === document.activeElement ? slashToken(node.value, node.selectionEnd) : null;
     const found = token ? matching(prompts, token.query, 8) : [];
+    const ins = inserts();
     const blanksLeft = live && nextBlank(node.value, 0, 0) !== null;
     if (!blanksLeft) live = false;
-    if (found.length === 0 && !blanksLeft) {
+    if (found.length === 0 && ins.length === 0 && !blanksLeft) {
       close();
       return;
     }
@@ -152,8 +168,9 @@ export function promptBox(node: HTMLTextAreaElement) {
       document.body.appendChild(bar);
     }
     bar.replaceChildren();
-    if (found.length > 0) {
+    if (found.length > 0 || ins.length > 0) {
       for (const p of found) bar.appendChild(button(`/${p.name}`, null, false, () => void pick(p)));
+      for (const i of ins) bar.appendChild(button(`/${i.name}`, "insert", false, () => pickInsert(i)));
     } else {
       bar.appendChild(button("‹", null, false, () => step(true)));
       bar.appendChild(button("Next blank ›", null, true, () => step(false)));
@@ -174,6 +191,12 @@ export function promptBox(node: HTMLTextAreaElement) {
     if (found.length > 0 && !e.shiftKey) {
       e.preventDefault();
       void pick(found[0]);
+      return;
+    }
+    const ins = inserts();
+    if (ins.length > 0 && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      pickInsert(ins[0]);
       return;
     }
     if (live && step(e.shiftKey)) e.preventDefault();

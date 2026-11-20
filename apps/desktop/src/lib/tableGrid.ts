@@ -140,6 +140,14 @@ export function focusCell(wrap: HTMLElement, r: number, c: number, caret: number
   return true;
 }
 
+/** Item 890: focus cell `(r, c)` of the grid over the table whose first line
+ *  starts at `from` (a `/table` just inserted); false when it is not drawn. */
+export function focusGridAt(view: EditorView, from: number, r = 0, c = 0): boolean {
+  const t = tableBlocks(view.state).find((b) => b.from === from);
+  const el = t ? gridEl(view, t) : null;
+  return el ? focusCell(el, r, c) : false;
+}
+
 /** A cell's height to its wrapped text (long cells wrap, never scroll). */
 /**
  * Item 814 (his second paste, 2026-11-17: the grid's header showed raw `$z$`): a cell's maths drawn
