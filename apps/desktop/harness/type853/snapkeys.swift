@@ -28,9 +28,11 @@ final class Nav: NSObject, WKNavigationDelegate {
       guard let s = r as? String, let d = s.data(using: .utf8), let at = try? JSONSerialization.jsonObject(with: d) as? [Double], at.count == 2 else { after(0.2) { self.poll() }; return }
       win.makeFirstResponder(web)
       let p = NSPoint(x: at[0], y: h - at[1])
-      web.mouseDown(with: mouse(.leftMouseDown, p))
+      // __at x < 0: no click (a scroll case, item 853 / blocker 2204: the page scrolls in __afterClick).
+      let click = at[0] >= 0
+      if click { web.mouseDown(with: mouse(.leftMouseDown, p)) }
       after(0.08) {
-        web.mouseUp(with: mouse(.leftMouseUp, p))
+        if click { web.mouseUp(with: mouse(.leftMouseUp, p)) }
         after(0.4) {
           js("window.__afterClick && window.__afterClick()") { _ in
             web.keyDown(with: key(.keyDown))

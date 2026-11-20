@@ -230,6 +230,11 @@ let pressedCard: Element | null = null;
  *  (`section.pane`), else null (the sidebar, the title bar, the rail). */
 let pressedRegion: Element | null = null;
 
+/** The last mark was a scroll (item 853, blocker 2204 — his "if youre
+ *  scrolling it should be over the object youre scrolling no?"): the place
+ *  scrolled is the place meant, even over a card the focus sits in. */
+let scrolled = false;
+
 /** A press is under way: the focus it moves (or the ancestor it lands on)
  *  is its own, not a move away from it. */
 let pressing = false;
@@ -250,9 +255,14 @@ export function isStaleFocus(
   region: unknown,
   active: unknown,
   isRoot: boolean,
+  activeCard: unknown = null,
 ): boolean {
   if (!pressed || isRoot || !active) return false;
-  return pressed === region && !pressed.contains(active);
+  if (pressed !== region) return false;
+  // Outside the place, or in a card inside it that is not the place (a
+  // scroll over the chat's transcript while the focus sits in an anchored
+  // card's box — blocker 2204).
+  return !pressed.contains(active) || (activeCard !== null && activeCard !== region);
 }
 
 /** The window's pointerdown (capture), wired with the keys. */
@@ -261,8 +271,25 @@ export function noteCardPress(e: Event): void {
   const ok = !!t && typeof t.closest === "function";
   pressedCard = ok ? t.closest(ASIDE_SELECTOR) : null;
   pressedRegion = ok ? (pressedCard ?? t.closest("section.pane")) : null;
+  scrolled = false;
   pressing = true;
   setTimeout(() => (pressing = false), 0);
+}
+
+/**
+ * The window's wheel (capture, passive) — a scroll, by wheel or trackpad,
+ * marks the place under it as a press does (blocker 2204): an aside card's
+ * answer (docked, floating, the side panel's) → its box; the chat's
+ * transcript or another pane → that pane's box. It moves no focus and
+ * touches no selection; the keys are routed only when he types. A scroll
+ * inside the place whose box he is typing in leaves that box his.
+ */
+export function noteScroll(e: Event): void {
+  const t = e.target as Element | null;
+  const ok = !!t && typeof t.closest === "function";
+  pressedCard = ok ? t.closest(ASIDE_SELECTOR) : null;
+  pressedRegion = ok ? (pressedCard ?? t.closest("section.pane")) : null;
+  scrolled = pressedRegion !== null;
 }
 
 /** The window's focusin (capture): a focus that moves out of the pressed
@@ -274,6 +301,13 @@ export function noteFocusMove(e: Event): void {
   if (t && pressedRegion.contains(t)) return;
   pressedRegion = null;
   pressedCard = null;
+  scrolled = false;
+}
+
+/** The pane he last scrolled (not a card in it), while that mark stands. */
+export function scrolledPane(): HTMLElement | null {
+  const r = pressedRegionNow();
+  return scrolled && r && pressedCard === null && r.matches("section.pane") ? (r as HTMLElement) : null;
 }
 
 /** The pressed region, for `pasteToCompose.ts`. */
@@ -283,7 +317,8 @@ export function pressedRegionNow(): Element | null {
 
 /** The box meant, from the document (item 853; `pickTarget` decides). */
 export function composerTarget(doc: Document): (Candidate<HTMLElement, HTMLElement, Element> & { region: HTMLElement | null }) | null {
-  const focusedPane = doc.querySelector("section.pane.focused");
+  // A pane he scrolled is the pane meant (2204), the focused one otherwise.
+  const focusedPane = scrolledPane() ?? doc.querySelector("section.pane.focused");
   const cands: Candidate<HTMLElement, HTMLElement, Element>[] = [];
   for (const root of Array.from(doc.querySelectorAll<HTMLElement>(".composer"))) {
     if (root.closest("[inert]")) continue;
@@ -296,7 +331,11 @@ export function composerTarget(doc: Document): (Candidate<HTMLElement, HTMLEleme
     cands.push({ root, box, kind, card, inPane: inFocusedPane(root, focusedPane) });
   }
   const active = doc.activeElement;
-  const focusCard = active && active !== doc.body ? active.closest(ASIDE_SELECTOR) : null;
+  // A scroll over a pane outside the focused card means that pane (2204).
+  const marked = pressedRegionNow();
+  const activeCard = active && active !== doc.body ? active.closest(ASIDE_SELECTOR) : null;
+  const overrule = scrolled && pressedCard === null && marked !== null && activeCard !== null;
+  const focusCard = overrule ? null : activeCard;
   const card = pressedCard && pressedCard.isConnected ? pressedCard : null;
   const hit = pickTarget(cands, focusCard, card);
   if (!hit) return null;
@@ -332,6 +371,8 @@ export function typeToComposeKeydown(
   e: KeyboardEvent,
   endOfEditor?: (el: HTMLElement) => boolean,
   boxText?: (el: HTMLElement) => string,
+  /** Make this pane the focused one (a pane he scrolled, 2204). */
+  focusPaneOf?: (pane: HTMLElement) => void,
 ): void {
   if (e.defaultPrevented) return;
   // Cheap rejections first: most keys he presses are in the box already.
@@ -345,9 +386,20 @@ export function typeToComposeKeydown(
   const ctx: ComposeContext = {
     composer: found !== null && found.inPane,
     blocked: !!doc.querySelector(TYPE_BLOCKERS),
-    focus: isStaleFocus(pressedRegionNow(), found?.region ?? null, active, isRoot) ? "none" : focusKindOf(active, isRoot, found?.region ?? null),
+    focus: isStaleFocus(pressedRegionNow(), found?.region ?? null, active, isRoot, active && !isRoot ? active.closest(ASIDE_SELECTOR) : null) ? "none" : focusKindOf(active, isRoot, found?.region ?? null),
   };
+  // A scrolled pane with no box of its own (the other split pane's chat,
+  // drawn read-only until focused): the key focuses it, which opens its box.
+  const sp = scrolledPane();
+  if (sp && sp.querySelector(".transcript") && !(found && sp.contains(found.root)) && !enter && !e.altKey && !isEditable(active) && !doc.querySelector(TYPE_BLOCKERS)) {
+    focusPaneOf?.(sp);
+    return;
+  }
   if (!found) return;
+  const pane = found.root.closest<HTMLElement>("section.pane");
+  const follow = () => {
+    if (pane && !pane.classList.contains("focused")) focusPaneOf?.(pane);
+  };
   if (enter) {
     const text = boxText?.(found.box) ?? (found.box instanceof HTMLTextAreaElement ? found.box.value : "");
     const draft = text.trim() !== "" || found.root.querySelector(".attachments .attachment") !== null;
@@ -356,10 +408,12 @@ export function typeToComposeKeydown(
     // the transcript's or the window's.
     e.preventDefault();
     e.stopPropagation();
+    follow();
     focusBoxAtEnd(found.box, endOfEditor);
     found.box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
     return;
   }
   if (!sendsToComposer(e, ctx)) return;
+  follow();
   focusBoxAtEnd(found.box, endOfEditor);
 }

@@ -11,7 +11,7 @@ H9_DEBUG=1 nice -n 15 npx vite build -c harness/type853/vite.config.ts --outDir 
 sed -i '' -e 's/ type="module" crossorigin/ defer/' -e 's/ crossorigin//' "$OUT/dist/type853.html"
 [ -x "$OUT/snapkeys" ] || nice -n 15 swiftc -O harness/type853/snapkeys.swift -o "$OUT/snapkeys" || exit 2
 for f in 1 0; do for c in 0 1; do for pre in $( [ $f = 1 ] && echo "box main card cardbox body tab" || echo "box main" ); do
-  for sc in main main-with-card main-with-anchor main-topbar card-thread card-head card-border anchor-thread anchor-head anchor-border anchor-finish panel-thread tab-thread tab-head tab-switch; do
+  for sc in main main-with-card main-with-anchor main-topbar card-thread card-head card-border anchor-thread anchor-head anchor-border anchor-finish panel-thread tab-thread tab-head tab-switch main-scroll card-scroll anchor-scroll panel-scroll; do
     p=$pre; [ "$p" = box ] && p=
     "$OUT/snapkeys" "$OUT/dist/type853.html#sc=$sc&classic=$c&format=$f&real=1&pre=$p" 1280 800 40
   done

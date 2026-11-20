@@ -1,7 +1,8 @@
 import { EditorView } from "@codemirror/view";
 import { pasteToComposeEvent, pasteToComposeKeydown } from "./pasteToCompose";
 import { isMac } from "./platform";
-import { composerTarget, noteCardPress, noteFocusMove, typeToComposeKeydown } from "./typeToCompose";
+import { focusPane } from "./state/tabs.svelte";
+import { composerTarget, noteCardPress, noteFocusMove, noteScroll, typeToComposeKeydown } from "./typeToCompose";
 
 /**
  * ⌘L's ask (nightshift backlog 290): the open chat's composer takes the
@@ -70,7 +71,13 @@ export function isSummonTarget(root: Element | null): boolean {
 function onTyping(e: KeyboardEvent): void {
   // ⌘V with nothing to type in (backlog 351, `pasteToCompose.ts`).
   pasteToComposeKeydown(e, isMac);
-  typeToComposeKeydown(e, endOfEditor, boxText);
+  typeToComposeKeydown(e, endOfEditor, boxText, paneFocus);
+}
+
+/** A pane he scrolled takes the focus when the keys go there (2204). */
+function paneFocus(pane: HTMLElement): void {
+  const id = pane.dataset.pane;
+  if (id) focusPane(id);
 }
 
 /** The box's draft text: the formatted box's from its state (its DOM holds
@@ -96,10 +103,12 @@ function listenForTyping(on: boolean): void {
     window.addEventListener("paste", pasteToComposeEvent, true);
     window.addEventListener("pointerdown", noteCardPress, true);
     window.addEventListener("focusin", noteFocusMove, true);
+    window.addEventListener("wheel", noteScroll, { capture: true, passive: true });
   } else {
     window.removeEventListener("keydown", onTyping, true);
     window.removeEventListener("paste", pasteToComposeEvent, true);
     window.removeEventListener("pointerdown", noteCardPress, true);
     window.removeEventListener("focusin", noteFocusMove, true);
+    window.removeEventListener("wheel", noteScroll, true);
   }
 }
