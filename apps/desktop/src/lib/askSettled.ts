@@ -91,7 +91,9 @@ function markUnanswered(box: HTMLElement, state: Exclude<AskBoxState, "answered"
     if (box.dataset.note !== note) box.dataset.note = note;
   } else if (box.dataset.note !== undefined) delete box.dataset.note;
   const pickable = state !== "live";
-  for (const li of Array.from(box.querySelectorAll<HTMLElement>(".nl-ask-o > li"))) {
+  const lis = Array.from(box.querySelectorAll<HTMLElement>(".nl-ask-o > li"));
+  markStack(box, lis);
+  for (const li of lis) {
     if (li.dataset.picked) delete li.dataset.picked;
     if (pickable) {
       if (li.getAttribute("role") !== "button") li.setAttribute("role", "button");
@@ -120,6 +122,7 @@ export function settleBox(box: HTMLElement, said: string | null): void {
   if (box.dataset.note !== undefined) delete box.dataset.note;
   if (box.dataset.sending !== undefined) delete box.dataset.sending;
   const items = Array.from(box.querySelectorAll<HTMLElement>(".nl-ask-o > li"));
+  markStack(box, items);
   const pick = said === null ? -1 : pickedOption(
     items.map((li) => li.textContent ?? ""),
     said,
@@ -148,6 +151,25 @@ function nextSaid(node: HTMLElement): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Item 884, option A (his pick, "Lowk like control row more than console"; his worry: "make sure it'll still
+ * look good w like longer answer choices"): short answers sit side by side as buttons; once any answer of a
+ * card is longer than ASK_STACK_CHARS, every answer of that card stacks full width (the same buttons), so no
+ * card mixes a short button with a wrapped one.
+ */
+export const ASK_STACK_CHARS = 40;
+export function askStacks(options: readonly string[]): boolean {
+  return options.some((o) => o.trim().length > ASK_STACK_CHARS);
+}
+
+/** Mark a box `data-stack` when its answers stack (askStacks). Idempotent. */
+function markStack(box: HTMLElement, items: HTMLElement[]): void {
+  const stack = askStacks(items.map((li) => li.textContent ?? ""));
+  if (stack) {
+    if (box.dataset.stack !== "1") box.dataset.stack = "1";
+  } else if (box.dataset.stack !== undefined) delete box.dataset.stack;
 }
 
 /** Item 884: the answer number a key press names (1–9, no modifier), else 0. */

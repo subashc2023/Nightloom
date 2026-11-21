@@ -22,6 +22,7 @@
   import { flyAnswer } from "./askMotion";
   import { answerText, isAnswered } from "./askQuestions";
   import type { Ask } from "./askTag";
+  import { askStacks } from "./askSettled";
   import type { AskQuestion } from "./types";
 
   let {
@@ -55,6 +56,8 @@
     { question: ask.question, header: "needs you", options: ask.options.map((label) => ({ label })), multiSelect: false },
   ]);
   const ready = $derived(isAnswered(picks[0], others[0]));
+  // Item 884 (option A, the stack rule): any answer past 40 characters stacks every answer full width.
+  const stack = $derived(askStacks(ask.options));
 
   function toggle(i: number, label: string) {
     picks[i] = picks[i]?.[0] === label ? [] : [label];
@@ -85,7 +88,7 @@
   }
 </script>
 
-<div class="turn-ask lk-shell" class:sending data-turn-ask={idBase} aria-busy={sending} bind:this={shell}>
+<div class="turn-ask lk-shell" class:sending data-turn-ask={idBase} data-stack={stack ? "1" : undefined} aria-busy={sending} bind:this={shell}>
   <AskLock />
   <AskQuestions
     {questions}
@@ -146,9 +149,12 @@
     font-size: 12px;
     color: var(--dim);
   }
-  /* Item 884 (option B, Console rows): in Jarvis the card is the question box's and the hand-off card's
-     glass — the amber-tinted top and thin amber edge — and Send answer is the hand-off's Wrap up now (the
-     terminal fill, the amber edge and glow), not a tan pill. Classic keeps the rules above. */
+  /* Item 884 (option A, Control row — his pick; the stack rule for long answers): in Jarvis the card is the
+     question box's and the hand-off card's glass — the amber-tinted top and thin amber edge — and Send
+     answer is the hand-off's Wrap up now (the terminal fill, the amber edge and glow), not a tan pill. The
+     answers are the box's buttons (src/askLook.css): the number key first, no radio dot (a click sends),
+     side by side while short; once any answer passes 40 characters (`data-stack`), all stack full width.
+     Other and an option's comment field always take a full row. Classic keeps the rules above. */
   :global(:where(:root:not([data-layout="classic"]))) .turn-ask {
     border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line2));
     border-radius: var(--r2);
@@ -183,5 +189,92 @@
   }
   :global(:where(:root:not([data-layout="classic"]))) .ta-note {
     font: 11px var(--mono);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opts) {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px;
+    margin-left: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick) {
+    align-items: flex-start;
+    gap: 9px;
+    max-width: 100%;
+    min-height: 30px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 5px 8px 5px 7px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--well);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick .aq-mk) {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick .aq-ot) {
+    flex: 0 1 auto;
+    padding-right: 4px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick .aq-ol) {
+    font-size: 13.5px;
+    font-weight: 500;
+    line-height: 18px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick .aq-k) {
+    order: -1;
+    display: inline-grid;
+    place-items: center;
+    min-width: 18px;
+    height: 18px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0 4px;
+    border: 1px solid var(--line2);
+    border-radius: 3px;
+    background: var(--term);
+    line-height: 1;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick .aq-cb) {
+    height: 18px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick:hover),
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick:has(.aq-in:focus-visible)) {
+    outline: none;
+    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
+    background: var(--well2);
+    box-shadow:
+      inset 0 0 10px color-mix(in srgb, var(--accent) 12%, transparent),
+      var(--glow-main, none);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick:hover .aq-ol),
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick:has(.aq-in:focus-visible) .aq-ol) {
+    color: var(--accent-ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick:hover .aq-k) {
+    border-color: color-mix(in srgb, var(--accent) 60%, var(--line2));
+    color: var(--accent-ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick.on) {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent-soft) 70%, var(--well));
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-other),
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-cm) {
+    flex: 1 0 100%;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask[data-stack] :global(.aq-opts) {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask[data-stack] :global(.aq-opt.quick) {
+    width: 100%;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn-ask[data-stack] :global(.aq-opt.quick .aq-ot) {
+    flex: 1 1 auto;
   }
 </style>
