@@ -528,7 +528,7 @@ impl Terminals {
     /// The open shells' ids, for the tests. (~~and for a window that
     /// reloads (dev)~~ — 2026-11-11, item 622b: the `terminal_list` command
     /// that served the window was removed; no window called it.)
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn ids(&self) -> Vec<u32> {
         let mut ids: Vec<u32> = self
             .shells
@@ -1031,15 +1031,57 @@ mod tests {
 
     /// A never-ending block: a ⌃C at the pty ends it, and the end is
     /// reported, which is what the dock's Stop is.
+    ///
+    /// Backlog 852: under load (~70+) a single ⌃C sent the moment `UP`
+    /// shows was sometimes lost — the pty echoed `^C` and the loop ran on
+    /// past the deadline. Most likely `sh`'s own fork window: the ⌃C lands
+    /// while the next `sleep` is being started, in the moment its process
+    /// holds the terminal's foreground group but has not yet exec'd, and
+    /// the SIGINT is dropped there (microseconds at rest, wider under
+    /// load). So the test presses Stop again, as he would, every `AGAIN`
+    /// until the end is reported, under a deadline generous enough for a
+    /// loaded machine. What it checks is unchanged: ⌃C bytes at the pty
+    /// end the block, the end is reported, and it is not a clean exit.
     #[test]
     fn interrupt_ends_a_never_ending_block() {
+        const AGAIN: Duration = Duration::from_secs(2);
+        const DEADLINE: Duration = Duration::from_secs(60);
         let dir = std::env::temp_dir().join(format!("nightloom-run2-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let t = Terminals::default();
         let (info, rx) = run_sh(&t, &dir, "echo UP; while :; do sleep 1; done");
         read_until(&rx, |o| o.contains("UP"));
         t.write(info.id, "\u{3}").unwrap();
-        let (_, code, signal) = until_exit(&rx);
+        let start = Instant::now();
+        let mut pressed = Instant::now();
+        let mut presses = 1;
+        let mut out = String::new();
+        let (code, signal) = loop {
+            assert!(
+                start.elapsed() < DEADLINE,
+                "{presses} ⌃C did not end the block; it said {out:?}"
+            );
+            match rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(Outgoing::Data { bytes, .. }) => out.push_str(&String::from_utf8_lossy(&bytes)),
+                Ok(Outgoing::Exit { code, signal, .. }) => break (code, signal),
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if pressed.elapsed() >= AGAIN {
+                        // The block may end between the check and the
+                        // write; a press on an ended run is not an error.
+                        let _ = t.write(info.id, "\u{3}");
+                        pressed = Instant::now();
+                        presses += 1;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("the run's reports stopped; it said {out:?}")
+                }
+            }
+        };
+        if presses > 1 {
+            eprintln!("interrupt_ends_a_never_ending_block: ended on ⌃C number {presses}");
+        }
         assert!(code != Some(0) || signal.is_some(), "{code:?} {signal:?}");
     }
 
@@ -1362,6 +1404,15 @@ mod tests {
         read_until(&rx, |o| !o.is_empty());
         t.write(info.id, "yes | head -c 5000000\n").unwrap();
         // No acks: the emitter stops at the mark (plus one frame's cap).
+        // Wait for the mark itself, not a fixed time: under load (~20) the
+        // shell had not printed 256 KB within a fixed 600 ms (item 841).
+        // Then 600 ms more to show it holds there — well inside `STALL`,
+        // after which the emitter rightly sends anyway.
+        let flow = t.shells.lock().unwrap()[&info.id].flow.clone();
+        wait_until(
+            || flow.outstanding() >= HIGH_WATER,
+            "the output to reach the mark",
+        );
         thread::sleep(Duration::from_millis(600));
         let got: usize = rx
             .try_iter()
@@ -1370,10 +1421,9 @@ mod tests {
                 _ => 0,
             })
             .sum();
-        eprintln!("MEASURE pause: {got} bytes in 600 ms without acks (mark {HIGH_WATER})");
+        eprintln!("MEASURE pause: {got} bytes without acks (mark {HIGH_WATER})");
         assert!(got >= HIGH_WATER, "{got} never reached the mark");
         assert!(got <= HIGH_WATER + FRAME_BYTES, "{got} ran past the mark");
-        let flow = t.shells.lock().unwrap()[&info.id].flow.clone();
         assert!(flow.outstanding() >= HIGH_WATER);
         // An ack for what was drawn lets the next frames through.
         t.ack(info.id, got);

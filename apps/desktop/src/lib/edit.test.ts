@@ -242,6 +242,10 @@ describe("editLine", () => {
     );
     expect(editLine(cacheState(warm, T0 + 61 * 60_000))).toBe("cache cold — edit freely");
     expect(editLine(null)).toBe("cache cold — edit freely");
+    // Item 776: the re-write's price, when the rates are in.
+    expect(editLine(cacheState(warm, T0 + 19 * 60_000), 1.65)).toBe(
+      "cache warm · 41 min — this re-writes the history after this turn (≈ $1.65)",
+    );
   });
 });
 

@@ -5,8 +5,12 @@
   import type { Zone } from "./floatingMove";
   import MoveZone from "./MoveZone.svelte";
   import { attachmentBytes, closeAttachment, opening } from "./attachments.svelte";
-  import { VIEW_MARGIN, ZOOM_MS, fitRect, zoomCss, zoomTransform, type Rect } from "./attachmentView";
+  import { ZOOM_MS, fitRect, zoomCss, zoomTransform, type Rect } from "./attachmentView";
   import { escapeClosesPanel } from "./search";
+  // Item 879: a transparent PNG/GIF/WebP with dark ink sits on white paper, readable on the dark looks.
+  import { paperIfDarkInk } from "./rasterBacking";
+  // Item 885: a click on the picture zooms in at that spot (again: back to fit), a pinch zooms, a drag pans.
+  import { zoomable } from "./pictureZoomAction";
 
   /**
    * The floating attachment tab (nightshift backlog 145, 2026-09-17).
@@ -16,8 +20,10 @@
    * in front of the panes over a scrim, zooming up from the thumbnail it
    * was clicked on (a Web Animations run from the thumbnail's transform
    * to none, `ZOOM_MS`, ease-out; none under reduced motion). An image
-   * shows fit-to-screen, and at its own size on a second click (the card
-   * scrolls); a PDF shows in an `<embed>` of its bytes — the log holds
+   * shows fit-to-screen; ~~at its own size on a second click (the card
+   * scrolls)~~ since item 885 (2026-11-19) a click on it zooms in at that
+   * spot, a second click goes back to fit, a pinch zooms, a drag pans
+   * (`zoomable`, as the other full-size viewers); a PDF shows in an `<embed>` of its bytes — the log holds
    * the base64, so nothing is fetched and no viewer outside the app is
    * launched. It closes on a click on the scrim, ×, or Escape — caught
    * here on the way down, from anywhere but another text field (backlog
@@ -39,8 +45,6 @@
   const src = $derived(bytes ? `data:${bytes.media_type}${bytes.media_type.startsWith("text/") ? ";charset=utf-8" : ""};base64,${bytes.data}` : null);
 
   let card = $state<HTMLElement | null>(null);
-  /** The image at its own size (a second click), scrolling in the card. */
-  let full = $state(false);
   function viewportRect(): Rect {
     return { top: 0, left: 0, width: window.innerWidth, height: window.innerHeight };
   }
@@ -66,7 +70,6 @@
   });
   $effect(() => {
     void tab;
-    full = false;
     at = null;
   });
 
@@ -151,16 +154,15 @@
   >
     <div
       class="attach-card"
-      class:full
       class:holding
       role="dialog"
       aria-modal="true"
       aria-label={bytes.name}
       bind:this={card}
-      style:left={at ? `${at.left}px` : full ? `${VIEW_MARGIN}px` : `${rect.left}px`}
-      style:top={at ? `${at.top}px` : full ? `${VIEW_MARGIN}px` : `${rect.top}px`}
-      style:width={full ? `${vp.width - 2 * VIEW_MARGIN}px` : `${rect.width}px`}
-      style:height={full ? `${vp.height - 2 * VIEW_MARGIN}px` : `${rect.height}px`}
+      style:left={at ? `${at.left}px` : `${rect.left}px`}
+      style:top={at ? `${at.top}px` : `${rect.top}px`}
+      style:width={`${rect.width}px`}
+      style:height={`${rect.height}px`}
     >
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
@@ -180,22 +182,15 @@
         <span class="spacer"></span>
         <button class="ns-btn ghost small" use:tip={"Close (Escape, or click outside)"} onclick={closeAttachment}>×</button>
       </div>
-      <div class="attach-body" class:scroll={full}>
-        {#if content.media === "image"}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-          <img
-            class="attach-img"
-            class:full
-            {src}
-            alt={bytes.name}
-            use:tip={full ? "Click to fit the screen" : "Click for the image's own size"}
-            onclick={() => (full = !full)}
-          />
-        {:else}
+      {#if content.media === "image"}
+        <div class="attach-body" data-picture-viewer use:zoomable>
+          <img class="attach-img" {src} use:paperIfDarkInk alt={bytes.name} draggable="false" use:tip={"Click to zoom in there (again to fit) · pinch to zoom · drag to move"} />
+        </div>
+      {:else}
+        <div class="attach-body">
           <embed class="attach-pdf" {src} type={bytes.media_type} title={bytes.name} />
-        {/if}
-      </div>
+        </div>
+      {/if}
     </div>
   </div>
   {#if zone}<MoveZone {zone} z={40} />{/if}
@@ -219,8 +214,9 @@
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
     overflow: hidden;
     transform-origin: 0 0;
-    /* The fit ↔ own-size change (a second click) glides; the entrance is
-       the Web Animation above, which overrides this while it runs. */
+    /* A move glides; the entrance is the Web Animation above, which
+       overrides this while it runs. (Item 885: the own-size change it was
+       for is now a zoom inside the card.) */
     transition:
       left 160ms ease-out,
       top 160ms ease-out,
@@ -274,21 +270,15 @@
     background: var(--well);
     overflow: hidden;
   }
-  .attach-body.scroll {
-    display: block;
-    overflow: auto;
-  }
   .attach-img {
     max-width: 100%;
     max-height: 100%;
     object-fit: contain;
     cursor: zoom-in;
     display: block;
-  }
-  .attach-img.full {
-    max-width: none;
-    max-height: none;
-    cursor: zoom-out;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-user-drag: none;
   }
   .attach-pdf {
     width: 100%;

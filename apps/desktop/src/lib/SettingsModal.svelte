@@ -15,12 +15,16 @@
 
 <script lang="ts">
   import { tip } from "./tip";
+  import { buildLabel } from "./buildNumber";
   import { hourLabel } from "./nightshiftFace";
   import { setLinkPref, web as webTabs } from "./webtabs.svelte";
   import { STOP_SHAPES } from "./stopButton";
   import { setStopShape, stopPref } from "./stopShape.svelte";
   // Item 542: the layout, Filament IV or Classic (the look before item 525).
   import { LAYOUTS, classic, layout, setLayout } from "./layout.svelte";
+  // Item 876: his default zoom — what ⌘0 returns to and where the top bar's zoom chip hides.
+  import { ZOOM_STEPS, setZoomDefault, zoomLabel } from "./zoom";
+  import { zoomNow } from "./zoomLevel.svelte";
   // Filament IV's accent and instrument light (item 571, stage 7).
   import { ACCENTS, LIGHTS, look, setAccent, setLight, applyLook } from "./settings/look.svelte";
   // Item 629/630: the new-chat layout and the motion colour, their own choices.
@@ -29,6 +33,10 @@
   import { pickMotion as pickSlide } from "./settings/pickMotion";
   import { COMPOSER_ROWS, composerRow, setComposerRow } from "./composerRow.svelte";
   import { CACHE_LOOKS, cacheLook, setCacheLook } from "./cacheLook.svelte";
+  // Item 826: Touch ID unlock and the pre-arm card.
+  import BitwardenTouch from "./BitwardenTouch.svelte";
+  import BitwardenPreArm from "./BitwardenPreArm.svelte";
+  import CacheLookPreview from "./CacheLookPreview.svelte";
   // Item 589: the running step's motion in the turn trace.
   import { STEP_MOTIONS, stepMotion, setStepMotion, type StepMotion } from "./stepMotion.svelte";
   import StepMotionPreview from "./StepMotionPreview.svelte";
@@ -36,6 +44,8 @@
   import { GROUND_STYLES, GROUND_MENU } from "./newChatGround";
   import { groundPick, setGroundPick } from "./newChatGroundPick.svelte";
   import GroundPreview from "./GroundPreview.svelte";
+  import { wholeCardPicks } from "./settings/wholeCard";
+  import { tabPlace } from "./tabPlace"; // Item 715: the view keeps its scroll across close and reopen.
   // End item 632.
   // Item 640: Settings offers Horizon, Radar and Default (Weft); a stored look
   // no longer offered shows as one more card, the earlier pick, until he picks.
@@ -46,8 +56,11 @@
   });
   // Item 617 (own block): Reply text — Line reveal or Word rise.
   import { REPLY_LOOKS, replyLook, setReplyLook } from "./replyLook.svelte";
+  import ThinkingArrivalSample from "./ThinkingArrivalSample.svelte"; // Item 716 part 5: the real thinking block.
+  import ReplyLookDemo from "./ReplyLookDemo.svelte"; // Item 716: the looping demo of each look.
   // End item 617.
   import ContextDial from "./ContextDial.svelte";
+  import ImageToolCalls from "./ImageToolCalls.svelte"; // Item 823: the image tool's count.
   import { planDials, surfaceShares, paceLine, weekGone, resetsWhen } from "./settingsUsage";
   /** The Layout choice: the layout, then the accent again (no accent is stamped under Classic). */
   function pickLayout(l: (typeof LAYOUTS)[number]["id"]): void {
@@ -162,6 +175,22 @@
   import CliUpdateActions from "./CliUpdateActions.svelte";
   import SettingsGroup from "./settings/SettingsGroup.svelte";
   import SettingRow from "./settings/SettingRow.svelte";
+  // Item 800: saved message prompts with blanks.
+  import { blankWords, AUTO_BLANKS } from "./savedPrompts";
+  import {
+    saved as savedPrompts,
+    loadSaved,
+    startEdit as startPromptEdit,
+    setDraft as setPromptDraft,
+    draftDirty as promptDraftDirty,
+    draftProblem as promptDraftProblem,
+    saveDraft as savePromptDraft,
+    discardDraft as discardPromptDraft,
+    trashPrompt,
+    untrashPrompt,
+    restorePromptVersion,
+    movePrompt,
+  } from "./savedPromptsStore.svelte";
   import {
     CONTROLS as SUB_CONTROLS,
     GROUPS as SUB_GROUPS,
@@ -174,10 +203,13 @@
     subagentsSummary,
     updatesSummary,
     cacheSummary,
+    bitwardenSummary,
     type GroupId as SubGroupId,
   } from "./settings/subscriptionPane";
   import { keepWarm, loadKeepWarmDefault, setKeepWarmDefault } from "./keepWarm.svelte";
-  import { paneFilter, setPaneFilter } from "./settings/paneState.svelte";
+  import { paneFilter, setPaneFilter, setOpen } from "./settings/paneState.svelte";
+  // Item 844: the search box at the top of the nav.
+  import { paneTitle, searchSettings, settingsIndex, type SettingHit } from "./settings/searchIndex";
   import {
     WRAP_UP,
     clearDefaultReadOrder,
@@ -185,6 +217,8 @@
     defaultReadOrder,
     hasOwnDefaultMessage,
     hasOwnDefaultReadOrder,
+    replacedMessage,
+    restoreReplacedMessage,
     hasOwnThreshold as hasOwnHandoffThreshold,
     reconsider as reconsiderHandoff,
     setDefaultReadOrder,
@@ -197,6 +231,7 @@
   import { onDestroy, tick, untrack } from "svelte";
   import { isMac } from "./platform";
   import Icon from "./Icon.svelte";
+  import FilamentMark from "./FilamentMark.svelte"; // Item 716: the real controls in the Composer row previews.
   import CopyButton from "./CopyButton.svelte";
   import { COPIED_MS } from "./copyIcon";
   import Kbd from "./Kbd.svelte";
@@ -214,6 +249,21 @@
   } from "./messageMotion";
   import { REMOVED_PLACEHOLDER } from "./edit";
   import { setTypedMathOn, typedMathPrefs } from "./typedMathPrefs.svelte";
+  import { replyPagePrefs, setPagesCollapsed } from "./replyPagePrefs.svelte";
+  import { KIT_NAMES } from "./pageKit";
+  // Item 768: wrap up while the cache is warm; the cold-return chip.
+  import { MODES as WARM_MODES, modeLabel as warmModeLabel, isMode as isWarmMode } from "./warmWrap";
+  import { setWarmMinTokens, setWarmMode, warmWrap } from "./warmWrap.svelte";
+  import { allowSource, checkReach, home, homeProject, refreshHome, refreshReach, refreshSources, saveBrief, setBriefDraft, setReach, setSource } from "./home.svelte";
+  import { MESSAGES_STEP, isRead, sourceButton, sourceStatusWords, sourcesSummary } from "./homeSources";
+  import { REACH_GROUPS, reachName, reachNote, reachStatusWords, reachSummary } from "./home";
+  import HomeJobs from "./HomeJobs.svelte";
+  // Item 795: Quick Entry's shortcut recorder.
+  import QuickEntrySetting from "./QuickEntrySetting.svelte";
+  // Item 848: the System → Quick Entry row says the shortcut.
+  import { shortcutLabel } from "./quickEntry";
+  import { quickEntry } from "./quickEntry.svelte";
+  import { revealFolder } from "./state.svelte";
 
   /**
    * Redesigned 2026-09-13 (nightshift surface-redesign-2026-09-13, canvas
@@ -247,7 +297,8 @@
   function previewArrival(style: ArrivalStyle) {
     stopPreview[style]?.();
     delete stopPreview[style];
-    const node = arrivalBlock[style];
+    // Item 716 part 5: the look plays on the real block's `.activity`, the node a reply's own arrival plays on.
+    const node = arrivalBlock[style]?.querySelector<HTMLElement>(".activity") ?? null;
     if (!node) return;
     stopPreview[style] = playArrival(node, reducedMotion() ? "fade" : style, 0, null, arrivalFrom[style] ?? null);
   }
@@ -449,6 +500,32 @@
   $effect(() => {
     if (selected === "models") void refreshChatFile();
   });
+  /**
+   * The practices layer (nightshift item 738): how he works, in every chat,
+   * from `~/.claude/practices/nightloom-chat.md`. One switch for all chats,
+   * kept by the backend and read at each connect — a running chat takes a
+   * flip at its next cold moment, like a changed file.
+   */
+  let practices = $state<api.PracticesLayer | null>(null);
+  async function refreshPractices() {
+    try {
+      practices = await api.practicesLayer();
+    } catch {
+      practices = null;
+    }
+  }
+  void refreshPractices();
+  $effect(() => {
+    if (selected === "models") void refreshPractices();
+  });
+  async function flipPractices(on: boolean): Promise<void> {
+    try {
+      practices = await api.setPracticesLayer(on);
+    } catch (e) {
+      addToast(`Practices: ${e}`);
+      void refreshPractices();
+    }
+  }
   /** The model the "+ add" control names: the rail's, by the same rule the
    *  popover's pencil uses. */
   const addModel = $derived(currentModelId());
@@ -698,6 +775,14 @@
     return `${bytes} B`;
   }
 
+  // Item 800: the saved-prompts pane's own folds and confirms.
+  void loadSaved();
+  const livePrompts = $derived(savedPrompts.list.filter((p) => !p.deleted));
+  const trashedPrompts = $derived(savedPrompts.list.filter((p) => !!p.deleted));
+  let promptDiscardArmed = $state(false);
+  let promptDeleteArmed = $state<string | null>(null);
+  let promptVersionsOpen = $state<string | null>(null);
+
   function select(kind: string) {
     selected = canonicalPane(kind);
     keyDraft = "";
@@ -714,6 +799,47 @@
     );
   }
   let navEl = $state<HTMLElement | null>(null);
+  // Item 763: the Home pane's discard is two clicks, and the pane re-reads Home when opened.
+  let briefDiscardArmed = $state(false);
+  $effect(() => {
+    if (selected === "home")
+      untrack(() => {
+        void refreshHome();
+        // Item 804: what Home can reach, from the last check.
+        void refreshReach();
+        // Item 808: the Mac's own stores, status only.
+        void refreshSources();
+      });
+  });
+  // Item 808: a status changes in System Settings or in macOS's dialog, so
+  // the rows are re-read whenever the window comes back to the front.
+  $effect(() => {
+    if (selected !== "home") return;
+    const again = () => {
+      if (document.visibilityState === "visible") void refreshSources();
+    };
+    window.addEventListener("focus", again);
+    document.addEventListener("visibilitychange", again);
+    return () => {
+      window.removeEventListener("focus", again);
+      document.removeEventListener("visibilitychange", again);
+    };
+  });
+  // Item 808: the phone asked while Settings was already open — go to Home
+  // and bring the asked row into view.
+  $effect(() => {
+    const want = app.settingsOpenOn;
+    if (want === null) return;
+    untrack(() => {
+      selected = want;
+      app.settingsOpenOn = null;
+    });
+  });
+  $effect(() => {
+    const id = home.sourceAsked;
+    if (selected !== "home" || id === null || home.sources === null) return;
+    requestAnimationFrame(() => document.getElementById(`home-source-${id}`)?.scrollIntoView({ block: "center" }));
+  });
 
   /** Which of the key card's states a provider is in. */
   function keyState(p: ProviderInfo): "stored" | "env" | "local" | "none" {
@@ -848,6 +974,8 @@
   // localStorage when the modal opens, written on each change; `notify.ts`
   // reads the store again at each turn, so nothing here needs to be live.
   let notifyPrefs = $state<NotifyPrefs>(loadNotifyPrefs());
+  /** Item 848: how many of the three banners are on, for the nav row. */
+  const notifyOn = $derived([notifyPrefs.turnEnd, notifyPrefs.needsYou, notifyPrefs.usageRefresh].filter(Boolean).length);
   function setNotify(key: keyof NotifyPrefs, on: boolean) {
     notifyPrefs = { ...notifyPrefs, [key]: on };
     saveNotifyPrefs(notifyPrefs);
@@ -1039,6 +1167,22 @@
       setPaneFilter("subscription", "");
     }
   }
+  // Item 766 part 2: the Bitwarden group's rules and session (read below).
+  let bwRules = $state<api.BitwardenRule[] | null>(null);
+  // Item 825: rules dropped on load because their prefix was a wrapper.
+  let bwDropped = $state<api.BitwardenDropped[]>([]);
+  let bwSession = $state(false);
+  // Item 826: Touch ID unlock and the pre-arm (a marker read; no Keychain, no bw).
+  let bwTouch = $state<api.BitwardenTouchStatus | null>(null);
+  function loadBwTouch(): void {
+    void api
+      .bitwardenTouchStatus()
+      .then((t) => {
+        bwTouch = t;
+        bwSession = t.session;
+      })
+      .catch(() => (bwTouch = { stored: false, session: false, armed: null }));
+  }
   const subSummaries = $derived({
     handoff: handoffSummary({
       pct: handoffDefaultPct,
@@ -1058,7 +1202,41 @@
       layersAtCold: app.layerPrefs.autoAtCold,
     }),
     cache: cacheSummary(keepWarm.defaultOn),
+    bitwarden: bitwardenSummary(bwRules?.length ?? null, bwSession),
   });
+  // Item 766 part 2: the secret card's "always" rules, read once the pane
+  // opens (a file read; `bw` is not run).
+  $effect(() => {
+    void api
+      .bitwardenRules()
+      .then((r) => {
+        bwRules = r.rules;
+        bwDropped = r.dropped ?? [];
+        bwSession = r.session;
+      })
+      .catch(() => (bwRules = []));
+    loadBwTouch();
+  });
+  async function removeBwRule(id: string): Promise<void> {
+    try {
+      bwRules = await api.bitwardenRemoveRule(id);
+    } catch (e) {
+      addToast(`Bitwarden: ${String(e)}`);
+    }
+  }
+  async function clearBwDropped(): Promise<void> {
+    try {
+      await api.bitwardenClearDropped();
+      bwDropped = [];
+    } catch (e) {
+      addToast(`Bitwarden: ${String(e)}`);
+    }
+  }
+  async function forgetBwSession(): Promise<void> {
+    await api.bitwardenForgetSession();
+    bwSession = false;
+    loadBwTouch();
+  }
   // Item 608: the keep-warm default, read once the pane opens.
   $effect(() => {
     void loadKeepWarmDefault();
@@ -1273,7 +1451,125 @@
     select(all[(at < 0 ? 0 : at + dir + all.length) % all.length]);
   }
 
+  // ---- Item 844: search every setting from the top of the nav. The words
+  // stay in the box across closing and reopening Settings (paneState's
+  // filter rule: not across a relaunch); while there are words the nav
+  // lists the matches instead of the panes, as macOS's System Settings
+  // does, so he can step through them and each stays one click away.
+  const SEARCH_KEY = "settings-search";
+  const searchQuery = $derived(paneFilter(SEARCH_KEY));
+  const searchProviders = $derived((app.providers ?? []).map((p) => ({ kind: p.kind, label: providerLabel(p.kind) })));
+  const searchBackends = $derived((app.searchBackends ?? []).map((b) => ({ name: b.name, label: b.label })));
+  const searchIndexNow = $derived(settingsIndex(searchProviders, searchBackends));
+  const searchHits = $derived(
+    searchSettings(
+      searchIndexNow,
+      searchQuery,
+      (p) => paneTitle(p, searchProviders, searchBackends),
+      (p) => groups.find((g) => g.panes.includes(p))?.title ?? "",
+    ),
+  );
+  const searching = $derived(searchQuery.trim().length > 0);
+  let searchAt = $state(0);
+  let searchPicked = $state<SettingHit | null>(null);
+  let searchEl = $state<HTMLInputElement | null>(null);
+  let hitTimer: ReturnType<typeof setTimeout> | undefined;
+  onDestroy(() => clearTimeout(hitTimer));
+
+  function setSearch(text: string): void {
+    setPaneFilter(SEARCH_KEY, text);
+    searchAt = 0;
+    searchPicked = null;
+  }
+
+  /** The element a hit points at, once its pane is drawn: the control, else its card, else the pane's head. */
+  function hitTarget(hit: SettingHit): HTMLElement | null {
+    const pane = document.querySelector<HTMLElement>(".modal .pane");
+    if (!pane) return null;
+    const e = hit.entry;
+    if (e.fold) {
+      return (
+        pane.querySelector<HTMLElement>(`[data-fold="${e.fold.row}"]`) ??
+        pane.querySelector<HTMLElement>(`[data-fold="${e.fold.group}"]`)
+      );
+    }
+    const card =
+      [...pane.querySelectorAll<HTMLElement>(".card")].find(
+        (c) => c.querySelector(".ch .t")?.textContent?.trim() === e.section,
+      ) ?? pane.querySelector<HTMLElement>(`section[aria-label="${CSS.escape(e.section)}"]`);
+    if (card && e.label) {
+      const want = e.label.toLowerCase();
+      const inner = [...card.querySelectorAll<HTMLElement>("label, [aria-label], [role=radiogroup]")].find(
+        (el) =>
+          el.getAttribute("aria-label")?.toLowerCase() === want ||
+          (el.tagName === "LABEL" && (el.textContent ?? "").toLowerCase().includes(want)),
+      );
+      if (inner) return inner;
+    }
+    return card ?? pane.querySelector<HTMLElement>(".pane-head");
+  }
+
+  /** Open a hit's pane, bring the setting into view and light it for a moment. */
+  async function openHit(hit: SettingHit): Promise<void> {
+    searchPicked = hit;
+    searchAt = Math.max(0, searchHits.indexOf(hit));
+    const e = hit.entry;
+    if (e.fold) {
+      // A Subscription filter that would hide the row is cleared; the group is opened (and stays open, as his fold).
+      setPaneFilter("subscription", "");
+      setOpen(e.fold.group, true);
+    }
+    if (selected !== e.pane) select(e.pane);
+    await tick();
+    // The pane may still be laying out what it shows: one frame more (or
+    // 60 ms, for a window macOS is not drawing, where frames do not come).
+    await new Promise((r) => {
+      requestAnimationFrame(() => r(null));
+      setTimeout(() => r(null), 60);
+    });
+    const el = hitTarget(hit);
+    if (!el) return;
+    // tabPlace restores the pane's last scroll for 1.5 s after it is drawn
+    // and stops at the first wheel; this jump is his, so it stops it.
+    el.closest(".pane")?.dispatchEvent(new WheelEvent("wheel", { bubbles: false }));
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    el.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+    document.querySelectorAll(".search-hit").forEach((x) => x.classList.remove("search-hit"));
+    el.classList.add("search-hit");
+    clearTimeout(hitTimer);
+    hitTimer = setTimeout(() => el.classList.remove("search-hit"), 2600);
+  }
+
+  function onSearchKey(e: KeyboardEvent): void {
+    if (e.key === "Escape") {
+      if (!searchQuery) return; // an empty box: Escape closes Settings as before
+      e.preventDefault();
+      e.stopPropagation();
+      setSearch("");
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (searchHits.length === 0) return;
+      e.preventDefault();
+      const n = searchHits.length;
+      searchAt = (searchAt + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+      void tick().then(() =>
+        navEl?.querySelector<HTMLElement>(".hit.at")?.scrollIntoView({ block: "nearest" }),
+      );
+    } else if (e.key === "Enter") {
+      const h = searchHits[searchAt];
+      if (!h) return;
+      e.preventDefault();
+      void openHit(h);
+    }
+  }
+
   function onkeydown(e: KeyboardEvent) {
+    // Item 844: ⌘F (Ctrl+F elsewhere) puts the cursor in the search box, its words selected.
+    if ((isMac ? e.metaKey : e.ctrlKey) && !e.altKey && !e.shiftKey && e.code === "KeyF") {
+      e.preventDefault();
+      searchEl?.focus();
+      searchEl?.select();
+      return;
+    }
     if (e.key === "Escape") {
       app.showSettings = false;
       return;
@@ -1379,8 +1675,54 @@
 
 <!-- Item 631: every radio group in Settings moves when its pick changes (`settings/pickMotion.ts`). -->
 <div class="modal" use:pickSlide>
-  <nav class="nav" bind:this={navEl}>
+  <nav class="nav" bind:this={navEl} use:tabPlace={"settings:nav"}>
     <div class="nav-h">Settings</div>
+    <!-- Item 844: search every setting. Words here replace the panes below
+         with the matches; a pick opens its pane, scrolled to it and lit. -->
+    <div class="set-search">
+      <Icon name="search" size={13} />
+      <input
+        bind:this={searchEl}
+        type="text"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+        placeholder="Search settings"
+        aria-label="Search settings"
+        aria-controls="set-hits"
+        value={searchQuery}
+        oninput={(e) => setSearch(e.currentTarget.value)}
+        onkeydown={onSearchKey}
+      />
+      {#if searching}
+        <button class="sub-clear" aria-label="Clear the search" use:tip={"Clear (esc)"} onclick={() => (setSearch(""), searchEl?.focus())}><Icon name="x" size={12} /></button>
+      {:else}
+        <Kbd keys={isMac ? "⌘F" : "Ctrl+F"} dim />
+      {/if}
+    </div>
+    {#if searching}
+      <div class="hits" id="set-hits" role="listbox" aria-label="Matching settings">
+        <div class="nav-title hits-count">{searchHits.length === 0 ? "No setting matches" : `${searchHits.length} match${searchHits.length === 1 ? "" : "es"}`}</div>
+        {#each searchHits as h, i (h.entry.pane + "|" + h.entry.section + "|" + (h.entry.label ?? ""))}
+          <button
+            class="nav-item hit"
+            class:at={i === searchAt}
+            class:active={searchPicked === h}
+            role="option"
+            aria-selected={i === searchAt}
+            onmouseenter={() => (searchAt = i)}
+            onclick={() => void openHit(h)}
+          >
+            <span class="hit-t">{h.title}</span>
+            <span class="hit-w">{h.where}</span>
+            {#if h.snippet}<span class="hit-s">{h.snippet}</span>{/if}
+          </button>
+        {/each}
+        {#if searchHits.length === 0}
+          <p class="hits-none">Try another word — a setting's name, what it does, or its pane.</p>
+        {/if}
+      </div>
+    {:else}
     <!-- Usage & Cost (nightshift backlog 206): one category, two tabs —
          what the plan has left, then what it would have cost. 153 had made
          them one page, which squeezed this row's title to "U." beside both
@@ -1452,7 +1794,31 @@
         {modelFiles.length === 0 ? "none" : `${modelFiles.length} model${modelFiles.length === 1 ? "" : "s"}`}
       </span>
     </button>
+    <!-- Item 800: message prompts /name puts in any box (not system prompts). -->
+    <button
+      class="nav-item"
+      class:active={selected === "saved-prompts"}
+      onclick={() => select("saved-prompts")}
+    >
+      <span class="nav-label">Saved prompts</span>
+      <span class="st">
+        <span class="dot" class:ok={livePrompts.length > 0}></span>
+        {savedPrompts.draft ? "unsaved" : `${livePrompts.length}`}
+      </span>
+    </button>
     <div class="nav-title">Projects<Kbd keys={keyOf("Projects")} dim /></div>
+    <!-- Item 763: Home's brief and its scan time. -->
+    <button
+      class="nav-item"
+      class:active={selected === "home"}
+      onclick={() => select("home")}
+    >
+      <span class="nav-label">Home</span>
+      <span class="st">
+        <span class="dot" class:ok={!!home.info}></span>
+        {home.briefDraft !== null ? "unsaved" : home.info ? "on" : "none"}
+      </span>
+    </button>
     <button
       class="nav-item"
       class:active={selected === "projects"}
@@ -1536,12 +1902,49 @@
         {away?.url ? "on" : "off"}
       </span>
     </button>
+    <!-- Item 848: Quick Entry, Notifications and Sleep, each its own row. -->
+    <div class="nav-title">System<Kbd keys={keyOf("System")} dim /></div>
+    <button
+      class="nav-item"
+      class:active={selected === "quick-entry"}
+      onclick={() => select("quick-entry")}
+    >
+      <span class="nav-label">Quick Entry</span>
+      <span class="st">
+        <span class="dot" class:ok={!!quickEntry.shortcut}></span>
+        {quickEntry.shortcut ? shortcutLabel(quickEntry.shortcut) : "off"}
+      </span>
+    </button>
+    <button
+      class="nav-item"
+      class:active={selected === "notifications"}
+      onclick={() => select("notifications")}
+    >
+      <span class="nav-label">Notifications</span>
+      <span class="st">
+        <span class="dot" class:ok={notifyOn > 0}></span>
+        {notifyOn === 0 ? "off" : `${notifyOn} of 3`}
+      </span>
+    </button>
+    <button
+      class="nav-item"
+      class:active={selected === "sleep"}
+      onclick={() => select("sleep")}
+    >
+      <span class="nav-label">Sleep</span>
+      <span class="st">
+        <span class="dot" class:ok={sleepPrefs.keepAwake}></span>
+        {sleepPrefs.keepAwake ? "kept awake" : "off"}
+      </span>
+    </button>
+    {/if}
     <div class="nav-spacer"></div>
-    <div class="nav-foot">Esc or click outside to close</div>
+    <!-- Item 832: which release build is running ("dev" for a dev build). -->
+    <div class="nav-foot"><div>{buildLabel()}</div>Esc or click outside to close</div>
   </nav>
 
   {#if selected === "appearance"}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Palette</h2>
         <span class="slug">{app.palette}</span>
@@ -1571,6 +1974,33 @@
                   use:tip={l.note}
                   onclick={() => pickLayout(l.id)}
                 >{l.name}</button>
+              {/each}
+            </div>
+          </div>
+        </div>
+      </section>
+      <!-- Item 876 (his words, 2026-11-19: 90 % "is kind of my default
+           zoom"): the default zoom. ⌘0 and the top bar's zoom chip return
+           to it, and the chip hides while the app sits at it. -->
+      <section class="card" data-zoom-default>
+        <div class="ch"><span class="t">Zoom</span></div>
+        <p class="note small">
+          Your default zoom: ⌘0 returns here, and the top bar's zoom chip
+          shows only when the app is zoomed to something else. If the app is
+          at the old default it moves to the new one. Now at
+          {zoomLabel(zoomNow.level)}.
+        </p>
+        <div class="type-rows">
+          <div class="type-row">
+            <span class="type-label">Default</span>
+            <div class="seg" role="radiogroup" aria-label="Default zoom">
+              {#each ZOOM_STEPS as z (z)}
+                <button
+                  class:on={zoomNow.def === z}
+                  role="radio"
+                  aria-checked={zoomNow.def === z}
+                  onclick={() => void setZoomDefault(z, "settings")}
+                >{zoomLabel(z)}</button>
               {/each}
             </div>
           </div>
@@ -1702,19 +2132,23 @@
               <span class="pick-h"><i class="radio" aria-hidden="true"></i>{r.name}</span>
               <span class="pick-n">{r.note}</span>
               <span class="composer crow-pv" data-composer-row={r.id} aria-hidden="true">
+                <!-- Item 716: the composer's own controls — its markup, under its own rules
+                     (src/composerControls.css, lifted out of Composer.svelte) and this
+                     row's (composerRow.css). Spans, not buttons, inside the pick button;
+                     pointing at one runs its hover as in a chat (Send's scan line). -->
                 <span class="card">
                   <span class="pv-text">Ask anything…</span>
                   <span class="row">
                     <span class="ns-btn ghost small attach"><Icon name="plus" /></span>
-                    <span class="pick-btn"><span class="pick-dot"></span><span class="pick-name">Opus 5.5</span></span>
+                    <span class="pick-wrap"><span class="pick-btn"><span class="pick-dot"></span><span class="pick-name">Opus 5.5</span><span class="pick-chev"><Icon name="chev" size={11} /></span></span></span>
                     <span class="pv-gap"></span>
-                    <span class="ns-btn ghost small open">Council</span>
-                    <span class="pv-send">Send</span>
+                    <span class="council-wrap"><span class="ns-btn ghost small fil-btn fil-ghost"><FilamentMark kind="council" /><span class="council-ico"><Icon name="agent" size={13} /></span><span class="council-word">Council</span></span></span>
+                    <span class="send-split"><span class="ns-btn accent send fil-btn fil-send"><span class="fil-scan"></span><span class="fil-edge"></span><FilamentMark kind="send" />Send</span><span class="ns-btn accent sched-caret">▾</span></span>
                   </span>
                 </span>
                 <span class="bottom-row">
-                  <span class="ns-chip bottom-toggle"><span class="bottom-mark"></span>thinking</span>
-                  <span class="ns-chip bottom-toggle on"><span class="bottom-mark"></span>tools</span>
+                  <span class="ns-chip bottom-toggle"><span class="bottom-mark">✦</span>thinking</span>
+                  <span class="ns-chip bottom-toggle on"><span class="bottom-mark">⚒</span>tools</span>
                 </span>
               </span>
             </button>
@@ -1731,6 +2165,8 @@
             <button class="pick" class:on={cacheLook.value === c.id} role="radio" aria-checked={cacheLook.value === c.id} onclick={() => setCacheLook(c.id)}>
               <span class="pick-h"><i class="radio" aria-hidden="true"></i>{c.name}</span>
               <span class="pick-n">{c.note}</span>
+              <!-- Item 716: the look live on a small real box, over a sped-up hour. -->
+              <CacheLookPreview look={c.id} />
             </button>
           {/each}
         </div>
@@ -1828,7 +2264,14 @@
                   role="radio"
                   aria-checked={stopPref.shape === sh.id}
                   onclick={() => setStopShape(sh.id)}
-                ><span class="stop-swatch {sh.id}" aria-hidden="true">{#if sh.id === "labelled"}<i></i>Stop{:else}<i></i>{/if}</span>{sh.name}</button>
+                ><!-- Item 716 part 4: the composer's own Stop, its markup under its own rules
+                     (src/composerControls.css), at its real size; ~~a small drawing (stop-swatch)~~.
+                     A span inside the choice button; pointing at it runs its hover as in a chat. -->
+                  <span class="composer stop-pv" aria-hidden="true"
+                    ><span class="ns-btn danger send stop shape-{sh.id}"
+                      ><span class="stop-size">Send</span><span class="stop-ico"><Icon name="stop" size={sh.id === "wide" ? 16 : 12} />{#if sh.id === "labelled"}<span class="stop-word">Stop</span>{/if}</span></span
+                    ></span
+                  >{sh.name}</button>
               {/each}
             </div>
           </div>
@@ -1855,6 +2298,60 @@
         </label>
       </section>
 
+      <!-- Item 770: a page a reply writes (a chart, a diagram, a table to
+           click through) is drawn inside the reply; this turns every page
+           down to a one-line card with Show. A page he opened or folded
+           himself keeps that. -->
+      <section class="card">
+        <div class="ch"><span class="t">Pages in replies</span></div>
+        <p class="note small">
+          A reply can hold a small interactive page — a chart, a diagram, a
+          table with controls — drawn where the reply wrote it. A page runs
+          in a sandbox with no network and nothing of the app; its libraries
+          ({KIT_NAMES.join(", ")}) come from inside Nightloom. Each page has
+          Hide, Source and Copy on its card.
+        </p>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={replyPagePrefs.collapsed}
+            onchange={(e) => setPagesCollapsed(e.currentTarget.checked)}
+          />
+          <span>Show pages as a one-line card until I click Show</span>
+        </label>
+      </section>
+    </div>
+  <!-- Item 848 (his words: "gang i dont see a notifications section bro"):
+       Notifications, Quick Entry and Sleep were three cards at the foot of
+       Appearance → Palette, where he did not look. Each is its own pane now,
+       under a System group of the nav (⌘9), the cards unchanged. -->
+  {:else if selected === "quick-entry"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Quick Entry</h2>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
+      <!-- Item 795: Quick Entry — a system-wide shortcut opens a small box
+           (quick_entry.rs, quick/QuickEntry.svelte). Off until he picks one. -->
+      <section class="card">
+        <div class="ch"><span class="t">Quick Entry</span></div>
+        <p class="note small">
+          A shortcut that works from any app: it opens a small box over what you are in, without bringing Nightloom
+          forward. Send goes to the chat you last used, a new chat in a project, or an aside on the last chat; the box
+          remembers which. It takes typing, dictation and ⌘V (the clipboard only, so macOS asks for no permission).
+          Closing it keeps what you typed. It works only while Nightloom is running.
+        </p>
+        <QuickEntrySetting />
+      </section>
+    </div>
+  {:else if selected === "notifications"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Notifications</h2>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
       <!-- The turn-end banner (nightshift backlog 079): two switches, one
            per kind. The rule they cannot change is the focus one — a
            window in front is never notified. -->
@@ -1891,7 +2388,14 @@
           <span>When Usage & Cost → Refresh now finishes — the figures; clicking it opens that page. Never for the automatic refresh</span>
         </label>
       </section>
-
+    </div>
+  {:else if selected === "sleep"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Sleep</h2>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
       <!-- Sleep-safe turns (nightshift backlog 101): his `caffeinate -dis`
            made automatic while anything runs, and the turn a closed lid
            cut off resumed on wake. Here, under Notifications, per blocker
@@ -1948,7 +2452,7 @@
          "put both A and B as two diff options for the thinking block's
          animation"). One card per animated moment; the rewind and the
          delete (396, 397) join as cards of their own below this one. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Animations</h2>
         <span class="spacer"></span>
@@ -1964,7 +2468,7 @@
         <p class="note small">How a reply's thinking block comes in when the model starts thinking.</p>
         <div class="anims" role="radiogroup" aria-label="Thinking block arrival">
           {#each OFFERED_STYLES as s (s.id)}
-            <div class="anim" class:on={arrival === s.id}>
+            <div class="anim" use:wholeCardPicks class:on={arrival === s.id}>
               <button
                 class="anim-pick"
                 role="radio"
@@ -1975,10 +2479,8 @@
                 <span class="anim-blurb">{s.blurb}</span>
               </button>
               <div class="anim-stage" aria-hidden="true">
-                <div class="anim-block" bind:this={arrivalBlock[s.id]}>
-                  <span class="anim-label">Thinking</span>
-                  <span class="anim-text">The cache key hashes the lockfile and the toolchain file…</span>
-                </div>
+                <!-- Item 716 part 5: the real reply's thinking block, ~~a stand-in drawing (anim-block)~~. -->
+                <div class="arr-host" bind:this={arrivalBlock[s.id]}><ThinkingArrivalSample /></div>
                 <div class="anim-composer" bind:this={arrivalFrom[s.id]}></div>
               </div>
               <div class="anim-foot">
@@ -2004,7 +2506,7 @@
             </p>
             <div class="anims three motion-picks" role="radiogroup" aria-label="Thinking motion">
               {#each STEP_MOTIONS as m (m.id)}
-                <div class="anim" class:on={stepMotion.value === m.id}>
+                <div class="anim" use:wholeCardPicks class:on={stepMotion.value === m.id}>
                   <button
                     class="anim-pick"
                     role="radio"
@@ -2034,11 +2536,13 @@
             </p>
             <div class="anims motion-picks" role="radiogroup" aria-label="Reply text">
               {#each REPLY_LOOKS as l (l.id)}
-                <div class="anim" class:on={replyLook.value === l.id}>
+                <div class="anim" use:wholeCardPicks class:on={replyLook.value === l.id}>
                   <button class="anim-pick" role="radio" aria-checked={replyLook.value === l.id} onclick={() => setReplyLook(l.id)}>
                     <span class="anim-name">{l.name}</span>
                     <span class="anim-blurb">{l.note}</span>
                   </button>
+                  <!-- Item 716: a sample reply streaming in this look, looping (the real motion). -->
+                  <div class="anim-stage rl-stage" aria-hidden="true"><ReplyLookDemo look={l.id} /></div>
                   <div class="anim-foot">
                     {#if replyLook.value === l.id}<span class="anim-on">In use</span>{/if}
                   </div>
@@ -2057,7 +2561,7 @@
             {#each OFFERED_MOTIONS[mk.kind] as s (s.id)}
               {@const key = `${mk.kind}:${s.id}`}
               {@const done = !!motionDone[key]}
-              <div class="anim" class:on={motionPick[mk.kind] === s.id}>
+              <div class="anim" use:wholeCardPicks class:on={motionPick[mk.kind] === s.id}>
                 <button
                   class="anim-pick"
                   role="radio"
@@ -2109,7 +2613,7 @@
           </p>
           <div class="anims three" role="radiogroup" aria-label="New-chat background">
             {#each groundCards as g (g.id)}
-              <div class="anim" class:on={groundPick.value === g.id}>
+              <div class="anim" use:wholeCardPicks class:on={groundPick.value === g.id}>
                 <button class="anim-pick" role="radio" aria-checked={groundPick.value === g.id} onclick={() => setGroundPick(g.id)}>
                   <span class="anim-name">{g.name}</span>
                   <span class="anim-blurb">{g.note}</span>
@@ -2131,7 +2635,7 @@
          and nothing else (blocker 105's default — no LAN, no 0.0.0.0, no
          option), off by default. The token is the phone's key: shown as a
          QR the camera opens and as text for a paste. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Phone</h2>
         <span class="slug">{remote?.on ? `on · ${remote.address}:${remote.port}` : phoneWanted(remote) ? "on · waiting for Tailscale" : "off"}</span>
@@ -2189,7 +2693,7 @@
             disabled={remoteBusy}
             onchange={(e) => void remoteRun(() => api.remoteSetKeepAwake(e.currentTarget.checked))}
           />
-          <span>Keep the Mac awake while remote is on (needs Palette → Sleep's first switch; a closed lid on battery still sleeps it)</span>
+          <span>Keep the Mac awake while remote is on (needs System → Sleep's first switch; a closed lid on battery still sleeps it)</span>
         </label>
         <div class="remote-actions">
           <button class="ns-btn" disabled={selfTesting || !remote?.on} onclick={() => void runSelfTest()}>
@@ -2239,7 +2743,7 @@
          Mac sleeps. The Mac sends copies up — memory, the vault, and the
          projects marked below — and takes the chats started there back
          down. The token is read from a file by the app and never shown. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Away server</h2>
         <span class="slug">{awayHeadline(away)}</span>
@@ -2439,6 +2943,55 @@
             takes it back. With you present, only the notice shows.
           {/snippet}
         </SettingRow>
+        <SettingRow fold="subscription/handoff-warm" shown={subShown("handoff-warm")}>
+          {#snippet label()}<span>Before the cache lapses</span>{/snippet}
+          {#snippet control()}
+            <select
+              value={warmWrap.mode}
+              aria-label="What Nightloom does when a big idle chat's cache is about to lapse"
+              onchange={(e) => {
+                const v = e.currentTarget.value;
+                if (isWarmMode(v)) setWarmMode(v);
+              }}
+            >
+              {#each WARM_MODES as m (m)}
+                <option value={m}>{warmModeLabel(m)}</option>
+              {/each}
+            </select>
+          {/snippet}
+          {#snippet help()}
+            Five minutes before a big chat's cache goes cold, with no turn running and
+            keep-warm off: <em>Offer</em> (to begin with) shows a line over the box with
+            <em>Wrap up now</em>; <em>Do it</em> sends the wrap-up then, when you are away
+            (else it offers); <em>Off</em> does nothing. A wrap-up sent warm reads the history
+            back from the cache — on Opus 5.5 about a fortieth of what it costs once cold,
+            when it is all written again. Nothing is ever compacted.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/handoff-warm-size" shown={subShown("handoff-warm-size")}>
+          {#snippet label()}<span>A big chat is over</span>{/snippet}
+          {#snippet control()}
+            <label class="sub-num">
+              <input
+                type="number"
+                min="0"
+                step="10"
+                value={Math.round(warmWrap.minTokens / 1000)}
+                aria-label="The size, thousands of tokens, past which a chat is offered the warm wrap-up and the cold chip"
+                onchange={(e) => {
+                  const n = Number((e.currentTarget as HTMLInputElement).value);
+                  if (Number.isFinite(n) && n >= 0) setWarmMinTokens(Math.round(n) * 1000);
+                }}
+              />
+              <span>k tokens</span>
+            </label>
+          {/snippet}
+          {#snippet help()}
+            150k to begin with; 0 for never. The same size gates the chip a cold chat shows
+            when you come back to it: <em>Hand off</em> or <em>Keep</em>, each with what the
+            next send costs.
+          {/snippet}
+        </SettingRow>
         <SettingRow fold="subscription/handoff-message" shown={subShown("handoff-message")} stack>
           {#snippet label()}
             <span>The wrap-up message</span>
@@ -2457,6 +3010,17 @@
             ></textarea>
             {#if hasOwnDefaultMessage()}
               <div class="sub-actions"><button class="ns-btn ghost small" onclick={() => setHandoffDefaultMessage("")}>Reset to default</button></div>
+            {/if}
+            <!-- Item 760: his September copy, replaced once, offered back. -->
+            {#if replacedMessage()}
+              {@const r = replacedMessage()}
+              <p class="handoff-replaced">
+                On {new Date(r?.at ?? 0).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true })}
+                Nightloom put the current wrap-up here in place of your September copy, which told the model to
+                overwrite HANDOFF.md (losing every earlier hand-off) and asked for the old <code>start-prompt</code> fence.
+                Your line about updating CLAUDE.md and other MD files is step 2 now.
+              </p>
+              <div class="sub-actions"><button class="ns-btn ghost small" onclick={restoreReplacedMessage}>Restore my old message</button></div>
             {/if}
           {/snippet}
           {#snippet help()}
@@ -2738,6 +3302,88 @@
           {/snippet}
         </SettingRow>
       </SettingsGroup>
+      <!-- Item 766 part 2: "Always for this command" from a secret card —
+           which Bitwarden item answers which secret for which command, each
+           removable; and the session he pasted, forgettable now. -->
+      <SettingsGroup fold="subscription/bitwarden" title={subTitle("bitwarden")} summary={subSummaries.bitwarden} filtering={subFiltering} matches={subMatches("bitwarden")}>
+        <SettingRow fold="subscription/bitwarden-always" shown={subShown("bitwarden-always")} stack>
+          {#snippet label()}<span>Always allowed</span>{/snippet}
+          {#snippet control()}
+            {#if bwRules === null}
+              <p class="note small">Reading…</p>
+            {:else if bwRules.length === 0}
+              <p class="note small">None yet. “Always for this command” on a secret card adds one.</p>
+            {:else}
+              <ul class="bw-rules" aria-label="Bitwarden always rules">
+                {#each bwRules as r (r.id)}
+                  <li>
+                    <span><b class="sub-mono">{r.name}</b> from {r.item_name} · {r.field.startsWith("field:") ? r.field.slice(6) : r.field}, for <code>{r.prefix}</code></span>
+                    <button class="ns-btn ghost small" aria-label={`Remove ${r.name} for ${r.prefix}`} onclick={() => void removeBwRule(r.id)}>Remove</button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+            {#if bwDropped.length}
+              <ul class="bw-rules bw-dropped" aria-label="Bitwarden rules removed">
+                {#each bwDropped as d, i (i)}
+                  <li>
+                    <span>Removed: <b class="sub-mono">{d.name}</b> from {d.item_name}, for <code>{d.prefix}</code>: {d.why.replace(/^Not for `[^`]*`( alone)?: /, "")}</span>
+                  </li>
+                {/each}
+              </ul>
+              <button class="ns-btn ghost small" onclick={() => void clearBwDropped()}>OK</button>
+            {/if}
+          {/snippet}
+          {#snippet help()}
+            A chat that asks for one of these secrets and names a command that
+            starts with these words gets the value from that Bitwarden item
+            without a card, while Bitwarden is unlocked in Nightloom — and the
+            value is there only while a command starting with those words
+            runs. Any other command, or a locked vault, asks on the card again.
+            A shell, env, sudo or an interpreter alone cannot be allowed: they
+            run any command.
+          {/snippet}
+        </SettingRow>
+        <!-- Item 826: Touch ID unlock, and the pre-arm card for a run. -->
+        <SettingRow fold="subscription/bitwarden-touch" shown={subShown("bitwarden-touch")} stack>
+          {#snippet label()}<span>Touch ID unlock</span>{/snippet}
+          {#snippet control()}
+            <BitwardenTouch status={bwTouch} onchange={loadBwTouch} />
+          {/snippet}
+          {#snippet help()}
+            One press and Touch ID (or your login password) open Bitwarden for
+            Nightloom, with no Terminal and no paste. It stays open until
+            Nightloom quits, the Mac sleeps or the screen locks. The master
+            password is typed once here or on a secret card, and kept only
+            once Bitwarden accepts it.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/bitwarden-prearm" shown={subShown("bitwarden-prearm")} stack>
+          {#snippet label()}<span>Pre-arm for a run</span>{/snippet}
+          {#snippet control()}
+            <BitwardenPreArm rules={bwRules} status={bwTouch} onchange={loadBwTouch} />
+          {/snippet}
+          {#snippet help()}
+            Before an overnight or away run: tick the secrets it may need and
+            an end time. One Touch ID fetches only those, holds them for chats
+            and jobs until that time — a screen lock does not end it — and the
+            vault locks again at once. Each still goes only to its rule's
+            command.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/bitwarden-session" shown={subShown("bitwarden-session")}>
+          {#snippet label()}<span>Session {bwSession ? "held" : "not held"}</span>{/snippet}
+          {#snippet control()}
+            <button class="ns-btn ghost small" disabled={!bwSession} onclick={() => void forgetBwSession()}>Forget now</button>
+          {/snippet}
+          {#snippet help()}
+            The open session, kept in Nightloom's memory only — never on disk.
+            One opened by Touch ID lasts until quit, sleep or screen lock; a key
+            you pasted from bw unlock --raw is forgotten after 30 idle minutes
+            or when Nightloom quits.
+          {/snippet}
+        </SettingRow>
+      </SettingsGroup>
     </div>
   {:else if selected === USAGE_PANE || selected === COST_PANE}
     <!-- Usage & Cost (nightshift backlog 206, 2026-09-25): two tabs under
@@ -2747,7 +3393,7 @@
          ledger. Refresh now sits on both and re-reads all of it (153's
          second half; the 116 banner opens Usage); each card says when it
          was read. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">{selected === USAGE_PANE ? "Usage" : "Cost"}</h2>
         <span class="slug"
@@ -2946,6 +3592,8 @@
           </section>
         {/if}
       {/if}
+      <!-- Item 823: the image tool that is not built yet, counted (both looks). -->
+      <ImageToolCalls />
       {:else}
       <p class="note">
         What Claude Code would have cost, and what each provider key has
@@ -3073,7 +3721,7 @@
   {:else if selected === "council"}
     <!-- The council's pane (nightshift backlog 149): the default roster
          and mode, and the table of recent council turns. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Council</h2>
         <span class="slug">several models answer one message; this chat's model chairs</span>
@@ -3174,8 +3822,201 @@
         {/if}
       </section>
     </div>
+  {:else if selected === "home"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Home</h2>
+        <span class="slug">the pinned chat that writes your morning scan</span>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
+      {#if !home.info && !homeProject()}
+        <p class="note">Home is not set up on this Mac yet.{home.problem ? ` (${home.problem})` : ""}</p>
+      {:else}
+        <p class="note">
+          Home is pinned first in the sidebar. Each day it starts a fresh chat from this brief and its folder,
+          writes the morning scan, and lists what finished since you last looked in Needs you.
+        </p>
+        <section class="card">
+          <div class="ch">
+            <span class="t">Brief</span>
+            {#if home.briefDraft !== null}<span class="sub-tag">not saved</span>{/if}
+          </div>
+          <p class="note small">What Home should always know — what you want each morning, what to leave out. Your draft is kept until you save or discard it.</p>
+          <textarea
+            class="home-brief"
+            rows="10"
+            spellcheck="true"
+            aria-label="Home's brief"
+            placeholder="What should Home always keep in mind?"
+            value={home.briefDraft ?? home.info?.brief ?? ""}
+            oninput={(e) => {
+              const v = (e.currentTarget as HTMLTextAreaElement).value;
+              setBriefDraft(v === (home.info?.brief ?? "") ? null : v);
+              briefDiscardArmed = false;
+            }}
+          ></textarea>
+          <div class="kf">
+            <button class="ns-btn accent" disabled={home.briefDraft === null || home.saving} onclick={() => void saveBrief()}
+              >{home.saving ? "Saving…" : "Save"}</button
+            >
+            {#if home.briefDraft !== null}
+              <button
+                class="ns-btn ghost"
+                onclick={() => {
+                  if (!briefDiscardArmed) {
+                    briefDiscardArmed = true;
+                    return;
+                  }
+                  briefDiscardArmed = false;
+                  setBriefDraft(null);
+                }}
+                onmouseleave={() => (briefDiscardArmed = false)}>{briefDiscardArmed ? "Discard your changes? Click again" : "Discard changes"}</button
+              >
+            {/if}
+          </div>
+        </section>
+        <!-- Item 804: what Home can reach, account by account, and what it cannot and why. -->
+        <section class="card" data-testid="home-reach">
+          <div class="ch">
+            <span class="t">What Home can reach</span>
+            <span class="spacer"></span>
+            <span class="reach-when">{home.checking ? "Checking…" : home.reach?.checked_at ? `Checked ${clock12(home.reach.checked_at)}` : ""}</span>
+            <button class="ns-btn ghost" disabled={home.checking} onclick={() => void checkReach()}>{home.checking ? "Checking…" : "Check again"}</button>
+          </div>
+          <p class="note small">
+            Your connectors, one row per account. Home reads them; a label, draft or calendar event it proposes changes only when you tap Allow on that one change, and it cannot send or delete anything through them.
+            {reachSummary(home.reach)}
+          </p>
+          {#if home.reach?.error}
+            <p class="note small reach-bad">{home.reach.error} The rows below are from the check before.</p>
+          {/if}
+          {#if home.reach === null}
+            <p class="note small">Not available in this build.</p>
+          {:else}
+            {#each REACH_GROUPS as g (g.kind)}
+              {@const rows = home.reach.accounts.filter((a) => a.kind === g.kind)}
+              {#if rows.length > 0}
+                <div class="reach-group">
+                  <div class="reach-title">{g.title}</div>
+                  {#each rows as a (a.connector)}
+                    <div class="reach-row" class:off={!a.on || a.status !== "connected"}>
+                      <span class="reach-dot" class:ok={a.status === "connected" && a.on} class:warn={a.status !== "connected"}></span>
+                      <div class="reach-main">
+                        <div class="reach-name">{reachName(a)}</div>
+                        <div class="reach-note">{reachNote(a)}</div>
+                      </div>
+                      <span class="sub-tag">{reachStatusWords(a.status)}</span>
+                      {#if a.claude_ai && a.status === "connected"}
+                        <label class="reach-switch">
+                          <input
+                            type="checkbox"
+                            checked={a.on}
+                            disabled={home.switching !== null}
+                            aria-label={`Let Home read ${reachName(a)}`}
+                            onchange={(e) => void setReach(a.connector, e.currentTarget.checked)}
+                          />
+                          <span>{a.on ? "On" : "Off"}</span>
+                        </label>
+                      {:else}
+                        <span class="reach-switch" aria-hidden="true"></span>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            {/each}
+            {#if home.reach.accounts.length === 0 && !home.checking}
+              <p class="note small">Claude Code listed no connectors. Add them at claude.ai, under Settings, Connectors, then check again.</p>
+            {/if}
+            <!-- Item 808: empty since the four have their own "On this Mac" group below (an older backend still lists them). -->
+            {#if home.reach.locals.length > 0 && home.sources === null}
+            <div class="reach-group">
+              <div class="reach-title">On this Mac, not reachable</div>
+              {#each home.reach.locals as l (l.name)}
+                <div class="reach-row off">
+                  <span class="reach-dot"></span>
+                  <div class="reach-main">
+                    <div class="reach-name">{l.name}</div>
+                    <div class="reach-note">{l.why}</div>
+                  </div>
+                  <span class="sub-tag">Not reachable</span>
+                  <span class="reach-switch" aria-hidden="true"></span>
+                </div>
+              {/each}
+            </div>
+            {/if}
+            <p class="note small">The next morning scan uses a change here; an open Home chat, the next time you open it. An account's address shows once a scan has read it.</p>
+          {/if}
+          <!-- Item 808: Messages, Contacts, Reminders and the Calendar app — each read only once he allows it here. -->
+          {#if home.sources !== null}
+            <div class="reach-group" data-testid="home-sources">
+              <div class="reach-title">On this Mac</div>
+              <p class="note small src-lead">{sourcesSummary(home.sources)} Nothing here is read until you allow it. Home only reads these, except that it adds a reminder or marks one done when you tap Allow on that one change; it never sends anything.</p>
+              {#each home.sources as s (s.id)}
+                {@const button = sourceButton(s)}
+                <div class="reach-row" class:off={!isRead(s)} class:asked={home.sourceAsked === s.id} id={`home-source-${s.id}`}>
+                  <span class="reach-dot" class:ok={isRead(s)} class:warn={s.status === "denied" || s.status === "write_only"}></span>
+                  <div class="reach-main">
+                    <div class="reach-name">{s.name}</div>
+                    <div class="reach-note">{s.why}</div>
+                    {#if home.sourceAsked === s.id && s.status !== "allowed"}
+                      <div class="reach-note src-step">Your phone asked for this.</div>
+                    {/if}
+                    {#if s.id === "messages" && home.messagesOpened && s.status !== "allowed"}
+                      <div class="reach-note src-step">{MESSAGES_STEP}</div>
+                    {/if}
+                  </div>
+                  <span class="sub-tag">{sourceStatusWords(s.status)}</span>
+                  {#if button}
+                    <button
+                      class="ns-btn ghost src-allow"
+                      disabled={home.sourceBusy !== null}
+                      onclick={() => {
+                        home.sourceAsked = null;
+                        void allowSource(s.id);
+                      }}>{button}</button
+                    >
+                  {:else if s.status === "allowed"}
+                    <label class="reach-switch">
+                      <input
+                        type="checkbox"
+                        checked={s.on}
+                        disabled={home.sourceBusy !== null}
+                        aria-label={`Let Home read ${s.name}`}
+                        onchange={(e) => void setSource(s.id, e.currentTarget.checked)}
+                      />
+                      <span>{s.on ? "On" : "Off"}</span>
+                    </label>
+                  {:else}
+                    <span class="reach-switch" aria-hidden="true"></span>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+        <section class="card">
+          <div class="ch"><span class="t">Morning scan</span></div>
+          <div class="key-status">
+            {home.info?.scan_words ? `Runs ${home.info.scan_words}.` : "No scan time set yet."}
+          </div>
+          <p class="note small">The scan is one of your jobs: change its time from the Jobs list on the phone page.</p>
+          {#if home.info?.folder}
+            <div class="key-status">Folder <code class="path">{home.info.folder}</code></div>
+            <div class="kf"><button class="ns-btn ghost" onclick={() => void revealFolder(home.info?.folder ?? "")}>Show folder</button></div>
+          {/if}
+        </section>
+        <!-- Item 2105: Home's jobs with Run now, as on the phone's Jobs list. -->
+        <section class="card">
+          <div class="ch"><span class="t">Home's jobs</span></div>
+          <p class="note small">Run now runs one at once. Past Home's spend guard it asks first.</p>
+          <HomeJobs />
+        </section>
+      {/if}
+    </div>
   {:else if selected === "projects"}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Projects folder</h2>
         <span class="slug">new projects go in</span>
@@ -3227,7 +4068,7 @@
       </section>
     </div>
   {:else if selected === "knowledge"}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Knowledge base</h2>
         <span class="slug">{app.knowledge?.alias ?? "@kb"}</span>
@@ -3454,8 +4295,153 @@
         </div>
       </section>
     </div>
+  {:else if selected === "saved-prompts"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Saved prompts</h2>
+        <span class="slug">/name</span>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
+      <p class="note">
+        Messages you send often, under a short name. Type <code>/name</code> in a chat's box, an aside's, the phone's
+        or a job's prompt and pick it: the text goes in, and <kbd>Tab</kbd> steps through its <code>{"{blanks}"}</code>
+        (<kbd>⇧Tab</kbd> back). <code>{"{clipboard}"}</code>, <code>{"{date}"}</code> and <code>{"{selection}"}</code>
+        (the text you selected in the transcript) fill themselves. They are only message text — nothing here goes into
+        a system prompt; those are the prompt library's.
+      </p>
+      {#if savedPrompts.error}
+        <p class="note small sp-bad">{savedPrompts.error}</p>
+      {/if}
+      {#if savedPrompts.draft}
+        {@const d = savedPrompts.draft}
+        {@const problem = promptDraftProblem()}
+        <section class="card" data-testid="saved-prompt-edit">
+          <div class="ch">
+            <span class="t">{d.id === null ? "New prompt" : `Edit /${savedPrompts.list.find((p) => p.id === d.id)?.name ?? d.name}`}</span>
+            {#if promptDraftDirty()}<span class="sub-tag">not saved</span>{/if}
+          </div>
+          <label class="sp-label" for="sp-name">Name — what you type after the slash</label>
+          <input
+            id="sp-name"
+            class="sp-name"
+            value={d.name}
+            placeholder="wrapup"
+            autocapitalize="off"
+            autocomplete="off"
+            spellcheck="false"
+            oninput={(e) => setPromptDraft({ name: (e.currentTarget as HTMLInputElement).value })}
+          />
+          <label class="sp-label" for="sp-body">Text — a word in braces is a blank</label>
+          <textarea
+            id="sp-body"
+            class="home-brief"
+            rows="9"
+            spellcheck="true"
+            value={d.body}
+            placeholder={"Review {file} for {what}, as of {date}."}
+            oninput={(e) => setPromptDraft({ body: (e.currentTarget as HTMLTextAreaElement).value })}
+          ></textarea>
+          {#if blankWords(d.body).length > 0}
+            <div class="sp-blanks">
+              {#each blankWords(d.body) as w (w)}
+                <span class="sub-tag" class:sp-auto={(AUTO_BLANKS as readonly string[]).includes(w)}>{w}{(AUTO_BLANKS as readonly string[]).includes(w) ? " · fills itself" : ""}</span>
+              {/each}
+            </div>
+          {/if}
+          {#if problem && promptDraftDirty()}<p class="note small sp-bad">{problem}</p>{/if}
+          <div class="kf">
+            <button class="ns-btn accent" disabled={!!problem || !promptDraftDirty()} onclick={() => void savePromptDraft()}>Save</button>
+            <button
+              class="ns-btn ghost"
+              onclick={() => {
+                if (promptDraftDirty() && !promptDiscardArmed) {
+                  promptDiscardArmed = true;
+                  return;
+                }
+                promptDiscardArmed = false;
+                discardPromptDraft();
+              }}
+              onmouseleave={() => (promptDiscardArmed = false)}
+              >{!promptDraftDirty() ? "Close" : promptDiscardArmed ? "Discard your changes? Click again" : "Discard changes"}</button
+            >
+          </div>
+        </section>
+      {/if}
+      <section class="card" data-testid="saved-prompts">
+        <div class="ch">
+          <span class="t">Prompts</span>
+          <span class="spacer"></span>
+          <button class="ns-btn ghost" disabled={!!savedPrompts.draft} use:tip={savedPrompts.draft ? "Save or discard the edit above first" : "A new saved prompt"} onclick={() => startPromptEdit(null)}>New prompt</button>
+        </div>
+        {#if !savedPrompts.loaded}
+          <p class="note small">Reading…</p>
+        {:else if livePrompts.length === 0}
+          <p class="note small">None yet. New prompt makes one.</p>
+        {/if}
+        {#each livePrompts as p, i (p.id)}
+          <div class="sp-row" data-testid="saved-prompt-row">
+            <div class="sp-main">
+              <div class="sp-title"><code>/{p.name}</code>
+                {#each blankWords(p.body) as w (w)}<span class="sub-tag" class:sp-auto={(AUTO_BLANKS as readonly string[]).includes(w)}>{w}</span>{/each}
+              </div>
+              <div class="sp-preview">{p.body.length > 160 ? p.body.slice(0, 160) + "…" : p.body}</div>
+              {#if p.versions.length > 0}
+                <button class="sp-link" onclick={() => (promptVersionsOpen = promptVersionsOpen === p.id ? null : p.id)}
+                  >{promptVersionsOpen === p.id ? "Hide" : "Show"} {p.versions.length} earlier version{p.versions.length === 1 ? "" : "s"}</button
+                >
+                {#if promptVersionsOpen === p.id}
+                  {#each p.versions as v, vi (v.at + ":" + vi)}
+                    <div class="sp-version">
+                      <span class="sp-when">{exactTime(new Date(v.at).toISOString())}{v.name !== p.name ? ` · was /${v.name}` : ""}</span>
+                      <span class="sp-preview">{v.body.length > 120 ? v.body.slice(0, 120) + "…" : v.body}</span>
+                      <button class="ns-btn ghost small" disabled={!!savedPrompts.draft} onclick={() => void restorePromptVersion(p.id, vi)}>Restore</button>
+                    </div>
+                  {/each}
+                {/if}
+              {/if}
+            </div>
+            <div class="sp-acts">
+              <button class="ns-btn ghost small" aria-label={`Move /${p.name} up`} disabled={i === 0} onclick={() => void movePrompt(p.id, -1)}>↑</button>
+              <button class="ns-btn ghost small" aria-label={`Move /${p.name} down`} disabled={i === livePrompts.length - 1} onclick={() => void movePrompt(p.id, 1)}>↓</button>
+              <button class="ns-btn ghost small" disabled={!!savedPrompts.draft} onclick={() => startPromptEdit(p.id)}>Edit</button>
+              <button
+                class="ns-btn ghost small"
+                disabled={savedPrompts.draft?.id === p.id}
+                onclick={() => {
+                  if (promptDeleteArmed !== p.id) {
+                    promptDeleteArmed = p.id;
+                    return;
+                  }
+                  promptDeleteArmed = null;
+                  void trashPrompt(p.id);
+                }}
+                onmouseleave={() => (promptDeleteArmed = null)}>{promptDeleteArmed === p.id ? "Delete? Click again" : "Delete"}</button
+              >
+            </div>
+          </div>
+        {/each}
+      </section>
+      {#if trashedPrompts.length > 0}
+        <section class="card" data-testid="saved-prompts-trash">
+          <div class="ch"><span class="t">Deleted</span></div>
+          <p class="note small">Kept here until you restore them.</p>
+          {#each trashedPrompts as p (p.id)}
+            <div class="sp-row">
+              <div class="sp-main">
+                <div class="sp-title"><code>/{p.name}</code></div>
+                <div class="sp-preview">{p.body.length > 120 ? p.body.slice(0, 120) + "…" : p.body}</div>
+              </div>
+              <div class="sp-acts">
+                <button class="ns-btn ghost small" onclick={() => void untrashPrompt(p.id)}>Restore</button>
+              </div>
+            </div>
+          {/each}
+        </section>
+      {/if}
+    </div>
   {:else if selected === "models"}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Model instructions</h2>
         <span class="slug">~/.nightloom/models</span>
@@ -3543,6 +4529,48 @@
         </div>
       </section>
 
+      <!-- The practices layer (nightshift item 738): how he works, in every
+           chat — one switch for all of them. The file is his practices
+           repo's, re-worded there, so this card switches it and names it;
+           it does not edit it. -->
+      <section class="card">
+        <div class="ch"><span class="t">Practices</span></div>
+        <p class="note small">
+          How you work, in every chat: write findings to files, strike an old
+          claim with a date instead of deleting it, tag where a claim came
+          from, hand off past ~300k. Read from your practices folder, after
+          the Chat instructions and before the project's rules, on both
+          engines. Left out of a Claude Code chat whose folder's
+          <code>CLAUDE.md</code> already imports the full
+          <code>practices.md</code>. A running chat takes a change at its next
+          cold moment.
+        </p>
+        <div class="kf pick-row">
+          <label class="dream-auto cli-auto">
+            <input
+              type="checkbox"
+              aria-label="Give every chat the practices layer"
+              checked={practices?.on ?? true}
+              disabled={practices === null}
+              onchange={(e) => void flipPractices(e.currentTarget.checked)}
+            />
+            <span>Give every chat the practices layer</span>
+          </label>
+        </div>
+        <div class="kf pick-row">
+          <span class="dot" class:ok={(practices?.bytes ?? 0) > 0}></span>
+          <span class="key-status pick-st">
+            {#if practices === null || practices.path === null}
+              No home folder to read it from.
+            {:else if (practices.bytes ?? 0) > 0}
+              <code>{practices.path}</code> · {size(practices.bytes ?? 0)}
+            {:else}
+              No file at <code>{practices.path}</code> — the layer sends nothing.
+            {/if}
+          </span>
+        </div>
+      </section>
+
       <!-- Any provider and model, not only the rail's (nightshift backlog
            053): the file the preamble reads for that pair, opened when it
            exists and created — one header line naming the pair — when not.
@@ -3607,7 +4635,7 @@
       </section>
     </div>
   {:else if searchSel}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">{searchSel.label}</h2>
         <span class="slug">{searchSel.env_key}</span>
@@ -3635,7 +4663,7 @@
   {:else if provider}
     {@const state = keyState(provider)}
     {@const keyFirst = provider.key_source === null}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">{providerLabel(provider.kind)}</h2>
         <span class="slug">{provider.kind}</span>
@@ -3882,6 +4910,90 @@
     font-weight: 500;
     padding: 0 10px 6px;
     color: var(--ink);
+  }
+  /* Item 844: the search box at the top of the nav, and its matches. */
+  .set-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 8px 0 10px;
+    height: 32px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r2, 8px);
+    background: var(--term, var(--well));
+    color: var(--dim);
+    flex: none;
+    margin: 0 0 6px;
+  }
+  .set-search:focus-within {
+    border-color: var(--accent);
+  }
+  /* [type] so it outranks the pane's input[type="text"] box, which comes later. */
+  .set-search input[type="text"] {
+    all: unset;
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .set-search input[type="text"]::placeholder {
+    color: var(--dim);
+  }
+  .hits {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .nav-item.hit {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+  }
+  .nav-item.hit.at {
+    background: var(--well);
+  }
+  .hit-t {
+    color: var(--ink);
+    line-height: 1.3;
+  }
+  .hit-w {
+    font-size: 11px;
+    color: var(--dim);
+    line-height: 1.3;
+  }
+  .hit-s {
+    font-size: 11px;
+    color: var(--dim);
+    opacity: 0.85;
+    line-height: 1.35;
+  }
+  .hits-none {
+    margin: 4px 10px;
+    font-size: 12px;
+    color: var(--dim);
+  }
+  /* The setting a search opened: lit, then faded (2.6 s; removed by openHit). */
+  :global(.search-hit) {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: var(--r2, 8px);
+    animation: search-hit 2.6s ease-out;
+  }
+  @keyframes -global-search-hit {
+    0%,
+    55% {
+      outline-color: var(--accent);
+      box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 22%, transparent);
+    }
+    100% {
+      outline-color: transparent;
+      box-shadow: 0 0 0 6px transparent;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :global(.search-hit) {
+      animation: none;
+    }
   }
   .nav-title {
     display: flex;
@@ -4468,6 +5580,13 @@
     outline: none;
     border-color: var(--accent);
   }
+  /* Item 760: the note that his September copy was replaced. */
+  .handoff-replaced {
+    margin: 6px 0 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--ink2);
+  }
   /* The dream row as rows and pills (nightshift backlog 071): the Models
      card's `.mr` / `.cb` / `.cart` shapes, a name in the sans with one dim
      line under it, the billing pill at the right. */
@@ -4926,40 +6045,13 @@
   }
   /* Backlog 412: the whole card picks, not only its name and blurb — the
      pick's ::after stretches over the stage and the foot; Preview sits above it. */
-  /* Item 411: each Stop shape drawn small in its own choice. */
-  .stop-swatch {
+  /* Item 411: each Stop shape ~~drawn small~~ in its own choice — since item 716
+     part 4 the composer's real Stop (src/composerControls.css draws it; the
+     stop-swatch drawing and its rules are gone), at its real size. */
+  .stop-pv {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    gap: 3px;
-    height: 16px;
-    min-width: 16px;
-    margin-right: 6px;
-    vertical-align: -3px;
-    border: 1px solid #7a3d3f;
-    border-radius: 3px;
-    color: var(--failed);
-    font-size: 9px;
-    box-sizing: border-box;
-  }
-  .stop-swatch i {
-    width: 6px;
-    height: 6px;
-    border-radius: 1px;
-    background: currentColor;
-  }
-  .stop-swatch.square,
-  .stop-swatch.round {
-    background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
-  }
-  .stop-swatch.round {
-    border-radius: 50%;
-  }
-  .stop-swatch.labelled {
-    padding: 0 4px;
-  }
-  .stop-swatch.wide {
-    width: 32px;
+    margin-right: 8px;
   }
   /* Item 576 (his "labels are kinda screwed up here", 2026-11-10): the
      swatch sat on the text's baseline nudged by `vertical-align: -3px`,
@@ -4969,9 +6061,10 @@
   .seg button.stop-choice {
     display: inline-flex;
     align-items: center;
-  }
-  .stop-choice .stop-swatch {
-    vertical-align: middle;
+    /* Item 716 part 4: the real Stop is 32 px high (Classic ~31), past Jarvis's 30-px choice;
+       the choice grows round it, a 4-px margin on three sides. */
+    height: auto;
+    padding: 4px 13px 4px 4px;
   }
   .anim-pick::after {
     content: "";
@@ -4985,6 +6078,10 @@
   }
   .anim:hover {
     border-color: var(--dim);
+  }
+  /* Item 719: the card itself picks (settings/wholeCard.ts), so all of it says so. */
+  .anim {
+    cursor: pointer;
   }
   .anim.on {
     border-color: var(--accent);
@@ -5027,25 +6124,10 @@
     background: var(--sheet);
     border: 1px solid var(--line);
   }
-  .anim-block {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 7px 10px;
-    border-radius: 8px;
-    border: 1px solid var(--line2);
-    background: var(--paper);
-  }
-  .anim-label {
-    font-size: 11.5px;
-    color: var(--ink2);
-  }
-  .anim-text {
-    font-size: 11.5px;
-    color: var(--dim);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  /* Item 716 part 5: ~~.anim-block / .anim-label / .anim-text, the stand-in block~~ — the stage
+     holds the real reply's thinking block now (ThinkingArrivalSample), clipped to it. */
+  .arr-host {
+    min-height: 0;
   }
   .anim-composer {
     height: 22px;
@@ -5149,6 +6231,26 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  /* Item 766 part 2: the Bitwarden always rules. */
+  .bw-rules {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .bw-rules li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: space-between;
+    font-size: 13px;
+  }
+  .bw-rules code {
+    font-family: var(--mono);
+    font-size: 12px;
   }
   /* Backlog 291: the default subagent rules box. */
   .rules-default {
@@ -5277,7 +6379,8 @@
     border-radius: var(--r2);
     /* A strip of the dot ground behind, so the glass has something to show. */
     background: radial-gradient(circle, color-mix(in srgb, var(--ink) 12%, transparent) 1px, transparent 1.4px) 0 0 / 10px 10px, var(--paper);
-    pointer-events: none;
+    /* Item 716: ~~pointer-events: none~~ — the pointer reaches the controls, so their hover runs;
+       a click still lands on the card's pick (it bubbles to the button). */
   }
   .crow-pv .card {
     position: relative;
@@ -5298,89 +6401,230 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    /* Item 716: as the composer's row does when narrow, what does not fit drops to a second line. */
+    flex-wrap: wrap;
+  }
+  /* Item 716: the controls are drawn at their real size, so each choice takes the pane's width
+     (two to a row, the row ran ~66 px past a 333-px card — measured in the wave D harness). */
+  /* Item 716: the Reply text demo's stage holds just the sample reply. */
+  .anim-stage.rl-stage {
+    gap: 0;
+    padding: 0;
+    background: none;
+    border: 0;
+  }
+  .pick2.crow-picks {
+    grid-template-columns: minmax(0, 1fr);
   }
   :global(:where(.crow-pv) .pv-gap) {
     flex: 1;
-  }
-  :global(:where(.crow-pv) .ns-btn.small.attach) {
-    padding: 0 7px;
-  }
-  :global(:where(.crow-pv) .pick-btn) {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    min-height: 26px;
-    padding: 0 9px;
-    border-radius: var(--r1);
-    border: 1px solid var(--line2);
-    background: var(--well);
-    font: 500 12px var(--sans);
-    color: var(--ink);
-    white-space: nowrap;
-  }
-  :global(:where(.crow-pv) .pick-dot) {
-    flex: none;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--done);
-  }
-  :global(:where(.crow-pv) .pv-send) {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    height: 26px;
-    padding: 0 10px;
-    font: 500 12px var(--sans);
-    color: var(--accent-ink);
-    border-radius: var(--r1);
-    background: var(--term);
-    border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--line2));
-    box-shadow: inset 0 0 8px color-mix(in srgb, var(--accent) 35%, transparent);
   }
   :global(:where(.crow-pv) .bottom-row) {
     display: flex;
     justify-content: flex-end;
     gap: 6px;
   }
-  :global(:where(.crow-pv) .ns-chip.bottom-toggle) {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    min-height: 22px;
-    padding: 0 9px 0 8px;
-    border-radius: 12px;
-    background: var(--raised);
-    font: 500 11px var(--sans);
-    color: var(--ink2);
-    text-transform: capitalize;
+  /* Item 716: Attach, the picker, Council, Send and the switches are the composer's own now
+     (src/composerControls.css); ~~their stand-ins here (pick-btn, pick-dot, pv-send, the
+     switch)~~ are gone. Send's ▾ keeps ScheduleMenu's split-half base, which lives in that
+     component (its .sched-caret rule, verbatim). */
+  .crow-pv .sched-caret {
+    padding: 6px 7px;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left: 1px solid rgba(0, 0, 0, 0.18);
+    margin-left: -1px;
   }
-  :global(:where(.crow-pv) .bottom-mark) {
-    position: relative;
+  /* Item 808: the Mac's own stores, in the reach card. */
+  .src-lead {
+    margin: 0 0 4px;
+  }
+  .src-step {
+    color: var(--accent);
+  }
+  .src-allow {
     flex: none;
-    width: 20px;
-    height: 12px;
+  }
+  .reach-row.asked {
+    background: color-mix(in srgb, var(--accent) 9%, transparent);
     border-radius: 6px;
-    background: var(--well2);
-    overflow: hidden;
   }
-  :global(:where(.crow-pv) .bottom-mark::after) {
-    content: "";
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 8px;
-    height: 8px;
+  /* Item 804: what Home can reach. */
+  .reach-when {
+    font-size: 12px;
+    color: var(--dim);
+  }
+  .reach-bad {
+    color: var(--accent);
+  }
+  .reach-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .reach-title {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    padding-bottom: 2px;
+  }
+  .reach-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0;
+    border-top: 1px solid var(--line);
+    min-width: 0;
+  }
+  .reach-row.off .reach-name {
+    color: var(--dim);
+  }
+  .reach-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
-    background: var(--dim);
+    background: var(--line2);
   }
-  :global(:where(.crow-pv) .bottom-toggle.on .bottom-mark) {
+  .reach-dot.ok {
+    background: var(--done);
+  }
+  .reach-dot.warn {
     background: var(--accent);
   }
-  :global(:where(.crow-pv) .bottom-toggle.on .bottom-mark::after) {
-    left: 10px;
-    background: var(--on-accent);
+  .reach-main {
+    flex: 1 1 auto;
+    min-width: 0;
   }
+  .reach-name {
+    font-size: 13.5px;
+    overflow-wrap: anywhere;
+  }
+  .reach-note {
+    font-size: 12px;
+    color: var(--dim);
+    overflow-wrap: anywhere;
+  }
+  .reach-row .sub-tag {
+    flex: none;
+    white-space: nowrap;
+  }
+  .reach-switch {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--dim);
+    min-width: 3.2rem;
+  }
+  @media (max-width: 560px) {
+    .reach-row {
+      flex-wrap: wrap;
+    }
+    .reach-main {
+      flex-basis: calc(100% - 20px);
+    }
+  }
+  /* Item 763: Home's brief editor. */
+  /* Item 800: the saved-prompts pane. */
+  .sp-label {
+    display: block;
+    font-size: 12px;
+    color: var(--dim);
+    margin: 8px 0 2px;
+  }
+  .sp-name {
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 5px 8px;
+    width: 16em;
+    box-sizing: border-box;
+  }
+  .sp-blanks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+  .sp-auto {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .sp-bad {
+    color: var(--red, #c0392b);
+  }
+  .sp-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 8px 0;
+    border-top: 1px solid var(--line2);
+  }
+  .sp-row:first-of-type {
+    border-top: 0;
+  }
+  .sp-main {
+    flex: 1;
+    min-width: 0;
+  }
+  .sp-title {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+  }
+  .sp-preview {
+    font-size: 12.5px;
+    color: var(--dim);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin-top: 2px;
+    max-height: 4.5em;
+    overflow: hidden;
+  }
+  .sp-acts {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .sp-link {
+    background: none;
+    border: 0;
+    padding: 0;
+    margin-top: 4px;
+    color: var(--accent);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .sp-version {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 8px;
+    align-items: start;
+    margin-top: 4px;
+    padding-left: 8px;
+    border-left: 2px solid var(--line2);
+  }
+  .sp-when {
+    font-size: 11.5px;
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  .home-brief {
+    width: 100%;
+    box-sizing: border-box;
+    margin: 6px 0 8px;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 13.5px;
+    line-height: 1.5;
+    resize: vertical;
+  }
+
   /* ---- Filament IV, stage 7 (item 571; 521 report §2 and §5,
      f4-settings-*.png). Every rule below is behind the layout gate
      (`:where()`, zero specificity), so Classic draws exactly as before;
@@ -5576,7 +6820,8 @@
     border-radius: var(--r1);
     color: var(--ink);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .sub-filter input {
+  :global(:where(:root:not([data-layout="classic"]))) .sub-filter input,
+  :global(:where(:root:not([data-layout="classic"]))) .set-search input {
     background: none;
     border: none;
   }

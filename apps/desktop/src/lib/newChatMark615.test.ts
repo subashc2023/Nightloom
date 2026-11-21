@@ -24,8 +24,11 @@ const api = await import("./api");
 const st = await import("./state.svelte");
 const { app, applyTurnEvent, chatSelected, newChatSelected, newSession, reflectTabs, send } = st;
 const tabs = await import("./tabs");
-const sidebarSrc = (await import("./Sidebar.svelte?raw")).default as string;
-const classicSrc = (await import("./SidebarClassic.svelte?raw")).default as string;
+// Item 856: the twins share sidebar/logic.svelte.ts; read each as the one file it was.
+const sidebarLogicRaw = (await import("./sidebar/logic.svelte.ts?raw")).default as string;
+const { asOneFile } = await import("../test/oneFile");
+const sidebarSrc = asOneFile((await import("./Sidebar.svelte?raw")).default as string, sidebarLogicRaw);
+const classicSrc = asOneFile((await import("./SidebarClassic.svelte?raw")).default as string, sidebarLogicRaw);
 
 const OLD = "chat-old";
 const MADE = "chat-615";

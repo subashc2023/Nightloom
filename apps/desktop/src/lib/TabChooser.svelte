@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { homeFirst } from "./home";
   import { hudIn, hudOut } from "./hudMenu";
   import { app, browseFree, defaultKind, KIND_LINES, kindLabel, newSession, openContent, saveNote } from "./state.svelte";
   import * as tabs from "./tabs";
@@ -189,7 +190,7 @@
 
   {#if app.projects.length > 0}
     <div class="tab-chooser-sect">Projects <span class="tab-chooser-key">a card; opening one resets the tabs</span></div>
-    {#each app.projects as p (p.id)}
+    {#each homeFirst(app.projects) as p (p.id)}
       <button class="tab-chooser-row" role="menuitem" onclick={() => void pick({ kind: "project", id: p.id })}>
         <span class="tab-chooser-glyph" aria-hidden="true"><Icon name="folder" size={13} /></span>
         <span class="tab-chooser-text"

@@ -46,7 +46,9 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { findMath, type MathSpan } from "./math";
 import { toggleInline, toggleTaskAt, type Command } from "./noteFormat";
 import { renderMarkdown, renderMathHtml } from "./markdown";
+import { diagramFence } from "./diagramBlock";
 import { toggleComment } from "./codeBlockKeys";
+import { paperIfDarkInk } from "./rasterBacking";
 
 /** The same one-line `[[target|alias]]` shape `links.ts` parses. */
 const WIKILINK = /\[\[([^\[\]\n]{1,200})\]\]/g;
@@ -177,6 +179,48 @@ export class TableWidget extends WidgetType {
   }
 }
 
+/**
+ * Item 821: a ```mermaid or ```svg block off the cursor, drawn as its diagram (the same placeholder a note's
+ * preview and a reply use; `diagrams.ts` draws it, with its Diagram / Source toggle). A click on the drawing
+ * puts the cursor at the block's start, where its source shows for editing, as a drawn table does.
+ */
+export class DiagramWidget extends WidgetType {
+  constructor(readonly source: string) {
+    super();
+  }
+  eq(other: DiagramWidget): boolean {
+    return other.source === this.source;
+  }
+  toDOM(view: EditorView): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "cm-ndiagram markdown";
+    el.innerHTML = renderMarkdown(this.source);
+    el.dataset.tip = "Click to edit the diagram's source";
+    el.addEventListener("mousedown", (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      view.dispatch({ selection: EditorSelection.cursor(Math.min(view.state.doc.length, view.posAtDOM(el))) });
+      view.focus();
+    });
+    // The drawing arrives after the widget is placed (and Source / Diagram changes its height): the editor
+    // measures again, so a click or the cursor below the block lands where it is shown.
+    if (typeof ResizeObserver === "function") {
+      const ro = new ResizeObserver(() => view.requestMeasure());
+      ro.observe(el);
+      diagramObservers.set(el, ro);
+    }
+    return el;
+  }
+  destroy(dom: HTMLElement): void {
+    diagramObservers.get(dom)?.disconnect();
+    diagramObservers.delete(dom);
+  }
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+const diagramObservers = new WeakMap<HTMLElement, ResizeObserver>();
+
 /** `[[target|alias]]` inside a drawn table: shown as its alias (or target),
  *  styled as a link, the way the editor draws one outside a table. */
 export function tableWikilinks(src: string): string {
@@ -249,6 +293,8 @@ export class ImageWidget extends WidgetType {
     el.className = "cm-nimage";
     el.alt = this.alt;
     el.addEventListener("load", () => view.requestMeasure());
+    // Item 879: a transparent picture with dark ink is drawn on white paper, readable on the dark looks.
+    paperIfDarkInk(el);
     // Only what an <img> may load; anything else (`javascript:`) is left raw
     // by `noteDecorations`, never reaches here.
     const resolve = view.state.facet(imageSource);
@@ -496,9 +542,19 @@ export function noteDecorations(state: EditorState): DecorationSet {
             );
             return false;
           }
+          const marks = node.node.getChildren("CodeMark");
+          // Item 821: a closed ```mermaid / ```svg block is drawn, off the cursor only.
+          if (diagramFence(lang) && body && marks.length > 1 && !onLines(state, from, to) && last.number > first.number) {
+            out.push(
+              Decoration.replace({
+                widget: new DiagramWidget(doc.sliceString(first.from, last.to)),
+                block: true,
+              }).range(first.from, last.to),
+            );
+            return false;
+          }
           eachLine(from, to, "cm-ncodeblock");
           lineClass(from, "cm-nfence");
-          const marks = node.node.getChildren("CodeMark");
           if (marks.length > 1) lineClass(marks[marks.length - 1].from, "cm-nfence");
           return false;
         }
@@ -677,6 +733,8 @@ export interface NoteEditorHooks {
   placeholder?: string;
   /** A relative image link's loadable URL (item 498, `imageSource`). */
   imageSource?: (src: string) => Promise<string | null>;
+  /** Item 860: a paste, first; true when it took the paste. */
+  onPaste?: (e: ClipboardEvent) => boolean;
 }
 
 /**
@@ -758,6 +816,11 @@ export function noteExtensions(hooks: NoteEditorHooks): Extension[] {
       if (u.docChanged || u.selectionSet) hooks.onCaret?.(u.state.selection.main.head);
     }),
     EditorView.domEventHandlers({
+      paste(e) {
+        if (!hooks.onPaste || !hooks.onPaste(e)) return false;
+        e.preventDefault();
+        return true;
+      },
       mousedown(e) {
         if (!(e.metaKey || e.ctrlKey) || !hooks.onFollow) return false;
         const link = (e.target as HTMLElement | null)?.closest?.("[data-wikilink]");

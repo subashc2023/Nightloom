@@ -1970,6 +1970,30 @@ slash commands from the same init line, filtered by what follows the slash;
 inserts text only — the CLI runs a skill named in the message when Send
 goes. Nothing on the other engine, and nothing before the first turn.
 
+**Saved prompts** (item 800, 2026-11-18): messages he sends often, under a
+short name, in Settings → Knowledge → *Saved prompts* — separate from the
+system-prompt library and never part of a system prompt. They live on the
+host as `<config>/saved-prompts.json` (`nightloom_service::saved_prompts`,
+read and written whole by `saved_prompts_read` / `saved_prompts_write`) so
+the phone reads the same list. In the composer (chat and asides alike, one
+component) a `/word` that ends the box — at its start, a line's start or
+after a space — lists the matching saved prompts first in the `/` picker,
+on either engine and before the first turn. Picking one replaces the
+`/word` with the body: `{date}` (2026-11-18), `{selection}` (the text last
+selected outside a text box, kept ten minutes — `selectionMemory.ts`) and
+`{clipboard}` (the pasteboard read natively, `clipboard_text`) fill
+themselves, an empty one stays a blank; the first blank left is selected,
+Tab selects the next and ⇧Tab the one before, and with none left Tab is the
+box's own again. A blank is `{word}` — letters, digits, space, `_`, `-`, so
+JSON's braces are not blanks. Settings: New prompt, Edit (name and text,
+the blanks listed as chips, the self-filling ones in the accent), ↑ ↓ to
+reorder, Delete (click twice) to a *Deleted* list with Restore; every edit
+keeps the version it replaced (up to 20, newest first, each restorable). The
+open edit is kept in app state and local storage until Save or Discard. A
+file that never existed starts with `/wrapup` (the Settings wrap-up message,
+else the built-in) and `/spec` (a spec launch); a list he emptied stays
+empty. Pure rules: `savedPrompts.ts`; Mac store: `savedPromptsStore.svelte.ts`.
+
 **Restyled to the approved boards (2026-09-16 afternoon, nightshift
 `claude-code-ui-design-2026-09-16/Session.dc.html` and `Layers.dc.html`).**
 *This session*: an MCP server's row is the board's grid — status dot (green
@@ -2196,6 +2220,81 @@ them is superseded by this paragraph.
   the phone too (blocker 1661): its card has Copy, and its menu's Continue is
   the unsent path. A chat's own read order can no longer be edited, only kept
   (blocker 1662).
+
+**What a hand-off carries (nightshift item 747, 2026-11-16).** From item
+736's survey of other harnesses (hand-offs that take a goal, fixed summary
+sections, pinned instructions, a file list built from tool calls). Nothing
+here asks the model to judge; all of it is read from the chat's log
+(`handoffCarry.ts`, pure; `handoffCarryFor.ts` reads the open chat's log;
+`handoffButton.ts` draws it).
+
+- **The wrap-up as sent** (`wrapUpToSend`): the chat's wrap-up message — the
+  built-in, his Settings text, the chat's own, a thread's — then **the fixed
+  sections**, added by Nightloom under any of them (`sectionsAddendum`): the
+  prompt opens with a `Goal:` line; the new HANDOFF.md section has `### Goal`,
+  `### His instructions in this chat (verbatim, dated)`, `### Done / In
+  progress / Blocked`, `### Decisions`, `### Critical context`, `### Next
+  steps` (the queue, last); what to keep word for word and what to drop; and
+  not to list files, since Nightloom does. A thread chat in a project with no
+  HANDOFF.md is asked only for the goal line and his words in the prompt. Then
+  his **goal**, when he typed one in the notice's *Goal for the next chat*
+  field (`HandoffGoal.svelte`; kept per chat with the other hand-off choices).
+  The notice has a folded line, *Nightloom adds the hand-off's fixed sections
+  under this message*, opening to the added text, so all that is sent is on
+  the notice. The usage line's *Wrap up* and the wrap-up queued while he is
+  away send the same.
+- **The card**, above *Continue with this prompt*: a **Goal** field holding
+  the prompt's own `Goal:` line, editable (his edit replaces the line; emptied,
+  none is sent); **his messages the hand-off does not quote** — every message
+  of his in the chat (not rewound, not removed, edits applied, wrap-ups and the
+  chat's own opening hand-off prompt left out) is compared with what the
+  wrap-up turn wrote (its replies, and the text its Edit, Write and Bash calls
+  put on disk); one is *quoted* when at least half its words sit in runs of 8
+  words the hand-off repeats. The rest are listed, oldest first, each with a
+  tick box: a ticked one goes to the next chat word for word, dated. Messages
+  carried into this chat that way are listed first and stay ticked until he
+  unticks them, so a rule survives every hop; **the list built from the tool
+  calls** (folded): files edited with call counts, files read most, files
+  named most in shell commands, commits (from `git commit`'s own output line),
+  subagents with the report files their prompt or result names, backlog items
+  and blockers named by a path or a commit subject; **the section check** when
+  the turn wrote HANDOFF.md: which fixed headings are missing; and **what the
+  wrap-up cost**: requests, tokens written, tokens read and how many from
+  cache, time, dollars where recorded.
+- **What the button sends** (`nextChatMessage`): `Goal: …`, the prompt, his
+  ticked messages under a fixed heading, the list and the cost line. With no
+  goal, nothing ticked and no tool calls it is the prompt unchanged. The goal
+  and the ticks are kept on disk per reply (`viewState`), the folds for the
+  run. After *Continued* the field and boxes are disabled.
+- **Not covered:** the phone's Continue and the composer's no-prompt
+  *Continue in a new chat* send no carry; what a shell command *wrote* is not
+  attributed to a file beyond the path being named in the command.
+
+**The wrap-up message, every piece with a reason (nightshift item 760, 2026-11-16).** The built-in `WRAP_UP` (`handoff.svelte.ts`) was rewritten so each step carries its reason in the comment beside it: finish the half-done edit and wait for any subagent still running; fix facts this chat made outdated in CLAUDE.md and other .md files (his own line, kept); run `mdcheck.py` and queue its FLAGs, no trimming; a new `## STATE AS OF` section with 747's sub-headings, plus measurements, subagent cost and questions waiting on him; the code close; the prompt after its Goal line; stop. A Settings wrap-up carrying September's stale parts (overwrite HANDOFF.md, the `start-prompt` fence; `isStaleWrapUp`) gives way to the built-in once at launch, kept in `replaced`; Settings says so and offers *Restore my old message* while the box holds the built-in. Before/after with reasons: nightshift-code `notes/runner-design/760-wrapup-message-2026-11-16.md`.
+
+**Every hand-off is logged for scoring (nightshift item 757, 2026-11-16).**
+`<config>/logs/handoffs.jsonl` (`~/.nightloom/logs/`, or under
+`NIGHTLOOM_HOME`), one JSON object per line, built in the window
+(`handoffLog.ts`) and appended and stamped (`at`) by `handoff_log.rs`:
+
+- **`kind: "handoff"`** when a next chat opens from a hand-off, by any of the
+  three routes — `route: "card"` (*Continue with this prompt*, with the carry),
+  `"box"` (the no-prompt line or the phone: the text goes in the box) and
+  `"unattended"` (the hand-off made while he is away). It holds both chats,
+  the goal and where it came from (`goal_from`: the card's field, the
+  prompt's own line, none), the first message as sent, his ticked messages
+  word for word, the unticked ones by id, date, word count and quoted share
+  only (their text was not carried, so it is not logged), the list built from
+  the tool calls uncapped with the card's caps beside it, the fixed-sections
+  check (`missing`) and the wrap-up's cost.
+- **`kind: "next_turn"`**, one for each of the first 30 turns of a chat whose
+  log opens with a `handoff` fork, at each turn's end (open chat, provider and
+  background turns alike): files edited, read and named in shell commands,
+  commits, tool-call count. The last turn logged is kept per chat in
+  `viewState`, so a relaunch does not log a turn twice.
+
+Nothing is sent anywhere; a line that cannot be written is dropped. The
+reader is `nightshift-code/bin/handoffscore.py`.
 
 **The read order (nightshift backlog 193, 2026-09-25).** *Continue in a new
 chat* now fills the new chat's box with a fixed prompt — the read order —
@@ -2682,3 +2781,36 @@ next turn reconnects with it; the hint says so. On Ask a subagent's browser
 call is refused (nightshift blocker 1415).
 The measurements and the flag spelling are in `service-agent.md`, *Browser:
 Claude in Chrome per chat*.
+
+## Review this chat: the retrospective at hand-off (nightshift item 796, 2026-11-18)
+
+From item 793's survey (§4 #3, Devin's "Session Insights"). The hand-off
+card's row carries *Review this chat* beside *Continue with this prompt*
+(`handoffButton.ts` `syncReview`, both layouts). One press runs three steps
+(`chatReview.svelte.ts`):
+
+1. **Digest, no model** — `retro_digest` → `nightloom_service::retrospective`
+   reads the chat's Claude Code transcript and lists, each with its line:
+   tool errors and denials, calls repeated with the same input, cache misses
+   (a request reading under 80% of the context before it; a gap over the
+   cache's hour marks it expired) with the write's cost at the rates table's
+   prices, tokens by tool (results' characters ÷ 4, said so) and by helper
+   (the `session_figures` split), the instruction and memory files read, and
+   his messages that read like a correction, verbatim (a heuristic, named on
+   the page). Measured on three of his chats of 334k–405k: 0.2–0.9 s.
+2. **Review pass** — the digest under an instruction, sent as an aside
+   (`ask_aside`: a throwaway fork on the chat's warm cache, nothing recorded
+   in the chat) with a `seq` past every card's, so no aside card draws it.
+   It asks for an issue timeline, what was read and then contradicted by
+   him, and at most three proposed rule changes as `- [ ]` lines with diffs,
+   each citing a transcript line. It runs only on the chat open in the
+   window (the aside forks that one) and not under a running turn.
+3. **Save** — `retro_save` writes `retrospectives/<date>-<chat>.md` in the
+   chat's thread folder, or the project's notes when it has none; a second
+   review that day gets `-2`, never over the first. The card then says
+   *Open the review* (the path is kept per card on disk, so a relaunch keeps
+   it) and opens the page as a tab. Nothing is applied: a proposed change
+   waits for his tick.
+
+A chat with no Claude Code session (the API engine) has no transcript and
+shows no button; a pane shows none, as it shows no *Continue*.

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { COPIED_MS, copyIconSvg } from "./copyIcon";
 import { ICONS } from "./icons";
-import assistantSrc from "./AssistantMessage.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+import assistantSrcRaw from "./AssistantMessage.svelte?raw";
+const assistantSrc = asOneFile(assistantSrcRaw, assistantMessageLogicRaw);
 import asideCardSrc from "./AsideCard.svelte?raw";
 import contextSrc from "./ContextPanel.svelte?raw";
 import settingsSrc from "./SettingsModal.svelte?raw";

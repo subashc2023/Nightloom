@@ -21,7 +21,9 @@
  * call that changed no log and raised a toast is a refusal, and the
  * toast's words are the phone's sentence.
  */
+import { contextOf as usageContext } from "./warmWrap";
 import { invoke } from "@tauri-apps/api/core";
+import { briefHere } from "./listenHere";
 import { emit, listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import { pastOf } from "./asideHistory.svelte";
@@ -74,6 +76,8 @@ import {
   switchChatKind,
   useEngine,
   useProject,
+  chatRuns,
+  sendInChat,
 } from "./state.svelte";
 import { EDITABLE_LAYERS } from "./types";
 import { MAX_SEATS, MIN_SEATS, type CouncilPrefs, type CouncilRequest } from "./council";
@@ -561,6 +565,8 @@ export function runningNow(): unknown {
     asides: asidesRunning(),
     dream: app.dreaming ? { running: true } : null,
     capture: app.capturing ? { running: true } : null,
+    // Item 741 (763 H8): each running chat's context, for the phone's Home.
+    contexts: Object.fromEntries(liveChats().flatMap((c) => (c.session && c.usage ? [[c.session, usageContext(c.usage)]] : []))),
   };
 }
 
@@ -750,6 +756,20 @@ function openedSince(list: readonly Aside[], before: number): { thread: Aside; t
   return null;
 }
 
+/**
+ * Item 786: the open chat's cache expiry as the desktop reckons it — the
+ * reply, keep-warm pings and asides' reads (`cacheState`) — for the phone,
+ * whose header reads only the log's reply. Rides the relayed `aside-event`
+ * as `{kind: "cache", chat, warm_until}` (no `seq`, so a phone page from
+ * before ignores it). Sent when it changes, per chat.
+ */
+const toldCache = new Map<string, number | null>();
+export function tellPhoneCache(chat: string | null, warmUntil: number | null): void {
+  if (!chat || toldCache.get(chat) === warmUntil) return;
+  toldCache.set(chat, warmUntil);
+  void emit("aside-event", { kind: "cache", chat, warm_until: warmUntil }).catch(() => {});
+}
+
 function emitAsideEvent(e: AsideEvent): void {
   void emit("aside-event", e).catch(() => {});
 }
@@ -923,6 +943,41 @@ export async function runSend(p: RemoteSendPayload): Promise<"sent" | "queued"> 
   return remoteSend(p.chat, p.text, images, documents, council, p.spoken === true);
 }
 
+// ---- a recurring job's run (item 746) ----
+
+/** How long a refusal "before anything was sent" may take to arrive. */
+const JOB_REFUSAL_MS = 2500;
+
+/**
+ * A job's run: its message into its own chat, off screen (`sendInChat`,
+ * backlog 535) — the chat and project on his screen do not change, unlike
+ * a phone's send, which opens the chat it names. The backend made the chat
+ * and kept its agent's spec, held to the job's read-only policy, before
+ * this (`jobs.rs`). Answers once the turn is on its way; a refusal before
+ * anything was sent is thrown, and the job tries again in a minute.
+ */
+export async function runJob(p: { id?: number; chat: string; project: string | null; text: string }): Promise<{ status: "sent" }> {
+  if (app.connection?.engine !== "claude-code") throw new Error("jobs run on the Claude Code engine — connect it on the Mac");
+  if (chatRuns(p.chat)) throw new Error("its chat is still running a turn");
+  await api.canSendInChat(p.chat, p.project);
+  await mustClaim(p.id);
+  const name = app.projects.find((x) => x.id === p.project)?.name ?? null;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ status: "sent" });
+    }, JOB_REFUSAL_MS);
+    sendInChat(p.chat, { id: p.project, name }, p.text, [], (why) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(why || "the Mac could not start the run"));
+    });
+  });
+}
+
 // ---- the listeners ----
 
 type Chatted = { id: number; chat: string; project?: string | null };
@@ -961,6 +1016,11 @@ export async function installRemoteHandlers(): Promise<void> {
     });
   });
   await listen("remote-renamed", () => void refreshSessions());
+  // Item 746: a recurring job's run, off screen in its own chat.
+  await listen<{ id: number; chat: string; project?: string | null; text: string }>("remote-job", (e) => {
+    const { id, chat, project, text } = e.payload;
+    void answer(id, () => runJob({ id, chat, project: project ?? null, text }));
+  });
   // Item 246, wave 1: every answered call.
   await listen<Chatted & { action: ChatAction }>("remote-act", (e) => {
     const { id, chat, project, action } = e.payload;
@@ -983,6 +1043,8 @@ export async function installRemoteHandlers(): Promise<void> {
     void answer(id, async () => (patch ? runSetRail(patch) : railOf()));
   });
   await listen<{ id: number }>("remote-running", (e) => void answer(e.payload.id, async () => runningNow()));
+  // Item 801: the phone's Brief, on this window's agent binary.
+  await listen<{ id: number; text: string }>("remote-brief", (e) => void answer(e.payload.id, () => briefHere(e.payload.text)));
   await listen<ProjectOp & { id: number }>("remote-project", (e) => {
     const { id, ...op } = e.payload;
     void answer(id, () => runProject(op as ProjectOp));

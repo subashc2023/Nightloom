@@ -25,6 +25,7 @@ import type { SessionEvent, Usage } from "./types";
 import type { TabContent } from "./tabs";
 import { parseSubagentBlock } from "./subagent";
 import { fmtTokens } from "./tokens";
+import { errorWeight } from "./errorWeight";
 
 /** The call names that spawn a subagent: the CLI's `Agent` (`Task` in
  *  older builds). */
@@ -186,7 +187,10 @@ export function rowsFromLog(events: SessionEvent[], session: string): SubagentRo
       const result = results.get(b.id);
       const story = narratives.get(b.id);
       const launched = !!result && /launched/i.test(result.content) && !story;
-      const status = !result ? "no result" : result.is_error ? "failed" : launched ? "launched" : "completed";
+      // Item 700: an Agent call the harness did not run ("not run, redo it")
+      // is not a failed agent.
+      const weight = errorWeight(result);
+      const status = !result ? "no result" : weight === "soft" ? "not run" : weight === "hard" ? "failed" : launched ? "launched" : "completed";
       const figures = result ? figuresOf(result.content) : { tokens: 0, tool_uses: 0, duration_ms: 0 };
       const segments: Segment[] = story ? [{ kind: "text", text: story }] : [];
       out.push({

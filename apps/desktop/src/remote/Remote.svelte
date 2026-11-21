@@ -1,5 +1,6 @@
 <script lang="ts">
   import { isImeKey } from "../lib/imeKey";
+  import { BY_HOME_TIP } from "../lib/homeRoutes";
   import { takeBlockKey } from "../lib/codeBlockKeys";
   /**
    * The phone page (nightshift backlog 091, Shape B; redesigned in item 246
@@ -45,6 +46,7 @@
     dismissVerdict,
     foldAside,
     parseAsideEvent,
+    parseCacheEvent,
     pastAsides,
     searchGroupLabel,
     searchSummary,
@@ -87,15 +89,26 @@
     type Try,
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
+  import { renderStreamingMarkdown } from "../lib/streamBlocks";
+  import MathText from "../lib/MathText.svelte";
+  // Item 820: pictures and video a reply names, under its text.
+  import ReplyMedia from "../lib/ReplyMedia.svelte";
+  import { mediaKindOf } from "../lib/replyMedia";
+  import { replyMediaInline, stripMedia } from "../lib/replyMediaInline";
+  import { setMediaLoader } from "../lib/replyMediaStore.svelte";
   import AskQuestions from "../lib/AskQuestions.svelte";
   // Wave 8B F2 (item 300): replies in order, code blocks, the keyboard.
   import { aimAction, liveSegments, retryStopping, sentOf } from "./client";
   import { retryText } from "../lib/retryLine";
   import { parseRan } from "../lib/shellRun";
+  import { parseHandoffMessage } from "../lib/handoffBubble";
+  import { KIND_WORD, chaptersOf, logEdits, placeOnRows, withEdits, type ShownChapter } from "../lib/chapters";
   /** Item 515: a file card's badge on the phone, as the Mac's. */
   const fileBadgeOf = (name: string) => extOf(name).slice(0, 5).toUpperCase() || "FILE";
   import { sentExt, type SentFile } from "../lib/sentFiles";
   import { codeBlocks } from "./codeBlocks";
+  // Item 770: a page a reply wrote, drawn where its block stands (a settled reply; a live one says it is coming).
+  import { replyPages } from "../lib/replyPages";
   import { trackViewport } from "./viewport";
   import { subagentCalls } from "../lib/subagent";
   import { arrive, launch, reducedMotion } from "../lib/sendMotion";
@@ -103,26 +116,50 @@
   import { badgeOf, extOf, looksLikeText, MAX_TEXT_BYTES, notebookText, routeOf } from "../lib/attachKinds";
   import MessageMenu from "./MessageMenu.svelte";
   import RailSheet from "./RailSheet.svelte";
+  import PushRow from "./PushRow.svelte";
+  import { browserEnv, pushHost, refreshPush, supportHere, syncBadge, watchPushTaps } from "./push";
   import ContextSheet from "./ContextSheet.svelte";
   import RunningSheet from "./RunningSheet.svelte";
+  import JobsSheet from "./JobsSheet.svelte";
+  // Item 800: saved prompts after a `/` in the chat's, an aside's and a job's box.
+  import { promptBox, setPhonePrompts } from "./promptBox";
+  // Item 763 H8: Home, the phone's first screen.
+  import HomeFirst from "./HomeFirst.svelte";
+  import JobChatCard from "./JobChatCard.svelte";
+  import { parseRepeat, parseWatch, type WatchPrefill } from "./jobs";
   import UsageLine from "./UsageLine.svelte";
+  // Item 824: the Context and Plan card (design B, Dials) as a bottom sheet.
+  import PlanDials from "../lib/PlanDials.svelte";
+  import { dialWindow, staleTag, stopLine, type DialFigures } from "../lib/planDials";
   import MicButton from "./voice/MicButton.svelte";
   // Item 334: the speech test panel, behind a link in the Hosts sheet.
   import SpeechTest from "./voice/SpeechTest.svelte";
   import NotesSheet from "./NotesSheet.svelte";
   import NightshiftSheet from "./NightshiftSheet.svelte";
+  import FeedbackSheet from "./FeedbackSheet.svelte";
   import AsideSheet from "./AsideSheet.svelte";
   import CouncilSheet from "./CouncilSheet.svelte";
+  import ChangesSheet from "./ChangesSheet.svelte";
+  import { changesLine, turnChanges } from "./turnChanges";
   import ChatMenu from "./ChatMenu.svelte";
+  import RulesSheet from "./RulesSheet.svelte";
+  import { asideKey, connectorWords, type RuleForm } from "./rules";
   import { chatSheetSub, fitVisual } from "./sheetLayout";
   import Hosts from "./Hosts.svelte";
   import { PLAYWRIGHT_BUTTONS, PLAYWRIGHT_DECLINED, playwrightAction } from "../lib/playwright";
+  import { stuckView } from "../lib/stuck";
+  import { SECRET_DECLINED, secretView, type BwApi } from "../lib/secret";
+  import { DRIVE_DECLINED, DRIVE_HEAD, DRIVE_NO_WHY, DRIVE_PHONE, driveWhy } from "../lib/drive";
+  import SecretAsk from "./SecretAsk.svelte";
   // Item 300 (wave 8B F1): the drawer follows the finger; Recents and Projects.
   import { dragAxis, drawerX, fingerSpeed, settleOpen } from "./client";
   import { UNFILED, lastActive as chatWhen, projectSummaries, recentRows } from "./recents";
   import ProjectsSheet from "./ProjectsSheet.svelte";
   // Item 572 (Filament IV stage 11): the phone's own look, the context dial.
   import { applyLook, cacheLeft, contextLine, kTokens, loadLook, saveLook, type Look } from "./look";
+  // Wave O: the cache chip's price and tooltip, as the Mac's.
+  import { newestReply, phoneCache } from "./cacheChip";
+  import type { CacheRatesWire } from "../lib/cachePrice";
   import ContextDial from "../lib/ContextDial.svelte";
   import ProjectPage from "./ProjectPage.svelte";
   import {
@@ -149,7 +186,7 @@
     type Tried,
   } from "./hosts";
   import { halvesFromHash, keepStored, manifestHref, setManifest } from "./homeScreen";
-  import { heldTap, joinDraft, loadPlace, placeFromHash, placeHash, plainError, samePlace, savePlace, triable, type Place } from "./place";
+  import { HOME_PLACE, heldTap, joinDraft, loadPlace, placeFromHash, placeHash, plainError, samePlace, savePlace, triable, type Place } from "./place";
   import { NO_PROJECT, callProject, notesProject, openedProject, placeProject, resolveAsk, unresolvedAsk } from "./screenProject";
   import { LATE_NOTICE_MS, NEW_CHAT_TURN, noticeFor, turnEndedFor, type EndedTurn } from "./turnNotice";
   import { unsavedDrafts, writesInFlight } from "./client";
@@ -197,8 +234,31 @@
     for (const r of paired) out[r] = new Client(hosts[r]!.token, hosts[r]!.base === origin ? "" : hosts[r]!.base);
     return out;
   });
+  /** Item 739: every paired host's push routes (`push.ts`). */
+  const pushHosts = $derived(paired.map((r) => pushHost(r, { token: hosts[r]!.token, base: hosts[r]!.base === origin ? "" : hosts[r]!.base })));
+  /** Item 739, at the page's open and each time it is shown again: hand
+   *  the subscription to the hosts again if he turned push on here (a key
+   *  the away server took since, a host paired since), and set the icon's
+   *  badge from their counts. Asks nothing; nothing where push is not on. */
+  function pushCatchUp(refresh: boolean) {
+    if (supportHere() !== "ok" || pushHosts.length === 0) return;
+    const env = browserEnv();
+    if (!env.remembered()) return;
+    void (refresh ? refreshPush(env, pushHosts) : Promise.resolve(null)).then(() => syncBadge(env, pushHosts)).catch(() => {});
+  }
   /** The active host's client. */
   const client = $derived(active ? (clients[active] ?? null) : null);
+  // Item 800: the host's saved prompts, read on connect and when the page
+  // comes back (he may have added one on the Mac meanwhile).
+  $effect(() => {
+    const c = client;
+    if (!c) return;
+    const read = () => void c.savedPrompts().then(setPhonePrompts).catch(() => setPhonePrompts([]));
+    read();
+    const back = () => document.visibilityState === "visible" && read();
+    document.addEventListener("visibilitychange", back);
+    return () => document.removeEventListener("visibilitychange", back);
+  });
   /** `online` while the event stream is open; `off` after every paired
    *  host answered 401 (the token is wrong — a new scan is the way back). */
   let link = $state<"connecting" | "online" | "offline" | "off">("connecting");
@@ -254,6 +314,13 @@
   let pendingNew = $state<{ before: string | null } | null>(null);
   /** Set once he picks a screen, so the first state read does not move him. */
   let chose = false;
+  /** Item 763 H8: Home, the phone's first screen, is showing (over the chat). */
+  let home = $state(false);
+  /** The page's URL named no place when it opened (an icon launch, a
+   *  pairing link): it opens on Home. A reload keeps the chat it was on. */
+  let startHome = false;
+  /** The chat he was in before Home, for its "Back to" row. */
+  let homeResume = $state<{ chat: string; project: string | null; label: string | null } | null>(null);
   let events = $state<SessionEvent[]>([]);
   let live = $state<LiveTurn | null>(null);
   /** The chat whose turn the page started (300 A16/B2): the turn-end toast
@@ -289,6 +356,7 @@
     | "message"
     | "rail"
     | "running"
+    | "jobs"
     | "delete"
     | "notes"
     | "aside"
@@ -298,7 +366,38 @@
     | "compact"
     | "nightshift"
     | "speech"
+    | "changes"
+    | "rules"
+    | "feedback"
+    | "dials"
   >(null);
+  /** Item 743: the rule form he left open in the rules sheet, by chat
+   *  (`""` with no chat open) — kept while the page lives, so a dismissed
+   *  sheet reopens on the same half-made rule. */
+  let ruleForms = $state<Record<string, RuleForm | null>>({});
+  function openRules() {
+    sheet = "rules";
+    sheetTall = true;
+  }
+  /** Item 743: calls he answered "Not now — carry on", by chat, so the
+   *  card that returns says it is the one he set aside. */
+  let setAside = $state<Record<string, string[]>>({});
+  /** Item 742: the reply whose Changes sheet is open (chat + its first
+   *  event), and per reply the file he was on and the files opened to
+   *  every line — kept while the page lives, so reopening lands there. */
+  let changesKey = $state<string | null>(null);
+  let changesAt = $state<Record<string, number>>({});
+  let changesAll = $state<Record<string, string[]>>({});
+  const changesFiles = $derived.by(() => {
+    if (sheet !== "changes" || !changesKey) return [];
+    const r = rows.find((x) => x.kind === "assistant" && `${chatId}:${x.indexes[0]}` === changesKey);
+    return r && r.kind === "assistant" ? turnChanges(r.tools) : [];
+  });
+  function openChanges(key: string) {
+    changesKey = key;
+    sheet = "changes";
+    sheetTall = true;
+  }
   // ---- wave 2C: notes, asides, council, new project, search, gestures ----
   /** The notes sheet opens on this note (a search hit), else its list. */
   let notesStart = $state<{ scope: NoteScope; name: string } | null>(null);
@@ -386,6 +485,17 @@
    *  project is open (300 review 1): read-only, no "new chat there". */
   const unaddressable = $derived(chatProject === NO_PROJECT && !listsUnfiled);
   const rows = $derived(transcriptRows(events));
+  // Item 842: the chat's chapters (item 799's marks), with the names he gave
+  // them on the Mac — read from the chat's log, so both say the same — drawn
+  // as dividers between rows (`placeOnRows`); a removed one is not drawn.
+  const chapterRows = $derived.by(() => {
+    if (!chatId) return { before: new Map<number, ShownChapter[]>(), tail: [] as ShownChapter[] };
+    const shown = withEdits(chaptersOf(events, liveFlags(events)), logEdits(events)).filter((c) => !c.removed);
+    const ranges = rows.map((r) =>
+      r.kind === "user" ? { first: r.index, last: r.index } : r.kind === "assistant" ? { first: r.indexes[0], last: r.indexes[r.indexes.length - 1] } : null,
+    );
+    return placeOnRows(ranges, shown);
+  });
   const currentChat = $derived.by(() => {
     if (!chatId) return null;
     const list = chatsBy[chatProject ?? activePid] ?? [];
@@ -410,6 +520,17 @@
   const readOnly = $derived(unaddressable || (chatProject !== null && chatProject !== activePid && !hasFeature(remote, "send_project")));
   /** A host from before wave 1 would drop a photo without a word. */
   const canPhoto = $derived(hasFeature(remote, "images"));
+  // Item 820: the Mac reads the file; a host without the route shows none.
+  const canMedia = $derived(hasFeature(remote, "reply_media"));
+  $effect(() => {
+    const c = client;
+    if (!c) return;
+    setMediaLoader(async (path, chat) => {
+      if (!chat) throw new Error("no chat");
+      const m = await c.replyMedia(chat, path);
+      return { kind: mediaKindOf(path) ?? "image", mediaType: m.mediaType, size: m.bytes.size, bytes: m.bytes };
+    });
+  });
   /** And one that takes documents (item 277): PDFs, text, office files. */
   const canFile = $derived(hasFeature(remote, "documents"));
   /** The chat's project to send with when the Mac has another open. */
@@ -470,7 +591,50 @@
   /** The header's context line: the newest reply's prompt size and the
    *  cache's time left, from the chat's own log. */
   const ctxLine = $derived(chatId ? contextLine(events, liveFlags(events)) : { used: null, warmUntil: null });
-  const cacheText = $derived(cacheLeft(ctxLine.warmUntil, now));
+  /** Item 786: the desktop's reckoning of the open chat's cache (its
+   *  reply, keep-warm pings, asides' reads), when it has told one; the
+   *  later of it and the log's reply. */
+  let hostWarm = $state<Record<string, number | null>>({});
+  const warmUntil = $derived.by(() => {
+    const told = chatId ? hostWarm[chatId] : undefined;
+    if (told == null) return ctxLine.warmUntil;
+    return ctxLine.warmUntil == null ? told : Math.max(told, ctxLine.warmUntil);
+  });
+  const cacheText = $derived(cacheLeft(warmUntil, now));
+  /** Wave O (776's left-out): the chip's price — the newest reply's model's
+   *  rates from the chat's host (`GET /api/cache-rates`), read once per model
+   *  and again after ten minutes, as the Mac's; no rates, no price. */
+  let cacheRatesBy = $state<Record<string, CacheRatesWire | null>>({});
+  const cacheRatesAt: Record<string, number> = {};
+  const lastReplyHere = $derived(chatId ? newestReply(events, liveFlags(events)) : null);
+  $effect(() => {
+    const model = lastReplyHere?.model;
+    const via = sameHost ? client : chatClient;
+    if (!model || !via || !hasFeature(chatState ?? remote, "cache_rates")) return;
+    const key = `${via.base} ${model}`;
+    if (cacheRatesAt[key] && Date.now() - cacheRatesAt[key] < 10 * 60_000) return;
+    cacheRatesAt[key] = Date.now();
+    void via
+      .cacheRates(model)
+      .then((r) => (cacheRatesBy = { ...cacheRatesBy, [key]: r }))
+      .catch(() => {
+        // A failed read is no figure; the next reply's model asks again.
+        delete cacheRatesAt[key];
+      });
+  });
+  const chipRates = $derived.by(() => {
+    const via = sameHost ? client : chatClient;
+    return lastReplyHere && via ? (cacheRatesBy[`${via.base} ${lastReplyHere.model}`] ?? null) : null;
+  });
+  const chip = $derived(phoneCache(lastReplyHere, warmUntil, now, chipRates));
+  /** The chip's tooltip, shown by a tap on it (a phone has no hover). */
+  let chipTip = $state(false);
+  let chipTipTimer: ReturnType<typeof setTimeout> | undefined;
+  function showChipTip() {
+    chipTip = !chipTip;
+    clearTimeout(chipTipTimer);
+    if (chipTip) chipTipTimer = setTimeout(() => (chipTip = false), 5000);
+  }
   /** The window size, once the Context sheet has read it for this chat
    *  (`view.context_limit`); the phone has no other source (blocker 1781). */
   let ctxLimits = $state<Record<string, number>>({});
@@ -607,6 +771,8 @@
     }
   }
 
+  /** Item 763 H5: the chats Home started, for the list's ⌂ mark. */
+  let byHome = $state(new Set<string>());
   async function refreshChats() {
     if (!client) return;
     try {
@@ -614,6 +780,11 @@
       // even when the host's active project moved since `projects` was read.
       const pid = activePid;
       chatsBy = { ...chatsBy, [pid]: await client.chats(pid || null) };
+      // Item 763 H5: which chats Home started (the list's mark); an older host has none.
+      void client
+        .homeRoutes()
+        .then((r) => (byHome = new Set(r.started)))
+        .catch(() => {});
       for (const p of projects) if (!p.active && expanded[p.id]) void loadProject(p.id);
       // 300 retest: the chat on screen's own project is re-read too, so its
       // title follows a rename or a turn (F1's Recents dropped the expanded
@@ -677,6 +848,17 @@
     await refreshChats();
     const back = startPlace;
     startPlace = null;
+    if (!chose && chatId === null && !pendingNew && (startHome || back?.home)) {
+      // Item 763 H8: the first screen is Home; the chat he was in is its
+      // "Back to" row.
+      startHome = false;
+      if (back?.chat) homeResume = { chat: back.chat, project: back.project, label: Object.values(chatsBy).flat().find((c) => c.id === back.chat)?.label ?? null };
+      chose = true;
+      home = true;
+      place(true);
+      await applyResume();
+      return;
+    }
     if (!chose && chatId === null && !pendingNew && back) {
       // Item 300 (A21, A37): the screen he was on — a reload, a
       // home-screen launch — not the host's last chat.
@@ -738,6 +920,31 @@
         }
         break;
       }
+      case "approval-nudge": {
+        // 783: nobody answered. A set-aside takes the card down and is
+        // remembered, so the card that returns says so.
+        try {
+          const n: { id: string; name?: string; stage: "remind" | "set_aside" | "unattended" } = JSON.parse(data);
+          if (n.stage === "unattended") {
+            // 783's finish: a read-only chat's card in a run nobody was
+            // there for — never shown; the reply's end lists it.
+            remote = { ...remote, pending: remote.pending.filter((p) => p.id !== n.id) };
+            note("Nobody was here to approve it, so it was set aside and did not run");
+          } else if (n.stage === "set_aside") {
+            const req = remote.pending.find((p) => p.id === n.id);
+            if (req) {
+              remote = { ...remote, pending: remote.pending.filter((p) => p.id !== n.id) };
+              const chat = req.chat ?? chatId ?? "";
+              const key = asideKey(req.name, req.input);
+              setAside = { ...setAside, [chat]: [...(setAside[chat] ?? []).filter((k) => k !== key), key] };
+            }
+            note("No answer, so it was set aside — it asks again when the rest is done");
+          }
+        } catch {
+          // Unreadable: the card stays, and answering it says it has gone.
+        }
+        break;
+      }
       case "turn-notice": {
         let said: string;
         try {
@@ -763,6 +970,12 @@
         break;
       case "aside-event":
       case "aside-delta": {
+        // Item 786: the desktop's cache expiry for a chat (pings and asides too).
+        const told = parseCacheEvent(data);
+        if (told) {
+          hostWarm = { ...hostWarm, [told.chat]: told.warmUntil };
+          break;
+        }
         // Wave 2C: an aside's answer streaming in (patch note 2C→2A).
         const ev = parseAsideEvent(data);
         if (!ev) break;
@@ -993,6 +1206,7 @@
     // Where he was (A21): the hash's place on a reload, the stored one on
     // a launch — read before the token's hash is cleared.
     startPlace = (fromHash ? null : placeFromHash(location.hash)) ?? loadPlace();
+    startHome = fromHash !== null || placeFromHash(location.hash) === null;
     // Item 302: what the page kept when it reloaded for a scheme change.
     pendingResume = fromHash ? null : takeResume(Date.now());
     window.addEventListener("popstate", onPopState);
@@ -1004,6 +1218,12 @@
       else start(fromHash);
     } else if (paired.length > 0) void streamLoop();
     pollLoop();
+    // Item 739: a notification tapped while the page is alive opens its
+    // chat here (a cold start opens it by the place in the URL).
+    watchPushTaps((t) => {
+      if (client) void openChat(t.chat, t.project, t.host && clients[t.host] ? t.host : active);
+    });
+    pushCatchUp(true);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") {
         // Let the stream go while out of sight (A34); the loop waits.
@@ -1017,6 +1237,7 @@
       failures = 0;
       if (wake) wake();
       if (client) void everything();
+      pushCatchUp(false);
     });
     // Leaving or going into the back-forward cache: the stream goes too.
     window.addEventListener("pagehide", () => abort?.abort());
@@ -1169,8 +1390,15 @@
       case "nightshift":
         openNightshift();
         break;
+      case "feedback":
+        openFeedback();
+        break;
       case "newproject":
         openNewProject();
+        break;
+      case "jobs":
+        // Item 746: tall, as the drawer opens it; the form's draft comes back by itself.
+        if (hasFeature(remote, "jobs")) openJobs();
         break;
       case "notes":
         // The place goes in with the opening: the sheet reads it once, as it mounts.
@@ -1233,7 +1461,9 @@
   /** Item 300 (A21, A37): the screen in the URL's hash — a history entry
    *  per chat, so Back returns to the chat before — and in storage. */
   function place(replace = false) {
-    const p: Place = chatId
+    const p: Place = home
+      ? HOME_PLACE
+      : chatId
       ? { chat: chatId, project: (asked?.chat === chatId ? asked.project : null) ?? placeProject(chatPid, projects.length > 0), host: chatHost }
       : { chat: null, project: newProject ?? (activePid || null), host: null };
     savePlace(p);
@@ -1255,7 +1485,8 @@
     if (!p || !client) return;
     navigating = true;
     try {
-      if (p.chat) void openChat(p.chat, p.project, p.host && clients[p.host] ? p.host : active);
+      if (p.home) openHome();
+      else if (p.chat) void openChat(p.chat, p.project, p.host && clients[p.host] ? p.host : active);
       else startNew(p.project);
     } finally {
       navigating = false;
@@ -1289,7 +1520,12 @@
   async function openChat(id: string, project: string | null = null, host: HostRole | null = active) {
     chose = true;
     drawer = false;
-    if (id === chatId && project === chatProject && chatHost === host) return;
+    const fromHome = home;
+    home = false;
+    if (id === chatId && project === chatProject && chatHost === host) {
+      if (fromHome) place();
+      return;
+    }
     chatId = id;
     // Listed by the host answering now: it is that host's chat — or, an
     // Undo of a delete, the host it was deleted on (132 f), set before the
@@ -1319,6 +1555,7 @@
   function startNew(project: string | null = null) {
     chose = true;
     drawer = false;
+    home = false;
     sheet = null;
     chatId = null;
     chatHost = null;
@@ -1334,6 +1571,23 @@
     draft = loadDraft(draftKey(null, newProject));
     void grow();
     requestAnimationFrame(() => box?.focus());
+  }
+
+  /** Item 763 H8: show Home; the chat he was in stays one tap away. */
+  function openHome() {
+    const was = placeFromHash(location.hash);
+    if (was?.chat && !was.home) homeResume = { chat: was.chat, project: was.project, label: chatLabel };
+    chose = true;
+    drawer = false;
+    sheet = null;
+    home = true;
+    place();
+  }
+
+  /** A message Home's boxes could not hand over: the page's queue holds it. */
+  function holdFromHome(chat: string, text: string, project: string | null, nonce: string) {
+    queue = [...queue, newQueued(chat, text, new Date(), project, active, nonce)];
+    saveQueue(queue);
   }
 
   function openDrawer() {
@@ -1500,6 +1754,20 @@
   async function sendNow() {
     const text = draft.trim();
     if (!text || readOnly) return;
+    // Item 746: "repeat every morning: …" is a job, not a message — the
+    // form opens filled, and his words stay in the box until he saves it.
+    const repeat = hasFeature(remote, "jobs") && sameHost ? parseRepeat(text) : null;
+    if (repeat) {
+      openJobs(repeat);
+      return;
+    }
+    // Item 794: "keep this current: …" is a research watch — the form opens
+    // on the proposal; his words stay in the box until he saves it.
+    const watch = hasFeature(remote, "jobs") && sameHost ? parseWatch(text) : null;
+    if (watch) {
+      openJobs({ every: "", text: "", watch });
+      return;
+    }
     if (chatId === null) {
       await sendNew(text);
       return;
@@ -2103,6 +2371,34 @@
   }
 
   // ---- wave 1C: the rail, running tasks, usage ---------------------------------
+  /** Item 824: the Mac's Context and Plan card as a sheet, from the
+   *  header's dial or the context row: context, 5 h, week, his stop line
+   *  (the rail's limits), Itemise opening the Context sheet. The reading
+   *  and the rail are refreshed as it opens; what is missing is left out. */
+  function openDials() {
+    sheet = "dials";
+    void refreshUsage();
+    if (!rail && client && hasFeature(remote, "rail")) {
+      void client
+        .rail()
+        .then((r) => (rail = r))
+        .catch(() => {
+          // No tick until the rail is read.
+        });
+    }
+  }
+  const dialFigures = $derived.by((): DialFigures => {
+    const p = usage?.plan && usage.plan.source !== "none" ? usage.plan : null;
+    return {
+      head: "Context & plan",
+      stale: p ? staleTag(p, now) : null,
+      ctx: ctxLine.used !== null ? { used: ctxLine.used, limit: ctxLimit, estimated: false, agents: 0 } : null,
+      five: p ? dialWindow(p.five_hour, p.five_hour_resets_at, usage?.pace?.five_hour, now) : null,
+      week: p ? dialWindow(p.seven_day, p.seven_day_resets_at, usage?.pace?.seven_day, now) : null,
+      stop: stopLine(rail?.limits),
+      spend: null,
+    };
+  });
   async function openRail() {
     sheet = "rail";
     if (!client) return;
@@ -2136,6 +2432,16 @@
     drawer = false;
     sheet = "running";
     await refreshRunning();
+  }
+
+  /** Item 746: "repeat every …" read from the composer, for the Jobs
+   *  sheet's form; null when the sheet was opened from the drawer. */
+  let jobPrefill = $state<{ every: string; text: string; watch?: WatchPrefill } | null>(null);
+  function openJobs(prefill: { every: string; text: string; watch?: WatchPrefill } | null = null) {
+    drawer = false;
+    jobPrefill = prefill;
+    sheet = "jobs";
+    sheetTall = true;
   }
 
   async function refreshRunning() {
@@ -2178,6 +2484,13 @@
       );
     sheetTall = false;
     sheet = "notes";
+  }
+
+  // ---- item 805: his feedback to the agent ----
+  function openFeedback() {
+    drawer = false;
+    sheetTall = false;
+    sheet = "feedback";
   }
 
   // ---- wave 3 B1: the Nightshift sheet, the Mac's dream and capture passes ----
@@ -2665,13 +2978,40 @@
 
   // ---- the cards --------------------------------------------------------------
   let notes = $state<Record<string, string>>({});
+  // Item 766: the secret card's value is the card's own (`SecretAsk`); kept
+  // on the chat's host, then a bare Allow.
+  async function useSecret(req: ApprovalRequest, name: string, value: string): Promise<string | null> {
+    const via = sameHost ? client : chatClient;
+    if (!value || !via) return "Not connected to the computer running this chat.";
+    try {
+      await via.storeSecret(req.chat ?? chatId ?? "", name, value);
+    } catch (e) {
+      return `Not kept: ${String(e).replace(/^Error:\s*/, "")}`;
+    }
+    await answer(req, "allow");
+    return null;
+  }
+  // Item 766 part 2: "From Bitwarden" on the chat's host. The phone cannot
+  // hand over a session: a locked vault is unlocked on the Mac's card.
+  function bitwardenFor(req: ApprovalRequest): BwApi | null {
+    const via = sameHost ? client : chatClient;
+    if (!via) return null;
+    const name = secretView(req.input).name;
+    return {
+      ready: () => via.bitwardenReady(),
+      search: (q) => via.bitwardenSearch(q),
+      store: (itemId, field, alwaysFor) => via.bitwardenStore(req.chat ?? chatId ?? "", name, itemId, field, alwaysFor),
+    };
+  }
   let picks = $state<Record<string, Record<number, string[]>>>({});
   let others = $state<Record<string, Record<number, string>>>({});
+  // Item 712: his comment on each option, by call, question, label.
+  let optNotes = $state<Record<string, Record<number, Record<string, string>>>>({});
   let planThen = $state<Record<string, "ask" | "auto">>({});
 
   async function answer(
     req: ApprovalRequest,
-    decision: "allow" | "always" | "deny",
+    decision: "allow" | "always" | "deny" | "later",
     answerPayload?: unknown,
     then?: "ask" | "auto",
     fallback?: string,
@@ -2687,6 +3027,12 @@
     else if (otherState) otherState = { ...otherState, pending: otherState.pending.filter((p) => p.id !== req.id) };
     try {
       await via.approve({ id: req.id, name: req.name, decision, reason, answer: answerPayload, then });
+      // Item 743: set aside is remembered until the same call is answered.
+      const chat = chatId ?? "";
+      const key = asideKey(req.name, req.input);
+      const rest = (setAside[chat] ?? []).filter((k) => k !== key);
+      setAside = { ...setAside, [chat]: decision === "later" ? [...rest, key] : rest };
+      if (decision === "later") note("Set aside — it asks again when the rest is done");
       if (decision !== "deny" && text) hold(text);
     } catch (e) {
       fail(e);
@@ -2729,6 +3075,17 @@
   const still = reducedMotion();
   const toolCount = (tools: ToolRow[]): number => tools.reduce((n, t) => n + 1 + toolCount(t.children), 0);
 </script>
+
+{#snippet chapterLines(list: readonly ShownChapter[])}
+  <!-- Item 842: a chapter's divider (the Mac's ChapterRule, without its Rename and Remove: those are the Mac's). -->
+  {#each list as c (c.key)}
+    <div class="chapter-line" data-chapter={c.key} role="separator" aria-label={`Chapter: ${c.shown}`}>
+      <span class="cl-rule"></span>
+      <span class="cl-label"><span class="cl-kind">{KIND_WORD[c.kind] ?? "Chapter"}</span>{c.shown}</span>
+      <span class="cl-rule"></span>
+    </div>
+  {/each}
+{/snippet}
 
 {#snippet icon(name: "menu" | "new" | "more" | "up" | "stop" | "chev" | "x" | "search" | "check" | "mac" | "pencil" | "sliders" | "plus" | "trash" | "play" | "swap" | "pulse" | "note" | "aside" | "council" | "folder" | "compact" | "flag" | "moon")}
   <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
@@ -2855,7 +3212,7 @@
       <Hosts mode="chip" {hosts} {active} {link} onopen={() => (sheet = "hosts")} />
       {#if fil && chatId && ctxLimit && ctxLine.used !== null}
         <!-- Item 572: the context dial, once the window is known. -->
-        <button class="hdr-dial" onclick={() => (contextOn = true)} aria-label="Context: {kTokens(ctxLine.used)} of {kTokens(ctxLimit)}">
+        <button class="hdr-dial" onclick={openDials} aria-label="Context: {kTokens(ctxLine.used)} of {kTokens(ctxLimit)}">
           <ContextDial size={30} stroke={3} pad={5} minor={40} major={8} share={ctxLine.used / ctxLimit} mark={Math.min(1, 300_000 / ctxLimit)} value={String(Math.round((ctxLine.used / ctxLimit) * 100))} label="Context used" />
         </button>
       {/if}
@@ -2869,18 +3226,30 @@
       {/if}
       <button class="icon-btn" onclick={() => startNew(chatProject ?? newProject)} aria-label="New chat">{@render icon("new")}</button>
     </header>
-    {#if fil && chatId && (ctxLine.used !== null || fiveHour !== null)}
+    {#if chatId && (ctxLine.used !== null || fiveHour !== null || chip)}
       <!-- Item 572 (f4-phone-390): the chat's context, the cache's time
-           left and the 5-hour window, under the title. Tap: the Context sheet. -->
-      <button class="ctx-row" onclick={() => hasFeature(remote, "context") && (contextOn = true)} aria-label="Context">
+           left and the 5-hour window, under the title. Tap: the Context sheet.
+           Wave O (776's left-out): the cache chip as the Mac's — cold too, the
+           next send's price (warm and cold), its two-line tooltip on a tap of
+           the cache part; in Classic as well, which had no cache line. -->
+      <button
+        class="ctx-row"
+        onclick={(e) => {
+          if ((e.target as Element | null)?.closest?.(".ctx-cache")) showChipTip();
+          else openDials();
+        }}
+        aria-label="Context and plan"
+      >
         {#if ctxLine.used !== null}
           <span class="ctx-k">Context</span>
           <b class="ctx-v">{kTokens(ctxLine.used)}</b>
           {#if ctxLimit}<span class="ctx-k">of {kTokens(ctxLimit)}</span>{/if}
         {/if}
         <span class="spacer"></span>
-        {#if cacheText}<span class="ctx-k">cache <b class="ctx-v sig">{cacheText}</b></span>{/if}
+        {#if chip}<span class="ctx-k ctx-cache" class:cold={chip.cold} title={chip.tip}>cache <b class="ctx-v sig">{chip.cold ? "cold" : chip.left}</b></span>{/if}
         {#if fiveHour !== null}<span class="ctx-k">5h <b class="ctx-v" class:hot={fiveHour >= 85}>{Math.round(fiveHour)}%</b></span>{/if}
+        {#if chip?.price}<span class="ctx-k ctx-cache ctx-price" title={chip.tip}>{chip.price}</span>{/if}
+        {#if chipTip && chip}<span class="ctx-cache ctx-tip" role="tooltip">{chip.tip}</span>{/if}
       </button>
     {/if}
 
@@ -2919,6 +3288,24 @@
       </div>
     {/if}
 
+    {#if home && client && active}
+      <!-- Item 763 H8: Home, the first screen, over the chat page. -->
+      <HomeFirst
+        {client}
+        {active}
+        macPaired={!!hosts.mac}
+        {remote}
+        openLabel={(chatsBy[activePid] ?? []).find((c) => c.id === remote.active_chat)?.label ?? null}
+        {fil}
+        resume={homeResume}
+        queued={queue.length}
+        onopen={(chat, project) => void openChat(chat, project, active)}
+        onjobs={() => openJobs()}
+        ondrawer={openDrawer}
+        onnew={() => startNew(null)}
+        onhold={holdFromHome}
+      />
+    {/if}
     {#if paired.length > 0 && !drawer && !sheet}
       <!-- Wave 2C: a swipe right from the left edge opens the drawer. -->
       <div class="edge" use:drag={edgeDrag} aria-hidden="true"></div>
@@ -2995,18 +3382,22 @@
         {/if}
       {/if}
       {#each rows as r, i (i)}
+        {#if chapterRows.before.has(i)}{@render chapterLines(chapterRows.before.get(i) ?? [])}{/if}
         {#if r.kind === "user"}
           <!-- Item 503: a block he ran at the Mac, its output folded as there. -->
           {@const ran = parseRan(r.said)}
+          <!-- Item 706: the wrap-up Nightloom sent, as the Mac draws it — a folded hand-off card — until he edits it. -->
+          {@const hand = ran || r.edited ? null : parseHandoffMessage(r.said)}
           <div class="turn user" data-row={i} class:enter={i >= enterFrom && !still} class:removed={r.removed} use:arrive={{ channel: "phone" }}>
             <div class="bubble" use:press={() => openMenu(r)}>
-              {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{#each r.files as f, fi (fi)}<span class="file-card"><span class="file-badge">{fileBadgeOf(f)}</span><span class="file-name">{f}</span></span>{/each}{#if ran}<div class="ran-card"><div class="ran-head">Ran in terminal · {ran.status}</div><div class="ran-cmd">{ran.command}</div>{#if ran.output}<details><summary>Output</summary><pre>{ran.output}</pre></details>{/if}</div>{:else}{r.said}{/if}
+              {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{#each r.files as f, fi (fi)}<span class="file-card"><span class="file-badge">{fileBadgeOf(f)}</span><span class="file-name">{f}</span></span>{/each}{#if hand}<div class="hb-card" data-handoff-bubble><div class="hb-head">Nightloom hand-off · wrap-up sent for you</div><div class="hb-headline">{#if hand.goal}<span class="hb-goal">Goal</span>{/if}{hand.headline}</div><details><summary>The message · {hand.lines} {hand.lines === 1 ? "line" : "lines"}</summary><pre>{hand.text}</pre></details></div>{:else if ran}<div class="ran-card"><div class="ran-head">Ran in terminal · {ran.status}</div><div class="ran-cmd">{ran.command}</div>{#if ran.output}<details><summary>Output</summary><pre>{ran.output}</pre></details>{/if}</div>{:else}<MathText text={r.said} />{/if}
             </div>
             <div class="stamp">
               {#if r.removed}{"removed from the context · "}{:else if r.edited}{"edited · "}{/if}{shortWhen(r.at)}
             </div>
           </div>
         {:else if r.kind === "assistant"}
+          {@const changed = turnChanges(r.tools)}
           <div class="turn reply" data-row={i} class:enter={i >= enterFrom && !still} class:removed={r.removed} use:press={() => openMenu(r)}>
             <!-- 300 A2: words and calls in the order they happened. -->
             {#each r.seq as s, k (s.kind === "text" ? `${s.part.index}.${s.part.block}` : `t${k}.${s.tools[0]?.id}`)}
@@ -3014,10 +3405,20 @@
               {:else if s.part.removed}
                 <div class="part-gone" use:press={() => openMenu(r, s.part)}>[text removed]</div>
               {:else if s.part.text}
-                <div class="md" use:press={() => openMenu(r, s.part)} use:codeBlocks={copy}>{@html renderMarkdown(s.part.text, { breaks: true })}</div>
+                <div class="md" use:press={() => openMenu(r, s.part)} use:codeBlocks={copy} use:replyPages={{ copy }} use:replyMediaInline={{ chat: chatId, off: !canMedia }}>{@html renderMarkdown(s.part.text, { breaks: true, localImagesAsText: true })}</div>
+                {#if canMedia}<ReplyMedia items={stripMedia(s.part.text, [])} chat={chatId} />{/if}
               {/if}
             {/each}
             {@render sentChips(sentOf(r.tools))}
+            {#if changed.length > 0}
+              <!-- Item 742: what the reply changed, a file a page. -->
+              <button class="changes-row" data-changes onclick={() => openChanges(`${chatId}:${r.indexes[0]}`)}>
+                <span class="changes-word">Changes</span>
+                <span class="changes-sum">{changesLine(changed)}</span>
+                <span class="spacer"></span>
+                {@render icon("chev")}
+              </button>
+            {/if}
             {#if r.removed}<div class="stamp">removed from the context — long-press to restore</div>
             {:else}{@const line = replyLine(events, r, sizes)}{#if line}<div class="stamp reply-line">{line}</div>{/if}{/if}
           </div>
@@ -3025,15 +3426,18 @@
           <div class="turn note" data-row={i}>{r.text}</div>
         {/if}
       {/each}
+      {#if chapterRows.tail.length > 0}{@render chapterLines(chapterRows.tail)}{/if}
       {#if liveHere && live}
         <div class="turn reply live" class:enter={!still}>
           {#if fil}
             <!-- Item 572: the reply's header, Claude working in blue. -->
             <div class="reply-head"><span class="rh-ring" aria-hidden="true"></span><b>Claude</b>{#if lastModel}<span class="rh-model">{lastModel}</span>{/if}<span class="rh-sep">·</span><span class="rh-st">Replying</span></div>
           {/if}
+          <!-- Item 837: the reply's unfinished tail is drawn as the Mac draws it (`streamingTail`): a formula
+               still arriving is held until it closes, a table row until it is whole. -->
           {#each liveSegments(live) as s, k (k)}
             {#if s.kind === "tools"}{@render toolBox(s.tools, `live${k}`, true)}
-            {:else}<div class="md" use:codeBlocks={copy}>{@html renderMarkdown(s.text, { breaks: true })}</div>{/if}
+            {:else}<div class="md" use:codeBlocks={copy} use:replyMediaInline={{ chat: chatId, off: !canMedia }}>{@html k === liveSegments(live).length - 1 ? renderStreamingMarkdown(s.text, { breaks: true, localImagesAsText: true }) : renderMarkdown(s.text, { breaks: true, localImagesAsText: true })}</div>{/if}
           {/each}
           {@render sentChips(sentOf(live.tools))}
           {#if live.retry}
@@ -3100,10 +3504,13 @@
               others={others[req.id] ?? {}}
               ontoggle={(i, label, multi) => toggle(req.id, i, label, multi)}
               onother={(i, v) => (others = { ...others, [req.id]: { ...(others[req.id] ?? {}), [i]: v } })}
+              notes={optNotes[req.id] ?? {}}
+              onnote={(i, label, v) =>
+                (optNotes = { ...optNotes, [req.id]: { ...(optNotes[req.id] ?? {}), [i]: { ...(optNotes[req.id]?.[i] ?? {}), [label]: v } } })}
             />
             <input type="text" placeholder="A note (goes as your next message)" bind:value={notes[req.id]} />
             <div class="actions">
-              <button class="btn accent" disabled={!answered(req)} onclick={() => answer(req, "allow", questionAnswer(req.input, picks[req.id] ?? {}, others[req.id] ?? {}))}>Answer</button>
+              <button class="btn accent" disabled={!answered(req)} onclick={() => answer(req, "allow", questionAnswer(req.input, picks[req.id] ?? {}, others[req.id] ?? {}, optNotes[req.id] ?? {}))}>Answer</button>
               <button class="btn" onclick={() => answer(req, "deny", undefined, undefined, "the user skipped the question")}>Skip</button>
             </div>
           {:else if kind === "plan"}
@@ -3119,6 +3526,51 @@
               <button class="btn accent" onclick={() => answer(req, "allow", req.input, planThen[req.id] ?? "ask")}>Approve</button>
               <button class="btn" onclick={() => answer(req, "deny", undefined, undefined, KEEP_PLANNING)}>Keep planning</button>
             </div>
+          {:else if kind === "secret"}
+            <!-- 766: the chat asks for a secret; typed here, never in the chat. -->
+            <SecretAsk
+              input={req.input}
+              onuse={(name, value) => useSecret(req, name, value)}
+              ondecline={() => void answer(req, "deny", undefined, undefined, SECRET_DECLINED)}
+              bw={bitwardenFor(req)}
+              onstored={async () => {
+                await answer(req, "allow");
+                return null;
+              }}
+            />
+          {:else if kind === "drive"}
+            <!-- 872 step 5: Home asks him to take the page — only the Mac's card can; here he is told, and may set it aside. -->
+            <div class="card-head" data-card-kind="drive">{DRIVE_HEAD}</div>
+            <div class="args">
+              <div class="arg"><span class="key">what to do there</span><pre>{driveWhy(req.input) ?? DRIVE_NO_WHY}</pre></div>
+            </div>
+            <p class="card-note" data-drive-phone>{DRIVE_PHONE}</p>
+            {#if req.back || (setAside[chatId ?? ""] ?? []).includes(asideKey(req.name, req.input))}
+              <p class="card-note" data-aside-back>Back again — this was set aside earlier. It waits for you now.</p>
+            {/if}
+            <div class="actions">
+              {#if hasFeature(chatState ?? remote, "later")}
+                <button class="btn accent" data-act="later" onclick={() => answer(req, "later")}>Not now — carry on</button>
+              {/if}
+              <button class="btn" data-act="drive-decline" onclick={() => answer(req, "deny", undefined, undefined, DRIVE_DECLINED)}>Decline</button>
+            </div>
+          {:else if kind === "stuck"}
+            <!-- 784: a run nobody watched repeated itself and was paused; the Mac's card. -->
+            {@const sv = stuckView(req.input, req.reason)}
+            <div class="card-head">{sv.sentence}</div>
+            <p class="card-note">
+              {#if sv.job}The job <b>{sv.job}</b> ran with nobody watching, so it stopped here. Nothing is being spent.{:else}This chat ran with nobody
+                watching, so it stopped here. Nothing is being spent.{/if}
+            </p>
+            <div class="args">
+              {#if sv.ran}<div class="arg"><span class="key">it ran</span><pre>{sv.ran}</pre></div>{/if}
+              {#if sv.result}<div class="arg"><span class="key">{sv.error ? "and got this error" : "and got this"} each time</span><pre>{sv.result}</pre></div>{/if}
+            </div>
+            <div class="actions">
+              <button class="btn accent" data-act="continue" onclick={() => answer(req, "allow")}>Continue</button>
+              <button class="btn danger" data-act="stop" onclick={() => answer(req, "deny", undefined, undefined, "stopped: it looked stuck")}>Stop</button>
+            </div>
+            <p class="card-note">{sv.then} Stop: the run ends; what it did stays in the chat.</p>
           {:else if kind === "playwright"}
             <!-- 367: Playwright, Claude's own browser — the desktop's card. -->
             {@const act = playwrightAction(req.name, req.input)}
@@ -3137,9 +3589,27 @@
                   onclick={() => answer(req, b.decision, undefined, undefined, PLAYWRIGHT_DECLINED)}>{b.label}</button
                 >
               {/each}
+              {#if hasFeature(chatState ?? remote, "later")}
+                <button class="btn" data-act="later" onclick={() => answer(req, "later")}>Not now — carry on</button>
+              {/if}
             </div>
           {:else}
-            <div class="card-head">Allow <b>{req.name}</b>?</div>
+            <!-- 783: a read-only chat's own cards — a connector action that is not a plain read, and remember as a proposal. -->
+            {#if req.kind === "remember"}
+              <div class="card-head" data-card-kind="remember">Remember this?</div>
+              <p class="card-note">This chat is read-only, so Claude asks before it adds to your memory.</p>
+            {:else if req.kind === "home_write"}
+              <div class="card-head" data-card-kind="home_write">Let Home <b>{connectorWords(req.name)}</b>?</div>
+              <p class="card-note">Home changes your mail, calendar or reminders only on your tap — this one change, once. The next one asks again.</p>
+            {:else if req.kind === "connector"}
+              <div class="card-head" data-card-kind="connector">Let <b>{connectorWords(req.name)}</b> run?</div>
+              <p class="card-note">This chat is read-only, and this connector action's name does not say whether it only reads or also changes something.</p>
+            {:else}
+              <div class="card-head">Allow <b>{req.name}</b>?</div>
+            {/if}
+            {#if req.back || (setAside[chatId ?? ""] ?? []).includes(asideKey(req.name, req.input))}
+              <p class="card-note" data-aside-back>Back again — this was set aside earlier. It waits for you now.</p>
+            {/if}
             <div class="args">
               {#each fields(req.input) as f (f.key)}
                 <div class="arg"><span class="key">{f.key}</span><pre>{f.value}</pre></div>
@@ -3147,10 +3617,37 @@
             </div>
             <input type="text" placeholder="A note (the reason, if denied)" bind:value={notes[req.id]} />
             <div class="actions">
-              <button class="btn accent" onclick={() => answer(req, "allow")}>Allow</button>
-              <button class="btn" onclick={() => answer(req, "always")}>Allow for this chat</button>
-              <button class="btn danger" onclick={() => answer(req, "deny")}>Deny</button>
+              {#if req.kind === "remember"}
+                <button class="btn accent" data-act="allow" onclick={() => answer(req, "allow")}>Remember it</button>
+                <button class="btn danger" data-act="deny" onclick={() => answer(req, "deny")}>Don’t</button>
+              {:else if req.kind === "home_write"}
+                <button class="btn accent" data-act="allow" onclick={() => answer(req, "allow")}>Allow once</button>
+                <button class="btn danger" data-act="deny" onclick={() => answer(req, "deny")}>Deny</button>
+              {:else if req.kind === "connector"}
+                <button class="btn accent" data-act="allow" onclick={() => answer(req, "allow")}>Allow once</button>
+                <button class="btn" data-act="always" onclick={() => answer(req, "always")}>Allow always</button>
+                <button class="btn danger" data-act="deny" onclick={() => answer(req, "deny")}>Deny</button>
+              {:else}
+                <button class="btn accent" onclick={() => answer(req, "allow")}>Allow</button>
+                <button class="btn" onclick={() => answer(req, "always")}>Allow for this chat</button>
+                <button class="btn danger" onclick={() => answer(req, "deny")}>Deny</button>
+              {/if}
             </div>
+            {#if req.kind === "connector"}
+              <p class="card-note">Allow always: it runs without asking in every read-only chat, on the Mac and Away. Take it back under Rules.</p>
+            {/if}
+            <!-- 743: set it aside — the turn does the rest and asks again at the end; and the rules in force. -->
+            <div class="actions later-row">
+              {#if hasFeature(chatState ?? remote, "later")}
+                <button class="btn" data-act="later" onclick={() => answer(req, "later")}>Not now — carry on</button>
+              {/if}
+              {#if hasFeature(chatState ?? remote, "rules")}
+                <button class="btn quiet" data-act="rules" onclick={openRules}>Rules</button>
+              {/if}
+            </div>
+            {#if hasFeature(chatState ?? remote, "later")}
+              <p class="card-note">Not now: Claude does the rest of the task without this, then asks you again at the end.</p>
+            {/if}
           {/if}
         </section>
       {/each}
@@ -3165,7 +3662,7 @@
         <div class="queue">
           {#each queue as q (q.id)}
             <div class="held" class:failed={!!q.failed} transition:fly={{ y: 8, duration: motion(180) }}>
-              <span class="held-text">{q.text}</span>
+              <span class="held-text"><MathText text={q.text} /></span>
               {#if heldAsk === q.id}
                 <span class="held-ask">
                   <button class="btn small" onclick={() => void editHeldInItsChat(q.id)}>Edit in its chat</button>
@@ -3183,6 +3680,16 @@
             </div>
           {/each}
         </div>
+      {/if}
+      <!-- Item 780: a job's chat carries its approval card (or its mark). -->
+      {#if client && chatId && sameHost && hasFeature(remote, "jobs")}
+        {@const jc = client}
+        <JobChatCard
+          chat={chatId}
+          where={projectName(chatProject)}
+          load={async (c) => (await jc.jobs()).jobs.find((j) => j.chat === c) ?? null}
+          send={(id, patch) => jc.jobPatch(id, patch)}
+        />
       {/if}
       {#if readOnly}
         <div class="readonly">
@@ -3216,6 +3723,7 @@
           <textarea
             data-kept
             bind:this={box}
+            use:promptBox
             rows="1"
             placeholder={chatId ? "Reply…" : fil ? "What are we making?" : `Message ${projectName(newProject)}…`}
             bind:value={draft}
@@ -3288,6 +3796,8 @@
     >
         <div class="drawer-head">
           <span class="drawer-title">Nightloom</span>
+          <!-- Item 763 H8: back to Home, the first screen. -->
+          <button class="btn small drawer-home" class:on={home} onclick={openHome} data-act="home">Home</button>
           <button class="icon-btn" onclick={() => (drawer = false)} aria-label="Close">{@render icon("x")}</button>
         </div>
         <label class="search">
@@ -3315,12 +3825,17 @@
           {#if hasFeature(remote, "running")}
             <button class="new-row quiet" onclick={openRunning}>{@render icon("pulse")} Running tasks</button>
           {/if}
+          {#if hasFeature(remote, "jobs")}
+            <button class="new-row quiet" data-act="jobs" onclick={() => openJobs()}>{@render icon("pulse")} Jobs</button>
+          {/if}
           {#if hasFeature(remote, "notes")}
             <button class="new-row quiet" onclick={() => openNotes()}>{@render icon("note")} Notes</button>
           {/if}
           {#if hasFeature(remote, "nightshift")}
             <button class="new-row quiet" onclick={openNightshift}>{@render icon("moon")} Nightshift</button>
           {/if}
+          <!-- Item 805: always offered; the sheet says where it cannot be filed. -->
+          <button class="new-row quiet" onclick={openFeedback}>{@render icon("note")} Send feedback</button>
           {#if hasFeature(remote, "dream")}
             <button class="new-row quiet" onclick={() => startPass("dream")}>{@render icon("pulse")} Dream</button>
           {/if}
@@ -3375,7 +3890,7 @@
           {#each recents.filter((r) => matches(r.chat)) as r (r.pid + "/" + r.chat.id)}
             {@const here = r.chat.id === chatId && (chatProject ?? activePid) === r.pid}
             <button class="chat-row" class:here onclick={() => openChat(r.chat.id, r.pid || null)}>
-              <span class="chat-label">{r.chat.label}</span>
+              <span class="chat-label">{#if byHome.has(r.chat.id)}<span class="by-home" role="img" aria-label={BY_HOME_TIP} title={BY_HOME_TIP} data-by-home>⌂</span>{" "}{/if}{r.chat.label}</span>
               <span class="chat-meta">
                 <!-- Item 556: ~~only the desktop's open chat~~ — every chat whose turn runs. -->
                 {#if r.pid === activePid && r.chat.id === remote.active_chat}<span class="live-dot" class:run={remote.busy}></span>{:else if runningIds.has(r.chat.id)}<span class="live-dot run"></span>{/if}
@@ -3489,6 +4004,7 @@
             onkind={switchKind}
             oncompact={() => (sheet = "compact")}
             oncontext={() => (closeSheet(), (contextOn = true))}
+            onrules={openRules}
             onstop={stop}
             ondelete={() => (sheet = "delete")}
           />
@@ -3518,6 +4034,7 @@
         {:else if sheet === "message" && menuOn && chatId}
           {@const target = rowTarget(events, menuOn.row)}
           <MessageMenu
+            listen={client ? client.listenSource() : undefined}
             chat={chatId}
             row={menuOn.row}
             part={menuOn.part}
@@ -3534,10 +4051,28 @@
             onwhole={() => menuOn && (menuOn = { row: menuOn.row, part: null, tool: null })}
             onclose={() => ((sheet = null), (menuOn = null))}
           />
+        {:else if sheet === "dials"}
+          <PlanDials
+            figures={dialFigures}
+            variant="sheet"
+            itemise={chatId && hasFeature(remote, "context")
+              ? {
+                  label: "Itemise",
+                  onclick: () => {
+                    closeSheet();
+                    contextOn = true;
+                  },
+                }
+              : null}
+          />
         {:else if sheet === "rail"}
           <RailSheet {rail} problem={railProblem} busy={remote.busy} onpatch={patchRail} {look} onlook={setLook} />
+          <!-- Item 739: this phone's notifications, under its look. -->
+          <PushRow hosts={pushHosts} />
         {:else if sheet === "notes" && client}
           <NotesSheet {client} where={hostName(active ?? "mac")} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} project={notesPid} projectLabel={notesPid === null ? null : notesPid === NO_PROJECT ? "No project" : (projects.find((x) => x.id === notesPid)?.name ?? null)} resume={notesResume} onview={(v) => (notesPlace = v)} />
+        {:else if sheet === "feedback" && client}
+          <FeedbackSheet {client} available={hasFeature(remote, "feedback")} imagesOk={hasFeature(remote, "feedback_images")} host={remote.host} chat={chatId} chatTitle={chatId ? title : null} project={projects.find((x) => x.id === chatProject)?.name ?? null} onnote={note} />
         {:else if sheet === "nightshift" && client}
           <NightshiftSheet {client} host={remote.host} available={hasFeature(remote, "nightshift")} onnote={note} ontall={(t) => (sheetTall = t)} />
         {:else if sheet === "aside" && chatId}
@@ -3545,13 +4080,43 @@
             chat={chatId}
             {title}
             available={hasFeature(remote, "aside")}
+            media={canMedia}
             host={remote.host}
             aside={asides[chatId] ?? null}
             past={asidePast}
             problem={asideProblem}
+            cache={warmUntil == null ? null : (cacheText ?? "cold")}
+            price={chip?.price ?? null}
             onask={askAside}
             onstop={stopAside}
             oncopy={copy}
+          />
+        {:else if sheet === "rules"}
+          {@const key = chatId ?? ""}
+          {@const via = sameHost ? client : chatClient}
+          {#key key}
+            <RulesSheet
+              title={chatId ? title : null}
+              where={hostWord}
+              missing={!via
+                ? `${HostWord} is unreachable.`
+                : hasFeature(chatState ?? remote, "rules")
+                  ? null
+                  : missingSentence((chatState ?? remote).host, "This Mac's Nightloom is older than the phone page: update it to see and change approval rules from here.")}
+              load={() => via!.rules(chatId, chatProject)}
+              save={(edit) => via!.editRules(chatId, chatProject, edit)}
+              form={ruleForms[key] ?? null}
+              onform={(f) => (ruleForms = { ...ruleForms, [key]: f })}
+            />
+          {/key}
+        {:else if sheet === "changes" && changesKey}
+          {@const key = changesKey}
+          <ChangesSheet
+            files={changesFiles}
+            at={changesAt[key] ?? 0}
+            all={new Set(changesAll[key] ?? [])}
+            onpage={(i) => (changesAt = { ...changesAt, [key]: i })}
+            onall={(path) => (changesAll = { ...changesAll, [key]: [...(changesAll[key] ?? []), path] })}
           />
         {:else if sheet === "council"}
           <CouncilSheet
@@ -3606,6 +4171,17 @@
           <button class="speech-link" data-act="speech-test" onclick={() => ((sheet = "speech"), (sheetTall = true))}>Speech test</button>
         {:else if sheet === "speech"}
           <SpeechTest onclose={closeSheet} />
+        {:else if sheet === "jobs" && client}
+          <JobsSheet
+            api={client}
+            prefill={jobPrefill}
+            project={(chatProject ?? activePid) || null}
+            projectName={projects.find((p) => p.id === ((chatProject ?? activePid) || null))?.name ?? null}
+            fromChat={chatId}
+            where={hostName(active ?? "mac")}
+            onmade={() => setDraft("")}
+            onopen={(id, project) => ((sheet = null), void openChat(id, project ?? projectOf(id)))}
+          />
         {:else if sheet === "running"}
           <RunningSheet
             {running}
@@ -4069,6 +4645,40 @@
   }
   /* A file a reply sent (backlog 343): the attachment chip, tapped to
      fetch it. */
+  /* Item 742: the reply's Changes row — a chip like a sent file's. */
+  .changes-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    margin: 6px 0 2px;
+    padding: 9px 12px;
+    border: 1px solid var(--line2, var(--line));
+    border-radius: 10px;
+    background: var(--sheet, var(--bg));
+    color: var(--ink);
+    font: inherit;
+    font-size: 14px;
+    text-align: left;
+  }
+  .changes-word {
+    font-weight: 600;
+    flex: none;
+  }
+  .changes-sum {
+    color: var(--dim);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .changes-row .spacer {
+    flex: 1;
+  }
   .sent-files {
     display: flex;
     flex-direction: column;
@@ -4127,6 +4737,54 @@
   .turn.reply {
     align-self: stretch;
     font-size: 16px;
+  }
+  /* Item 842: a chapter's divider, as the Mac's ChapterRule draws it: a thin
+     rule, the kind word small and upper-case in mono, the name; Classic in sans. */
+  .chapter-line {
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 0 2px;
+    min-width: 0;
+  }
+  .cl-rule {
+    flex: 1;
+    min-width: 16px;
+    height: 1px;
+    background: var(--line2);
+  }
+  .cl-label {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink2);
+    min-width: 0;
+    max-width: calc(100% - 52px);
+    /* The phone is narrow: a long name takes two lines, centred, then is cut. */
+    text-align: center;
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .cl-kind {
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-right: 8px;
+  }
+  :global(:root[data-layout="classic"]) .cl-label {
+    font-family: var(--sans);
+    font-size: 12.5px;
+  }
+  :global(:root[data-layout="classic"]) .cl-kind {
+    font-size: 11.5px;
+    letter-spacing: 0;
+    text-transform: none;
   }
   .turn.note {
     align-self: center;
@@ -4574,6 +5232,14 @@
     color: var(--failed);
     border-color: color-mix(in srgb, var(--failed) 45%, transparent);
   }
+  /* 743: the card's second row — Not now grows, Rules stays a word. */
+  .later-row .btn:first-child {
+    flex: 1;
+  }
+  .btn.quiet {
+    border-color: transparent;
+    color: var(--dim);
+  }
 
   /* ---- the dock: toast, queue, composer ---- */
   .dock {
@@ -4873,6 +5539,9 @@
     background: var(--sheet);
     box-shadow: inset 0 0 0 1px var(--line);
   }
+  .chat-label .by-home {
+    color: var(--accent-ink);
+  }
   .chat-label {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -5044,6 +5713,42 @@
   .ran-card summary {
     margin-top: 4px;
     font-size: 12px;
+  }
+  /* Item 706: the wrap-up as a Nightloom hand-off card on his side, folded. */
+  .hb-card {
+    white-space: normal;
+    min-width: 0;
+    border-left: 3px solid var(--accent);
+    padding-left: 8px;
+  }
+  .hb-head {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-ink, var(--accent));
+  }
+  .hb-headline {
+    margin-top: 2px;
+    overflow-wrap: anywhere;
+  }
+  .hb-goal {
+    margin-right: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0.7;
+  }
+  .hb-card summary {
+    margin-top: 4px;
+    font-size: 12px;
+    opacity: 0.75;
+  }
+  .hb-card pre {
+    font-family: inherit;
+    font-size: 12.5px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin: 4px 0 0;
+    max-height: 50vh;
+    overflow: auto;
   }
   .pics {
     display: block;
@@ -5542,6 +6247,39 @@
   }
   .ctx-row .ctx-k + .ctx-k {
     margin-left: 6px;
+  }
+  /* Wave O: the price takes its own line under the row, right-aligned
+     under the cache part (warm or cold alike, so it never reads as the 5h
+     figure's); the tooltip opens under the row's right end. */
+  .ctx-row {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+  .ctx-row .ctx-k.ctx-price {
+    margin-left: 0;
+    flex-basis: 100%;
+    text-align: right;
+    font-family: var(--mono);
+    color: var(--ink2, var(--ink));
+    white-space: nowrap;
+  }
+  .ctx-cache.cold .ctx-v {
+    color: var(--dim);
+  }
+  .ctx-tip {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 10px;
+    max-width: calc(100% - 20px);
+    padding: 6px 9px;
+    border-radius: 8px;
+    background: var(--raised, var(--sheet));
+    box-shadow: inset 0 0 0 1px var(--line2), 0 6px 18px rgba(0, 0, 0, 0.35);
+    color: var(--ink);
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: pre-line;
+    text-align: left;
   }
   .ctx-v {
     font-family: var(--mono);

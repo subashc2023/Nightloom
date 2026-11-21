@@ -15,7 +15,7 @@
  * in place of the full-context one (blocker 311).
  */
 import { app, addToast, readTurnBudget, send } from "./state.svelte";
-import { message } from "./handoff.svelte";
+import { wrapUpToSend } from "./handoff.svelte";
 import { budgetOverride } from "./api";
 import { usageWrapUp } from "./budget";
 import { requestWrapUp } from "./wrapAsides.svelte";
@@ -25,7 +25,8 @@ export const wrapAsk = $state<{ session: string | null }>({ session: null });
 
 /** The words the button sends for this chat. */
 export function wrapUpText(session: string): string {
-  return usageWrapUp(message(session));
+  // ~~`message(session)`~~ — item 747: with the fixed sections and his goal.
+  return usageWrapUp(wrapUpToSend(session));
 }
 
 /** The chat the button acts on: the running chat while a turn runs

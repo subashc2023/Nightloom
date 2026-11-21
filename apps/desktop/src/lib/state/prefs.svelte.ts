@@ -18,10 +18,24 @@ export function loadLastProject(): string | null {
   }
 }
 
-export function saveLastProject(id: string | null): void {
+/** The last project's name, for the launch screen's "Opening <name>…"
+ *  before the project list is read (item 865). */
+const LAST_PROJECT_NAME_KEY = "nightloom.last-project-name";
+
+export function loadLastProjectName(): string | null {
+  try {
+    return localStorage.getItem(LAST_PROJECT_NAME_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function saveLastProject(id: string | null, name?: string | null): void {
   try {
     if (id) localStorage.setItem(LAST_PROJECT_KEY, id);
     else localStorage.removeItem(LAST_PROJECT_KEY);
+    if (id && name) localStorage.setItem(LAST_PROJECT_NAME_KEY, name);
+    else if (!id) localStorage.removeItem(LAST_PROJECT_NAME_KEY);
   } catch {
     // best-effort
   }

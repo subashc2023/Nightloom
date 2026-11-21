@@ -24,6 +24,7 @@ import {
 import type { SessionEvent } from "./types";
 import * as api from "./api";
 import { draftHistory, drafts, historyFor, readDraft, setDraftText } from "./drafts.svelte";
+import { rewoundOffer } from "./rewindDraft.svelte";
 
 /*
  * One inverse per operation (nightshift backlog 064): each undo calls the
@@ -323,6 +324,8 @@ describe("the Undo toast", () => {
   });
 
   it("a rewind raises '… back in the box · Undo' (backlog 247), 'Rewound to here' on a reply", async () => {
+    // Item 724: an empty box (an earlier test's draft would now stay).
+    delete drafts["chat-1"];
     await rewindTo(3);
     const toast = app.toasts.find((t) => t.text === "Rewound — your message is back in the box");
     expect(toast?.action?.label).toBe("Undo");
@@ -425,14 +428,34 @@ describe("rewind puts his message back in the box (backlog 247)", () => {
     expect(readDraft("chat-1").text).toBe("");
   });
 
-  it("replaces half-typed text, which goes to the top of the drafts, and says so (blocker 581)", async () => {
+  // ~~Blocker 581: replaces half-typed text, which goes to the drafts~~ —
+  // superseded 2026-11-18 by item 724 (his ask): the draft stays in the box.
+  it("keeps half-typed text in the box; the message goes to the top of the drafts and is offered (item 724)", async () => {
     setDraftText("chat-1", "half typed");
     await rewindTo(3);
-    expect(readDraft("chat-1").text).toBe("two");
-    expect(historyFor("chat-1")[0].text).toBe("half typed");
-    expect(app.toasts.some((t) => t.text.includes("half-typed message is in drafts"))).toBe(true);
+    expect(readDraft("chat-1").text).toBe("half typed");
+    expect(historyFor("chat-1")[0].text).toBe("two");
+    expect(rewoundOffer.key).toBe("chat-1");
+    expect(rewoundOffer.text).toBe("two");
+    expect(app.toasts.some((t) => t.text.includes("your draft stayed; the message is in drafts"))).toBe(true);
     await undo();
     expect(readDraft("chat-1").text).toBe("half typed");
+    expect(rewoundOffer.key).toBeNull();
+  });
+
+  it("a box of only spaces is not a draft: the message fills it, as before (item 724)", async () => {
+    setDraftText("chat-1", "  \n");
+    await rewindTo(3);
+    expect(readDraft("chat-1").text).toBe("two");
+  });
+
+  it("a second rewind of the same message moves it to the top of the drafts, not twice (item 724)", async () => {
+    setDraftText("chat-1", "half typed");
+    await rewindTo(3);
+    await undo();
+    await rewindTo(3);
+    expect(historyFor("chat-1").filter((s) => s.text === "two")).toHaveLength(1);
+    expect(historyFor("chat-1")[0].text).toBe("two");
   });
 
   it("undo leaves the box alone once he has changed the restored message", async () => {

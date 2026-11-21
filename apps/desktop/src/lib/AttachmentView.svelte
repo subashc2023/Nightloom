@@ -4,6 +4,10 @@
   import { attachmentBytes, type AttachmentContent } from "./attachments.svelte";
   import * as tabs from "./tabs";
   import { viewGet, viewSet } from "./viewState";
+  // Item 879: a transparent PNG/GIF/WebP with dark ink sits on white paper, readable on the dark looks.
+  import { paperIfDarkInk } from "./rasterBacking";
+  // Item 885: a click zooms in at that spot (again: back to fit), pinch / ctrl-wheel zoom, a drag pans; kept per tab.
+  import { zoomable } from "./pictureZoomAction";
 
   /**
    * An attachment kept as an ordinary tab (nightshift backlog 145 pass 2):
@@ -12,8 +16,9 @@
    * bytes are the open chat's; a tab whose chat is not the open one is a
    * card until that chat is brought forward (the log is the backend's
    * one session, blocker 182), like a chat tab that is not the live one.
-   * An image fits the pane and shows at its own size on a click; a PDF
-   * fills it.
+   * An image fits the pane; ~~shows at its own size on a click~~ (item 885,
+   * 2026-11-19) a click zooms in at that spot, a second click back to fit,
+   * pinch zooms, a drag pans — kept per tab; a PDF fills it.
    */
   let { content }: { content: AttachmentContent } = $props();
 
@@ -24,16 +29,9 @@
     const s = app.sessions.find((x) => x.id === content.session);
     return s?.title ?? s?.first_user ?? content.session.slice(0, 8);
   });
-  // Item 495: fit-or-own-size, kept per attachment past this view.
-  const fullKey = $derived(`attachment.full:${content.session}:${content.turn}:${content.media}:${content.index}`);
-  let full = $state(false);
-  $effect.pre(() => {
-    full = viewGet(fullKey, false);
-  });
-  function setFull(v: boolean) {
-    full = v;
-    viewSet(fullKey, v, false);
-  }
+  // Item 495, as a zoom since item 885: the zoom and pan, kept per attachment past this view.
+  const zoomKey = $derived(`attachment.zoom:${content.session}:${content.turn}:${content.media}:${content.index}`);
+  const kept = $derived(viewGet(zoomKey, ""));
 
   /** Bring the attachment's chat forward: its chat tab if there is one,
    *  else the chat lands in this pane's active tab. */
@@ -62,16 +60,14 @@
     <p>This attachment is no longer in the chat's log — the message was rewound or removed.</p>
   </div>
 {:else if content.media === "image"}
-  <div class="attach-view" class:scroll={full}>
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div class="attach-view" data-picture-viewer use:zoomable={{ initial: kept, onchange: (v) => viewSet(zoomKey, v, "") }}>
     <img
       class="attach-view-img"
-      class:full
       {src}
+      use:paperIfDarkInk
       alt={bytes.name}
-      use:tip={full ? "Click to fit the pane" : "Click for the image's own size"}
-      onclick={() => setFull(!full)}
+      draggable="false"
+      use:tip={"Click to zoom in there (again to fit) · pinch to zoom · drag to pan"}
     />
   </div>
 {:else}
@@ -91,21 +87,15 @@
     background: var(--well);
     overflow: hidden;
   }
-  .attach-view.scroll {
-    display: block;
-    overflow: auto;
-  }
   .attach-view-img {
     max-width: 100%;
     max-height: 100%;
     object-fit: contain;
     cursor: zoom-in;
     display: block;
-  }
-  .attach-view-img.full {
-    max-width: none;
-    max-height: none;
-    cursor: zoom-out;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-user-drag: none;
   }
   .attach-view-pdf {
     width: 100%;

@@ -64,7 +64,8 @@ describe("685: the header card and its strip", () => {
     expect(rule(".twin .aside-head-in")).toMatch(/position: absolute;/);
     // The thread's head keeps the full card's room: the card's extra over the band, less the column's gap.
     expect(rule(".aside-head-room")).toMatch(/height: max\(0px, calc\(var\(--head-full\) - var\(--strip-h\) \+ 14px\)\);\s*margin-bottom: -26px;/);
-    expect(viewSrc).toMatch(/lead=\{room\}/);
+    // test-change: item 856 — Classic, now on the shared thread too, leads with the passage.
+    expect(viewSrc).toMatch(/lead=\{classic\(\) \? quoted : room\}/);
   });
 
   it("the fold reads the thread's own scroller, so a place put back brings its fold", () => {

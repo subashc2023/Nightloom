@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import topBar from "./TopBar.svelte?raw";
-import rightRail from "./RightRail.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import topBarLogicRaw from "./topBar/logic.svelte.ts?raw";
+import topBarRaw from "./TopBar.svelte?raw";
+const topBar = asOneFile(topBarRaw, topBarLogicRaw);
+import rightRailLogicRaw from "./rightRail/logic.svelte.ts?raw";
+import rightRailRaw from "./RightRail.svelte?raw";
+const rightRail = asOneFile(rightRailRaw, rightRailLogicRaw);
 import providerRail from "./ProviderRail.svelte?raw";
 import composer from "./Composer.svelte?raw";
 import { displayName } from "./modelSeen";
@@ -26,13 +31,15 @@ describe("657: the aside chip opens the settings card", () => {
 
   it("opens the same popover with the same RightRail, given the aside", () => {
     expect(topBar).toMatch(/\{#if aside \? showAsideCard : app\.showRail\}\s*<!--[\s\S]*?-->\s*<div\s+class="popover hud-m"/);
-    expect(topBar).toMatch(/<RightRail \{aside\} \{asideChat\} \/>/);
+    // test-change: item 856 — the logic's members are written out (`aside={T.aside}`), so no shorthand.
+    expect(topBar).toMatch(/<RightRail aside=\{aside\} asideChat=\{asideChat\} \/>/);
     // Its own flag: the chat bar's card does not open with it.
     expect(topBar).toMatch(/if \(aside \? !showAsideCard : !app\.showRail\) return;\n\s+placePop\(\);/);
   });
 
   it("the card's ProviderRail is the aside's; no Tasks tab for an aside", () => {
-    expect(rightRail).toMatch(/<ProviderRail \{aside\} \{asideChat\} \/>/);
+    // test-change: item 856 — the logic's members are written out, so no shorthand.
+    expect(rightRail).toMatch(/<ProviderRail aside=\{aside\} asideChat=\{asideChat\} \/>/);
     expect(rightRail).toMatch(/aside \? TABS\.filter\(\(t\) => t\.id !== "tasks"\) : TABS/);
   });
 

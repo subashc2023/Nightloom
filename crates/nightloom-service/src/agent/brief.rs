@@ -92,6 +92,9 @@ const BRIEF_CLOSE: &str = "</nightloom-subagent-brief>";
 pub const SPAWN_CAP: usize = 6;
 /// The per-turn spawn count, beside the brief.
 pub const SPAWNS_FILE: &str = "subagent-spawns.txt";
+/// What a subagent's `log_run` / `write_state` call is refused with (803):
+/// the chain's two files are the main chat's, like its budget.
+pub const SUBAGENT_CHAIN_DENIED: &str = "Not run: only the main chat writes the run log and the state file. Put what you found in your report and carry on with your task.";
 
 /// The refusal the model reads when the cap is reached — his wording.
 /// ~~"The limit is set beside \"Subagents run on auto\""~~ — struck
@@ -813,6 +816,19 @@ pub struct EarlierAgent {
     /// `subagent_type: reusable` (a 1-hour cache) by its `.meta.json`
     /// `agentType`; anything else, or no meta, is the 5-minute cache.
     pub reusable: bool,
+    /// Nightloom told it to wrap up at [`STOP_TOKENS`] (707), by the
+    /// chat's [`STOPS_FILE`]; set by [`mark_stops`].
+    pub wrap_asked: bool,
+}
+
+/// Mark the helpers Nightloom has told to wrap up (707), so the main
+/// thread's view of them says so.
+pub fn mark_stops(mut agents: Vec<EarlierAgent>, dir: &Path) -> Vec<EarlierAgent> {
+    let stops = read_stops(dir);
+    for a in &mut agents {
+        a.wrap_asked = stops.contains(&a.id);
+    }
+    agents
 }
 
 /// The chat's subagents beside its session file, `<transcript without
@@ -861,6 +877,7 @@ pub fn earlier_agents(transcript: &Path, skip: Option<&str>) -> Vec<EarlierAgent
             context: context_tokens(transcript, Some(id)),
             last_ms,
             reusable: field("agentType").as_deref() == Some("reusable"),
+            wrap_asked: false,
         });
     }
     out.sort_by(|a, b| b.last_ms.cmp(&a.last_ms).then_with(|| a.id.cmp(&b.id)));
@@ -886,7 +903,21 @@ impl EarlierAgent {
 /// them could be continued now — a list of cold helpers changes nothing
 /// there, and launches carry the full list anyway.
 pub fn continuable_agents_lines(transcript: &Path, now_ms: i64) -> Option<String> {
+    continuable_agents_lines_in(transcript, None, now_ms)
+}
+
+/// [`continuable_agents_lines`] with the chat's directory, so a helper
+/// Nightloom told to wrap up is marked (707).
+pub fn continuable_agents_lines_in(
+    transcript: &Path,
+    dir: Option<&Path>,
+    now_ms: i64,
+) -> Option<String> {
     let agents = earlier_agents(transcript, None);
+    let agents = match dir {
+        Some(d) => mark_stops(agents, d),
+        None => agents,
+    };
     if !agents.iter().any(|a| a.continuable(now_ms)) {
         return None;
     }
@@ -927,8 +958,13 @@ pub fn earlier_agents_lines(agents: &[EarlierAgent], now_ms: i64) -> Option<Stri
         } else {
             ""
         };
+        let asked = if a.wrap_asked {
+            format!(" · asked to wrap up at {}k", STOP_TOKENS / 1000)
+        } else {
+            String::new()
+        };
         out.push_str(&format!(
-            "\n- {}{name}: {ctx} · last ran {mins} min ago · {cache}, {state}{retire}",
+            "\n- {}{name}: {ctx} · last ran {mins} min ago · {cache}, {state}{retire}{asked}",
             a.id
         ));
     }
@@ -967,6 +1003,142 @@ fn own_text<'a>(input: &'a Value, field: &str) -> Option<&'a str> {
         Some(i) => &t[i + BRIEF_CLOSE.len()..],
         None => t,
     })
+}
+
+// ---- what the helper is not shown (nightshift backlog 707, 2026-11-15) ----
+//
+// 707, measured: a helper's first message was the brief, then the main
+// agent's task verbatim, starting "Estimated context: ~130k. … Aim for at
+// most ~30 tool calls." — and capped helpers ended at 90–123% of their cap
+// in 8 of 11 runs (they anchor on it). The estimate and the Fable reason are
+// for the hook's checks and the main agent's planning; a tool-call cap is
+// a number the helper steers by instead of the task. The hook reads them
+// from the call as written, then hands the helper the task without them.
+
+/// The task as the helper receives it: the `Estimated context:` sentence,
+/// the `Why Fable:` line (to its end) and any tool-call budget sentence
+/// ("Aim for at most ~30 tool calls.", "about 50 tool calls at most", "a
+/// 40 tool-call budget") taken out; a sentence that carried other words
+/// keeps them ("…, stop at 2 survivors." stays). Narrow on purpose: a
+/// phrase about tool calls with no figure ("no Agent tool calls") stays.
+pub fn strip_budget_lines(task: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for line in task.split('\n') {
+        let kept = strip_line(line);
+        // A line that held only what was taken out goes; a blank one stays.
+        if kept.trim().is_empty() && !line.trim().is_empty() {
+            continue;
+        }
+        out.push(kept);
+    }
+    out.join("\n")
+}
+
+/// One line of [`strip_budget_lines`].
+fn strip_line(line: &str) -> String {
+    let mut kept: Vec<String> = Vec::new();
+    for sentence in sentences(line) {
+        let bare = sentence
+            .trim_start()
+            .trim_start_matches(['-', '*', '>', ' ', '\t'])
+            .to_ascii_lowercase();
+        if bare.starts_with(&FABLE_LABEL.to_ascii_lowercase()) {
+            // The reason runs to the line's end (the refusal asks for "a
+            // line of its prompt").
+            break;
+        }
+        if bare.starts_with(&ESTIMATE_LABEL.to_ascii_lowercase()) {
+            continue;
+        }
+        match strip_tool_budget(sentence) {
+            Some(rest) if rest.is_empty() => {}
+            Some(rest) => kept.push(rest),
+            None => kept.push(sentence.trim().to_string()),
+        }
+    }
+    if kept.is_empty() {
+        return String::new();
+    }
+    // A line that lost nothing comes back exactly as it was.
+    let joined = kept.join(" ");
+    if joined == line.trim() {
+        return line.to_string();
+    }
+    let lead: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+    format!("{lead}{joined}")
+}
+
+/// A line's sentences: each runs to a `.`, `!` or `?` followed by
+/// whitespace (so "~1.5M" does not split), the line's end included.
+fn sentences(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let b = line.as_bytes();
+    for i in 0..b.len() {
+        if matches!(b[i], b'.' | b'!' | b'?') && b.get(i + 1).is_some_and(u8::is_ascii_whitespace) {
+            out.push(&line[start..=i]);
+            start = i + 1;
+        }
+    }
+    if start < line.len() {
+        out.push(&line[start..]);
+    }
+    out
+}
+
+/// A sentence with a tool-call budget: `None` when it has none, else what
+/// is left of it once the budget is out (empty when nothing is).
+fn strip_tool_budget(sentence: &str) -> Option<String> {
+    use std::sync::LazyLock;
+    // "a 40 tool-call budget": the sentence is the budget.
+    static NOUN: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)~?\d+(?:\s*(?:-|–|to)\s*~?\d+)?[- ]tool[- ]call budget")
+            .expect("budget noun regex")
+    });
+    // "aim for at most ~25 tool calls", "about 25 to 35 tool calls total".
+    static PHRASE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)(?:\baim (?:to finish in|for)\s+)?(?:\bat most\s+)?(?:\babout\s+)?~?\d+(?:\s*(?:-|–|to)\s*~?\d+)?\s+tool[- ]calls?(?:\s+(?:at most|max|total|in all))?",
+        )
+        .expect("budget phrase regex")
+    });
+    static LABEL: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)^\s*(?:budget|be economical|be efficient|be brief)\s*:\s*")
+            .expect("budget label regex")
+    });
+    if NOUN.is_match(sentence) {
+        return Some(String::new());
+    }
+    if !PHRASE.is_match(sentence) {
+        return None;
+    }
+    let rest = PHRASE.replace_all(sentence, "");
+    let rest = LABEL.replace(&rest, "");
+    // "stop and report when done or at that point": the point was the cap.
+    let rest = rest.replace(" or at that point", "");
+    let end = match sentence.trim_end().chars().last() {
+        Some(c @ ('.' | '!' | '?')) => c.to_string(),
+        _ => String::new(),
+    };
+    let mut rest = rest
+        .trim_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | ':' | '.'))
+        .replace(" ,", ",")
+        .replace(",,", ",");
+    // A lone word left ("Use" of "Use at most 12 tool calls") was the cap's.
+    if rest.split_whitespace().count() < 2 {
+        return Some(String::new());
+    }
+    // What was left a parenthesis to the cap ("(this is mostly a thinking
+    // task; …)") stands as its own sentence.
+    if rest.starts_with('(') && rest.ends_with(')') {
+        rest = rest[1..rest.len() - 1].trim().to_string();
+    }
+    let mut chars = rest.chars();
+    let first: String = chars
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
+    Some(format!("{first}{}{end}", chars.as_str()))
 }
 
 /// The token count a launch states for its helper's context, from a line
@@ -1137,8 +1309,87 @@ pub fn context_due(last: Option<u64>, context: Option<u64>, subagent: bool) -> O
     (crossed || (subagent && c > SPLIT_TOKENS)).then_some(band.max(last.unwrap_or(0)))
 }
 
-/// What a helper past the split mark is told on every call (554's "past
-/// ~250k, finish the step you are on and report").
+/// Where Nightloom tells a helper to wrap up, once (707; practices §3's
+/// "past ~285k, finish the step you are on and report", his mark of
+/// 2026-11-10, which moved 554's 250k).
+pub const STOP_TOKENS: u64 = 285_000;
+
+/// The helpers this chat has told to wrap up, one `agent_id` a line,
+/// beside the brief: the notice goes once per helper, for the chat's life
+/// (a helper continued in a later message is not told again).
+pub const STOPS_FILE: &str = "subagent-stops.txt";
+
+/// The one notice a helper gets on its first call past [`STOP_TOKENS`].
+pub fn stop_notice(context: u64) -> String {
+    format!(
+        "[Nightloom] Past ~{}k of context (you are at {}k): if you are a step or two from done, \
+         finish; otherwise finish the step you are on, then report, saying what is left.",
+        STOP_TOKENS / 1000,
+        (context + 500) / 1000
+    )
+}
+
+/// What the main thread is told when Nightloom has asked one of its
+/// helpers to wrap up (707): it rides the main thread's next call.
+pub fn stop_main_note(id: &str, name: Option<&str>, context: u64) -> String {
+    let who = match name {
+        Some(n) => format!("\u{201c}{n}\u{201d} ({id})"),
+        None => id.to_string(),
+    };
+    format!(
+        "[Nightloom, not from Swaraag] Your helper {who} passed {}k of context (now {}k), so \
+         Nightloom asked it to wrap up: finish the step it is on and report what is left. Expect \
+         its report; give what is left to a fresh helper.",
+        STOP_TOKENS / 1000,
+        (context + 500) / 1000
+    )
+}
+
+/// Take this helper's one notice: `true` the first time `id` is claimed in
+/// the chat, `false` after (or when the file cannot be locked — no notice
+/// rather than a repeated one). Under a file lock: a helper's parallel
+/// calls run their hooks at once.
+pub fn claim_stop(dir: &Path, id: &str) -> bool {
+    use std::io::{Read as _, Seek as _, Write as _};
+    if id.is_empty() || id.contains('\n') {
+        return false;
+    }
+    let _ = std::fs::create_dir_all(dir);
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(STOPS_FILE))
+    else {
+        return false;
+    };
+    if file.lock().is_err() {
+        return false;
+    }
+    let mut have = String::new();
+    let _ = file.read_to_string(&mut have);
+    if have.lines().any(|l| l.trim() == id) {
+        return false;
+    }
+    let _ = file.seek(std::io::SeekFrom::End(0));
+    file.write_all(format!("{id}\n").as_bytes()).is_ok()
+}
+
+/// The helpers Nightloom has told to wrap up in this chat.
+pub fn read_stops(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join(STOPS_FILE))
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// What a helper past the retire mark is told on every call (553). Under
+/// [`RETIRE_TOKENS`] it says what 554's 250k note said; the hook now sends
+/// it only past the retire mark, the one [`stop_notice`] covering 285k.
 pub fn context_wrap_note(context: u64) -> String {
     let k = (context + 500) / 1000;
     if context > RETIRE_TOKENS {
@@ -2502,15 +2753,53 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     // and the refresh below would always run — 15 s of his Skip, measured.
     // That call takes the reading there is instead; the resume's next call
     // has the reply's fresh wire reading.
-    let usage = if wire_fresh {
-        crate::plan_usage::read()
-    } else if is_resumed_call(dir, stdin_json) {
-        crate::plan_usage::read_without_refresh()
-    } else {
-        crate::plan_usage::read_fresh_shared(std::time::Duration::from_secs(120))
+    // Item 722: his message's own hook (`UserPromptSubmit`) never runs it
+    // either. The CLI sends nothing to the model until this hook returns,
+    // and after any pause of two minutes the wire reading is stale — so
+    // nearly every message waited on a whole `/usage` run (11.3 s and
+    // 22.0 s measured in his session 53146e33, 2026-11-16) before its
+    // first request. The line shows the reading there is; the window asks
+    // for a fresh one as he starts typing (`plan_usage::refresh_soon`),
+    // and the first reply brings the wire's own.
+    let usage = match usage_source(wire_fresh, || {
+        is_prompt_event(stdin_json) || is_resumed_call(dir, stdin_json)
+    }) {
+        UsageSource::Files => crate::plan_usage::read(),
+        UsageSource::NoRefresh => crate::plan_usage::read_without_refresh(),
+        UsageSource::Refresh => {
+            crate::plan_usage::read_fresh_shared(std::time::Duration::from_secs(120))
+        }
     };
     let week = week_of(&usage, now_ms);
     decide_with_week(dir, stdin_json, reading_of(usage), week)
+}
+
+/// Where [`decide`] takes the plan's reading from.
+#[derive(Debug, PartialEq, Eq)]
+enum UsageSource {
+    /// The files as they are: the chat's wire reading is fresh and wins.
+    Files,
+    /// The files or the last refresh's stamp, never a `/usage` run: a
+    /// call that must not wait on one.
+    NoRefresh,
+    /// A `/usage` run when the files are stale (shared, once a minute).
+    Refresh,
+}
+
+/// `must_not_wait` is asked only when the wire reading is stale.
+fn usage_source(wire_fresh: bool, must_not_wait: impl FnOnce() -> bool) -> UsageSource {
+    if wire_fresh {
+        UsageSource::Files
+    } else if must_not_wait() {
+        UsageSource::NoRefresh
+    } else {
+        UsageSource::Refresh
+    }
+}
+
+/// Whether the hook's input is a user message's ([`PROMPT_EVENT`]).
+fn is_prompt_event(stdin_json: &str) -> bool {
+    serde_json::from_str::<HookInput>(stdin_json).is_ok_and(|i| i.hook_event_name == PROMPT_EVENT)
 }
 
 /// Whether this call is the one a card is waiting on in `dir` (item 522's
@@ -2548,6 +2837,45 @@ pub fn decide_with(dir: &Path, stdin_json: &str, gauge: Option<WindowReading>) -
 /// so the suite holds for milliseconds rather than minutes — and (backlog
 /// 192) what the hook senses of the Mac, so it runs against a fixed one.
 pub(super) fn decide_holding(
+    dir: &Path,
+    stdin_json: &str,
+    gauge: Option<WindowReading>,
+    week: Option<u8>,
+    hold_ms: i64,
+    poll_ms: u64,
+    senses: &Senses,
+) -> HookReply {
+    // Item 825: a Bitwarden "always" value is released here, at run time,
+    // only into a command that runs its rule — never from what the model
+    // declared. Every call first takes back a copy an earlier one was given.
+    crate::secret::rehold(dir);
+    let gate = serde_json::from_str::<HookInput>(stdin_json)
+        .ok()
+        .filter(|i| i.hook_event_name != PROMPT_EVENT)
+        .map(|i| {
+            let main = i.agent_id.as_deref().is_none_or(str::is_empty);
+            crate::secret::release_gate(dir, &i.tool_name, &i.tool_input, main)
+        })
+        .unwrap_or(crate::secret::Gate::Pass);
+    if let crate::secret::Gate::Deny(reason) = gate {
+        return HookReply::deny(reason);
+    }
+    let reply = decide_holding_unheld(dir, stdin_json, gauge, week, hold_ms, poll_ms, senses);
+    if let crate::secret::Gate::Release(notes) = gate
+        && reply.decision() != "deny"
+    {
+        for note in &notes {
+            // A copy that cannot be made leaves the command without it:
+            // it fails as a missing file would, and nothing else is told.
+            let _ = crate::secret::release(note);
+        }
+    }
+    reply
+}
+
+/// [`decide_holding`] past the held-secret gate: the brief, the caps, the
+/// usage line.
+fn decide_holding_unheld(
     dir: &Path,
     stdin_json: &str,
     gauge: Option<WindowReading>,
@@ -2607,7 +2935,7 @@ pub(super) fn decide_holding(
         let earlier = (!subagent)
             .then_some(input.transcript_path.as_deref())
             .flatten()
-            .and_then(|t| continuable_agents_lines(t, now_ms));
+            .and_then(|t| continuable_agents_lines_in(t, Some(dir), now_ms));
         let line = match (line, earlier) {
             (Some(l), Some(e)) => Some(format!("{l}\n{e}")),
             (l, e) => l.or(e),
@@ -2649,6 +2977,15 @@ pub(super) fn decide_holding(
             "Not run: only the main chat sets the budget. Carry on with your task.".into(),
         );
     }
+    // A hand-off chain's run log and state file (items 789, 791; 803) are
+    // the main chat's: a helper's write would replace the state file whole
+    // or log a run that is not the chat's. Its findings go in its report.
+    if subagent
+        && (input.tool_name == crate::mcp_server::mcp_name(crate::chain::LOG_TOOL)
+            || input.tool_name == crate::mcp_server::mcp_name(crate::chain::STATE_TOOL))
+    {
+        return HookReply::deny(SUBAGENT_CHAIN_DENIED.into());
+    }
     // The usage line for this call, when due (backlog 249): read after the
     // verdict, so the ledger it quotes is the one this call just updated.
     let line = if show {
@@ -2657,9 +2994,10 @@ pub(super) fn decide_holding(
         } else {
             usage_line(read_turn_budget(dir).as_ref(), reading, week, context)
         };
-        // A helper past the split mark is told to wrap up (553, 554).
+        // A helper past the retire mark is told to hand back on every call
+        // (553); its one notice at 285k (707) leads the line below.
         let usage = match (usage, context) {
-            (Some(u), Some(c)) if subagent && c > SPLIT_TOKENS => {
+            (Some(u), Some(c)) if subagent && c > RETIRE_TOKENS => {
                 Some(format!("{u}\n{}", context_wrap_note(c)))
             }
             (u, _) => u,
@@ -2669,7 +3007,10 @@ pub(super) fn decide_holding(
             .then_some(input.transcript_path.as_deref())
             .flatten()
             .and_then(|t| {
-                earlier_agents_lines(&earlier_agents(t, subagent.then_some(who)), now_ms)
+                earlier_agents_lines(
+                    &mark_stops(earlier_agents(t, subagent.then_some(who)), dir),
+                    now_ms,
+                )
             });
         match (usage, earlier) {
             (Some(u), Some(e)) => Some(format!("{u}\n{e}")),
@@ -2686,14 +3027,39 @@ pub(super) fn decide_holding(
             input
                 .transcript_path
                 .as_deref()
-                .and_then(|t| continuable_agents_lines(t, now_ms)),
+                .and_then(|t| continuable_agents_lines_in(t, Some(dir), now_ms)),
         )
     } else {
         wake
     };
+    // A helper's one notice past 285k (707), on the first of its calls
+    // that runs there; the main thread hears of it on its next call.
+    let stop = match context {
+        Some(c) if subagent && c > STOP_TOKENS && claim_stop(dir, who) => {
+            let name = input.transcript_path.as_deref().and_then(|t| {
+                earlier_agents(t, None)
+                    .into_iter()
+                    .find(|a| a.id == who)
+                    .and_then(|a| a.name)
+            });
+            let _ = super::steer::queue(
+                dir,
+                super::steer::MAIN,
+                super::steer::Queued {
+                    id: format!("stop-{who}"),
+                    text: stop_main_note(who, name.as_deref(), c),
+                    at_ms: now_ms,
+                    about: None,
+                    raw: true,
+                },
+            );
+            Some(stop_notice(c))
+        }
+        _ => None,
+    };
     // The wrap-up and the wake (538) lead what the model reads beside the
     // call; the usage line follows.
-    let line = [wrap_note.clone(), wake, line]
+    let line = [wrap_note.clone(), stop, wake, line]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
@@ -2807,13 +3173,23 @@ pub(super) fn decide_holding(
     // above; only one stated past the mark is refused here).
     // A call with no string task is no launch the hook has an opinion on.
     let task = input.tool_input.get("prompt").is_some_and(Value::is_string);
-    if task && let Err(reason) = estimate_verdict(stated_estimate(&input.tool_input), subagent) {
+    // A task this hook already briefed passed its checks then, and its
+    // estimate and Fable lines are gone from it now (707).
+    let briefed = input
+        .tool_input
+        .get("prompt")
+        .and_then(Value::as_str)
+        .is_some_and(|p| p.trim_start().starts_with(BRIEF_OPEN) && p.contains(BRIEF_CLOSE));
+    if task
+        && !briefed
+        && let Err(reason) = estimate_verdict(stated_estimate(&input.tool_input), subagent)
+    {
         return HookReply::deny(reason);
     }
     // Its model under Choose (540): a Fable launch with no reason is
     // refused before it counts, too.
     let chosen = match limits.model {
-        SubagentModel::Choose if task => match choose_model(&input.tool_input) {
+        SubagentModel::Choose if task && !briefed => match choose_model(&input.tool_input) {
             Ok(c) => Some(c),
             Err(reason) => return HookReply::deny(reason),
         },
@@ -2903,6 +3279,35 @@ pub(super) fn decide_holding(
     {
         return HookReply::deny(super::fork::report(&out));
     }
+    // Item 761: the second and later spawns of one type and model in this
+    // turn wait for the first's first reply, so they read its cached
+    // prompt; last of the checks, so a refused spawn never leads a group.
+    let line = if task {
+        // The caller by its own id (a helper's agent id, a main thread's
+        // session — an aside or a checkpoint fork sharing this folder is
+        // its own session, with its own subagents folder to watch) and
+        // the turn, so a group never spans two sessions or two turns.
+        let caller = format!("{who}@{turn}");
+        let note = super::stagger::hold(
+            dir,
+            input.transcript_path.as_deref(),
+            &caller,
+            &input.tool_input,
+            alias,
+            &input.tool_use_id,
+            // Now, not the call's start: a `/usage` refresh above can take
+            // seconds, which would cut a follower's wait short.
+            chrono::Utc::now().timestamp_millis(),
+            super::stagger::HOLD_MAX_MS.min(hold_ms),
+            super::stagger::POLL_MS.min(poll_ms),
+        );
+        match (note, line) {
+            (Some(n), Some(l)) => Some(format!("{l}\n{n}")),
+            (n, l) => n.or(l),
+        }
+    } else {
+        line
+    };
     let brief = std::fs::read_to_string(dir.join(BRIEF_FILE)).unwrap_or_default();
     // What the helper is told of the budget (538, 539's table): under
     // "work to the cap" nothing — the brief goes in without its pacing
@@ -2919,6 +3324,10 @@ pub(super) fn decide_holding(
     if let Some(Value::String(prompt)) = fields.get("prompt")
         && !prompt.trim_start().starts_with(BRIEF_OPEN)
     {
+        // The helper's task without the main agent's budget lines (707);
+        // every check above read the call as written. Only with the brief
+        // or a share going in: with neither the hook keeps no opinion.
+        let task = strip_budget_lines(prompt);
         let mut parts: Vec<&str> = Vec::new();
         if !brief.trim().is_empty() {
             parts.push(brief.trim_end());
@@ -2927,7 +3336,7 @@ pub(super) fn decide_holding(
             parts.push(share);
         }
         if !parts.is_empty() {
-            parts.push(prompt);
+            parts.push(&task);
             let briefed = parts.join("\n\n");
             fields.insert("prompt".into(), Value::String(briefed));
             changed = true;
@@ -2983,6 +3392,54 @@ pub fn run_hook(args: &[String]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Item 722: his message's hook never waits on a `/usage` run — the
+    /// CLI holds the model's first request until the hook returns. A tool
+    /// call's hook with a stale wire reading still refreshes, as before.
+    #[test]
+    fn a_user_message_never_waits_on_a_usage_refresh() {
+        use super::{UsageSource, is_prompt_event, usage_source};
+        let prompt = r#"{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"hi"}"#;
+        let call = r#"{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{}}"#;
+        assert!(is_prompt_event(prompt));
+        assert!(!is_prompt_event(call));
+        assert!(!is_prompt_event("not json"));
+        let source = |fresh, json: &str| usage_source(fresh, || is_prompt_event(json));
+        assert_eq!(source(false, prompt), UsageSource::NoRefresh);
+        assert_eq!(source(false, call), UsageSource::Refresh);
+        assert_eq!(source(true, prompt), UsageSource::Files);
+        assert_eq!(source(true, call), UsageSource::Files);
+    }
+
+    /// Item 722's measurement with the real CLI and his real usage files
+    /// (`cargo test -p nightloom-service --lib measure_the_prompt_hook --
+    /// --ignored --nocapture`): what a user message's hook waited on
+    /// before (a `/usage` run whenever the reading was stale — forced
+    /// here with a zero max age; no model call) against the hook now, in
+    /// a scratch chat directory with no wire reading. Prints only times.
+    #[test]
+    #[ignore]
+    fn measure_the_prompt_hook_against_a_usage_refresh() {
+        let dir = std::env::temp_dir().join(format!("nightloom-722-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prompt = r#"{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"hi"}"#;
+        for round in 0..3 {
+            let t = std::time::Instant::now();
+            let reply = super::decide(&dir, prompt);
+            let now = t.elapsed();
+            let has_line = serde_json::to_string(&reply).is_ok_and(|s| s.contains("Usage:"));
+            println!(
+                "722 row {round}: hook now {} ms (usage line: {has_line})",
+                now.as_millis()
+            );
+        }
+        let t = std::time::Instant::now();
+        let _ = crate::plan_usage::read_fresh_shared(std::time::Duration::ZERO);
+        println!(
+            "722 before: the refresh the hook ran when stale took {} ms",
+            t.elapsed().as_millis()
+        );
+    }
+
     /// Blocker 1757: each chat on Same is switched to Choose, the bytes of
     /// every other field untouched; Choose, Sonnet, an old `chat`, a broken
     /// file and a chat with no file are left as they were.
@@ -3042,6 +3499,38 @@ mod tests {
         assert!(r.reason().is_some_and(|s| s.contains("do it yourself")));
         super::reset_spawns(&dir);
         assert_eq!(super::decide_with(&dir, call, None).decision(), "allow");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 803 (merge round P): a helper cannot write the chain's run log
+    /// or replace its state file; the main chat still can.
+    #[test]
+    fn a_subagents_log_run_and_write_state_are_refused_and_the_main_chats_run() {
+        let dir =
+            std::env::temp_dir().join(format!("nightloom-chain-sub-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        super::write(
+            &dir,
+            "<nightloom-subagent-brief>x</nightloom-subagent-brief>",
+        )
+        .unwrap();
+        for tool in [crate::chain::LOG_TOOL, crate::chain::STATE_TOOL] {
+            let name = crate::mcp_server::mcp_name(tool);
+            let sub = format!(
+                r#"{{"tool_name":"{name}","tool_input":{{"text":"x"}},"agent_id":"a1","tool_use_id":"t1"}}"#
+            );
+            let r = super::decide_with(&dir, &sub, None);
+            assert_eq!(r.decision(), "deny", "{tool}");
+            assert_eq!(r.reason(), Some(super::SUBAGENT_CHAIN_DENIED), "{tool}");
+            let main = format!(
+                r#"{{"tool_name":"{name}","tool_input":{{"text":"x"}},"tool_use_id":"t2"}}"#
+            );
+            assert_ne!(
+                super::decide_with(&dir, &main, None).decision(),
+                "deny",
+                "{tool}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3280,7 +3769,8 @@ mod tests {
         let prompt = updated["prompt"].as_str().unwrap();
         assert!(prompt.starts_with(BRIEF_OPEN), "{prompt}");
         assert!(
-            prompt.ends_with("\n\nEstimated context: 20k; user asked for haiku. Reply with the code word if your task text states one."),
+            // The estimate's sentence is the hook's, not the helper's (707).
+            prompt.ends_with("\n\nReply with the code word if your task text states one."),
             "{prompt}"
         );
         // The rest of the input rides along untouched.
@@ -5240,10 +5730,18 @@ mod tests {
         for _ in 0..2 {
             let r = super::decide_with(&dir, &read, None);
             let ctx = r.additional_context().unwrap_or_default().to_string();
+            // 707: under 285k it sees its size on every call, no wrap-up.
             assert!(
-                ctx.contains("context 270k") && ctx.contains("finish the step"),
+                ctx.contains("context 270k") && !ctx.contains("finish the step"),
                 "{ctx}"
             );
+        }
+        // Past the retire mark the hand-back note rides every call (553).
+        let read2 = call("Read", json!({"file_path": "/x"}), Some("a2"));
+        for _ in 0..2 {
+            let r = super::decide_with(&dir, &read2, None);
+            let ctx = r.additional_context().unwrap_or_default().to_string();
+            assert!(ctx.contains("retire mark"), "{ctx}");
         }
         let send = call(
             "SendMessage",
@@ -5265,6 +5763,210 @@ mod tests {
             .unwrap_or_default()
             .to_string();
         assert!(!ctx.contains("past retirement"), "{ctx}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 707: the budget lines the main agent writes for the hook and itself
+    /// are not the helper's — the variants seen in his chats' launches.
+    #[test]
+    fn the_helper_is_not_shown_the_estimate_fable_reason_or_a_tool_call_cap() {
+        let s = super::strip_budget_lines;
+        assert_eq!(
+            s(
+                "Estimated context: ~130k. You may NOT start subagents of your own. Aim for at \
+               most ~30 tool calls. No em dashes in your output. Today is 2026-11-15."
+            ),
+            "You may NOT start subagents of your own. No em dashes in your output. Today is \
+             2026-11-15."
+        );
+        assert_eq!(
+            s("Task line one.\nAim for at most ~45 tool calls.\n\nThe rest."),
+            "Task line one.\n\nThe rest."
+        );
+        assert_eq!(
+            s(
+                "Aim for at most ~25 tool calls (this is mostly a thinking task; use the web only \
+               to check that a scenario is realistic). No em dashes."
+            ),
+            "This is mostly a thinking task; use the web only to check that a scenario is \
+             realistic. No em dashes."
+        );
+        assert_eq!(
+            s("Why Fable: a multi-file systems build. Needs the whole crate.\nBuild it."),
+            "Build it."
+        );
+        assert_eq!(s("- **Estimated context:** ~150k\nGo."), "Go.");
+        for (have, want) in [
+            ("Be economical: about 50 tool calls at most.", ""),
+            (
+                "Be economical: about 70 tool calls at most, stop at 2 survivors.",
+                "Stop at 2 survivors.",
+            ),
+            (
+                "Be economical: stop once the questions below are settled, about 60 tool calls \
+                 at most.",
+                "Stop once the questions below are settled.",
+            ),
+            ("Be efficient: aim for ~20-30 tool calls max.", ""),
+            ("About 25 to 35 tool calls.", ""),
+            ("Aim to finish in ~25 tool calls.", ""),
+            (
+                "Budget: aim for at most ~35 tool calls; stop and report when done or at that \
+                 point.",
+                "Stop and report when done.",
+            ),
+            ("You have a 40 tool-call budget.", ""),
+            ("Use at most 12 tool calls.", ""),
+        ] {
+            assert_eq!(
+                s(&format!("Keep.\n{have}")).trim_end(),
+                format!("Keep.\n{want}").trim_end(),
+                "{have}"
+            );
+        }
+        // Narrow: tool calls with no figure, and a task with nothing to take,
+        // come back exactly as written.
+        for same in [
+            "HARD RULE: Do NOT spawn any subagents of your own (no Agent tool calls).",
+            "Everything is designed for text agents (LLMs with tool calls, scored by log-probs).",
+            "  Indented line.\n\n- a bullet\nRead ~1.5M rows. Then 3 files.",
+        ] {
+            assert_eq!(s(same), same);
+        }
+    }
+
+    /// 707 through the hook: the checks read the call as written (no
+    /// estimate, or Fable with no reason, is still refused), and the
+    /// helper's task arrives without the lines.
+    #[test]
+    fn the_hook_checks_the_lines_then_strips_them_from_the_helpers_task() {
+        use serde_json::json;
+        let dir = sized_dir("strip");
+        std::fs::write(
+            dir.join(super::BRIEF_FILE),
+            "<nightloom-subagent-brief>b</nightloom-subagent-brief>",
+        )
+        .unwrap();
+        let r = super::decide_with(
+            &dir,
+            &agent_call(json!({"prompt": "Read a.rs. Aim for at most ~30 tool calls."})),
+            None,
+        );
+        assert_eq!(r.decision(), "deny", "no estimate: still refused");
+        let r = super::decide_with(
+            &dir,
+            &agent_call(json!({"prompt": "Estimated context: ~300k\nRead a.rs."})),
+            None,
+        );
+        assert_eq!(r.decision(), "deny", "past 250k: still refused");
+        let r = super::decide_with(
+            &dir,
+            &agent_call(json!({"prompt": "Estimated context: ~100k\nGo.", "model": "fable"})),
+            None,
+        );
+        assert_eq!(r.decision(), "deny", "Fable with no reason: still refused");
+        let r = super::decide_with(
+            &dir,
+            &agent_call(
+                json!({"prompt": "Estimated context: ~130k. Read a.rs and fix the \
+                bug. Aim for at most ~30 tool calls.\nWhy Fable: a multi-file systems build.\n\
+                Done is a green test.", "model": "fable", "description": "Estimated context: \
+                ~130k"}),
+            ),
+            None,
+        );
+        assert_eq!(r.decision(), "allow");
+        let up = r.updated_input().unwrap();
+        assert!(
+            up["prompt"].as_str().unwrap().ends_with(
+                "</nightloom-subagent-brief>\n\nRead a.rs and fix the bug.\nDone is a green test."
+            ),
+            "{up}"
+        );
+        assert_eq!(up["model"], "fable");
+        // The description (his row's label) is the call's, untouched.
+        assert_eq!(up["description"], "Estimated context: ~130k");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 707: a helper's first call past 285k carries one notice; later calls
+    /// do not; the main thread is told on its next call, and its list of
+    /// helpers marks the one asked to wrap up.
+    #[test]
+    fn a_helper_past_285k_is_told_once_and_the_main_thread_hears_of_it() {
+        use serde_json::json;
+        let dir = sized_dir("stop");
+        let t = dir.join("session.jsonl");
+        std::fs::write(&t, "").unwrap();
+        let subs = dir.join("session").join("subagents");
+        std::fs::create_dir_all(&subs).unwrap();
+        let usage = |n: u64| {
+            json!({"type": "assistant", "message": {"usage": {"input_tokens": 1,
+                "cache_read_input_tokens": n - 1, "cache_creation_input_tokens": 0}}})
+            .to_string()
+        };
+        std::fs::write(subs.join("agent-a3.jsonl"), usage(280_000)).unwrap();
+        std::fs::write(
+            subs.join("agent-a3.meta.json"),
+            json!({"agentType": "general-purpose", "description": "survey the logs"}).to_string(),
+        )
+        .unwrap();
+        super::write_turn_budget(
+            &dir,
+            &super::TurnBudget {
+                started_at_ms: 1,
+                ..Default::default()
+            },
+        );
+        let call = |tool: &str, input: serde_json::Value, agent: Option<&str>| {
+            let mut v = json!({"tool_name": tool, "tool_input": input,
+                "transcript_path": t.to_string_lossy(), "tool_use_id": "t1", "session_id": "s"});
+            if let Some(a) = agent {
+                v["agent_id"] = json!(a);
+            }
+            v.to_string()
+        };
+        let read = call("Read", json!({"file_path": "/x"}), Some("a3"));
+        let ctx = |r: HookReply| r.additional_context().unwrap_or_default().to_string();
+        // Under the mark: nothing.
+        let c = ctx(super::decide_with(&dir, &read, None));
+        assert!(!c.contains("Past ~285k"), "{c}");
+        std::fs::write(subs.join("agent-a3.jsonl"), usage(290_000)).unwrap();
+        let c = ctx(super::decide_with(&dir, &read, None));
+        assert!(
+            c.contains(
+                "Past ~285k of context (you are at 290k): if you are a step or two from done, \
+                 finish; otherwise finish the step you are on, then report, saying what is left."
+            ),
+            "{c}"
+        );
+        for _ in 0..2 {
+            let c = ctx(super::decide_with(&dir, &read, None));
+            assert!(!c.contains("Past ~285k"), "once only: {c}");
+        }
+        // The main thread's next call carries the note, once.
+        let main = call("Read", json!({"file_path": "/y"}), None);
+        let c = ctx(super::decide_with(&dir, &main, None));
+        assert!(
+            c.contains("Your helper \u{201c}survey the logs\u{201d} (a3) passed 285k")
+                && c.contains("asked it to wrap up"),
+            "{c}"
+        );
+        let c = ctx(super::decide_with(&dir, &main, None));
+        assert!(!c.contains("asked it to wrap up"), "{c}");
+        // Its view of the helper says so.
+        let lines = super::earlier_agents_lines(
+            &super::mark_stops(super::earlier_agents(&t, None), &dir),
+            0,
+        )
+        .unwrap();
+        assert!(
+            lines.contains("a3 (survey the logs): context 290k"),
+            "{lines}"
+        );
+        assert!(lines.contains("asked to wrap up at 285k"), "{lines}");
+        assert!(!super::claim_stop(&dir, "a3"));
+        assert!(super::claim_stop(&dir, "a4"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

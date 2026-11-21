@@ -14,6 +14,7 @@
     endContentDrag,
   } from "./state.svelte";
   import Icon from "./Icon.svelte";
+  import { homeFirst, isHome } from "./home";
 
   let { close }: { close: () => void } = $props();
 
@@ -64,7 +65,7 @@
 <div class="menu hud-m" role="menu" in:hudIn|global out:hudOut|global>
   <div class="head hud-head">Projects</div>
   <div class="list">
-    {#each app.projects as p (p.id)}
+    {#each homeFirst(app.projects) as p (p.id)}
       <div class="row hud-row" class:active={app.project?.id === p.id} class:hud-cur={app.project?.id === p.id}>
         {#if renaming === p.id}
           <!-- svelte-ignore a11y_autofocus -->
@@ -92,7 +93,7 @@
             ondragstart={(e) => startContentDrag(e, { kind: "project", id: p.id })}
             ondragend={endContentDrag}
           >
-            <span class="glyph"><Icon name="folder" size={14} /></span>
+            <span class="glyph"><Icon name={isHome(p) ? "home" : "folder"} size={14} /></span>
             <span class="txt">
               <span class="name">
                 <span class="name-text">{p.name}</span>
@@ -122,6 +123,8 @@
               aria-label="Show {p.name} folder"
               onclick={() => void revealFolder(p.root ?? p.notes_dir)}><Icon name="ext" size={13} /></button
             >
+            <!-- Item 763: Home is pinned — it has no Remove. -->
+            {#if !isHome(p)}
             <button
               class="icon remove"
               class:confirming={confirming === p.id}
@@ -134,6 +137,7 @@
             >
               {#if confirming === p.id}<span class="ns-pill failed sure">remove?</span>{:else}<Icon name="x" size={13} />{/if}
             </button>
+            {/if}
           </div>
         {/if}
       </div>

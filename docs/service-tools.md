@@ -451,6 +451,62 @@ passes both as a `ChatDirs { active, all: Vec<ChatDir { name, dir }> }`, taken
 at connect time like the rest of `ChatSpec`. An empty search names its scope,
 for the reason `grep`'s does.
 
+**Claude Code sessions outside Nightloom (item 751, 2026-11-16).** `all` also
+covers the sessions he ran in the terminal, the Claude desktop app or VS Code,
+once the desktop has mirrored them (`outside.rs`, [service-data.md](service-data.md)
+"Claude Code outside Nightloom"): the mirror is one more `ChatDir`, named
+`Claude Code, outside Nightloom`, so each hit is tagged `[Claude Code, outside
+Nightloom]` and its title ends with where it ran (`· Claude Code desktop app,
+Nightloom/nightshift-code`). Both shells list it — `capture::session_dirs` for
+the MCP server, `connect.rs` for the provider engine — only when the folder
+exists, and the header of an `all` search names it.
+
+**`scope: chain` (item 737, 2026-11-16).** His question: "all the chats that are
+technically a part of the same chat except arbitrarily split up by 300k handoff
+checkpoints". A chat that continues another has `forked_from { session, reason:
+"handoff" }` on its creation line (`Session::continued_from`); `chain_of` walks
+those links back from the starting chat and forward through every chat that
+continues it, within the starting chat's directory, and the search ranks only
+those chats — **with no recency prior**, since the chain is one conversation and
+the prior would bury the pieces the scope exists to reach. Each line carries its
+place: `[this chat]`, `[1 hand-off back]`, `[2 hand-offs back]`, `[1 hand-off on]`.
+It starts from `session` when given, else from the chat asking: the Claude Code
+engine's server learns that from the `--preview-chat` / `--budget-dir` the
+desktop already passes before every turn (`ServeArgs::current_chat`); the API
+engine's in-process tools are built before a session exists and need `session`.
+
+**Per turn, dates, speaker, neighbours (item 749, 2026-11-16).** ~~A chat's BM25
+score over its whole bag of words~~ — since 749 the index keeps each chat's
+counts **per turn** (a user message and the replies until the next; one opened
+by a reply when a chat starts with the model) and **per speaker**, with the
+turn's start time (`store/index.rs` `Turn`; index version 3). BM25's documents
+are turns: idf from how many turns in the directory say a word, length
+normalised by the mean turn. A chat scores its best turn plus ½ of its second
+and ¼ of its third (`SECOND_TURN`, `THIRD_TURN`), times the recency prior as
+before; a word in the title adds 3 to every turn's count. Why: LongMemEval
+(500 questions over long multi-session chat histories, Wu et al., ICLR 2025)
+found the turn ("round") the better unit, and whole-chat scoring under-ranked a
+long chat that discussed something in five turns of five hundred — the case
+hand-off chains made common. No embeddings: three outside results agree
+lexical search is enough for history an agent searches iteratively
+(`notes/runner-design/736-survey-B3-2026-11-16.md` §3). A result line now ends
+`turn k of N (date) · excerpt`, the excerpt taken from that turn.
+`search_chats` takes `after` / `before` (`YYYY-MM-DD`, local days; `after`
+inclusive, `before` exclusive) — only turns in the range count — and `speaker`
+(`user` | `assistant`). With a range and no `query` it **browses by date**: the
+chats with turns in the range, newest first, each with how many turns fall in it
+and the first one's opening. `read_chat` takes `turn` (the number on a result
+line) and `neighbours` (default 1, at most 5) and returns only those turns.
+**The hand-off note:** a chat that continues another is told so in the MCP
+server's `initialize` instructions (`tools::handoff_note`): search the chain
+with `scope: chain`, or send a subagent to `read_chat` the earlier chat, so its
+text does not fill this window. Constant for the chat's life, so it costs no
+cache miss after its first turn; nothing changes for other chats.
+**Measured** (`recall_set_over_the_real_corpora` over copies of five projects;
+report `notes/runner-design/wave-c-search-report-2026-11-16.md`): the 14
+known-item questions went from 6 to 12 at rank 1; the 2026-09-14 ten from 6 to
+8 in the top five.
+
 **Shape.** A search returns one line per chat, best first, at most `limit`
 (default 10, clamped to 25): short id · title · date last active · score ·
 excerpt around the first of the query's words the chat says, the sidebar's

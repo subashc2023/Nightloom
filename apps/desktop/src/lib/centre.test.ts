@@ -109,8 +109,29 @@ describe("the notices", () => {
     expect(n[2].title).toBe("A dream changed 2 notes in the vault");
     expect(n[3].id).toBe("morning:p1:2026-09-16.md");
     expect(n[4].id).toBe("blocker:p1:2");
-    expect(n[5].title).toBe("A release was installed (0.1.0)");
-    expect(countsOf(n)).toEqual({ proposal: 2, dream: 1, morning: 1, blocker: 1, release: 1, cli: 0 });
+    // Item 832: the build number, "dev" under the test runner (no VITE_NIGHTLOOM_BUILD).
+    expect(n[5].title).toBe("A release was installed (dev)");
+    expect(countsOf(n)).toEqual({ canary: 0, proposal: 2, dream: 1, memory: 0, morning: 1, blocker: 1, release: 1, cli: 0 });
+  });
+
+  it("puts item 758's canary first, one notice per alarm, gone once dismissed", () => {
+    const alarm = {
+      id: "758:cache:2.1.400",
+      item: 758,
+      kind: "cache" as const,
+      cli_version: "2.1.400",
+      title: "Claude Code 2.1.400 may no longer honour the 758 switch",
+      detail: "A new chat's second request (turn) read 23165 of 32533 tokens",
+      time: "2026-11-16 5:30 PM",
+      at_ms: Date.UTC(2026, 10, 17, 1, 30),
+      chat: "c1",
+    };
+    const n = buildNotices({ ...base, canary: [alarm] });
+    expect(n[0].kind).toBe("canary");
+    expect(n[0].id).toBe("canary:758:cache:2.1.400");
+    expect(n[0].title).toContain("758");
+    expect(countsOf(n).canary).toBe(1);
+    expect(buildNotices({ ...base, canary: [alarm], dismissed: ["canary:758:cache:2.1.400"] }).some((x) => x.kind === "canary")).toBe(false);
   });
 
   it("leaves out dismissed ids, read pages, and a release on a first run", () => {
@@ -125,6 +146,31 @@ describe("the notices", () => {
     expect(more.some((x) => x.id === "blocker:p1:3")).toBe(true);
     // The same stamp as seen: no release notice.
     expect(buildNotices({ ...base, seenStamp: base.stamp!.exe_modified }).some((x) => x.kind === "release")).toBe(false);
+  });
+
+  // Item 751: a change to Claude Code's own memory folders is a card of its
+  // own kind, after the dream's, named by where it was and keyed on its hash.
+  it("lists a change to Claude Code's memory after the dream's, by place", () => {
+    const memory = [
+      {
+        hash: "m1",
+        at: "2026-11-16T12:40:00-08:00",
+        subject: "nightloom: claude memory — 2 files in -Users-me-code-app",
+        files: [
+          { path: "-Users-me-code-app/MEMORY.md", added: 1, removed: 0 },
+          { path: "-Users-me-code-app/stack.md", added: 2, removed: 1 },
+        ],
+        places: ["code-app"],
+      },
+    ];
+    const n = buildNotices({ ...base, memory });
+    expect(n.map((x) => x.kind)).toEqual(["proposal", "proposal", "dream", "memory", "morning", "blocker", "release"]);
+    const m = n[3];
+    expect(m.id).toBe("memory:m1");
+    expect(m.title).toBe("Claude Code's memory changed: 2 notes in code-app");
+    expect(m.detail).toBe("MEMORY.md, stack.md");
+    expect(countsOf(n).memory).toBe(1);
+    expect(buildNotices({ ...base, memory, dismissed: ["memory:m1"] }).some((x) => x.kind === "memory")).toBe(false);
   });
 
   // Backlog 344: a dream applies its AGENTS.md change itself. In a project's

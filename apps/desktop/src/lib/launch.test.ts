@@ -38,20 +38,41 @@ function steps(over: Partial<LaunchSteps> = {}): LaunchSteps & { log: string[] }
 describe("the launch screen (item 220)", () => {
   afterEach(() => vi.useRealTimers());
 
-  it("stays up until the list is read and the last project has reopened", async () => {
+  // ~~stays up until the list is read and the last project has reopened~~
+  // — item 865: the list no longer holds the window.
+  it("stays up until the last project has reopened, not for the list (item 865)", async () => {
     const list = deferred();
     const open = deferred();
     const s = steps({ listProjects: () => list.promise, openProject: () => open.promise });
     const done = runLaunch(s);
     expect(launch.opening).toBe(true);
-    list.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(launch.opening).toBe(true);
     expect(launchMessage(launch.project)).toBe("Opening Value Generalization…");
+    // The reopen starts without waiting for the list.
     open.resolve();
+    await vi.waitFor(() => expect(launch.opening).toBe(false));
+    // The connect and the reads run while the list is still out …
+    await vi.waitFor(() => expect(s.log).toContain("connect"));
+    // … and only the restored tabs, which the list decides, wait for it.
+    expect(s.log).not.toContain("after");
+    list.resolve();
     await done;
+    expect(s.log.at(-1)).toBe("after");
+  });
+
+  it("launches whole when the list read fails (item 865)", async () => {
+    const s = steps({ listProjects: () => Promise.reject("disk") });
+    await runLaunch(s);
+    expect(s.log).toContain("connect");
+    expect(s.log.at(-1)).toBe("after");
     expect(launch.opening).toBe(false);
+  });
+
+  it("with no name kept for the last project, says Opening Nightloom and still reopens it", async () => {
+    const s = steps({ lastProject: () => ({ id: "p1", name: null }) });
+    const done = runLaunch(s);
+    expect(launchMessage(launch.project)).toBe("Opening Nightloom…");
+    await done;
+    expect(s.log).toContain("open");
   });
 
   it("comes down at the deadline when the reopen hangs, and the connect still waits for it", async () => {
@@ -78,7 +99,7 @@ describe("the launch screen (item 220)", () => {
     expect(launch.opening).toBe(false);
   });
 
-  it("with no last project, says Opening Nightloom and waits only for the list", async () => {
+  it("with no last project, says Opening Nightloom and opens none", async () => {
     const s = steps({ lastProject: () => null });
     const done = runLaunch(s);
     expect(launchMessage(launch.project)).toBe("Opening Nightloom…");
@@ -123,23 +144,25 @@ describe('"not connected" only once it is true (item 220)', () => {
   });
 });
 
-describe("the line under the composer says connecting… while the connect runs (item 230)", () => {
-  it("reads connecting… until the launch connect has settled, then the failure wording", async () => {
+// ~~says connecting… while the connect runs (item 230)~~ — item 873 (2026-11-19): "connecting…" showed twice, in the
+// top bar's chip and under the box; the chip keeps it, the line under the box says only the failure.
+describe("the line under the composer is empty while the connect runs, the failure once true (items 230, 873)", () => {
+  it("reads nothing until the launch connect has settled, then the failure wording", async () => {
     const connect = deferred();
     const s = steps({ connect: () => connect.promise });
     const done = runLaunch(s);
     const hint = () =>
       composerConnectHint({ connected: false, connecting: false, launchConnectSettled: launch.connectSettled });
-    expect(hint()).toBe("connecting…");
+    expect(hint()).toBeNull();
     await vi.waitFor(() => expect(s.log).toContain("newSession"));
-    expect(hint()).toBe("connecting…");
+    expect(hint()).toBeNull();
     connect.reject("claude not found");
     await done;
     expect(hint()).toBe("connect a provider to start");
   });
 
-  it("reads connecting… during a later connect, and nothing when connected", () => {
-    expect(composerConnectHint({ connected: false, connecting: true, launchConnectSettled: true })).toBe("connecting…");
+  it("reads nothing during a later connect (the top bar says it), and nothing when connected", () => {
+    expect(composerConnectHint({ connected: false, connecting: true, launchConnectSettled: true })).toBeNull();
     expect(composerConnectHint({ connected: true, connecting: false, launchConnectSettled: true })).toBeNull();
   });
 });

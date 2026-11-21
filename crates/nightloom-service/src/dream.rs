@@ -1389,7 +1389,9 @@ pub struct ThreadTidy {
 /// threads changed is snapshotted like the memory tidy. Mechanical: no
 /// model turn, so no cost beyond the disk. What needs judgement
 /// (condensing a long Start here, replacing a pasted block) is flagged in
-/// the index and the thread layer for the next bound chat's wrap-up.
+/// the index and the thread layer for the next bound chat's wrap-up; a
+/// thread still over its cap gets a "trim thread.md" row at the top of its
+/// Queue, which the next bound chat does first (item 708).
 /// Never age-based (his word, 2026-10-02: threads live days, not months).
 pub fn tidy_threads(
     config: &Path,
@@ -1411,13 +1413,13 @@ pub fn tidy_threads(
         let (threads, errors) = crate::thread::tidy_threads(&notes, today, apply);
         let changed: usize = threads
             .iter()
-            .map(|u| u.struck_moved + u.merged.len())
+            .map(|u| u.struck_moved + u.merged.len() + usize::from(u.trim_queued.is_some()))
             .sum();
         let git = if apply && changed > 0 {
             snapshot_target(
                 &Target::project(&p),
                 &format!(
-                    "nightloom: thread upkeep — {changed} line{} archived or merged",
+                    "nightloom: thread upkeep — {changed} line{} archived, merged or queued",
                     if changed == 1 { "" } else { "s" }
                 ),
             )
@@ -1992,6 +1994,36 @@ mod tests {
         (config, vault, workspace)
     }
 
+    #[test]
+    fn the_daily_pass_queues_the_trim_first_for_an_over_cap_thread() {
+        // Item 708: the daily pass's thread step, like Continue, puts a
+        // "trim thread.md" row at the top of an over-cap thread's Queue.
+        let (config, _vault, workspace) = fixture("thread-trim", "lanternfish");
+        let dir = workspace.join(".agents/threads/big");
+        fs::create_dir_all(&dir).unwrap();
+        let thread = format!(
+            "# Thread: Big\n\n## Start here\nAs of x.\n\n## Queue\n| id | Item | Status | Pointer |\n|---|---|---|---|\n| Q-1 | the question | live | ev 1 |\n\n## Claims\n{}\n",
+            "pad ".repeat(11000)
+        );
+        fs::write(dir.join(crate::thread::THREAD_FILE), &thread).unwrap();
+        fs::write(dir.join(crate::thread::LOG_FILE), "2026-10-01\n").unwrap();
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap();
+        let out = tidy_threads(&config, Some(day), true).unwrap();
+        let up = &out[0].threads[0];
+        assert_eq!(up.trim_queued.as_deref(), Some("Q-2"), "{up:?}");
+        let live = fs::read_to_string(dir.join(crate::thread::THREAD_FILE)).unwrap();
+        assert!(
+            live.contains("|---|---|---|---|\n| Q-2 | trim thread.md: ~"),
+            "first in the Queue"
+        );
+        // The next day's pass leaves the waiting row alone.
+        let day2 = chrono::NaiveDate::from_ymd_opt(2026, 10, 3).unwrap();
+        let out = tidy_threads(&config, Some(day2), true).unwrap();
+        assert!(out[0].threads[0].trim_queued.is_none());
+        let live = fs::read_to_string(dir.join(crate::thread::THREAD_FILE)).unwrap();
+        assert_eq!(live.matches("trim thread.md:").count(), 1);
+    }
+
     fn append(config: &Path, text: &str, source: Option<&str>) {
         observe::append_in(config, &obs(text, ObservationKind::Inferred, source)).unwrap();
     }
@@ -2225,11 +2257,18 @@ mod tests {
         fs::write(dir.join("short.md"), "fine\n").unwrap();
         fs::write(dir.join("archive/old.md"), &long).unwrap();
         fs::write(dir.join(".git/x.md"), &long).unwrap();
-        let got: Vec<String> = oversize_notes(&dir)
+        let got: Vec<PathBuf> = oversize_notes(&dir)
             .into_iter()
-            .map(|(p, _, _)| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned())
+            .map(|(p, _, _)| p.strip_prefix(&dir).unwrap().to_path_buf())
             .collect();
-        assert_eq!(got, ["topics/long.md", "wide.md"]);
+        // Compared as paths, so Windows' `\` between parts matches too.
+        assert_eq!(
+            got,
+            [
+                Path::new("topics").join("long.md"),
+                PathBuf::from("wide.md")
+            ]
+        );
     }
 
     /// Item 278: an observation read from a chat lists the chat's short id,
@@ -2637,6 +2676,9 @@ mod tests {
         git(&["init", "-q"]);
         git(&["config", "user.email", "dream@test"]);
         git(&["config", "user.name", "dream"]);
+        // Byte-for-byte checkouts: Windows runners set core.autocrlf, which
+        // would revert to "\r\n" line ends (item 864).
+        git(&["config", "core.autocrlf", "false"]);
         fs::write(workspace.join("src.rs"), "fn main() {}").unwrap();
         let memory = workspace.join(AGENTS_DIR).join(crate::project::MEMORY_DIR);
         fs::create_dir_all(&memory).unwrap();
@@ -2694,6 +2736,9 @@ mod tests {
         git(&["init", "-q"]);
         git(&["config", "user.email", "dream@test"]);
         git(&["config", "user.name", "dream"]);
+        // Byte-for-byte checkouts: Windows runners set core.autocrlf, which
+        // would revert to "\r\n" line ends (item 864).
+        git(&["config", "core.autocrlf", "false"]);
         let project_file = workspace.join(INSTRUCTION_FILE);
         let user_file = config.join(INSTRUCTION_FILE);
         fs::write(&project_file, "# Lanternfish\n\nUse cargo.\n").unwrap();

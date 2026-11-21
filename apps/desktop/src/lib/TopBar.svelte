@@ -1,625 +1,35 @@
 <script lang="ts">
-  import { resetLong, resetText as resetTextAt } from "./resetTime";
+  // Item 824: the Context and Plan card is design B, Dials.
+  import PlanDials from "./PlanDials.svelte";
   import { hudIn, hudOut } from "./hudMenu";
-  import {
-    addToast,
-    app,
-    chatMode,
-    compactSession,
-    contextUsed,
-    currentTodos,
-    liveFlags,
-    MODE_GLYPH,
-    latestSubagents,
-    subagentsOfTurn,
-  } from "./state.svelte";
-  import { touchedUntil } from "./keepWarm";
-  import { keepWarm } from "./keepWarm.svelte";
-  import { cacheState } from "./cache";
+  import { app, compactSession, MODE_GLYPH, chatKind, kindLabel, openSession } from "./state.svelte";
   import ContextDial from "./ContextDial.svelte";
-  import { lastLoggedTurn } from "./contextDial";
-  import { liveFor, liveTokens } from "./liveContext";
-  import { liveContextOf } from "./liveContext.svelte";
   import { mark as handoffMark } from "./handoff.svelte";
   import { connectionWord, launch } from "./launch.svelte";
   import { budgetChip, budgetTitle } from "./budget";
   import RightRail from "./RightRail.svelte";
-  import { portal, anchorBelow } from "./portal";
+  import { portal } from "./portal";
   import { tip } from "./tip";
-  import { foldToFit } from "./fold";
-  const POP_WIDTH = 340;
+  import ZoomChip from "./ZoomChip.svelte";
   import NotificationCentre from "./NotificationCentre.svelte";
   import ForYouButton from "./ForYouButton.svelte";
-  import { chatKind, kindLabel, liveChats, openSession } from "./state.svelte";
-  import { forkLine } from "./edit";
-  // Item 299: Make main on the open fork, from the bar.
-  import { canMakeMain } from "./versions";
-  import { makeMainChat, versions } from "./versions.svelte";
+  import { makeMainChat } from "./versions.svelte";
   import ThreadChip from "./ThreadChip.svelte";
   // Item 556: the open chat's own running sign, at the bar's left.
   import ChatRunSign from "./ChatRunSign.svelte";
-  import { allRunning } from "./running.svelte";
-  import { chatRun } from "./runGroups";
-  const runSign = $derived(chatRun(allRunning(), app.activeSessionId).state);
-  import { threadChip } from "./thread";
-  import { chatThread, asideReads } from "./state.svelte";
-  import { auth } from "./claudeAuth.svelte";
-  import { chipWord } from "./claudeAuth";
-  import type { Aside } from "./state.svelte";
-  import { asideFigures, asideSpendText } from "./asideFigures";
-  import { openChatSpend, trackOpenChatFigures } from "./chatFigures.svelte";
-  import { contextOf } from "./chatContext.svelte";
-  import { chatLabel } from "./chatLabel";
   import { displayName } from "./modelSeen";
+  import { topBarLogic, type TopBarLogicProps } from "./topBar/logic.svelte";
 
-  interface Props {
-    /**
-     * Item 605 (2026-11-11, his "that entire top bar, even like the
-     * notification bell place is gone for asides"): the bar over an aside
-     * tab — the same bar, reading the aside's own figures: its context
-     * (the next follow-up's prefix), the plan, its spend; the bell and
-     * Files for you. What is about the chat's session alone (the mode mark,
-     * the thread chip, Make main, the agents chip, Compact, the model popover)
-     * stays the chat's bar's. Null: the chat's bar, as before.
-     */
-    aside?: Aside | null;
-    /** The chat the aside is of (item 605), for its hand-off line. */
-    asideChat?: string | null;
-    /** Whether this bar carries the bell and Files for you (item 605): an
-     *  aside's bar does only while no chat bar is up, so the window has one. */
-    bell?: boolean;
-  }
-  let { aside = null, asideChat = null, bell = true }: Props = $props();
-
-  /**
-   * The chat top bar in the redesign (item 036, the mock-up's Chat artboard):
-   * the session's name and short id on the left; on the right the ~~model~~
-   * kind chip, the context chip, ~~the cache chip,~~ the cost chip and
-   * Compact. The ~~model~~ chip opens a popover that *is* the old right
-   * rail (Model · Tasks · Context), so nothing the rail did is lost — it
-   * just no longer takes a 240px column on every screen.
-   *
-   * Shortened 2026-09-16 (nightshift backlog 112, "the top bar is kinda
-   * getting too long"): the model's name, the thinking and tools toggles
-   * and the cache chip moved to the composer — the model and effort as
-   * buttons in the box, thinking · tools · cache on a row under it — and
-   * the chip reads the kind and the engine alone (blocker 141). This bar
-   * is what is about the *chat*: its name, its kind, how full its window
-   * is, the plan, what it has cost.
-   *
-   * Folds by priority (nightshift backlog 129, 2026-09-17; the rule his
-   * review of the tabs boards stated for 099 — "shortening the number of
-   * elements rather than just truncating all of them"): the bar is a CSS
-   * container, and as *its own* width runs out — a narrow window, a pane
-   * of a split, ⌘= at 150–200% — the chips shed their words in three
-   * steps rather than clipping at the right edge. Step 1 (under 1000px):
-   * the gauges lose their labels — the context gauge's `of 200k`, the plan
-   * chip's `plan` and `· stale` (the colour and the title still say it).
-   * Step 2 (under 860px): the spend chip folds into the gauge's hover, the
-   * gauge drops its percentage, the plan chip its week. Step 3 (under
-   * 700px): the token count folds into the gauge's hover too — both
-   * gauges are bars alone, every value in their titles — and the kind
-   * chip drops the engine. What survives last is his priority order: the
-   * plan's 5h bar, the context bar, the kind. Nothing is removed outright:
-   * every folded figure is in the hover of the chip it folded into, and
-   * the rail (⌘M) and the Context page (⌘⇧C) have all of it. A container
-   * query, not a media query, so the zoom factor (backlog 108) is
-   * invisible to it: at 200% the bar is half as many CSS pixels wide and
-   * folds as a half-width bar would.
-   * ~~A container query … invisible to the zoom~~ — wrong in WebKit
-   * (nightshift backlog 183, measured 2026-09-22): under page zoom the
-   * query reads the bar's width × the zoom, so each step fired a zoom
-   * step late and the bar wrapped. The bar now folds by measuring
-   * (`fold.ts`).
-   *
-   * Board d since 2026-09-22 (nightshift backlog 175 pass 2, blocker 274):
-   * no title row — the tab names the chat, and its hover carries the short
-   * id; the context gauge, the plan chip and the spend chip are one gauge
-   * chip — two thin bars (context over plan) and the plan reading's age —
-   * whose click opens a card with every figure and a button to the
-   * itemised Context page (⌘⇧C still opens that page directly). One row,
-   * 44 px, at every zoom from 100 to 200 % in a 1440 px window; what is
-   * left to fold (the kind chip's engine, the agents chip's words) folds by
-   * measurement, and the wrap stays the floor beneath.
-   */
-
-  const session = $derived(app.sessions.find((s) => s.id === app.activeSessionId) ?? null);
-  // ~~`title` and `crumb` (the name and the short id on the bar's left)~~ —
-  // board d (backlog 175): the tab is the title; the id is in its hover.
-
-  /**
-   * The chat's mode, projected from its log (nightshift backlog 059): a
-   * glyph and the word after the short id. An ephemeral chat has no listing
-   * row, so `title` above is empty for it and this mark is what says what
-   * it is; it also says, in the same breath, that nothing is kept.
-   */
-  /**
-   * "Continued from" (nightshift backlog 086): a chat opened by the
-   * hand-off card carries its parent on its creation line with
-   * `reason: "handoff"`; the mark names the parent the way the sidebar's
-   * lineage line does and opens it on click. An edit-and-send fork has
-   * no reason and no mark here — the sidebar already says "from …".
-   */
-  const continuedFrom = $derived.by(() => {
-    if (!session?.forked_from || session.forked_from.reason !== "handoff") return null;
-    const line = forkLine(session, app.sessions) ?? "from an earlier chat";
-    return { id: session.forked_from.session, line: line.replace(/^from /, "") };
-  });
-  /** The open chat is a fork (or a version) that can take its original's
-   *  place (item 299): the bar offers Make main beside the mode mark. */
-  const mainable = $derived(
-    !!app.activeSessionId && canMakeMain(app.sessions, versions.map, app.activeSessionId),
-  );
-  const mode = $derived(chatMode(app.events));
-  /** Whether the thread chip draws (backlog 281), so the left group is
-   *  there for it; the chip decides its own text. */
-  const threadChipShown = $derived(threadChip(chatThread(app.events), app.project !== null, mode) !== null);
-  const modeText = $derived(
-    mode === "incognito"
-      ? "incognito"
-      : mode === "ephemeral"
-        ? "ephemeral — nothing is kept"
-        : "",
-  );
-  const modeTitle = $derived(
-    mode === "incognito"
-      ? "Incognito: kept and marked; knows nothing about you (no profile, memory, vault or project), writes nothing, unread by other chats"
-      : "Ephemeral: no log, no name, no CLI session; gone when you close it",
-  );
-
-  /**
-   * Context gauge. The denominator comes from the backend's limits table and
-   * is null for models it doesn't know; in that case the raw count is shown
-   * with no bar, because a guessed window would tell the reader — and the
-   * model reading the same figure in its sidecar — that there is headroom
-   * nobody verified.
-   */
-  /**
-   * Item 654 (B3's chip: "stays simple"): while the chat's reply runs, the
-   * chip reads the live figure the right column does (item 590's), so its
-   * arc eases with the reply (ContextDial's 300 ms) and the figure shows
-   * `~`, dimmed, while it is an estimate; when the reply ends it flashes
-   * once as it lands on the real figure. Asides keep their own figures.
-   */
-  const liveCtx = $derived(
-    !aside && app.busy && app.live != null
-      ? liveFor(liveContextOf(app.activeSessionId), lastLoggedTurn(app.events)?.startedAt ?? null)
-      : null,
-  );
-  const liveEst = $derived(liveCtx != null && liveCtx.estimate > 0);
-  let landFlash = $state(false);
-  let wasLive = false;
-  $effect(() => {
-    const on = liveCtx != null;
-    if (wasLive && !on) {
-      landFlash = true;
-      const id = setTimeout(() => (landFlash = false), 500);
-      wasLive = on;
-      return () => {
-        clearTimeout(id);
-        landFlash = false;
-      };
-    }
-    wasLive = on;
-  });
-  const gauge = $derived.by(() => {
-    const used = af ? af.used : liveCtx ? liveTokens(liveCtx) : contextUsed();
-    if (used == null) return null;
-    const limit = app.connection?.contextLimit ?? null;
-    const ratio = limit ? Math.min(used / limit, 1) : null;
-    return { used, limit, ratio };
-  });
-
-  const level = $derived(
-    gauge?.ratio == null ? "" : gauge.ratio >= 0.9 ? "hot" : gauge.ratio >= 0.7 ? "warm" : "",
-  );
-
-  /**
-   * Session spend. Shown only once there is something to show, and never as
-   * "$0.00" for a model with no price — an unknown cost and a free one look
-   * identical at two decimal places, and only one of them is true.
-   */
-  const spend = $derived.by(() => {
-    if (af) {
-      const text = asideSpendText(af.cost);
-      return text && af.cost ? { text, complete: af.cost.complete, agent: true } : null;
-    }
-    // Item 675: a Claude Code chat's spend is the CLI's running cost for
-    // it (the right column's figure) — its replies carry no logged cost,
-    // so the log's sum (`sessionCost`) read "at least $0.00" here.
-    const c = openChatSpend();
-    if (!c) return null;
-    if (c.usd === 0 && c.complete) return null;
-    // Sub-cent turns are the common case early in a session; two decimals
-    // would render most of them as $0.00 and look broken.
-    const digits = c.usd > 0 && c.usd < 0.01 ? 4 : 2;
-    return { text: `$${c.usd.toFixed(digits)}`, complete: c.complete, agent: c.agent };
-  });
-  $effect(() => trackOpenChatFigures());
-
-  /**
-   * The prompt-cache timer (nightshift backlog 063, 2026-09-15): when the
-   * last turn's cache entry expires, read off the log — each turn records
-   * when its request was sent and the lifetime of the cache it left, on
-   * both engines — so reopening a chat shows the countdown it had.
-   *
-   * This supersedes the countdown the cached chip used to infer (five
-   * minutes from the reply's *end*, API engine only): the origin was the
-   * wrong clock, since the API counts from the request's start, and the
-   * Claude Code engine's hour was unreadable from here. Both are now
-   * recorded; see `cache.ts`.
-   *
-   * ~~The clock is a chain of timeouts aligned to when the text would
-   * change~~ — the chip and its clock moved to the composer's bottom row
-   * (nightshift backlog 112, 2026-09-16); what stays here is the toast
-   * on the crossing to cold, since this bar is up on every view the chat
-   * is open under and the composer only under the transcript. One timeout
-   * to the expiry, and only if the cache was warm when the chain was
-   * built: a chat reopened already cold is a state, not a crossing, and
-   * the chain is torn down and rebuilt whenever the open chat's log
-   * changes, so a background chat has no chain and cannot toast.
-   */
-  $effect(() => {
-    // Item 605: the chat's bar alone toasts its cache going cold.
-    if (aside) return;
-    const warmUntil = cacheState(app.events, Date.now(), app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null, asideReads(app.activeSessionId))?.warmUntil ?? null;
-    if (warmUntil == null) return;
-    const wait = warmUntil - Date.now();
-    if (wait <= 0) return;
-    // A millisecond past the boundary, as the display's ticks were: a
-    // timer firing on the boundary itself would read the cache as warm.
-    const id = setTimeout(
-      () => addToast("Prompt cache cold — edits to the history now cost nothing extra"),
-      wait + 1,
-    );
-    return () => clearTimeout(id);
-  });
-
-  /**
-   * The plan chip (nightshift backlog 073, 2026-09-16): on the Claude Code
-   * engine, the subscription's five-hour and seven-day percentages beside
-   * the context gauge — two numbers he ran `/usage` for more than any
-   * other command. Read from the Claude desktop app's sample file and the
-   * CLI's cache (`plan_usage.rs`), whichever is fresher, at connect and at
-   * every turn end; the title says how old the reading is and when each
-   * window resets, and a reading past twenty minutes is marked stale
-   * rather than shown as current. Account-wide and server-computed: it
-   * counts every surface, not this chat. Nothing before a sample exists.
-   * ~~The last turn's `rate_limit_event` carries no percentage~~ — measured
-   * 2026-09-16 on CLI 2.1.263, it does (`unifiedWindows`, both windows),
-   * and that live figure is the first choice (`planUsageFromTurn`); the
-   * files are the fallback before the first turn and on an older CLI.
-   */
-  const plan = $derived.by(() => {
-    if (app.connection?.engine !== "claude-code") return null;
-    const u = app.planUsage;
-    if (!u || u.source === "none" || u.five_hour == null) return null;
-    return u;
-  });
-  // The reading's age, ticking (his ask 2026-09-18: "add like a '5min
-  // ago' in the bar at the top"): `age_seconds` is fixed at the read, so
-  // the clock here runs from `sampled_at_ms` every 30 s.
-  let now = $state(Date.now());
-  /** The aside's figures, refreshed with the bar's 30 s clock (item 605). */
-  /** Item 639: the chat's last context reading, for an aside that kept no
-   *  tokens (answered before 605) — the same base the right column uses. */
-  const asideBase = $derived.by(() => {
-    if (!aside || !asideChat) return null;
-    if (asideChat === app.activeSessionId) return contextUsed() ?? contextOf(asideChat)?.used ?? null;
-    return contextOf(asideChat)?.used ?? null;
-  });
-  const af = $derived(aside ? asideFigures(aside, now, asideBase) : null);
-  /** The aside's chat by name (item 605), for the chip's and card's words. */
-  const asideChatName = $derived.by(() => {
-    if (!asideChat) return "the chat";
-    const s = app.sessions.find((x) => x.id === asideChat);
-    return chatLabel(s, asideChat.slice(0, 8));
-  });
-  $effect(() => {
-    const t = setInterval(() => (now = Date.now()), 30_000);
-    return () => clearInterval(t);
-  });
-  const planAgeSeconds = $derived.by(() => {
-    if (!plan) return null;
-    if (plan.sampled_at_ms != null) return Math.max(0, (now - plan.sampled_at_ms) / 1000);
-    return plan.age_seconds;
-  });
-  const planAgeMark = $derived.by(() => {
-    const a = planAgeSeconds;
-    if (a == null) return "?";
-    if (a < 90) return "now";
-    if (a < 3600) return `${Math.round(a / 60)}m`;
-    return `${Math.round(a / 3600)}h`;
-  });
-  const planAgeText = $derived(
-    planAgeSeconds == null
-      ? "age unknown"
-      : planAgeSeconds < 90
-        ? "sampled just now"
-        : `sampled ${Math.round(planAgeSeconds / 60)} min ago`,
-  );
-  const planWhere = $derived(
-    !plan
-      ? ""
-      : plan.source === "turn"
-        ? "this chat's last turn (the CLI's rate-limit event)"
-        : plan.source === "desktop"
-          ? "the Claude app's sample"
-          : plan.source === "cli-usage"
-            ? "the CLI's /usage, run live (zero tokens)"
-            : "the CLI's /usage cache",
-  );
-  /** A reset time for the gauge card (board d): `9:40 PM` today, `Thu
-   *  9:00 AM` on another day — 12-hour (blocker 1812), from `resetTime.ts`. */
-  function resetText(iso: string | null): string {
-    return resetTextAt(iso, now);
-  }
-  const planTitle = $derived.by(() => {
-    if (!plan) return "";
-    const age = planAgeText;
-    const where = planWhere;
-    const when = resetLong;
-    return (
-      `Plan usage, account-wide (every surface, not just this chat): ` +
-      `5-hour window ${plan.five_hour}% (${when(plan.five_hour_resets_at)}); ` +
-      `7-day window ${plan.seven_day ?? "?"}% (${when(plan.seven_day_resets_at)}). ` +
-      `From ${where}, ${age}${plan.stale ? " — stale: past 20 minutes, may be behind" : ""}. Refreshed at each turn end.`
-    );
-  });
-
-  /** Item 595: each reading's own hover, naming it ("Context 212k of 1M",
-   *  "5-hour window 59%"); the chip's hover keeps every figure. */
-  const gaugeTip = $derived.by(() => {
-    if (!gauge) return "";
-    const head = gauge.limit
-      ? `Context ${tokens(gauge.used)} of ${tokens(gauge.limit)} (${Math.round((gauge.ratio ?? 0) * 100)}%)`
-      : `Context ${tokens(gauge.used)} — window size unknown for this model`;
-    // Item 639: an aside that kept no token counts reads an estimate, and says so.
-    return `${af?.estimated ? "About: " : ""}${head}${af?.estimated ? " (estimated: this aside kept no token counts)" : ""} — click for the figures`;
-  });
-  const planTip = $derived.by(() => {
-    if (!plan) return "";
-    return `5-hour window ${plan.five_hour}% (${resetText(plan.five_hour_resets_at)}) · ${planAgeText}${plan.stale ? " — stale" : ""} — click for the figures`;
-  });
-
-  function tokens(n: number): string {
-    if (n >= 1_000_000) return `${parseFloat((n / 1_000_000).toFixed(2))}M`;
-    if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
-    return String(n);
-  }
-
-  // Compaction needs at least one completed exchange to summarize — one the
-  // projection still carries, since that is what the backend summarizes.
-  const canCompact = $derived.by(() => {
-    if (!app.connection || aside) return false;
-    // Compaction rewrites what the *log* projects onto the next request, and
-    // on the agent engine nothing projects: the next turn resumes a history
-    // Claude Code keeps. The button would change what this window shows and
-    // nothing about the conversation, which is worse than not offering it.
-    if (app.connection.engine === "claude-code") return false;
-    const live = liveFlags(app.events);
-    return app.events.some((e, i) => live[i] && e.event === "assistant_message");
-  });
-
-  // ~~`annotation`: the chip's `· thinking default · tools` tail~~ — gone
-  // with backlog 112 (2026-09-16): the thinking mode is the composer's
-  // second button on the provider engine, and the tools switch is the
-  // rail's; board 10's chips carry neither.
-
-  const openTasks = $derived(currentTodos().filter((t) => t.status !== "completed").length);
-
-  /** Backlog 409: "signed out" in place of `subscription` once Claude
-   *  Code's own status said so (`claude auth status`), and the dot red. */
-  const signedOut = $derived(app.connection?.engine === "claude-code" ? chipWord(auth.signedIn) : null);
-  /** The chip's second word: `subscription` on the Claude Code engine,
-   *  the provider's name on the other. Folds at step 3 (backlog 129). */
-  const engineName = $derived(
-    app.connection?.engine === "claude-code"
-      ? (signedOut ?? "subscription")
-      : (app.connection?.provider ?? ""),
-  );
-  /** The spend, for the gauge's hover once its chip has folded (backlog
-   *  129, step 2) — carried always, so the hover reads the same at every
-   *  width. */
-  const spendTail = $derived(
-    spend ? ` · spent ${spend.complete ? "" : "at least "}${spend.text}` : "",
-  );
-  /**
-   * The latest turn's subagents (nightshift backlog 152): the agents chip
-   * — `2 agents · 41k` while any runs, `2 agents · done · 41k` after —
-   * opening the Running-tasks panel, and the gauge's "+ subagents" line
-   * in its hover, so the window figure is not read as the whole.
-   */
-  const agents = $derived(subagentsOfTurn());
-  /** The chip's own rows (backlog 160): the chat's latest turn that had
-   *  agents, so `1 agent · done · 31k` stays after the turn and the next. */
-  const chipAgents = $derived(latestSubagents());
-  /** Chats whose turns run off screen (nightshift backlog 159, A4): the
-   *  chip shows while any does, so the Running-tasks panel that lists
-   *  them is a click away even in a chat with no subagents. */
-  const offScreen = $derived(liveChats().filter((c) => !c.onScreen).length);
-  const agentsTail = $derived(
-    !aside && agents.rows.length > 0
-      ? ` · + subagents: ${agents.tokens.toLocaleString()} tokens (${agents.rows.length}, not in the window)`
-      : "",
-  );
-  function toggleTasks() {
-    app.showRail = false;
-    app.showContext = false;
-    app.showTasks = !app.showTasks;
-  }
-
-  // The popovers: the model one opens from the model chip (or ⌘M, or the
-  // ⌘K palette — which is why the flags are app state), the context one
-  // from the gauge chip (or ⌘⇧C). The rail closes on Escape, on a click
-  // outside it, or on its chip again; opening one closes the other. Context
-  // is a centre modal since 2026-09-15 (nightshift backlog 056) — mounted
-  // in `App.svelte` on the same overlay as Settings, which handles its
-  // own outside click — so only Escape is shared here.
-  let popEl = $state<HTMLElement | null>(null);
-  let chipEl = $state<HTMLElement | null>(null);
-  /** The gauge card (board d, backlog 175): open while true; the bar's
-   *  own, since nothing else opens it (⌘⇧C opens the Context page). */
-  let showGauge = $state(false);
-  let gaugeEl = $state<HTMLElement | null>(null);
-  let gaugePopEl = $state<HTMLElement | null>(null);
-  function onDocClick(e: MouseEvent): void {
-    const t = e.target as Node;
-    if (!(popEl?.contains(t) || chipEl?.contains(t))) {
-      app.showRail = false;
-      showAsideCard = false;
-    }
-    if (!(gaugePopEl?.contains(t) || gaugeEl?.contains(t))) showGauge = false;
-  }
-  function onKey(e: KeyboardEvent): void {
-    if (e.key === "Escape") {
-      app.showRail = false;
-      app.showContext = false;
-      showGauge = false;
-      showAsideCard = false;
-    }
-  }
-  $effect(() => {
-    if (!app.showRail && !app.showContext && !showGauge && !showAsideCard) return;
-    document.addEventListener("mousedown", onDocClick, true);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick, true);
-      document.removeEventListener("keydown", onKey);
-    };
-  });
-  function toggleRail() {
-    app.showContext = false;
-    showGauge = false;
-    app.showRail = !app.showRail;
-  }
-  /** Item 657 (his "the aside * subscription button doesn't do anything",
-   *  then "on the normal chat is like the list of settings"): the aside's
-   *  chip opens the same settings card, in the same place, scoped to the
-   *  aside (`RightRail` → `ProviderRail` given the aside). Its own flag, not
-   *  `app.showRail`: a chat bar in another pane opens the chat's card from
-   *  that, and must not open with this one. */
-  let showAsideCard = $state(false);
-  function toggleAsideCard(): void {
-    app.showContext = false;
-    showGauge = false;
-    showAsideCard = !showAsideCard;
-  }
-  // The card's place, refreshed while it is open on resize and on scroll
-  // (backlog 163). ~~From the chip's rectangle~~ — since 2026-09-22 from the
-  // bar's (nightshift backlog 180, his word: "it used to be on the right
-  // hand side. i think i liked that more"): once the bar wrapped (20392bd)
-  // the chip sat mid-window and the card followed it. Back to the pre-163
-  // spot — 20 px in from the bar's right end, hanging from its foot — with
-  // 163's portal and z-order kept, so the Welcome page's bug stays fixed.
-  let barEl = $state<HTMLElement | null>(null);
-  let popPos = $state({ top: 0, left: 0 });
-  function placePop(): void {
-    const el = barEl ?? chipEl;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    popPos = anchorBelow({ left: r.left, right: r.right - 20, bottom: r.bottom - 1 }, POP_WIDTH, window.innerWidth, 0);
-  }
-  $effect(() => {
-    if (aside ? !showAsideCard : !app.showRail) return;
-    placePop();
-    window.addEventListener("resize", placePop);
-    window.addEventListener("scroll", placePop, true);
-    return () => {
-      window.removeEventListener("resize", placePop);
-      window.removeEventListener("scroll", placePop, true);
-    };
-  });
-  // ~~`toggleContext` (the gauge chip's click)~~ — the chip opens the gauge
-  // card since board d (backlog 175); the card's button is `itemise` below,
-  // and ⌘⇧C toggles the page from `state.svelte.ts`.
-
-  // The gauge card's place: right-aligned under the gauge chip, refreshed
-  // on resize and scroll while open, as the rail's card is.
-  const GAUGE_WIDTH = 320;
-  let gaugePos = $state({ top: 0, left: 0 });
-  function placeGauge(): void {
-    if (!gaugeEl) return;
-    const r = gaugeEl.getBoundingClientRect();
-    gaugePos = anchorBelow({ left: r.left, right: r.right, bottom: r.bottom }, GAUGE_WIDTH, window.innerWidth, 6);
-  }
-  $effect(() => {
-    if (!showGauge) return;
-    placeGauge();
-    window.addEventListener("resize", placeGauge);
-    window.addEventListener("scroll", placeGauge, true);
-    return () => {
-      window.removeEventListener("resize", placeGauge);
-      window.removeEventListener("scroll", placeGauge, true);
-    };
-  });
-  function toggleGauge() {
-    app.showRail = false;
-    app.showContext = false;
-    showGauge = !showGauge;
-  }
-  function itemise() {
-    showGauge = false;
-    app.showRail = false;
-    app.showContext = true;
-  }
-
-  // The folds, by measurement (nightshift backlog 183): on every change of
-  // the bar's size — a window resize, a split, ⌘+ — and of what it holds,
-  // step the fold level up from 0 until the bar's items sit on one line.
-  const FOLD_MAX = 3;
-  let rightEl = $state<HTMLElement | null>(null);
-  /** Mirrors what `foldToFit` wrote, so the attribute is dynamic markup
-   *  (a static one would let Svelte prune the fold rules as unused). */
-  let foldAttr = $state("0");
-  function refold(): void {
-    const bar = barEl;
-    if (!bar) return;
-    foldAttr = String(foldToFit(
-      bar,
-      () => [...bar.querySelectorAll(":scope > .left > *, :scope > .right > *")],
-      FOLD_MAX,
-    ));
-  }
-  $effect(() => {
-    const bar = barEl;
-    if (!bar || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => refold());
-    ro.observe(bar);
-    if (rightEl) ro.observe(rightEl);
-    return () => ro.disconnect();
-  });
-  $effect(() => {
-    // What the bar holds; each read registers the dependency.
-    void [
-      agents.rows.length,
-      agents.running,
-      agents.tokens,
-      app.turnBudget,
-      spend,
-      canCompact,
-      modeText,
-      continuedFrom,
-      runSign,
-      app.connection,
-      gauge == null,
-      plan == null,
-      planAgeMark,
-      openTasks,
-      offScreen,
-    ];
-    refold();
-  });
-  // ~~The two transcript toggles' key caps, the thinking-cost note (066)
-  // and `thinkingDead` (097)~~ — with the toggles, in `Composer.svelte`'s
-  // bottom row since backlog 112.
+  // Item 856: the behaviour lives once, in `topBar/logic.svelte.ts`; this file is the look.
+  const props: TopBarLogicProps = $props();
+  const T = topBarLogic(() => props);
 </script>
 
-<header class="topbar" bind:this={barEl} data-fold={foldAttr}>
+<header class="topbar" bind:this={T.barEl} data-fold={T.foldAttr}>
   <!-- ~~The title and the short id~~ — board d (backlog 175): the tab is
        the title, its hover the id. The mode mark and "continued from"
        stay, at the bar's left, when a chat has one. -->
-  {#if !aside && (runSign !== "idle" || modeText || continuedFrom || threadChipShown || mainable)}
+  {#if !T.aside && (T.runSign !== "idle" || T.modeText || T.continuedFrom || T.threadChipShown || T.mainable)}
     <div class="left">
       <!-- The chat's research thread (nightshift backlog 281): first on
            the left, where the title row's name used to be — the tab names
@@ -627,21 +37,21 @@
       <!-- Item 556: whether this chat runs — first, so it is seen. -->
       <ChatRunSign />
       <ThreadChip />
-      {#if modeText}
-        <span class="mode {mode}" use:tip={modeTitle}
-          ><span aria-hidden="true">{MODE_GLYPH[mode]}</span><span class="fold2"> {modeText}</span></span
+      {#if T.modeText}
+        <span class="mode {T.mode}" use:tip={T.modeTitle}
+          ><span aria-hidden="true">{MODE_GLYPH[T.mode]}</span><span class="fold2"> {T.modeText}</span></span
         >
       {/if}
-      {#if continuedFrom}
+      {#if T.continuedFrom}
         <button
           class="continued"
           use:tip={"This chat continues a full one from its HANDOFF.md — click to open the earlier chat"}
-          onclick={() => void openSession(continuedFrom.id)}
+          onclick={() => void openSession(T.continuedFrom!.id)}
         >
-          <span aria-hidden="true">↳</span><span class="fold1"> continued from {continuedFrom.line}</span>
+          <span aria-hidden="true">↳</span><span class="fold1"> continued from {T.continuedFrom.line}</span>
         </button>
       {/if}
-      {#if mainable && app.activeSessionId}
+      {#if T.mainable && app.activeSessionId}
         {@const sid = app.activeSessionId}
         <button
           class="continued make-main"
@@ -652,15 +62,19 @@
         </button>
       {/if}
     </div>
+  {:else if T.aside && T.asideRunSign !== "idle"}
+    <!-- Item 886: an aside's bar says it runs, with the chat's own sign. -->
+    <div class="left"><ChatRunSign aside={T.aside} session={T.asideChat} /></div>
   {/if}
 
-  <div class="right" bind:this={rightEl}>
+  <div class="right" bind:this={T.rightEl}>
+    {#if !T.aside}<ZoomChip />{/if}
     <!-- The kind chip (nightshift backlog 102; blocker 141's final form
          since backlog 112): `Claude Code · subscription`, `Chat ·
          subscription`, `Build · anthropic`, `Chat · anthropic` — the kind
          and the engine, no model. The model's name is the composer's
          button; this chip still opens the rail, where the model is. -->
-    {#if aside}
+    {#if T.aside}
       <!-- Item 605: the aside's kind chip. ~~Not a button: the model and
            effort are the composer's buttons, and the model popover is the
            chat's~~ — item 657 (his "doesn't do anything"): a button that
@@ -668,30 +82,30 @@
            aside — its model and effort its own, the rest the chat's. -->
       <button
         class="ns-chip model aside-kind"
-        class:open={showAsideCard}
-        bind:this={chipEl}
-        aria-expanded={showAsideCard}
-        use:tip={`An aside: answered from ${asideChatName}'s context on the Claude Code engine, never part of it — its model (${af?.model ? displayName(af.model) : "the chat's"}), effort and settings, click to open`}
-        onclick={toggleAsideCard}
+        class:open={T.showAsideCard}
+        bind:this={T.chipEl}
+        aria-expanded={T.showAsideCard}
+        use:tip={`An aside: answered from ${T.asideChatName}'s context on the Claude Code engine, never part of it — its model (${T.af?.model ? displayName(T.af.model) : "the chat's"}), effort and settings, click to open`}
+        onclick={T.toggleAsideCard}
       >
-        <span class="dot" class:unknown={!app.connection} class:failed={!!signedOut}></span>
-        <span class="model-name">Aside<span class="fold2">{" · "}{engineName || "subscription"}</span></span>
+        <span class="dot" class:unknown={!app.connection} class:failed={!!T.signedOut}></span>
+        <span class="model-name">Aside<span class="fold2">{" · "}{T.engineName || "subscription"}</span></span>
       </button>
     {:else}
     <button
       class="ns-chip model"
       class:open={app.showRail}
-      bind:this={chipEl}
+      bind:this={T.chipEl}
       use:tip={app.connection
-        ? `${kindLabel(chatKind(app.events), app.connection.engine)} · ${engineName} — model and tasks, click to open (⌘M)`
+        ? `${kindLabel(chatKind(app.events), app.connection.engine)} · ${T.engineName} — model and tasks, click to open (⌘M)`
         : "Model and tasks — click to open (⌘M)"}
       aria-expanded={app.showRail}
-      onclick={toggleRail}
+      onclick={T.toggleRail}
     >
-      <span class="dot" class:unknown={!app.connection} class:failed={!!signedOut}></span>
+      <span class="dot" class:unknown={!app.connection} class:failed={!!T.signedOut}></span>
       {#if app.connection}
         <span class="model-name"
-          >{kindLabel(chatKind(app.events), app.connection.engine)}<span class="fold2">{" · "}{engineName}</span></span
+          >{kindLabel(chatKind(app.events), app.connection.engine)}<span class="fold2">{" · "}{T.engineName}</span></span
         >
       {:else}
         <!-- "not connected" only once it is true (item 220): while the
@@ -704,7 +118,7 @@
           })}</span
         >
       {/if}
-      {#if openTasks > 0}<span class="badge" use:tip={`${openTasks} open tasks`}>{openTasks}</span>{/if}
+      {#if T.openTasks > 0}<span class="badge" use:tip={`${T.openTasks} open tasks`}>{T.openTasks}</span>{/if}
     </button>
     {/if}
 
@@ -719,19 +133,14 @@
          the bar. -->
     {#if app.connection}
       <button
-        class="ns-chip mono gauge {level}"
-        class:open={showGauge}
-        class:stale={plan?.stale}
-        aria-expanded={showGauge}
-        bind:this={gaugeEl}
-        use:tip={(gauge
-          ? gauge.limit
-            ? `Context: ${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} tokens (${Math.round((gauge.ratio ?? 0) * 100)}%)${spendTail}${agentsTail}`
-            : `Context: ${gauge.used.toLocaleString()} tokens — window size unknown for this model${spendTail}${agentsTail}`
-          : "Context: nothing sent yet") +
-          (plan ? `\n${planTitle}` : "") +
-          " — click for the figures (⌘⇧C itemises the context)"}
-        onclick={toggleGauge}
+        class="ns-chip mono gauge {T.level}"
+        class:open={T.showGauge}
+        class:stale={T.plan?.stale}
+        class:warn80={T.warn != null}
+        aria-expanded={T.showGauge}
+        bind:this={T.gaugeEl}
+        use:tip={T.chipTip}
+        onclick={T.toggleGauge}
       >
         <!-- Item 595 ("either both dials or both bars"): ~~a 13 px context
              ring over a 48 px blue five-hour bar, the age at the right~~ —
@@ -741,37 +150,38 @@
              five-hour dial takes the rail's colour for it (amber), so the
              two read as one pair; the context arc turns orange past the
              hand-off mark as before. -->
-        {#if gauge || plan}
-          {#if gauge}
-            <span class="reading" data-reading="context" use:tip={gaugeTip}>
-              {#if gauge.ratio != null}
+        {#if T.gauge || T.plan}
+          {#if T.gauge}
+            <span class="reading" data-reading="context" use:tip={T.gaugeTip}>
+              {#if T.gauge.ratio != null}
                 <ContextDial
                   size={14}
                   stroke={2.5}
                   pad={2}
                   minor={0}
                   major={0}
-                  share={gauge.ratio}
-                  mark={handoffMark(aside ? asideChat : app.activeSessionId, gauge.limit)}
-                  label={`Context ${Math.round(gauge.ratio * 100)}%`}
+                  share={T.gauge.ratio}
+                  mark={handoffMark(T.aside ? T.asideChat : app.activeSessionId, T.gauge.limit)}
+                  label={`Context ${Math.round(T.gauge.ratio * 100)}%`}
                 />
               {/if}
-              <span class="figure" class:dimmed={liveEst} class:landed={landFlash}>{af?.estimated || liveEst ? "~" : ""}{tokens(gauge.used)}</span>
+              <span class="figure" class:dimmed={T.liveEst} class:landed={T.landFlash}>{T.af?.estimated || T.liveEst ? "~" : ""}{T.tokens(T.gauge.used)}</span>
             </span>
           {/if}
-          {#if plan}
-            <span class="reading" data-reading="five-hour" use:tip={planTip}>
+          {#if T.plan}
+            <span class="reading" data-reading="five-hour" use:tip={T.planTip}>
               <ContextDial
                 size={14}
                 stroke={2.5}
                 pad={2}
                 minor={0}
                 major={0}
-                share={Math.min(plan.five_hour ?? 0, 100) / 100}
-                label={`5-hour window ${plan.five_hour}%`}
+                share={Math.min(T.plan.five_hour ?? 0, 100) / 100}
+                label={`5-hour window ${T.plan.five_hour}%`}
               />
-              <span class="figure">{plan.five_hour}%</span>
-              <span class="of plan-age">{planAgeMark}</span>
+              <span class="figure">{T.plan.five_hour}%</span>
+              {#if T.weekHot}<span class="of week-hot">wk {T.plan.seven_day}%</span>{/if}
+              <span class="of plan-age">{T.planAgeMark}</span>
             </span>
           {/if}
         {:else}
@@ -786,27 +196,27 @@
          agent's transcript stays a click away — ~~until the next turn~~
          since backlog 160 until a later turn spawns agents: the chip reads
          the chat's latest turn that had any (`chipAgents`). -->
-    {#if !aside && (chipAgents.rows.length > 0 || offScreen > 0)}
+    {#if !T.aside && (T.chipAgents.rows.length > 0 || T.offScreen > 0)}
       <button
         class="ns-chip mono agents"
-        class:live={chipAgents.running > 0 || offScreen > 0}
+        class:live={T.chipAgents.running > 0 || T.offScreen > 0}
         class:open={app.showTasks}
         aria-expanded={app.showTasks}
-        use:tip={`${offScreen > 0 ? `${offScreen} chat${offScreen === 1 ? "" : "s"} running off screen · ` : ""}${chipAgents.rows.length} subagent${chipAgents.rows.length === 1 ? '' : 's'} in this chat's latest turn with agents${chipAgents.running > 0 ? `, ${chipAgents.running} running` : ', all done'} · ${chipAgents.tokens.toLocaleString()} tokens (the CLI's figure per agent, not in the context gauge) — click for the Running-tasks panel${app.turnBudget ? `\n${budgetTitle(app.turnBudget)}` : ''}`}
-        onclick={toggleTasks}
+        use:tip={`${T.offScreen > 0 ? `${T.offScreen} chat${T.offScreen === 1 ? "" : "s"} running off screen · ` : ""}${T.chipAgents.rows.length} subagent${T.chipAgents.rows.length === 1 ? '' : 's'} in this chat's latest turn with agents${T.chipAgents.running > 0 ? `, ${T.chipAgents.running} running` : ', all done'} · ${T.chipAgents.tokens.toLocaleString()} tokens (the CLI's figure per agent, not in the context gauge) — click for the Running-tasks panel${app.turnBudget ? `\n${budgetTitle(app.turnBudget)}` : ''}`}
+        onclick={T.toggleTasks}
       >
         <span class="figure">
-          {#if chipAgents.rows.length > 0}
-            <span>{chipAgents.rows.length} agent{chipAgents.rows.length === 1 ? "" : "s"}</span>
+          {#if T.chipAgents.rows.length > 0}
+            <span>{T.chipAgents.rows.length} agent{T.chipAgents.rows.length === 1 ? "" : "s"}</span>
             <!-- Running or done, from the same rows the Running-tasks page
                  counts (backlog 331). -->
-            {#if chipAgents.running === 0}<span class="of fold1">· done</span>{:else}<span class="of">· {chipAgents.running} running</span>{/if}
+            {#if T.chipAgents.running === 0}<span class="of fold1">· done</span>{:else}<span class="of">· {T.chipAgents.running} running</span>{/if}
           {/if}
           <!-- Chats running off screen (A4). -->
-          {#if offScreen > 0}<span class:of={chipAgents.rows.length > 0}>{chipAgents.rows.length > 0 ? "· " : ""}{offScreen} chat{offScreen === 1 ? "" : "s"} running</span>{/if}
+          {#if T.offScreen > 0}<span class:of={T.chipAgents.rows.length > 0}>{T.chipAgents.rows.length > 0 ? "· " : ""}{T.offScreen} chat{T.offScreen === 1 ? "" : "s"} running</span>{/if}
           <!-- No figure when none is known (a row rebuilt from a log whose
                result carried none), rather than a bare `· 0`. -->
-          {#if chipAgents.tokens > 0}<span class="of fold3">· {tokens(chipAgents.tokens)}</span>{/if}
+          {#if T.chipAgents.tokens > 0}<span class="of fold3">· {T.tokens(T.chipAgents.tokens)}</span>{/if}
           <!-- The message's budget meter (backlog 165, pass 2): spent of
                budget, in window percent, as the hook's ledger moves. -->
           {#if app.turnBudget && budgetChip(app.turnBudget)}<span class="of budget" class:stopped={!!app.turnBudget.stopped}>· {budgetChip(app.turnBudget)}</span>{/if}
@@ -826,7 +236,7 @@
       the conversation — which model, how full its window is, what it has cost —
       and settings are about the app.
     -->
-    {#if canCompact}
+    {#if T.canCompact}
       <button
         class="ns-btn ghost small"
         use:tip={"Replace earlier turns with a model-written summary"}
@@ -845,29 +255,29 @@
          him, five kinds; the Nightshift header carries the same one. -->
     <!-- Files for you (nightshift backlog 377): what the model marked for
          him, a dot for new ones. -->
-    {#if bell}
+    {#if T.bell}
       <ForYouButton />
       <NotificationCentre />
     {/if}
   </div>
 
-  {#if aside ? showAsideCard : app.showRail}
+  {#if T.aside ? T.showAsideCard : app.showRail}
     <!-- Portalled to body and placed by the chip's rectangle (backlog 163):
          inside the bar's stacking context it painted under the Welcome
          page's floating composer and off its chip. Item 657: an aside's
          bar opens the same card from its chip, scoped to the aside. -->
     <div
       class="popover hud-m"
-      bind:this={popEl}
+      bind:this={T.popEl}
       use:portal
       in:hudIn|global
       out:hudOut|global
-      style="top: {popPos.top}px; left: {popPos.left}px"
+      style="top: {T.popPos.top}px; left: {T.popPos.left}px"
     >
-      <RightRail {aside} {asideChat} />
+      <RightRail aside={T.aside} asideChat={T.asideChat} />
     </div>
   {/if}
-  {#if showGauge && app.connection}
+  {#if T.showGauge && app.connection}
     <!-- The gauge card (board d, backlog 175 pass 2): every figure the
          context gauge, the plan chip and the spend chip carried, portalled
          and placed under the gauge chip as the rail's card is (163). -->
@@ -875,95 +285,20 @@
       class="gauge-card hud-m"
       role="dialog"
       aria-label="Context and plan"
-      bind:this={gaugePopEl}
+      data-card="dials"
+      bind:this={T.gaugePopEl}
       use:portal
       in:hudIn|global
       out:hudOut|global
-      style="top: {gaugePos.top}px; left: {gaugePos.left}px; width: {GAUGE_WIDTH}px"
+      style="top: {T.gaugePos.top}px; left: {T.gaugePos.left}px; width: {T.GAUGE_WIDTH}px"
     >
-      <div class="gc-head">{aside ? "This aside's context and plan" : "Context and plan"}</div>
-      <div class="gc-row">
-        <span class="gc-label">Context</span>
-        <span class="gc-val">
-          {#if gauge}
-            {#if gauge.ratio != null}
-              <span class="gc-bar {level}"><span class="fill" style:width="{gauge.ratio * 100}%"></span></span>
-            {/if}
-            <span class="gc-fig"
-              >{af?.estimated ? "about " : ""}{gauge.used.toLocaleString()}{" "}{#if gauge.limit}of {gauge.limit.toLocaleString()} · {Math.round(
-                  (gauge.ratio ?? 0) * 100,
-                )}%{:else}tokens — window size unknown{/if}</span
-            >
-            {#if af?.estimated}
-              <span class="gc-note"
-                >{af.estimated === "chat" ? "estimated: the chat's context plus this thread's text" : "estimated, a floor: this thread's text only"} — this aside kept no token counts</span
-              >
-            {/if}
-            {#if !aside && agents.rows.length > 0}
-              <span class="gc-note"
-                >+ subagents: {agents.tokens.toLocaleString()} tokens ({agents.rows.length}, not in the window)</span
-              >
-            {/if}
-          {:else}
-            <span class="gc-fig sans">nothing sent yet</span>
-          {/if}
-        </span>
-      </div>
-      {#if plan}
-        <div class="gc-row">
-          <span class="gc-label">Plan, 5 h</span>
-          <span class="gc-val">
-            <span class="gc-bar"><span class="fill plan-fill" style:width="{Math.min(plan.five_hour ?? 0, 100)}%"></span></span>
-            <span class="gc-fig">{plan.five_hour}% · {resetText(plan.five_hour_resets_at)}</span>
-          </span>
-        </div>
-        {#if plan.seven_day != null}
-          <div class="gc-row">
-            <span class="gc-label">Plan, week</span>
-            <span class="gc-val">
-              <span class="gc-bar"><span class="fill plan-fill" style:width="{Math.min(plan.seven_day, 100)}%"></span></span>
-              <span class="gc-fig">{plan.seven_day}% · {resetText(plan.seven_day_resets_at)}</span>
-            </span>
-          </div>
-        {/if}
-      {/if}
-      {#if spend}
-        <div class="gc-row">
-          <span class="gc-label">Spent</span>
-          <span class="gc-val">
-            <span
-              class="gc-fig"
-              class:partial={!spend.complete}
-              use:tip={aside
-                ? spend.complete
-                  ? "What this aside has added on top of the chat: each answer's own cost at API prices (the CLI's estimate) — not a bill under a subscription"
-                  : "At least this much on top of the chat: some answers kept no cost of their own (none came, or they were answered before Nov 12)"
-                : spend.agent
-                  ? spend.complete
-                    ? "This chat's cost so far at API prices: Claude Code's own running estimate, subagents and rewound replies included — not a bill under a subscription"
-                    : "At least this much: Claude Code could not price one of the models this chat ran on"
-                  : spend.complete
-                    ? "Session cost so far, summed from each exchange at the price in force when it ran"
-                    : "At least this much: some exchanges ran on a model with no verified price"}
-              >{spend.complete ? "" : "at least "}{spend.text}</span
-            >
-          </span>
-        </div>
-      {/if}
-      {#if plan}
-        <p class="gc-foot" class:stale={plan.stale}>
-          Plan {planAgeText.replace(/^sampled /, "read ")} from {planWhere}; account-wide, every surface.{#if plan.stale}
-            Stale: past 20 minutes, may be behind.{/if} Refreshed at each turn end.
-        </p>
-      {/if}
-      {#if aside}
-        <!-- Item 605: the Context page itemises the chat's request, not an aside's. -->
-        <p class="gc-foot">The aside's context: {asideChatName}'s, the thread so far, and the newest answer — what the next follow-up carries.</p>
-      {:else}
-        <div class="gc-actions">
-          <button class="ns-btn ghost small" onclick={itemise}>Itemise the context <span class="gc-key">⌘⇧C</span></button>
-        </div>
-      {/if}
+      <!-- Item 824: design B, Dials — ~~the rows with pace sentences and the
+           source foot~~ (his "bunch of yap on this page"). -->
+      <PlanDials
+        figures={T.dialFigures}
+        spendTip={T.spendTip}
+        itemise={T.aside ? { label: "Itemise chat", onclick: () => void T.itemiseChat() } : { label: "Itemise", key: "⌘⇧C", onclick: T.itemise }}
+      />
     </div>
   {/if}
   <!-- The Context page is no longer a popover here: it opens as a centre
@@ -1176,16 +511,9 @@
   }
   /* ~~`.bar`, `.plan`, `.plan .figure`, `.spend`~~ — the old gauge's,
      plan chip's and spend chip's; board d's are `.gbar` and the card's. */
-  .fill {
-    height: 100%;
-    background: var(--accent);
-    transition: width 120ms linear;
-  }
+  /* ~~`.fill`, `.plan-fill`~~ — the old card's bars (item 824: dials). */
   .gauge.hot {
     color: var(--failed);
-  }
-  .plan-fill {
-    background: var(--live);
   }
   /* ~~The gauge chip (board d): context over plan, two 3 px bars
      (`.gauge .bars`, `.gbar`)~~ — item 595: two readings side by side,
@@ -1231,17 +559,24 @@
       transition: color 80ms ease;
     }
   }
-  .gc-bar .fill {
-    display: block;
-  }
   .gauge .plan-age {
     font-size: 11px;
   }
   .gauge.stale .plan-age {
     font-style: italic;
   }
-  /* The gauge card: the rail card's frame, a label column and a value
-     column; portalled, so fixed to the viewport. */
+  /* Item 769: past 80% of either window (his stop line) the plan's
+     figure turns the partial colour, and a hot week shows beside it. */
+  .gauge.warn80 .reading[data-reading="five-hour"] .figure,
+  .gauge .week-hot {
+    color: var(--partial);
+    font-weight: 600;
+  }
+  .gauge .week-hot {
+    font-size: 11px;
+  }
+  /* The gauge card: the rail card's frame around PlanDials (item 824);
+     portalled, so fixed to the viewport. */
   .gauge-card {
     position: fixed;
     z-index: 80;
@@ -1256,74 +591,6 @@
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
     font-size: 12.5px;
     color: var(--ink2);
-  }
-  .gc-head {
-    font-size: 10.5px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--dim);
-  }
-  .gc-row {
-    display: grid;
-    grid-template-columns: 72px minmax(0, 1fr);
-    gap: 8px;
-    align-items: start;
-  }
-  .gc-label {
-    color: var(--ink);
-  }
-  .gc-val {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-  }
-  .gc-bar {
-    display: block;
-    height: 4px;
-    margin-top: 6px;
-    border-radius: 2px;
-    background: var(--line2);
-    overflow: hidden;
-  }
-  .gc-bar.warm .fill {
-    background: var(--partial);
-  }
-  .gc-bar.hot .fill {
-    background: var(--failed);
-  }
-  .gc-fig {
-    font-family: var(--mono);
-    font-size: 11.5px;
-    font-variant-numeric: tabular-nums;
-  }
-  .gc-fig.sans {
-    font-family: var(--sans);
-    color: var(--dim);
-  }
-  .gc-fig.partial {
-    font-style: italic;
-  }
-  .gc-note {
-    color: var(--dim);
-    font-size: 11.5px;
-  }
-  .gc-foot {
-    margin: 0;
-    color: var(--dim);
-    font-size: 11.5px;
-    line-height: 1.4;
-  }
-  .gc-foot.stale {
-    color: var(--partial);
-  }
-  .gc-actions {
-    display: flex;
-    justify-content: flex-end;
-  }
-  .gc-key {
-    color: var(--dim);
-    margin-left: 4px;
   }
   /* The cache chip's and the toggles' rules went with them to
      `Composer.svelte` (backlog 112). */

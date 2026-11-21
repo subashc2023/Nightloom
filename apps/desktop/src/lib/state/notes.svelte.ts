@@ -1,4 +1,5 @@
 // Moved out of state.svelte.ts by item 641 (pure move; state.svelte.ts re-exports every name it exported).
+import { hashText } from "../noteDraftStore";
 import { viewRenameKeys } from "../viewState";
 import * as api from "../api";
 import { UNFILED } from "../drafts.svelte";
@@ -352,6 +353,12 @@ function parkOlderDraft(scope: NoteScope, name: string, text: string): void {
   void sendDraftsToTrash(scope, [{ key, at: name, text }]);
 }
 
+/** Item 870: his edits set aside by Take theirs, kept in the notes trash
+ *  as an unsaved draft (the scopes with a trash: project notes, the vault). */
+export function setAsideDraft(scope: NoteScope, name: string, text: string): void {
+  parkOlderDraft(scope, name, text);
+}
+
 async function sendDraftsToTrash(scope: NoteScope, entries: { key: string; at: string; text: string }[]): Promise<void> {
   if (entries.length === 0) return;
   let written: string[];
@@ -464,8 +471,34 @@ export function reviewProposal(scope: ProposalScope, id?: string): void {
  * what makes a loaded proposal a draft and not a save.
  */
 export function mirrorDraft(key: string, text: string, saved: string): void {
-  if (text !== saved) app.noteDrafts[key] = text;
-  else delete app.noteDrafts[key];
+  if (text !== saved) {
+    app.noteDrafts[key] = text;
+    // Item 870: what the file read when this draft was typed.
+    // Item 871: as hashes, so the pair can be kept on disk with the draft.
+    if (app.noteDraftBases) setDraftBase(key, text, saved);
+  } else {
+    delete app.noteDrafts[key];
+    if (app.noteDraftBases) delete app.noteDraftBases[key];
+  }
+}
+
+/** Item 870/871: record that `draft` (now `key`'s draft) was typed
+ *  against the file text `base`. */
+export function setDraftBase(key: string, draft: string, base: string): void {
+  app.noteDraftBases[key] = { draft: hashText(draft), base: hashText(base) };
+}
+
+/**
+ * Item 870/871: whether the file text `content` differs from the text
+ * `key`'s draft was typed against — true or false, or null when unknown (a
+ * draft from elsewhere: a proposal, a restore of an older entry). Kept
+ * across a relaunch with the draft (`noteDraftStore.ts`).
+ */
+export function baseDiffers(key: string, content: string): boolean | null {
+  const b = app.noteDraftBases?.[key];
+  const draft = app.noteDrafts[key];
+  if (!b || draft === undefined || hashText(draft) !== b.draft) return null;
+  return hashText(content) !== b.base;
 }
 
 /**

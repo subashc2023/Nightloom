@@ -61,14 +61,17 @@ export const TRANSCRIPT_FEATURES: Record<string, Where> = {
   "save an edit in place": mainOnly("an aside's exchanges travel as text; Ask again replaces them"),
   "fork helpers from here, checkpoint line": mainOnly("an aside has no session of its own"),
   "ask aside on a selection, aside cards": mainOnly("an aside of an aside has no context to fork from"),
+  "comment on a selection (item 754): chips over the chat's box": mainOnly("comments collect in the chat's message box; an aside's thread has Reply for its own box"),
   "approval prompts, answer hand-back": mainOnly("an aside runs without prompts"),
   "budget stop card": mainOnly("the 85% hold is on the chat's turn"),
   "rewound-writes card": mainOnly("an aside writes nothing"),
+  "rewind restore-files card (item 765)": mainOnly("an aside's exchanges have no turn snapshots; its rewind is the window's own"),
   "subagent groups, council chip, next-chat hand-off": mainOnly("chat-turn features"),
   "tool-result images, attachments opened as tabs": mainOnly("no session file to read them from"),
   "keep-warm notice": mainOnly("the chat's cache; the aside rides it"),
   "connect error card, error banner": mainOnly("the chat's connection; an aside's error is a note under its exchange, in the same look"),
   "continued-from line": mainOnly("a chat's lineage"),
+  "session-cut notice (item 703), resumed": mainOnly("an aside runs no subagents to cut"),
   "queued / stalled notice, one aside at a time": asideOnly,
   "stopped-here mark, error under an exchange": asideOnly,
   "quoted passage at the head, Fold into thread at the end": asideOnly,
@@ -85,6 +88,8 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
   AssistantMessage: shared,
   WaitingMoon: shared,
   UserBubble: shared,
+  // Item 837: his words typeset (the adopted agent's prompt here; his bubbles in UserBubble).
+  MathText: shared,
   Icon: shared,
   Navigator: shared,
   PendingBubbles: TRANSCRIPT_FEATURES["pending bubbles (a message held mid-answer)"]!,
@@ -92,7 +97,18 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
   AsideLayer: TRANSCRIPT_FEATURES["ask aside on a selection, aside cards"]!,
   ApprovalPrompt: TRANSCRIPT_FEATURES["approval prompts, answer hand-back"]!,
   AskHandBack: TRANSCRIPT_FEATURES["approval prompts, answer hand-back"]!,
+  // Item 753: the turn-end question's card sits with the waiting calls' cards, in the chat only.
+  TurnAskHost: TRANSCRIPT_FEATURES["approval prompts, answer hand-back"]!,
   BudgetStopCard: TRANSCRIPT_FEATURES["budget stop card"]!,
+  SessionCutNotice: TRANSCRIPT_FEATURES["session-cut notice (item 703), resumed"]!,
+  // Item 763 (H3): the date and hand-off dividers and the scan card are drawn from the events, so an
+  // aside's thread gets its date lines too (it has no hand-offs or scans to draw).
+  ChatDividers: shared,
+  ScanCard: shared,
+  // Item 799: chapters are read from the events in every kind of transcript; an aside keeps its renames under
+  // its own fold name (its one `inAside` guard), and lists chapters only once it has a mark past its start.
+  ChapterRule: shared,
+  ChapterContents: shared,
 };
 
 /**
@@ -101,9 +117,13 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
  * it in `TRANSCRIPT_FEATURES`, then update the count.
  */
 export const KIND_GUARDS = {
-  isChat: 14,
+  // 17 since the merge of nightshift d5e4063b into dk-needs-you: each side added one chat-only guard
+  // (TurnAskHost, SessionCutNotice), both classified above.
+  // 18 since item 765: the rewind restore-files card, classified above.
+  isChat: 18,
   inPane: 8,
-  inAside: 7,
+  // 8 since item 799: the chapters' scope (an aside keys its renames by its fold name).
+  inAside: 8,
   "src.chatActions": 10,
 } as const;
 

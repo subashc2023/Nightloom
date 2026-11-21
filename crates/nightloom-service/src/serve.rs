@@ -177,6 +177,30 @@ pub fn desktop_running() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// `NIGHTLOOM_SERVE_IDLE_EXIT_MIN`: on the away server (item 781), `serve`
+/// exits by itself after this many quiet minutes, so Fly's proxy need not
+/// stop the machine — the proxy counts open connections, and a job's run
+/// has none, so its auto-stop would cut a running job (`deploy/fly.toml`).
+pub const IDLE_EXIT_ENV: &str = "NIGHTLOOM_SERVE_IDLE_EXIT_MIN";
+/// A job due within this keeps the server up (the knock comes 15 minutes
+/// early; GitHub may be late or early by a few).
+pub const KEEP_UP_AHEAD_MINUTES: i64 = 20;
+
+/// Whether `serve` may exit now: no turn running, no job running or due
+/// soon ([`crate::jobs::Jobs::keeps_up`]), and nobody has used it for
+/// `idle` since it started or was last used. Pure.
+pub fn idle_exit_due(
+    started: chrono::DateTime<chrono::Utc>,
+    last_used: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+    idle: chrono::Duration,
+    busy: bool,
+    jobs_keep_up: bool,
+) -> bool {
+    let quiet_since = last_used.map_or(started, |u| u.max(started));
+    !busy && !jobs_keep_up && now - quiet_since >= idle
+}
+
 /// How `serve` runs its turns.
 #[derive(Debug, Clone)]
 pub struct ServeConfig {
@@ -391,6 +415,13 @@ pub struct ServeHost {
     /// the first ask, as the desktop's host does; `None` until
     /// `bin/voice-setup.sh` has run there.
     voice: Mutex<Option<Arc<crate::voice::Engine>>>,
+    /// Push to the phone (item 739): the key, the subscriptions and the
+    /// sender, under `<home>/remote/push/`.
+    push: Arc<crate::push::Push>,
+    /// Item 781: this host is the Mac's background jobs runner.
+    mac_runner: bool,
+    /// The recurring jobs (item 746), kept under the home like the push state.
+    jobs: Arc<crate::jobs::Jobs>,
 }
 
 /// How long the voice programs stay up with no one talking.
@@ -398,6 +429,18 @@ const VOICE_IDLE: std::time::Duration = std::time::Duration::from_secs(600);
 
 impl ServeHost {
     pub fn new(cfg: ServeConfig, registry: Registry) -> Arc<Self> {
+        Self::build(cfg, registry, false)
+    }
+
+    /// Item 781: the windowless host as the Mac's background jobs runner
+    /// ([`crate::jobs::runner`]): the Mac's own push role and time zone,
+    /// the desktop binary's flag names for its hooks, and the away
+    /// server's lease asked before each run of an away job.
+    pub fn new_mac_runner(cfg: ServeConfig, registry: Registry) -> Arc<Self> {
+        Self::build(cfg, registry, true)
+    }
+
+    fn build(cfg: ServeConfig, registry: Registry, mac_runner: bool) -> Arc<Self> {
         let (tx, _) = broadcast::channel(1024);
         Arc::new_cyclic(|me| {
             let weak: Weak<ServeHost> = me.clone();
@@ -414,7 +457,6 @@ impl ServeHost {
             );
             Self {
                 me: me.clone(),
-                cfg,
                 registry: Mutex::new(registry),
                 active_project: Mutex::new(None),
                 active_chat: Mutex::new(None),
@@ -428,6 +470,20 @@ impl ServeHost {
                 resume: Mutex::new(None),
                 pause_gen: std::sync::atomic::AtomicU64::new(1),
                 voice: Mutex::new(None),
+                push: crate::push::Push::open(
+                    crate::push::Push::dir_under(&cfg.home),
+                    if mac_runner { "mac" } else { "away" },
+                ),
+                // Item 780: no zone from this host's clock (UTC), which
+                // would pin a London phone's job to UTC; the phone names
+                // its own zone on its next look at the list.
+                jobs: if mac_runner {
+                    crate::jobs::Jobs::open(crate::jobs::Jobs::dir_under(&cfg.home))
+                } else {
+                    crate::jobs::Jobs::open_in(crate::jobs::Jobs::dir_under(&cfg.home), None)
+                },
+                mac_runner,
+                cfg,
             }
         })
     }
@@ -436,6 +492,47 @@ impl ServeHost {
         let _ = self.tx.send(Event {
             name: name.into(),
             payload,
+        });
+    }
+
+    /// Tell the subscribed phones what happened in `chat` (item 739): its
+    /// name and the state, nothing of the reply. Off the caller's path —
+    /// the name is read from the chat list and the sends go out in a task.
+    /// The away server cannot know he is at the Mac, so it always sends.
+    fn push_note(&self, what: crate::push::What, chat: &str, project: Option<&str>) {
+        self.push_note_with(what, chat, project, None);
+    }
+
+    /// [`Self::push_note`] with a stuck run's line (item 784).
+    fn push_note_with(
+        &self,
+        what: crate::push::What,
+        chat: &str,
+        project: Option<&str>,
+        detail: Option<String>,
+    ) {
+        // (Item 741: `notify` is reached with no phone subscribed too — it
+        // keeps the home screen's feed row and then sends nothing.)
+        let Some(me) = self.me.upgrade() else {
+            return;
+        };
+        let (chat, project) = (chat.to_string(), project.map(str::to_string));
+        tokio::spawn(async move {
+            let label = Host::chats(&*me, project.as_deref())
+                .await
+                .ok()
+                .and_then(|rows| rows.into_iter().find(|r| r.id == chat))
+                .map(|r| r.label);
+            me.push
+                .notify(crate::push::Note {
+                    what,
+                    chat: Some(chat),
+                    label,
+                    project,
+                    at_the_mac: false,
+                    detail,
+                })
+                .await;
         });
     }
 
@@ -548,6 +645,7 @@ impl ServeHost {
         // The phone's rail (`<home>/serve/rail.json`), else `--model`.
         let rail = self.rail();
         rail.apply_model(&mut spec, self.cfg.model.as_deref());
+        crate::home::apply_model(project.map(|p| p.source.as_deref()), &mut spec);
         // No checkpoint helper on this host (the desktop's `sync_checkpoint`).
         spec.fork_mode = false;
         // A chat does not compact (backlog 086).
@@ -583,13 +681,22 @@ impl ServeHost {
         spec.permission_mode = Some(AgentSpec::headless_permission_mode(true).into());
         if let Some(exe) = &self.cfg.hook_exe {
             let exe = exe.to_string_lossy().into_owned();
+            // The `nightloom` CLI's subcommands; the desktop binary (the Mac
+            // runner, item 781) takes the same words as flags.
+            let word = |w: &str| {
+                if self.mac_runner {
+                    format!("--{w}")
+                } else {
+                    w.to_string()
+                }
+            };
             spec.ask = Some(crate::agent::AskSpec {
-                hook: vec![exe.clone(), "permission-hook".into()],
+                hook: vec![exe.clone(), word("permission-hook")],
                 dir: PathBuf::new(),
                 mode: crate::agent::AskMode::Ask,
                 subagents_auto: crate::agent::ask::SUBAGENTS_AUTO_DEFAULT,
             });
-            let mut args = vec!["mcp-serve".to_string()];
+            let mut args = vec![word("mcp-serve")];
             if let Some(p) = project.filter(|_| !incognito) {
                 args.push("--project".into());
                 args.push(p.id.clone());
@@ -611,7 +718,7 @@ impl ServeHost {
             crate::agent::own_browser::add_to(
                 &mut spec,
                 &mut servers,
-                vec![exe.clone(), "permission-hook".into()],
+                vec![exe.clone(), word("permission-hook")],
             );
             spec.mcp_config = Some(serde_json::json!({ "mcpServers": servers }).to_string());
         }
@@ -626,6 +733,19 @@ impl ServeHost {
         }
         spec.apply_kind(declared);
         spec.apply_kind_policy(session.kind(), declared);
+        // Item 804: a read-only chat of Home's gets his connectors, less
+        // the ones he turned off for Home — only one that refuses the
+        // connectors' writers, so there is no write path through them.
+        // Item 872: Home's chats are marked, held or not — its own
+        // Reminders writer is refused wherever no card gates it.
+        crate::home::reach::mark(project.map(|p| p.source.as_deref()), &mut spec);
+        if spec.refuses_mcp_writers() {
+            crate::home::reach::apply(
+                project.map(|p| p.source.as_deref()),
+                Some(&self.cfg.home),
+                &mut spec,
+            );
+        }
         if !spec.no_session_persistence
             && let Some((agent, id)) = session.agent_session()
             && agent == AGENT
@@ -794,6 +914,12 @@ impl ServeHost {
                 user_memory: memory,
                 model: spec.model.clone(),
                 chat_instructions: declared == ChatKind::Chat,
+                // The practices layer (item 738), on the Mac's terms: his
+                // Settings switch, and not where the CLI reads the full
+                // practices file through the folder's CLAUDE.md — so the
+                // turn here sends the prefix the desktop's would.
+                practices: crate::prompt::practices_layer_on()
+                    && (spec.safe_mode || !crate::prompt::practices_imported(workspace)),
                 project: project.map(|p| crate::ProjectContext {
                     name: p.name.clone(),
                     notes_dir: p.notes_dir(),
@@ -958,17 +1084,33 @@ impl ServeHost {
             &env,
         )
         .await;
+        // 739: the phone is told how the turn ended — unless he stopped
+        // it, or it only paused on a card (that card's own push stands).
+        let project_id = project.as_ref().map(|p| p.id.as_str());
         match end {
             Ok(AgentTurnEnd::Done { outcome, .. }) => {
                 for n in outcome.notices {
                     env.notice(n);
+                }
+                let ended = match (&outcome.limit, &outcome.deferred) {
+                    (Some(_), _) => Some(crate::push::What::Limit),
+                    (None, Some(_)) => None,
+                    (None, None) => Some(crate::push::What::Done),
+                };
+                if let Some(what) = ended.filter(|_| !cancel.is_cancelled()) {
+                    self.push_note(what, &chat_id, project_id);
                 }
                 self.after_turn(&chat_id, outcome.limit);
             }
             Ok(AgentTurnEnd::StoppedInCouncil) => {
                 env.notice("stopped during the council's seats; no chair ran".into());
             }
-            Err(e) => env.notice(format!("the turn failed: {e}")),
+            Err(e) => {
+                if !cancel.is_cancelled() {
+                    self.push_note(crate::push::What::Failed, &chat_id, project_id);
+                }
+                env.notice(format!("the turn failed: {e}"))
+            }
         }
     }
 
@@ -1476,6 +1618,7 @@ impl ServeHost {
         let workspace = self.workspace_for(project, session);
         let mut spec = AgentSpec::new(workspace.clone());
         rail.apply_model(&mut spec, self.cfg.model.as_deref());
+        crate::home::apply_model(project.map(|p| p.source.as_deref()), &mut spec);
         let prompt = self.prompt_for(project, session, &workspace, &spec);
         let view = WireView::assemble(Some(&prompt), &Session::new(), None, None);
         let mut layers = serde_json::to_value(PromptLayersInfo::as_built(session))
@@ -1606,7 +1749,59 @@ impl TurnEnv for ServeEnv<'_> {
         if let Ok(v) = serde_json::to_value(prompt) {
             lock(&self.host.pending).insert(prompt.id.to_string(), v.clone());
             self.host.emit("tool-approval", v.to_string());
+            // 739: a card waits on him.
+            if let Some(chat) = prompt.chat {
+                self.host.push_note_with(
+                    crate::push::What::for_prompt(prompt.name),
+                    chat,
+                    self.project.as_deref(),
+                    // Item 784: a stuck run's push says what it ran.
+                    (prompt.name == crate::runaway::STUCK_TOOL)
+                        .then(|| prompt.reason.clone())
+                        .flatten(),
+                );
+            }
         }
+    }
+
+    fn nudge(&self, nudge: &crate::agent_turn::ApprovalNudge<'_>) {
+        use crate::agent::ask::Nudge;
+        // 783: nobody answered. The reminder is a second push; a set-aside
+        // takes the card off the phone and says so.
+        if matches!(nudge.stage, Nudge::SetAside | Nudge::Unattended) {
+            lock(&self.host.pending).remove(nudge.id);
+        }
+        if let Ok(p) = serde_json::to_string(nudge) {
+            self.host.emit("approval-nudge", p);
+        }
+        if let Some(chat) = nudge.chat {
+            self.host.push_note(
+                match nudge.stage {
+                    Nudge::Remind => crate::push::What::Reminder,
+                    Nudge::SetAside => crate::push::What::SetAside,
+                    Nudge::Unattended => crate::push::What::Unattended,
+                },
+                chat,
+                self.project.as_deref(),
+            );
+        }
+    }
+
+    /// Item 783's finish: nobody has the phone page open (no subscriber
+    /// to the event stream, the voice socket included), so nobody can
+    /// answer a card here — a job's run at night, most often.
+    fn unattended(&self) -> bool {
+        self.host.tx.receiver_count() == 0
+    }
+
+    /// Item 784: nobody watches the away server's turn when no phone is
+    /// connected to its event stream.
+    fn unwatched(&self, _chat: &str) -> bool {
+        self.host.tx.receiver_count() == 0
+    }
+
+    fn job_of(&self, chat: &str) -> Option<crate::runaway::JobUsual> {
+        self.host.jobs.usual_for_chat(chat)
     }
 
     async fn grant_to_project(&self, dir: &Path) -> ProjectGrant {
@@ -1891,6 +2086,8 @@ impl Host for ServeHost {
                     .filter(|r| !r.trim().is_empty())
                     .unwrap_or_else(|| "the user declined this call".into()),
             },
+            // "Not now — carry on" (item 743).
+            "later" => Answer::Later,
             other => return Err(format!("unknown decision: {other}")),
         };
         lock(&self.pending).remove(&req.id);
@@ -2029,6 +2226,24 @@ impl Host for ServeHost {
         serve_reads::usage().await
     }
 
+    /// Wave O: the cache chip's rates, from every chat's pings here — the
+    /// unfiled chats' and each project's `ask/` directory.
+    async fn cache_rates(&self, model: &str) -> Result<Option<crate::usage::CacheRates>, String> {
+        let mut asks = vec![self.cfg.unfiled_dir.join("ask")];
+        asks.extend(
+            lock(&self.registry)
+                .projects()
+                .iter()
+                .map(|p| p.session_dir().join("ask")),
+        );
+        asks.sort();
+        asks.dedup();
+        let model = model.to_string();
+        tokio::task::spawn_blocking(move || crate::usage::cache_rates_in(&asks, &model))
+            .await
+            .map_err(|e| format!("reading the cache rates failed: {e}"))
+    }
+
     async fn search(
         &self,
         q: &str,
@@ -2155,6 +2370,103 @@ impl Host for ServeHost {
         "serve"
     }
 
+    fn push(&self) -> Option<Arc<crate::push::Push>> {
+        Some(self.push.clone())
+    }
+
+    async fn ask_dir(&self, project: Option<&str>, chat: &str) -> Result<PathBuf, String> {
+        let (_, path) = self.chat_in(project, chat)?;
+        crate::approval_rules::ask_dir_of_log(&path)
+    }
+
+    fn jobs(&self) -> Option<Arc<crate::jobs::Jobs>> {
+        Some(self.jobs.clone())
+    }
+
+    /// Item 781: a stand-in copy of a Mac job is claimed by the server
+    /// itself (after its grace, the Mac silent); the Mac runner asks the
+    /// away server for a job it has a copy of; anything else runs.
+    async fn job_claim(
+        &self,
+        job: &crate::jobs::Job,
+        due: chrono::DateTime<chrono::Utc>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> crate::sync::lease::Claim {
+        if job.stand_in {
+            return crate::sync::lease::away_claim(&self.cfg.home, job, due, now);
+        }
+        if self.mac_runner {
+            let projects = lock(&self.registry).projects();
+            if let Some(away) = crate::sync::lease::MacAway::load(&self.cfg.home, &projects) {
+                return away.claim(job, due, now).await;
+            }
+        }
+        crate::sync::lease::Claim::Granted
+    }
+
+    /// Item 781: the server takes the Mac's latest list of away jobs.
+    async fn before_tick(&self, jobs: &crate::jobs::Jobs) {
+        if self.mac_runner {
+            return;
+        }
+        if let Some(list) = crate::sync::lease::read_mac_jobs(&self.cfg.home) {
+            jobs.take_mac_jobs(list);
+        }
+    }
+
+    /// The job's chat (item 746): its log, made as a Claude Code chat in
+    /// the job's project when it has none, and the Chat policy on it while
+    /// the job is read-only — each turn here reads the kind back from the
+    /// log (`apply_kind_policy`), so the run that follows is held to it.
+    ///
+    /// Item 746's review: the kind is read back from the file before the
+    /// run (`jobs::hold_kind_on_disk`), and a chat the Mac owns — a mirrored
+    /// copy, or this server's own once the Mac took it down (0444, acked) —
+    /// is never written: the send would fork it from the unchanged file,
+    /// so a job whose approval was taken back would run with the writers.
+    /// The job goes on in a new chat of its own instead.
+    async fn job_prepare(&self, prep: crate::jobs::Prep) -> Result<String, String> {
+        let project = self.project(prep.project.as_deref())?;
+        // 804's review: Home's scan reads the accounts of the last
+        // connector check — checked again here when old or missing (no
+        // model request; a failure keeps the last good list).
+        if prep.connectors && prep.read_only {
+            let home = self.cfg.home.clone();
+            let bin = PathBuf::from(crate::resolve_binary(&self.cfg.binary));
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::home::reach::refresh_if_stale(&home, &bin, chrono::Utc::now())
+            })
+            .await;
+        }
+        let want = crate::jobs::kind_for(prep.read_only);
+        if let Some(chat) = &prep.chat
+            && let Ok(path) = self.find_chat(project.as_ref(), chat)
+            && !self.sync.layout().needs_fork(&path)
+        {
+            let _held = self.hold(chat)?;
+            let auto = prep.auto_hand_off;
+            return tokio::task::spawn_blocking(move || {
+                crate::jobs::hold_on_disk(&path, want, auto)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        let dir = self.log_dir(project.as_ref());
+        let mut session =
+            Session::start(dir, ChatMode::Normal, ChatKind::Build).map_err(|e| e.to_string())?;
+        session.record_title_by(prep.title, TitleBy::User);
+        if prep.read_only {
+            chat_ops::set_kind(&mut session, ChatKind::Chat, None);
+        }
+        let path = session.log_path().map(Path::to_path_buf);
+        drop(session);
+        let path = path.ok_or_else(|| crate::jobs::UNHELD.to_string())?;
+        let auto = prep.auto_hand_off;
+        tokio::task::spawn_blocking(move || crate::jobs::hold_on_disk(&path, want, auto))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
     async fn limit_pause(&self) -> Option<crate::remote::api::LimitPause> {
         let p = lock(&self.pause).clone()?;
         let resume_at = lock(&self.resume)
@@ -2219,15 +2531,30 @@ impl Host for ServeHost {
             // capture; `nightshift` the listener names itself.
             feature::BUDGET,
             feature::RESUME_LIMIT,
+            // Item 743: the rules sheet, and "Not now — carry on".
+            feature::RULES,
+            feature::LATER,
+            // Wave O: the cache chip's price.
+            feature::CACHE_RATES,
         ]
         .into_iter()
+        // Item 805: feedback only where it can be filed — this server's
+        // own Nightshift checkout; without one the phone says "on the Mac".
+        .chain(
+            self.cfg
+                .nightshift_root
+                .is_some()
+                .then_some([feature::FEEDBACK, feature::FEEDBACK_IMAGES])
+                .into_iter()
+                .flatten(),
+        )
         .map(String::from)
         .collect()
     }
 }
 
 #[cfg(all(test, unix))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::remote::Server;
     use std::time::{Duration, Instant};
@@ -2237,7 +2564,7 @@ mod tests {
     /// Ask position (`tool_deferred`), and the resume that follows carries
     /// the call's result and a reply; `park` waits until interrupted and
     /// then ends the turn the way the CLI does on SIGINT.
-    fn stand_in(dir: &Path) -> String {
+    pub(crate) fn stand_in(dir: &Path) -> String {
         let d = dir.display();
         let body = format!(
             r##"#!/bin/sh
@@ -2778,9 +3105,167 @@ esac
                 "notes",
                 "notes_project",
                 "budget",
-                "resume_limit"
+                "resume_limit",
+                "rules",
+                "later",
+                "cache_rates",
+                "push",
+                // 746: named by the listener while the host has jobs.
+                "jobs"
             ])
         );
+
+        // Wave O: the cache chip's rates — no table row and no ping on this
+        // model here, so no figure (`null`), never a guess.
+        let rates = get(
+            &c,
+            format!("{base}/api/cache-rates?model=claude-none-0"),
+            &token,
+        )
+        .await;
+        assert_eq!(rates, serde_json::Value::Null);
+
+        // Item 743: the rules routes, over the chat's own folder — an add
+        // lists back, a rule that could never fire is a 409 with the reason,
+        // and the remove empties the list.
+        let rules = format!("{base}/api/rules?chat={chat}");
+        let listed = get(&c, rules.clone(), &token).await;
+        assert_eq!(listed["chat"], true);
+        let (status, body) = post(
+            &c,
+            rules.clone(),
+            &token,
+            serde_json::json!({"op": "add", "scope": "chat", "action": "block", "tool": "Bash", "text": "sudo"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let added: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(added["rules"][0]["action"], "block");
+        assert_eq!(added["rules"][0]["scope"], "chat");
+        let id = added["rules"][0]["id"].as_str().unwrap().to_string();
+        let (status, body) = post(
+            &c,
+            rules.clone(),
+            &token,
+            serde_json::json!({"op": "add", "scope": "chat", "action": "allow", "tool": "Read"}),
+        )
+        .await;
+        assert_eq!(status, 409);
+        assert!(
+            body.contains("not a tool Nightloom is asked about"),
+            "{body}"
+        );
+        let (status, body) = post(
+            &c,
+            rules.clone(),
+            &token,
+            serde_json::json!({"op": "remove", "id": id}),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let left = get(&c, rules, &token).await;
+        assert!(
+            left["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["scope"] != "chat"),
+            "{left}"
+        );
+
+        // Item 783: a rule for every chat, added through the away server's
+        // API, is on the Mac after the Mac's sync pass — in its list, and
+        // binding there (the hook, handed the Mac's home, refuses the call).
+        let (status, body) = post(
+            &c,
+            format!("{base}/api/rules"),
+            &token,
+            serde_json::json!({"op": "add", "scope": "all", "action": "block", "tool": "Bash", "text": "terraform destroy"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let mac_home = root.join("mac-home");
+        std::fs::create_dir_all(&mac_home).unwrap();
+        let mac_chat = mac_home.join("sessions/ask/chat-on-the-mac");
+        let call = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "terraform destroy -auto-approve"},
+            "tool_use_id": "toolu_783",
+            "permission_mode": "default",
+        })
+        .to_string();
+        // Before the sync the Mac knows nothing of it: the call would ask.
+        let before = crate::agent::ask::decide_under(&mac_chat, Some(&mac_home), &call, false);
+        assert_eq!(before.decision(), "defer");
+        // A rule of the Mac's own goes the other way in the same pass.
+        crate::approval_rules::edit(
+            &crate::approval_rules::Places {
+                all: Some(mac_home.clone()),
+                chat: None,
+            },
+            crate::approval_rules::Edit::Add {
+                scope: "all".into(),
+                action: "ask".into(),
+                tool: "WebFetch".into(),
+                text: "pastebin".into(),
+            },
+        )
+        .unwrap();
+        let sync_client = crate::sync::Client::new(&base, &token).unwrap();
+        let synced = crate::approval_rules::shared::sync(&sync_client, &mac_home)
+            .await
+            .unwrap();
+        assert_eq!(synced.rules, 2);
+        let on_mac = crate::approval_rules::list(&crate::approval_rules::Places {
+            all: Some(mac_home.clone()),
+            chat: Some(mac_chat.clone()),
+        });
+        assert!(
+            on_mac.rules.iter().any(|r| r.scope == "all"
+                && r.action == crate::approval_rules::Action::Block
+                && r.tool == "Bash"
+                && r.text == "terraform destroy"),
+            "{:?}",
+            on_mac.rules
+        );
+        let after = crate::agent::ask::decide_under(&mac_chat, Some(&mac_home), &call, false);
+        assert_eq!(after.decision(), "deny");
+        assert!(
+            after
+                .reason()
+                .unwrap()
+                .contains("A rule the user set blocks")
+        );
+        // And the Mac's rule is on the away server, by the same ids.
+        let away = get(&c, format!("{base}/api/rules"), &token).await;
+        let ids = |v: &serde_json::Value| {
+            let mut ids: Vec<String> = v
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_str().unwrap().to_string())
+                .collect();
+            ids.sort();
+            ids
+        };
+        let mac_ids = {
+            let mut v: Vec<String> = on_mac.rules.iter().map(|r| r.id.clone()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(ids(&away["rules"]), mac_ids, "{away}");
+        // Left as it was found for the rest of this test.
+        for id in mac_ids {
+            let (status, body) = post(
+                &c,
+                format!("{base}/api/rules"),
+                &token,
+                serde_json::json!({"op": "remove", "id": id}),
+            )
+            .await;
+            assert_eq!(status, 200, "{body}");
+        }
 
         // Each in-place action: the log equals the shared function's.
         type Op = Box<dyn Fn(&mut Session)>;
@@ -4136,6 +4621,146 @@ esac
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].id, "away");
         assert_eq!(roots[0].name, "Value generalization");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// Item 746's review: the away server's half of a read-only job's hold.
+#[cfg(all(test, unix))]
+mod job_hold_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn host(root: &Path) -> Arc<ServeHost> {
+        let unfiled = root.join("unfiled");
+        let workspace = root.join("ws");
+        std::fs::create_dir_all(&unfiled).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let cfg = ServeConfig {
+            binary: "/usr/bin/false".into(),
+            model: None,
+            hook_exe: None,
+            assets: None,
+            unfiled_dir: unfiled,
+            home: root.to_path_buf(),
+            unfiled_workspace: workspace,
+            nightshift_root: None,
+        };
+        ServeHost::new(cfg, Registry::load_from(root.join("projects.json")))
+    }
+
+    fn prep(chat: Option<String>, read_only: bool) -> crate::jobs::Prep {
+        crate::jobs::Prep {
+            project: None,
+            chat,
+            title: "Check CI".into(),
+            read_only,
+            auto_hand_off: None,
+            model: None,
+            connectors: false,
+        }
+    }
+
+    fn log_of(root: &Path, chat: &str) -> PathBuf {
+        root.join("unfiled").join(format!("{chat}.jsonl"))
+    }
+
+    /// The approval taken back after the Mac took the job's chat down: the
+    /// chat's log is 0444 and still says Claude Code. The run must not fork
+    /// that file (the send would, with the writers on): it goes on in a
+    /// new chat of the server's own, held to the Chat policy, and the
+    /// taken-down log stays byte-identical.
+    #[tokio::test]
+    async fn a_taken_down_jobs_chat_is_never_written_and_the_run_moves_to_a_held_chat() {
+        let root = std::env::temp_dir().join(format!("nightloom-jobhold-{}", uuid::Uuid::new_v4()));
+        let h = host(&root);
+        let approved = h.job_prepare(prep(None, false)).await.unwrap();
+        let log = log_of(&root, &approved);
+        assert_eq!(Session::load(&log).unwrap().kind(), ChatKind::Build);
+        // The Mac takes it down: read-only, and on the acked list.
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let state = h.sync.layout().state();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(
+            state.join("acked.json"),
+            serde_json::to_vec(&[&approved]).unwrap(),
+        )
+        .unwrap();
+        assert!(h.sync.layout().needs_fork(&log));
+        let before = std::fs::read(&log).unwrap();
+
+        let next = h
+            .job_prepare(prep(Some(approved.clone()), true))
+            .await
+            .unwrap();
+        assert_ne!(next, approved, "a new chat of its own");
+        let held = Session::load(log_of(&root, &next)).unwrap();
+        assert_eq!(held.kind(), ChatKind::Chat);
+        assert_eq!(held.declared_kind(), ChatKind::Build);
+        assert!(
+            h.spec_for(None, &held).chat_policy,
+            "the run's spec carries the policy"
+        );
+        assert_eq!(
+            std::fs::read(&log).unwrap(),
+            before,
+            "the Mac's chat untouched"
+        );
+        let _ = std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The server's own chat, writable: the kind goes on its log, read back.
+    #[tokio::test]
+    async fn the_servers_own_jobs_chat_is_held_and_released_on_its_log() {
+        let root = std::env::temp_dir().join(format!("nightloom-jobhold-{}", uuid::Uuid::new_v4()));
+        let h = host(&root);
+        let chat = h.job_prepare(prep(None, true)).await.unwrap();
+        let s = Session::load(log_of(&root, &chat)).unwrap();
+        assert!(h.spec_for(None, &s).chat_policy);
+        assert_eq!(
+            h.job_prepare(prep(Some(chat.clone()), false))
+                .await
+                .unwrap(),
+            chat
+        );
+        let s = Session::load(log_of(&root, &chat)).unwrap();
+        assert!(!h.spec_for(None, &s).chat_policy, "approved: the writers");
+        assert_eq!(
+            h.job_prepare(prep(Some(chat.clone()), true)).await.unwrap(),
+            chat
+        );
+        let s = Session::load(log_of(&root, &chat)).unwrap();
+        assert!(h.spec_for(None, &s).chat_policy, "taken back");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Item 759, the away server's half: a held job's run (`spec_for`)
+    /// carries the connector-write deny in its `--settings`, and the
+    /// approved run does not.
+    #[tokio::test]
+    async fn a_held_jobs_run_refuses_connector_writes_on_the_away_server() {
+        let root = std::env::temp_dir().join(format!("nightloom-jobhold-{}", uuid::Uuid::new_v4()));
+        let h = host(&root);
+        let denies = |spec: &crate::agent::AgentSpec| -> bool {
+            let a = spec.args("hi");
+            let Some(i) = a.iter().position(|x| x == "--settings") else {
+                return false;
+            };
+            let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+            v["hooks"]["PreToolUse"].as_array().is_some_and(|pre| {
+                pre.iter()
+                    .any(|e| e["matcher"] == crate::agent::connector_writes::MATCHER)
+            })
+        };
+        let chat = h.job_prepare(prep(None, true)).await.unwrap();
+        let s = Session::load(log_of(&root, &chat)).unwrap();
+        assert!(denies(&h.spec_for(None, &s)), "held: refused");
+        h.job_prepare(prep(Some(chat.clone()), false))
+            .await
+            .unwrap();
+        let s = Session::load(log_of(&root, &chat)).unwrap();
+        assert!(!denies(&h.spec_for(None, &s)), "approved: the writers");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

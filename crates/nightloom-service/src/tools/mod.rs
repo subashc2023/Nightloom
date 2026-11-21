@@ -38,7 +38,7 @@ mod todo;
 mod web;
 
 pub use add_folder::AddFolder;
-pub use chats::{ChatDir, ChatDirs, ReadChat, SearchChats};
+pub use chats::{ChatDir, ChatDirs, ReadChat, SearchChats, handoff_note};
 pub use compact::{CompactContext, CompactSignal};
 pub use mark_file::MarkFile;
 pub use remember::Remember;
@@ -47,11 +47,11 @@ pub use root::{Root, VAULT_ALIAS};
 pub use send_file::SendFile;
 pub use task::{Subagent, TurnHandle};
 pub use todo::TodoWrite;
-pub(crate) use web::SHELL_PHRASE;
 pub use web::{
     Fetch, Fetched, FetchedBody, SearchBackend, WebSearch, env_search_key, search_backend,
     search_backends, web_tools,
 };
+pub(crate) use web::{SHELL_PHRASE, html_to_text};
 
 use chrono::{Local, Utc};
 use nightloom_core::ToolDef;

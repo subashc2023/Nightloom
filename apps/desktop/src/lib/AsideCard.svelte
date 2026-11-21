@@ -16,10 +16,13 @@
   } from "./state.svelte";
   import type { TabContent } from "./tabs";
   import { outcome, startMove } from "./floatingMove";
+  import { landMoved, placeMoved } from "./asideMove";
+  import { expandAside, minimizeAside } from "./state/asides.svelte";
+  import { foldMotion } from "./foldMotion";
+  import { asideLabel } from "./asides";
   import type { Zone } from "./floatingMove";
-  import { tick, untrack } from "svelte";
-  import { asideSendJumps } from "./sendScroll";
-  import { asideCardScrollKey, putBack, recallScroll, rememberScroll, returnEntry } from "./scroll.svelte";
+  import { tick } from "svelte";
+  import { asideCardScrollKey } from "./scroll.svelte";
   import type { Aside } from "./state.svelte";
   import type { Placement } from "./asideCard";
   import MoveZone from "./MoveZone.svelte";
@@ -28,11 +31,15 @@
   import { COPIED_MS } from "./copyIcon";
   // Backlog 283: the chat's composer and the chat's message pieces.
   import Composer from "./Composer.svelte";
-  import AsideThread from "./AsideThread.svelte";
-  // Item 674: the thread is the chat's transcript; Classic keeps AsideThread.
+  import StartCards from "./StartCards.svelte";
+  import { isHome } from "./home";
+  // Item 674: the thread is the chat's transcript; Classic's too since item
+  // 856 (it kept `AsideThread` until then, blocker 1989).
   import AsideTranscript from "./AsideTranscript.svelte";
-  import { classic } from "./layout.svelte";
   import { fmtTokens } from "./tokens";
+  // Item 886: the chat's running sign, given this aside.
+  import ChatRunSign from "./ChatRunSign.svelte";
+  import { firstFit, onOneLine } from "./fold";
 
   /**
    * The floating aside card (nightshift backlog 141, 2026-09-17; blocker
@@ -69,8 +76,11 @@
    * Moving it (backlog 156, 2026-09-22 — his "move it around the screen
    * freely"): the floating card's head moves the card by pointer
    * (`floatingMove.ts`), anywhere, and it stays where it is let go — a
-   * nudge of a few pixels included — fixed to the window, the passage
-   * still marked. Only near a tab strip (a tab of its own), the window's
+   * nudge of a few pixels included — ~~fixed to the window~~ (struck
+   * 2026-11-16, item 734: fixed, it stopped scrolling with the chat) kept
+   * in the chat column beside its passage and scrolling with the text as
+   * an unmoved card does (`asideMove.ts`), the passage still marked. While
+   * the pointer holds it, it is drawn over the window so a zone can light. Only near a tab strip (a tab of its own), the window's
    * right edge (the side panel) or its left edge (beside) does a zone
    * light, and a release there does what the old drop did. Escape during
    * a move puts it back where the move began; *back* in the head, or a
@@ -93,6 +103,10 @@
     front = true,
     footBottom = null,
     footCount = 1,
+    frame = null,
+    viewport = null,
+    passageTop = null,
+    frameWidth = 0,
   }: {
     aside: Aside;
     placement: Placement | null;
@@ -106,10 +120,18 @@
      *  and how many share the stack's room. */
     footBottom?: number | null;
     footCount?: number;
+    /** Item 734: the chat column the card is drawn in (the transcript's
+     *  `inner`) and its scrolled viewport; a drop is kept in the column's
+     *  px. Null for the panel's card, which does not move. */
+    frame?: HTMLElement | null;
+    viewport?: HTMLElement | null;
+    /** The passage's top in the column's px (null: none, or not found),
+     *  and the column's width, as `AsideLayer` measured them. */
+    passageTop?: number | null;
+    frameWidth?: number;
   } = $props();
 
   let root = $state<HTMLElement | null>(null);
-  let body = $state<HTMLElement | null>(null);
   // ~~`askBox` / `followBox`, `AsideBox` and its room~~ — the card's box
   // is the chat's composer since backlog 283 (`Composer` with `aside`),
   // pinned at the card's foot under the thread; its text, chips and held
@@ -120,6 +142,22 @@
   /** Another aside is answering first (blocker 317): one at a time. */
   const waiting = $derived(asideWaiting(aside));
   const folded = $derived(!panel && aside.folded === true);
+  /** Item 735: minimized to one line (never in the panel). */
+  const minimized = $derived(!panel && aside.minimized === true);
+  /** Item 755: minimize and expand with the short fold motion (foldMotion.ts), the hand-off card's too. */
+  function minimizeMoving(): void {
+    void foldMotion(root, async () => {
+      minimizeAside(aside);
+      await tick();
+    });
+  }
+  function expandMoving(): void {
+    void foldMotion(root, async () => {
+      expandAside(aside);
+      await tick();
+    });
+  }
+  const miniLabel = $derived(asideLabel(aside, 40));
   const last = $derived(aside.turns[aside.turns.length - 1] ?? null);
   /** The chat the thread belongs to: the panel's, else the open one. */
   const owner = $derived(panel ? session : app.activeSessionId);
@@ -130,6 +168,50 @@
     if (!owner) return "this chat";
     const s = app.sessions.find((x) => x.id === owner);
     return chatLabel(s, "this chat");
+  });
+  /*
+   * Item 833 (his shots, 2026-11-17): a narrow card's head ran its copy
+   * and × past the card's right edge — one row, nothing shrinking but
+   * "Aside of", which drew as "A.". The head now folds by measurement
+   * (`fold.ts`, as the composer's row): 1 the cache chip's word ("222k",
+   * the count's tooltip has the rest); 2 Fold into thread to its mark
+   * (its tooltip and label keep the words); 3 "Aside of ‹chat›" out, once
+   * it cannot show ~5em; 4 the floor — the head wraps rather than spill.
+   */
+  const HEAD_FOLD_MAX = 4;
+  /** "Aside of ‹chat›" is kept only while it shows at least this much (px). */
+  const OF_MIN = 64;
+  let headEl = $state<HTMLElement | null>(null);
+  let headFold = $state("0");
+  function refoldHead(): void {
+    const head = headEl;
+    if (!head) return;
+    const items = () => [...head.children].filter((e) => !e.classList.contains("spacer"));
+    headFold = String(
+      firstFit((level) => {
+        head.dataset.fold = String(level);
+        const r = head.getBoundingClientRect();
+        const padRight = parseFloat(getComputedStyle(head).paddingRight) || 0;
+        if (!onOneLine(items().map((e) => e.getBoundingClientRect()), r.right - padRight)) return false;
+        const of = head.querySelector<HTMLElement>(".aside-card-of");
+        return !of || of.offsetWidth === 0 || of.clientWidth >= Math.min(of.scrollWidth, OF_MIN);
+      }, HEAD_FOLD_MAX),
+    );
+  }
+  $effect(() => {
+    const head = headEl;
+    // What the head holds; each read registers the dependency.
+    void [aside.name, chatName, folded, asking, last?.cacheRead, last?.partial.trim() !== "", readOnly, panel, aside.moved, app.project];
+    refoldHead();
+    if (!head || typeof ResizeObserver === "undefined") return;
+    // The head and each thing in it: a chip that grows once its font loads
+    // changes no head size, and a fold read before it was stale (measured:
+    // "Aside of" left at 1 px in a 380 px card).
+    const ro = new ResizeObserver(() => refoldHead());
+    ro.observe(head);
+    for (const c of head.children) ro.observe(c);
+    void document.fonts?.ready.then(() => refoldHead());
+    return () => ro.disconnect();
   });
   // A draft drags too (backlog 148, his ask on 5847cca): the card sits
   // under the passage and can cover what he is reading before a word is
@@ -143,7 +225,13 @@
    *  go. The zone the pointer is over, lit while it is. */
   let dragPos = $state<{ left: number; top: number } | null>(null);
   let zone = $state<Zone | null>(null);
-  const moved = $derived(panel ? null : (aside.moved ?? null));
+  // Item 734: where a moved card is drawn, in the column's px (null while
+  // its passage cannot be found — it goes home until it can).
+  const moved = $derived(
+    panel || !aside.moved
+      ? null
+      : placeMoved(aside.moved, frameWidth > 0 ? frameWidth : aside.moved.width, passageTop),
+  );
   const pos = $derived(dragPos ?? moved);
   /** Whatever may change the card's room, so the box measures again. */
 
@@ -187,7 +275,17 @@
     if (!session) return;
     const o = outcome(z);
     if (o.kind === "stay") {
-      a.moved = { left: p.left, top: p.top, width };
+      // Item 734: kept in the chat column's px, so it scrolls with the text.
+      const f = frame?.getBoundingClientRect();
+      if (!f) return;
+      const v = viewport?.getBoundingClientRect() ?? { top: 0, bottom: window.innerHeight };
+      a.moved = landMoved(
+        p,
+        width,
+        { left: f.left, top: f.top, width: f.width, height: f.height },
+        { top: v.top, bottom: v.bottom },
+        a.anchor ? passageTop : null,
+      );
       return;
     }
     // Snapped: the card's next home is under its passage again.
@@ -208,97 +306,9 @@
     aside.moved = null;
   }
 
-  // The body follows the answer as the transcript follows a reply: a card
-  // taller than its room scrolls inside, and the newest text — the
-  // streaming answer, then the follow-up box — is what he is reading.
-  // Released the moment he scrolls up in it, held again at the foot.
-  let bodyPinned = true;
-  // Item 502: the card keeps his place in its thread across a remount (a
-  // chat switch, the card folded and opened): held at the foot as before
-  // when it was, else the line he left, put back while the thread draws.
-  const placeKey = $derived(owner ? asideCardScrollKey(owner, aside.id) : null);
-  let putting: ReturnType<typeof putBack> | null = null;
-  function bodyScrolled(): void {
-    if (!body) return;
-    bodyPinned = body.scrollHeight - body.scrollTop - body.clientHeight < 4;
-    if (placeKey && !putting?.busy()) rememberScroll(placeKey, body.scrollTop, bodyPinned);
-  }
-  $effect(() => {
-    const key = placeKey;
-    const el = body;
-    if (!key || !el) return;
-    return untrack(() => {
-      const entry = returnEntry(recallScroll(key), el.scrollHeight, el.clientHeight);
-      if (entry) bodyPinned = entry.pinned;
-      const p = putBack(el, entry);
-      putting = p;
-      return () => {
-        p.cancel();
-        if (putting === p) putting = null;
-      };
-    });
-  });
-  // A card whose room shrinks — a shorter window, more cards stacked
-  // above the composer — keeps its foot where it was: held at the bottom
-  // before the change, held there after, so the buttons stay (backlog
-  // 233). Measured on a change of the body's height only.
-  $effect(() => {
-    const el = body;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    let height = el.clientHeight;
-    let atFoot = el.scrollHeight - el.scrollTop - el.clientHeight < 4;
-    const keep = () => (atFoot = el.scrollHeight - el.scrollTop - el.clientHeight < 4);
-    el.addEventListener("scroll", keep);
-    const ro = new ResizeObserver(() => {
-      if (el.clientHeight === height) return;
-      height = el.clientHeight;
-      if (atFoot) el.scrollTop = el.scrollHeight;
-      keep();
-    });
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      el.removeEventListener("scroll", keep);
-    };
-  });
-  // Item 468: a follow-up Send from near the foot lands at the bottom, as
-  // the transcript's does (item 313's `sendJumps`, the body's height for
-  // the screen). The distance is read before the new turn is drawn, so it
-  // is the reader's, not the reader's plus the new question's height. Run
-  // before the follow effect below, which then sees the body pinned.
-  /** The thread's turn count at the last look; -1 before the first. */
-  let preTurns = -1;
-  let preDistance = 0;
-  let preHeight = 0;
-  $effect.pre(() => {
-    void aside.turns.length;
-    untrack(() => {
-      if (!body) return;
-      preDistance = body.scrollHeight - body.scrollTop - body.clientHeight;
-      preHeight = body.clientHeight;
-    });
-  });
-  $effect(() => {
-    const n = aside.turns.length;
-    untrack(() => {
-      const t = aside.turns[n - 1];
-      const asking = !!t && t.answer === null && !t.error && !t.cancelled;
-      if (preTurns >= 0 && asideSendJumps(bodyPinned, preTurns, n, asking, preDistance, preHeight)) bodyPinned = true;
-      preTurns = n;
-    });
-  });
-  $effect(() => {
-    void last?.partial;
-    void last?.answer;
-    void aside.turns.length;
-    void asking;
-    const el = body;
-    if (!el || !bodyPinned) return;
-    tick().then(() => {
-      if (bodyPinned) el.scrollTop = el.scrollHeight;
-    });
-  });
-
+  // ~~The body's own follow, kept place, foot-hold and send jump (468, 502,
+  // 233)~~ — Classic's `AsideThread` scroller's; since item 856 Classic draws
+  // the thread through its transcript too, which does all four.
   /** The transcript puts the caret here once the card is placed. */
   export function focusBox(): void {
     const box = root?.querySelector<HTMLElement>(".composer textarea, .composer [contenteditable='true']");
@@ -314,12 +324,20 @@
    *  panel it is the way back, not the end of the thread. */
   function cardKeys(e: KeyboardEvent): void {
     if (e.key !== "Escape") return;
+    // Item 853: an Escape the card's box already took (the slash menu, the
+    // ghost, the maths bar, the clip ring, an offer) closes only that, as
+    // in the chat's box — never the card too; nor one an input method
+    // takes to cancel a composition.
+    if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
     // Item 674: a question the thread's transcript is asking (drop this
     // edit?) takes the Escape itself — it must never close the card with
     // a half-typed edit in it.
     if (root?.querySelector('[role="dialog"][aria-modal="true"]')) return;
     e.preventDefault();
     e.stopPropagation();
+    // Item 735: a minimized line is not closed by Escape (nothing on it
+    // says it would); the key still never reaches the window.
+    if (minimized) return;
     // The discard question is up (backlog 228): Escape answers it "keep".
     if (app.asideDiscard !== null) {
       app.asideDiscard = null;
@@ -374,6 +392,7 @@
   class:floating={placement !== null}
   class:foot={placement === null && !panel}
   class:folded
+  class:minimized
   class:panel
   class:above={placement?.side === "above"}
   class:moved={pos !== null}
@@ -384,10 +403,16 @@
   bind:this={root}
   style:top={pos ? `${pos.top}px` : placement ? `${placement.top}px` : undefined}
   style:left={pos ? `${pos.left}px` : placement ? `${placement.left}px` : undefined}
-  style:width={moved ? `${moved.width}px` : placement ? `${placement.width}px` : undefined}
-  style:max-height={pos
-    ? `min(${placement ? `${placement.maxHeight}px` : "50vh"}, calc(100vh - ${pos.top + 8}px))`
-    : placement
+  style:width={minimized ? undefined : moved ? `${moved.width}px` : placement ? `${placement.width}px` : undefined}
+  style:max-height={minimized
+    ? undefined
+    : dragPos
+    ? `min(${placement ? `${placement.maxHeight}px` : "50vh"}, calc(100vh - ${dragPos.top + 8}px))`
+    : moved
+      ? placement
+        ? `${placement.maxHeight}px`
+        : "50vh"
+      : placement
       ? `${placement.maxHeight}px`
       : !panel && footCount > 1
         ? `max(200px, calc(60vh / ${footCount}))`
@@ -395,12 +420,45 @@
   style:bottom={!pos && !placement && !panel && footBottom !== null ? `${footBottom}px` : undefined}
   onkeydown={cardKeys}
 >
+  {#if minimized}
+  <!-- Item 735 (blocker 2008): minimized, the card is this one line — its
+       first words, and a dot when an answer landed since. A click opens it
+       where it is; its line still moves by pointer (a move is not a click,
+       `startMove` swallows it). -->
+  <div
+    class="aside-mini"
+    class:movable
+    role="button"
+    tabindex="0"
+    aria-label={`Aside: ${miniLabel}${aside.newReply ? " — new reply" : ""}. Open it`}
+    use:tip={aside.newReply ? "A new reply landed — click to open the aside" : "Click to open the aside"}
+    onpointerdown={headDown}
+    onmousedown={headMouseDown}
+    onclick={() => expandMoving()}
+    onkeydown={(e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      expandMoving();
+    }}
+  >
+    <span class="aside-mini-tag" aria-hidden="true">aside</span>
+    <span class="aside-mini-label">{miniLabel}</span>
+    {#if asking}
+      <span class="aside-mini-state mono">{waiting ? "waiting" : "asking…"}</span>
+    {/if}
+    {#if aside.newReply}
+      <span class="aside-mini-dot" aria-hidden="true"></span>
+    {/if}
+  </div>
+  {:else}
   <!-- The strip's click is a pointer convenience; the keyboard has the
        *open* button a folded head carries. -->
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
   <div
     class="aside-card-head"
     class:movable
+    bind:this={headEl}
+    data-fold={headFold}
     draggable={draggable && panel}
     use:tip={draggable
       ? panel
@@ -432,8 +490,13 @@
     <span class="aside-card-of" use:tip={"An aside: answered from this chat's context, never part of it"}
       >Aside of <em>{chatName}</em></span
     >
-    {#if folded && asking}
-      <span class="ns-chip mono">{waiting ? "waiting" : "asking…"}</span>
+    <!-- Item 886: while it asks, the head says so as a chat's bar does —
+         the same sign (Running · clock), folded or open; a question queued
+         behind the chat's turn keeps its "waiting" chip. -->
+    {#if asking && !waiting}
+      <ChatRunSign {aside} session={owner} />
+    {:else if folded && asking}
+      <span class="ns-chip mono">waiting</span>
     {/if}
     <!-- ~~"about ‹passage›"~~ — not in the head since backlog 283: under
          its passage the passage is marked right above, and the panel
@@ -443,13 +506,22 @@
       <!-- Short (backlog 358): the long "188,342 read from cache" lost the
            head's room and drew as "1…"; the full count is its tip. -->
       <span class="ns-chip mono aside-cache" use:tip={`${last.cacheRead.toLocaleString()} tokens read from cache`}
-        >{fmtTokens(last.cacheRead)} cached</span
+        >{fmtTokens(last.cacheRead)}<span class="head-word"> cached</span></span
       >
     {/if}
     <span class="spacer"></span>
     {#if folded}
       <button class="ns-btn ghost small" use:tip={"Open this card again (the oldest other open card folds)"} onclick={() => unfoldAside(aside)}
         >open</button
+      >
+    {/if}
+    {#if !panel}
+      <!-- Item 735: minimize to one line, in place. -->
+      <button
+        class="ns-btn ghost small aside-card-min"
+        aria-label="Minimize the aside"
+        use:tip={"Minimize to one line — click it to open again"}
+        onclick={() => minimizeMoving()}>–</button
       >
     {/if}
     {#if moved}
@@ -483,10 +555,11 @@
     {/if}
   </div>
   {#if !folded}
-  {#if (!aside.draft || panel) && !classic()}
+  {#if !aside.draft || panel}
     <!-- Item 674 (blocker 1990): the chat's own transcript in the card's
          room — the same turns, tools, folds and reading place as the tab
-         and the chat; no ground and no rail in this frame. -->
+         and the chat; no ground and no rail in this frame. Classic too
+         since item 856 (TranscriptClassic shares the logic). -->
     {#snippet quoted()}
       {#if aside.quote && panel}
         <!-- The passage it hangs off (283): under its passage the card
@@ -506,28 +579,17 @@
         />
       {/key}
     </div>
-  {:else if !aside.draft || panel}
-    <!-- Classic keeps its own thread (blocker 1989). -->
-    <div class="aside-card-body" bind:this={body} onscroll={bodyScrolled}>
-      {#if aside.quote && panel}
-        <!-- The passage it hangs off (283): under its passage the card
-             needs none — the passage is marked right above — but in the
-             side panel it is far from it. -->
-        <blockquote class="aside-card-quote">{@html renderReply(aside.quote.text)}</blockquote>
-      {/if}
-      {#if !aside.draft}
-        <AsideThread {aside} open={!readOnly} {owner} />
-        <AsideFoldPanel {aside} part="panel" open={!readOnly} />
-      {/if}
-    </div>
   {/if}
   <!-- The chat's composer (backlog 283), at the card's foot: the first
        question of a draft, every follow-up, chips, the model and effort
        pickers; in another chat's panel it types and its line says to open
        the chat (238's rule for the tab). -->
+  <!-- Item 763 H5 (asides mirror the main chat): Home's Start cards over an aside's box too. -->
+  {#if isHome(app.project)}<div class="aside-start-cards"><StartCards /></div>{/if}
   <div class="aside-card-foot" class:draft={aside.draft && !panel}>
     <Composer {aside} asideChat={owner} compact={!panel} />
   </div>
+  {/if}
   {/if}
 </div>
 
@@ -594,6 +656,58 @@
     border-bottom: none;
     cursor: pointer;
   }
+  /* Minimized (item 735): one line in its place — the card's own frame
+     around a row of its first words; Classic draws it plain, Jarvis as a
+     pill (below). */
+  .aside-card.minimized {
+    width: max-content;
+    max-width: min(340px, 100%);
+    max-height: none;
+    overflow: hidden;
+  }
+  .aside-card.foot.minimized {
+    width: max-content;
+  }
+  .aside-mini {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 4px 10px;
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--ink);
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .aside-mini:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .aside-mini-tag {
+    flex-shrink: 0;
+    color: var(--dim);
+    font-size: 11px;
+  }
+  .aside-mini-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .aside-mini-state {
+    flex-shrink: 0;
+    color: var(--dim);
+    font-size: 11px;
+  }
+  .aside-mini-dot {
+    flex-shrink: 0;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
   @keyframes aside-card-in {
     from {
       opacity: 0;
@@ -617,6 +731,24 @@
     padding: 8px 8px 6px 10px;
     border-bottom: 1px solid var(--line);
     cursor: default;
+  }
+  /* Item 833: the head's fold levels (`refoldHead`). */
+  .aside-card-head:not([data-fold="0"]) .head-word {
+    display: none;
+  }
+  .aside-card-head:is([data-fold="2"], [data-fold="3"], [data-fold="4"]) :global(.fold-btn-word) {
+    display: none;
+  }
+  .aside-card-head:is([data-fold="3"], [data-fold="4"]) .aside-card-of {
+    display: none;
+  }
+  /* The floor: wrap rather than run past the card's edge (191's one row
+     holds down to the narrowest card the levels above can fit). */
+  .aside-card-head[data-fold="4"] {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    /* What wraps (×, Copy) keeps the right edge, where the hand looks. */
+    justify-content: flex-end;
   }
   .aside-card-name {
     font-weight: 600;
@@ -657,13 +789,18 @@
     user-select: none;
     -webkit-user-select: none;
   }
-  /* Moved (backlog 156): fixed to the window, out of the column's flow,
-     over the panes and their strips. */
+  /* Moved (backlog 156): ~~fixed to the window, out of the column's flow,
+     over the panes and their strips~~ (struck 2026-11-16, item 734) — in
+     the column, placed in its px as an unmoved card is, so it scrolls with
+     the text; over the window only while the pointer holds it. */
   .aside-card.moved {
-    position: fixed;
+    position: absolute;
     bottom: auto;
     z-index: 15;
     animation: none;
+  }
+  .aside-card.moved.holding {
+    position: fixed;
   }
   .aside-card.holding {
     box-shadow: 0 14px 40px rgba(0, 0, 0, 0.4);
@@ -722,9 +859,12 @@
        with the spacer and cut the chat's name whole. */
     flex: 1 1 auto;
     min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    /* ~~white-space: nowrap; overflow: hidden; text-overflow: ellipsis~~
+       (struck 2026-11-18, item 833: in a narrow card it read "nothing …",
+       his shots). It wraps now — its own row once the chips do not fit
+       beside it, a second line under ~330 px; the chat's name inside stays
+       capped (the em below), so 358's fifteen lines cannot come back. */
+    white-space: normal;
   }
   .aside-card :global(.composer.aside .aside-line em) {
     display: inline-block;
@@ -792,8 +932,35 @@
   :global(:where(:root:not([data-layout="classic"]))) .aside-card.panel .aside-card-head {
     border-radius: 0;
   }
+  /* Item 735, Jarvis: the minimized line is a pill — the aside's tint and
+     dashed edge, its tag in small mono capitals, the dot lit. */
+  :global(:where(:root:not([data-layout="classic"]))) .aside-card.minimized {
+    border-radius: 999px;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.28);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-mini {
+    padding: 5px 12px 5px 10px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-mini-tag {
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-mini-dot {
+    box-shadow: 0 0 6px var(--accent);
+  }
   :global(:where(:root:not([data-layout="classic"]))) .aside-card.folded .aside-card-head {
     border-radius: var(--r2);
     border-bottom: none;
+  }
+  /* Item 763 H5: Home's Start cards in an aside — at most a third of the card, scrolling inside. */
+  .aside-start-cards {
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: 34vh;
+    overflow-y: auto;
+    padding: 0 10px;
   }
 </style>

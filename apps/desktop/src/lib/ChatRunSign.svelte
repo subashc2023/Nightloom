@@ -15,11 +15,16 @@
   import { tip } from "./tip";
   import { app } from "./state.svelte";
   import { allRunning } from "./running.svelte";
-  import { chatRun } from "./runGroups";
+  import { asideRun, chatRun } from "./runGroups";
   import { liveClock } from "./chatList";
 
+  /** Item 886: given an aside (and its chat), the sign is that aside's —
+   *  the same pill, clock and click, on its tab's bar and its card's head. */
+  let { aside = null, session = null }: { aside?: { id: number } | null; session?: string | null } = $props();
+
   let now = $state(Date.now());
-  const run = $derived(chatRun(allRunning(now), app.activeSessionId));
+  const run = $derived(aside ? asideRun(allRunning(now), session, aside.id) : chatRun(allRunning(now), app.activeSessionId));
+  const what = $derived(aside ? "This aside" : "This chat's turn");
   $effect(() => {
     if (run.state === "idle") return;
     now = Date.now();
@@ -30,7 +35,7 @@
   const title = $derived(
     run.state === "waiting"
       ? "This chat's turn waits on you: a prompt below needs your answer — click for every running task"
-      : `This chat's turn is running${run.doing ? ` (${run.doing})` : ""}${run.agents > 0 ? `, with ${run.agents} subagent${run.agents === 1 ? "" : "s"}` : ""} — click for every running task`,
+      : `${what} is running${run.doing ? ` (${run.doing})` : ""}${run.agents > 0 ? `, with ${run.agents} subagent${run.agents === 1 ? "" : "s"}` : ""} — click for every running task`,
   );
   function open() {
     app.showRail = false;
@@ -44,7 +49,7 @@
     class="run-sign"
     class:waiting={run.state === "waiting"}
     data-run-sign={run.state}
-    aria-label={run.state === "waiting" ? "This chat waits on you" : "This chat is running"}
+    aria-label={run.state === "waiting" ? "This chat waits on you" : aside ? "This aside is running" : "This chat is running"}
     use:tip={title}
     onclick={open}
   >

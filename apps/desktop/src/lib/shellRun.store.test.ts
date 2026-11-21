@@ -57,7 +57,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 const { app } = await import("./state.svelte");
 const store = await import("./state.svelte");
 const { initTerminalEvents, term } = await import("./terminal.svelte");
-const { runBlock, sendSoFar, stopRun, STOP_GRACE_MS } = await import("./shellRun.svelte");
+const { runBlock, sendSoFar, stopRun, STOP_GRACE_MS, STOP_RESEND_MS } = await import("./shellRun.svelte");
 const { enqueueMessage, readDraft, drafts, requeueFront, shiftQueue } = await import("./drafts.svelte");
 const { parseRan } = await import("./shellRun");
 
@@ -154,6 +154,30 @@ describe("503 harness: a never-ending command", () => {
     expect(queued("a")[0]).toMatchObject({ status: "stopped by you", output: "up" });
     expect(term.shells.some((s) => s.id === row!.id)).toBe(true);
     expect(h.closed).toEqual([]);
+  });
+  it("Stop resends ⌃C once if the block runs on, and not once it has ended (861)", async () => {
+    vi.useFakeTimers();
+    try {
+      const row = await runBlock("while :; do sleep 1; done", { chat: "a" });
+      await stopRun(row!.id);
+      expect(h.written).toEqual([[row!.id, "\u0003"]]);
+      await vi.advanceTimersByTimeAsync(STOP_RESEND_MS + 10);
+      expect(h.written).toEqual([[row!.id, "\u0003"], [row!.id, "\u0003"]]);
+      expect(h.closed).toEqual([]);
+      exit(row!.id, 130);
+      await vi.advanceTimersByTimeAsync(STOP_GRACE_MS + 10);
+      expect(h.written).toHaveLength(2);
+      expect(h.closed).toEqual([]);
+      expect(queued("a")[0]).toMatchObject({ status: "stopped by you" });
+      // A block that ends on the first ⌃C gets no second one.
+      const two = await runBlock("sleep 9", { chat: "a" });
+      await stopRun(two!.id);
+      exit(two!.id, 130);
+      await vi.advanceTimersByTimeAsync(STOP_GRACE_MS + 10);
+      expect(h.written.filter(([id]) => id === two!.id)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("a program that ignores ⌃C is killed past the grace, once, and still sent", async () => {
     vi.useFakeTimers();
@@ -281,10 +305,10 @@ describe("503: Agent commands tabs", () => {
 
 describe("503 review 3: an aside of a chat that is not open", () => {
   it("the owning chat comes from the caller, not the open chat", async () => {
-    const src = (await import("./AsideThread.svelte?raw")).default;
-    expect(src).not.toContain("chat: app.activeSessionId");
-    expect((await import("./AsideView.svelte?raw")).default).toContain("<AsideThread {aside} {open} owner={session} />");
-    expect((await import("./AsideCard.svelte?raw")).default).toContain("<AsideThread {aside} open={!readOnly} {owner} />");
+    // test-change: item 856 — AsideThread.svelte is deleted (it mounted nowhere).
+    // test-change: item 856 — both looks draw the thread through AsideTranscript.
+    expect((await import("./AsideView.svelte?raw")).default).toContain("<AsideTranscript {aside} {open} owner={session}");
+    expect((await import("./AsideCard.svelte?raw")).default).toMatch(/<AsideTranscript\s+\{aside\}\s+open=\{!readOnly\}\s+\{owner\}/);
   });
   it("an aside no longer found keeps the output in the tab, and the chat's line gets nothing", async () => {
     const row = await runBlock("ls", { chat: "b", aside: 999 });

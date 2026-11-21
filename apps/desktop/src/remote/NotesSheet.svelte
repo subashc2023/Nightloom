@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ListenButton from "../lib/ListenButton.svelte";
   /**
    * Notes from the phone (item 246, wave 2C): the project's notes and the
    * vault's, the three always-loaded files (the project's instructions, his
@@ -13,6 +14,9 @@
    */
   import { onMount, tick } from "svelte";
   import { renderMarkdown } from "../lib/markdown";
+  import HtmlPage from "../lib/HtmlPage.svelte";
+  import { isHtmlPath } from "../lib/htmlPage";
+  import { viewGet, viewSet } from "../lib/viewState";
   import {
     ApiError,
     FIXED_NOTES,
@@ -143,6 +147,22 @@
     } catch (e) {
       problem = say(e);
     }
+  }
+
+  /** Item 819: an HTML note's Source switch, kept per note (item 495). */
+  let sources = $state<Record<string, boolean>>({});
+  function sourceOf(s: NoteScope, n: string): boolean {
+    const k = `phone.note.html.source:${s}:${n}`;
+    return sources[k] ?? viewGet(k, false);
+  }
+  function flipSource(s: NoteScope, n: string) {
+    const k = `phone.note.html.source:${s}:${n}`;
+    const next = !sourceOf(s, n);
+    sources[k] = next;
+    viewSet(k, next, false);
+  }
+  function phoneScheme(): "light" | "dark" {
+    return document.documentElement.dataset.scheme === "light" ? "light" : "dark";
   }
 
   async function openNote(s: NoteScope, n: string) {
@@ -308,6 +328,10 @@
   });
 </script>
 
+{#snippet unsavedCue()}
+  <span class="ns-unsaved" role="img" aria-label="Unsaved changes" title="Unsaved changes"></span>
+{/snippet}
+
 {#if view.v === "list"}
   <div class="ns-head">
     <span class="ns-title">Notes</span>
@@ -323,7 +347,7 @@
       {#each FIXED as f (f.scope)}
         <button onclick={() => openFixed(f.scope)}>
           <span class="ns-grow">
-            <span class="ns-name">{f.label}</span>
+            <span class="ns-namerow"><span class="ns-name">{f.label}</span>{#if mark(f.scope, FIXED_NOTES[f.scope]!)}{@render unsavedCue()}{/if}</span>
             <small>{mark(f.scope, FIXED_NOTES[f.scope]!)}{f.sub}</small>
           </span>
         </button>
@@ -336,7 +360,7 @@
         {#each list as n (n.name)}
           <button onclick={() => openNote(scope, n.name)}>
             <span class="ns-grow">
-              <span class="ns-name">{noteTitle(n.name)}</span>
+              <span class="ns-namerow"><span class="ns-name">{noteTitle(n.name)}</span>{#if mark(scope, n.name)}{@render unsavedCue()}{/if}</span>
               <small>
                 {mark(scope, n.name)}{shortWhen(n.modified)}{n.summary && n.summary !== noteTitle(n.name) ? ` · ${n.summary}` : ""}
               </small>
@@ -353,9 +377,15 @@
   {/if}
 {:else if view.v === "read"}
   {@const v = view}
+  {@const html = isHtmlPath(v.name)}
   <div class="ns-head">
     <button class="ns-link" onclick={back}>‹ Notes</button>
     <span class="ns-grow"></span>
+    {#if html && text !== null}
+      <button class="ns-link" aria-pressed={sourceOf(v.scope, v.name)} onclick={() => flipSource(v.scope, v.name)}
+        >{sourceOf(v.scope, v.name) ? "Page" : "Source"}</button
+      >
+    {/if}
     {#if text !== null}
       <button class="ns-link" onclick={() => beginEdit(v.scope, v.name)}>{drafts.includes(key(v.scope, v.name)) || hasOld(v.scope, v.name) ? "Edit · draft kept" : "Edit"}</button>
     {/if}
@@ -366,7 +396,17 @@
   {#if text === null && !problem}
     <p class="ns-note">Asking {where}…</p>
   {:else if text !== null}
-    {#if text.trim()}
+    {#if html && !sourceOf(v.scope, v.name)}
+      <!-- Item 819: an HTML note as its page, in the sandbox the Mac's
+           note view uses; the phone's own light/dark. -->
+      <div class="ns-page">
+        <HtmlPage html={text} scheme={phoneScheme()} place={`phone-note:${v.scope}:${v.name}`} title={v.name} />
+      </div>
+    {:else if html}
+      <pre class="ns-source">{text}</pre>
+    {:else if text.trim()}
+      <!-- Item 801: this note read aloud by the host's voice. -->
+      <div class="ns-listen"><ListenButton kind="note" id="{v.scope}:{v.name}" text={() => text ?? ""} source={client.listenSource()} /></div>
       <div class="ns-md">{@html renderMarkdown(text)}</div>
     {:else}
       <p class="ns-note">Empty. Edit to write the first line.</p>
@@ -515,6 +555,26 @@
     display: flex;
     flex-direction: column;
   }
+  /* Item 867: a kept draft is edits not yet saved to the Mac — the desktop's
+     hollow amber ring beside the name, beside the words that say so. */
+  .ns-namerow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .ns-unsaved {
+    box-sizing: border-box;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    border: 1.5px solid var(--accent);
+    flex-shrink: 0;
+  }
+  /* Lit under Jarvis, as on the desktop; plain under Classic. */
+  :global(:where(:root:not([data-layout="classic"]))) .ns-unsaved {
+    box-shadow: 0 0 6px var(--accent);
+  }
   .ns-name {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -532,6 +592,22 @@
     color: var(--dim);
     padding: 14px 16px;
     margin: 0;
+  }
+  .ns-page {
+    display: flex;
+    flex-direction: column;
+    height: 70vh;
+    min-height: 320px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .ns-source {
+    margin: 0;
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 12.5px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
   .ns-md {
     font-size: 15px;
@@ -647,5 +723,10 @@
   .ns-btn.danger {
     color: var(--failed);
     border-color: color-mix(in srgb, var(--failed) 45%, transparent);
+  }
+  .ns-listen {
+    display: flex;
+    padding: 0 0 0.4rem;
+    font-size: 0.95rem;
   }
 </style>

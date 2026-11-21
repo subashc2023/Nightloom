@@ -8,11 +8,14 @@
   import { tip } from "./tip";
   import { relativeTime, exactTime } from "./time";
   import { quoteSnippet, type PastAside } from "./asideHistory";
+  import { quoteSummary } from "./asideQuote";
+  import MathText from "./MathText.svelte";
   import { deletePastAside, pastAsides, pastOf, renamePast, reopenPast } from "./asideHistory.svelte";
   import { renameAside } from "./asides.svelte";
   import { asideLabel } from "./asides";
   import AsideNameEdit from "./AsideNameEdit.svelte";
   import { viewGet, viewSet } from "./viewState";
+  import { contentsButtons, pillPlace } from "./topRightButtons.svelte";
 
   /**
    * A chat's asides at a glance (nightshift item 229, night batch B,
@@ -66,17 +69,23 @@
     }
     const r = vp.getBoundingClientRect();
     // 26 px in from the viewport's right: the Navigator strip (16 px at
-    // right 3) and the scroll bar stay clear.
-    pos = { top: r.top + 8, right: Math.max(8, window.innerWidth - r.right + 26) };
+    // right 3) and the scroll bar stay clear. Item 887: beside the chapters'
+    // Contents button when it is shown (under it when too narrow).
+    const c = contentsButtons.get(vp)?.getBoundingClientRect() ?? null;
+    pos = pillPlace(r, c, pill?.offsetWidth ?? 0, pill?.offsetHeight ?? 26, window.innerWidth);
   }
 
   $effect(() => {
     const vp = viewport;
+    const ct = vp ? contentsButtons.get(vp) : undefined;
+    const p = pill;
     void shown;
     measure();
     if (!vp || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(measure);
     ro.observe(vp);
+    if (ct) ro.observe(ct);
+    if (p) ro.observe(p);
     return () => ro.disconnect();
   });
   // The list closes itself when the chat changes or has no asides left.
@@ -93,6 +102,11 @@
   function toggle(): void {
     now = Date.now();
     listOpen = !listOpen;
+  }
+
+  /** Item 880: the passage's one line with its formulas kept for `MathText` (`quoteSnippet`'s words otherwise). */
+  function asideQuoteLine(text: string | null | undefined): string {
+    return text ? quoteSummary(text, 60, { math: true }) : quoteSnippet(text);
   }
 
   function firstQuestion(a: { turns: { question: string }[] }): string {
@@ -201,8 +215,8 @@
           {:else}
             <button class="row" disabled={asideInTab(session, a.id)} onclick={() => bring(a)}>
               {#if a.name}<span class="nm">{a.name}</span>{/if}
-              <span class="q">{quoteSnippet(a.quote?.text)}</span>
-              <span class="ask">{firstQuestion(a)}</span>
+              <span class="q"><MathText text={asideQuoteLine(a.quote?.text)} /></span>
+              <span class="ask"><MathText text={firstQuestion(a)} /></span>
               <span class="meta">{openState(a)}</span>
             </button>
             <button class="del ren" aria-label="Rename this aside" use:tip={"Rename this aside"} onclick={() => (naming = a.id)}>
@@ -229,8 +243,8 @@
           {:else}
           <button class="row" onclick={() => reopen(p)} use:tip={`Reopen this aside under its passage, thread intact (closed ${exactTime(new Date(p.closedAt).toISOString())})`}>
             {#if p.thread.name}<span class="nm">{p.thread.name}</span>{/if}
-            <span class="q">{quoteSnippet(p.thread.quote?.text)}</span>
-            <span class="ask">{firstQuestion(p.thread)}</span>
+            <span class="q"><MathText text={asideQuoteLine(p.thread.quote?.text)} /></span>
+            <span class="ask"><MathText text={firstQuestion(p.thread)} /></span>
             <span class="meta"
               >closed {relativeTime(new Date(p.closedAt).toISOString(), now)}</span
             >

@@ -144,6 +144,9 @@ pub(crate) struct ChatSpec {
     /// incognito chat's `incognito::denied_roots` — his config dir, the
     /// vault, `~/.claude`, every project. Empty for every other chat.
     denied: Vec<PathBuf>,
+    /// The focused chat's id at connect time, for the image tool's count
+    /// (item 823); `None` before the chat has a log.
+    chat_id: Option<String>,
 }
 
 impl ChatSpec {
@@ -214,6 +217,9 @@ pub(crate) fn build_chat(
         // By the declaration, not the policy (backlog 144): the layer is
         // in the system prompt, and a switch must not rewrite that.
         chat_instructions: spec.preamble && spec.declared_kind == ChatKind::Chat,
+        // How he works, for every chat (nightshift item 738): on the
+        // preamble and his Settings switch.
+        practices: spec.preamble && nightloom_service::prompt::practices_layer_on(),
         // Gated on the preamble like every other discovered layer: `--bare`
         // and its desktop equivalent mean "nothing but what I typed".
         project: spec.preamble.then(|| spec.project.clone()).flatten(),
@@ -350,6 +356,20 @@ pub(crate) fn build_chat(
         {
             chat.tools
                 .extend(nightloom_service::tools::notes::note_tools(vault));
+        }
+        // The image tool that is not built yet (item 823, stage 1): every
+        // chat, incognito too — it only counts the call, and a chat that
+        // writes nothing leaves no words in the count. `Session`, so it
+        // passes the approval gate and the read-only filter below.
+        if let Some(config) = project::config_dir() {
+            chat.tools
+                .push(Box::new(nightloom_service::image_tool::GenerateImage::new(
+                    config,
+                    "api",
+                    spec.chat_id.clone(),
+                    spec.project.as_ref().map(|p| p.name.clone()),
+                    spec.mode.writes_nothing(),
+                )));
         }
         if let Some(chats) = &spec.chats {
             chat.tools
@@ -619,6 +639,17 @@ pub(crate) async fn connect(
             name: "Unfiled chats".into(),
             dir: state.default_log_dir.clone(),
         });
+        // Claude Code sessions Nightloom did not start (item 751), as the
+        // desktop mirrors them: `scope: all` reaches them, labelled.
+        if let Some(config) = project::config_dir() {
+            let outside = nightloom_service::outside::sessions_dir(&config);
+            if outside.is_dir() {
+                all.push(ChatDir {
+                    name: nightloom_service::outside::OUTSIDE_NAME.into(),
+                    dir: outside,
+                });
+            }
+        }
         ChatDirs {
             active: state.log_dir().await,
             all,
@@ -669,6 +700,12 @@ pub(crate) async fn connect(
         declared_kind,
         extra_folders: granted.iter().map(|(p, _)| p.clone()).collect(),
         denied,
+        chat_id: state
+            .chats
+            .lock_focused()
+            .await
+            .as_ref()
+            .map(|s| s.id.clone()),
     };
     let mcp = ensure_mcp(&state, &spec.workspace, spec.tools).await;
     let mcp_tools = state

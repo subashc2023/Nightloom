@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import topBarSrc from "./TopBar.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import topBarLogicRaw from "./topBar/logic.svelte.ts?raw";
+import topBarSrcRaw from "./TopBar.svelte?raw";
+const topBarSrc = asOneFile(topBarSrcRaw, topBarLogicRaw);
 import composerSrc from "./Composer.svelte?raw";
 import appSrc from "../App.svelte?raw";
 import mathSrc from "./math.ts?raw";

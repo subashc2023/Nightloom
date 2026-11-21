@@ -1,0 +1,184 @@
+/* Item 884: the question box's Jarvis look, in its own file after app.css (main.ts) so it wins the ties with
+   app.css's .nl-ask rules — app.css's last section (item 646, what can be selected) must stay ungated by
+   layout, and every rule here is Jarvis-only.
+
+   His words: "these button choices look ugly as hell … this panel just looks disastrous compared to the rest
+   of the theme"; then, of the options page (nightshift-code notes/runner-design/884-options/), "Lowk like
+   control row more than console" and "make sure it'll still look good w like longer answer choices".
+   So option A, Control row, with the stack rule: the box takes the hand-off card's glass (an amber-tinted
+   top, a thin amber edge, a mono kicker, a mono status with a lit dot); its answers are the composer's
+   Jarvis buttons, each with its number key (1–9 answer from the keyboard, askSettled.ts), side by side while
+   they are short. Once any answer is longer than ASK_STACK_CHARS (40), askSettled marks the box
+   `data-stack` and every answer stacks full width — the same buttons, the text left-aligned and wrapping
+   inside even padding. Hover or focus lights the edge amber with the main glow. Answered keeps 851's green
+   pick and ✓ Answered. Classic keeps app.css's rules. */
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) {
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line2));
+  border-radius: var(--r2);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 6%, var(--raised)), var(--raised) 64%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 24%, transparent),
+    0 10px 28px -8px rgba(0, 0, 0, 0.5);
+  padding: 0;
+  counter-reset: nl-ask;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="closed"], [data-answered]) {
+  border-color: var(--line2);
+  background: var(--raised);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.16),
+    0 8px 22px -12px rgba(0, 0, 0, 0.45);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-h {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px 0;
+  font: 500 10px var(--mono);
+  letter-spacing: 0.14em;
+  color: var(--accent-ink);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="closed"], [data-answered]) .nl-ask-h {
+  color: var(--dim);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-h::after {
+  margin-left: auto;
+  font: 500 10px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border-radius: 0;
+  padding: 0 0 0 13px;
+  background: none;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-state="open"] .nl-ask-h::after {
+  color: var(--accent-ink);
+  background: radial-gradient(circle at 4px 50%, var(--accent) 3px, transparent 3.6px) no-repeat;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 50%, transparent));
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-state="closed"] .nl-ask-h::after {
+  content: "Closed · not answered";
+  color: var(--dim);
+  background: radial-gradient(circle at 4px 50%, var(--dim) 3px, transparent 3.6px) no-repeat;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-answered] .nl-ask-h::after {
+  color: var(--done);
+  padding-left: 0;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-q {
+  margin: 6px 14px 0;
+  color: var(--ink);
+}
+/* The answers: buttons side by side, wrapping onto more rows as they must. */
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 14px 12px;
+  padding: 0;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o > li {
+  counter-increment: nl-ask;
+  position: relative;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 9px;
+  max-width: 100%;
+  min-height: 30px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 5px 12px 5px 7px;
+  border: 1px solid var(--line2);
+  border-radius: var(--r1);
+  background: var(--well);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 18px;
+  text-align: left;
+  filter: none;
+  overflow-wrap: anywhere;
+  outline: none;
+  transition:
+    background-color 120ms,
+    border-color 120ms;
+}
+/* The number key: first in the button, on the text's first line. */
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o > li::before {
+  content: counter(nl-ask);
+  position: static;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: auto;
+  min-width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  background: var(--term);
+  font: 10.5px/1 var(--mono);
+  font-weight: 400;
+  color: var(--dim);
+  opacity: 1;
+}
+/* The stack rule: any answer past 40 characters (askSettled.ts) — every answer full width, one per row. */
+:where(:root:not([data-layout="classic"])) .nl-ask[data-stack] .nl-ask-o {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-stack] .nl-ask-o > li {
+  display: flex;
+  width: 100%;
+  padding: 6px 12px 6px 7px;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:is(:hover, :focus-visible) {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
+  background: var(--well2);
+  box-shadow:
+    inset 0 0 10px color-mix(in srgb, var(--accent) 12%, transparent),
+    var(--glow-main, none);
+  color: var(--accent-ink);
+  filter: none;
+}
+:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:is(:hover, :focus-visible)::before {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line2));
+  color: var(--accent-ink);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-note]::after {
+  margin: 0;
+  padding: 0 14px 11px;
+  font: 11px var(--mono);
+  color: var(--dim);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-said]::after {
+  margin: 0 14px 12px;
+}
+/* Answered (851): the others step back to outlines; his pick is green with a check in the key's place. */
+:where(:root:not([data-layout="classic"])) .nl-ask[data-answered] .nl-ask-o > li {
+  background: transparent;
+  border-color: var(--line);
+  box-shadow: none;
+  color: var(--dim);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-answered] .nl-ask-o > li[data-picked] {
+  color: var(--ink);
+  background: var(--done-soft);
+  border-color: color-mix(in srgb, var(--done) 55%, transparent);
+}
+:where(:root:not([data-layout="classic"])) .nl-ask[data-answered] .nl-ask-o > li[data-picked]::before {
+  content: "✓";
+  left: auto;
+  top: auto;
+  border-color: transparent;
+  background: none;
+  color: var(--done);
+  font-size: 12px;
+  font-weight: 700;
+}

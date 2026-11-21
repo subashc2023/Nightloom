@@ -16,6 +16,7 @@
  * activity.
  */
 import type { Segment } from "./state.svelte";
+import { errorWeight } from "./errorWeight";
 
 /** A segment with its index into the reply's segments, which the override
  *  ids and the hover Remove are keyed by. */
@@ -75,15 +76,18 @@ export interface ActivityCounts {
   thinking: number;
   errors: number;
   denied: number;
+  /** Item 700: calls the harness did not run ("not run, redo it") — not errors. */
+  notRun: number;
 }
 
 export function countActivity(rows: readonly Placed[]): ActivityCounts {
-  const c: ActivityCounts = { tools: 0, thinking: 0, errors: 0, denied: 0 };
+  const c: ActivityCounts = { tools: 0, thinking: 0, errors: 0, denied: 0, notRun: 0 };
   for (const { seg } of rows) {
     if (seg.kind === "tool") {
       c.tools++;
       if (seg.call.denied) c.denied++;
-      else if (seg.call.result?.is_error) c.errors++;
+      else if (errorWeight(seg.call.result) === "hard") c.errors++;
+      else if (errorWeight(seg.call.result) === "soft") c.notRun++;
     } else if (seg.kind === "thinking" || seg.kind === "redacted") {
       c.thinking++;
     }
@@ -108,6 +112,7 @@ export function activitySummary(rows: readonly Placed[], streaming = false): str
   if (c.thinking > 0) parts.push(`${c.thinking} thinking`);
   if (c.errors > 0) parts.push(plural(c.errors, "error", "errors"));
   if (c.denied > 0) parts.push(`${c.denied} denied`);
+  if (c.notRun > 0) parts.push(`${c.notRun} not run`);
   if (streaming) parts.push("working");
   return parts.join(" · ");
 }
@@ -219,4 +224,17 @@ export function workingLabel(elapsedMs: number): string {
   if (s < 60) return `working · ${s} s`;
   const m = Math.floor(s / 60);
   return `working · ${m} min ${s % 60} s`;
+}
+
+/**
+ * Item 700: the working line while the main reply has ended and the turn
+ * waits only on background agents — `waiting on 2 agents · 2 min 58 s`,
+ * the same turn clock as `working`. `agents` null or 0 is `working`.
+ */
+export function waitingLabel(agents: number | null, elapsedMs: number, lead: string | null = null): string {
+  const w = workingLabel(elapsedMs);
+  // Item 829: what the model is doing in the gap, when the stream says.
+  if (!agents && lead) return w.replace(/^working/, lead);
+  if (!agents) return w;
+  return w.replace(/^working/, `waiting on ${agents} agent${agents === 1 ? "" : "s"}`);
 }

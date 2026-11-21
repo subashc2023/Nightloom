@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import transcriptSrc from "./Transcript.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
 import composerSrc from "./Composer.svelte?raw";
 import {
   DOT_STEP,
@@ -24,6 +24,9 @@ import {
   scatterOf,
   stepDot,
 } from "./dotField";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
 
 describe("the dot grid matches the CSS tile (item 621)", () => {
   it("puts dot (0, 0) at the tile centre at the foot-left corner", () => {

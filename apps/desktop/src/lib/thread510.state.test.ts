@@ -71,6 +71,9 @@ beforeEach(async () => {
   app.sessions = [];
   app.draft.engine = "claude-code";
   app.connection = { engine: "claude-code", provider: "claude-code", model: "m", tools: [] } as unknown as typeof app.connection;
+  // Item 840: a made chat's first step retargets the front New chat tab;
+  // with no App effect here to land it back, each test starts its own strip.
+  app.tabs = (await import("./tabs")).emptyWorkspace();
 });
 
 describe("the + creates nothing (510)", () => {

@@ -14,6 +14,7 @@
  */
 
 import type { Attachment } from "./types";
+import { isPickInfo } from "./pick";
 
 export type ScheduleKind = "five_hour" | "seven_day" | "time";
 
@@ -390,6 +391,7 @@ function readChips(v: unknown): Attachment[] {
       ...(a.whole === true ? { whole: true } : {}),
       ...(typeof a.source_sha256 === "string" ? { source_sha256: a.source_sha256 } : {}),
       ...(stash ? { stash } : {}),
+      ...(isPickInfo(a.pick) ? { pick: a.pick } : {}),
       ...(!data ? { pending: true } : {}),
     });
   }
@@ -413,6 +415,7 @@ function writeChip(a: Attachment, bare: boolean): Attachment | null {
     ...(a.whole ? { whole: true } : {}),
     ...(a.source_sha256 ? { source_sha256: a.source_sha256 } : {}),
     ...(a.stash ? { stash: a.stash } : {}),
+    ...(a.pick ? { pick: a.pick } : {}),
   };
 }
 

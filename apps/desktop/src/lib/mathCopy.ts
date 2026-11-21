@@ -193,30 +193,71 @@ function tableRangeHtml(range: Range): string {
     return t.outerHTML;
   }
   const frag = range.cloneContents();
-  if (!frag.querySelector("table")) return "";
+  if (!frag.querySelector("table, tr")) return "";
+  // Item 814: with a formula in it, the fragment as `rangeHtml` gives it — formulas cut at either
+  // end widened to whole ones (half a formula has no source), hidden parts dropped.
+  const wide = frag.querySelector(".katex") ? rangeHtml(range) : "";
   const box = document.createElement("div");
-  box.appendChild(frag);
+  if (wide) box.innerHTML = wide;
+  else box.appendChild(frag);
+  wholeTableEnds(box, range);
   return box.innerHTML;
 }
 
+/**
+ * Item 814: a selection that begins or ends inside a table and runs on past it takes that table's
+ * rows whole — the row it begins in and the row it ends in as the page has them, not cut to the
+ * cells it touched (a cut row's cells slid left under the wrong headers, WebKit check) — and the
+ * table keeps its header row, as a selection inside one table does (684). `box` holds the range's
+ * cloned contents; its first table is the one the range began in, its last the one it ended in.
+ */
+export function wholeTableEnds(box: Element, range: Range): void {
+  const elOf = (n: Node) => (n instanceof Element ? n : n.parentElement);
+  const tables = box.querySelectorAll("table");
+  if (tables.length === 0) return;
+  const startTable = elOf(range.startContainer)?.closest("table");
+  if (startTable) {
+    const t = tables[0];
+    const live = elOf(range.startContainer)?.closest("tr");
+    const first = t.querySelector("tr");
+    if (live && first) first.replaceWith(live.cloneNode(true));
+    const head = startTable.rows[0];
+    const top = t.querySelector("tr");
+    if (head && top && head !== live && !range.intersectsNode(head)) top.parentElement?.insertBefore(head.cloneNode(true), top);
+  }
+  if (elOf(range.endContainer)?.closest("table")) {
+    const rows = tables[tables.length - 1].querySelectorAll("tr");
+    const live = elOf(range.endContainer)?.closest("tr");
+    const last = rows[rows.length - 1];
+    if (live && last && !(startTable && live === elOf(range.startContainer)?.closest("tr"))) last.replaceWith(live.cloneNode(true));
+  }
+}
+
+/**
+ * Item 814 (his bug, "like i've asked a millioni times"): the clipboard for a selection, given the
+ * HTML its table read (`tableRangeHtml`) and its formula read (`rangeHtml`). A table goes first:
+ * before, the formula read ran first, and any table with a formula in the selection (his `$z$`
+ * header) came out as loose tab-parted lines, while the same table selected from its second row
+ * on (no formula in it) came out a table — the outcome hung on where the selection began.
+ */
+export function clipboardFor(tableHtml: string, formulaHtml: string): { text: string; html: string } | null {
+  const ttext = tableHtml ? tablePasteText(tableHtml) : null;
+  // The rich side needs a document (`richHtml`); the tests' plain-text check runs without one.
+  const rich = (h: string) => (typeof document === "undefined" ? h : richHtml(h));
+  if (ttext !== null) return { text: ttext, html: rich(tableHtml) };
+  const text = mathCopyText(formulaHtml);
+  return text === null ? null : { text, html: rich(formulaHtml) };
+}
+
 function computeSelection(sel: Selection): { text: string; html: string } | null {
-  const got = mathOnly(sel);
-  if (got) return got;
   // Item 684: a selection taking a table copies it as a Markdown table on the plain-text side
   // (pasted into the message box it stays a table to fill in); the rich side keeps the table.
   const tparts: string[] = [];
+  const mparts: string[] = [];
   for (let i = 0; i < sel.rangeCount; i++) tparts.push(tableRangeHtml(sel.getRangeAt(i)));
-  const thtml = tparts.join("\n");
-  const ttext = thtml ? tablePasteText(thtml) : null;
-  return ttext === null ? null : { text: ttext, html: thtml };
-}
-
-function mathOnly(sel: Selection): { text: string; html: string } | null {
-  const parts: string[] = [];
-  for (let i = 0; i < sel.rangeCount; i++) parts.push(rangeHtml(sel.getRangeAt(i)));
-  const html = parts.join("\n");
-  const text = mathCopyText(html);
-  return text === null ? null : { text, html: richHtml(html) };
+  const thtml = tparts.filter(Boolean).join("\n");
+  if (!thtml) for (let i = 0; i < sel.rangeCount; i++) mparts.push(rangeHtml(sel.getRangeAt(i)));
+  return clipboardFor(thtml, mparts.join("\n"));
 }
 
 /** ⌘C on the page: the TeX on the plain-text side, MathML on the rich. */
@@ -236,4 +277,51 @@ export function installMathCopy(): void {
   if (installed || typeof document === "undefined") return;
   installed = true;
   document.addEventListener("copy", onMathCopy);
+}
+
+/**
+ * Item 838 (his "highlighting is broken", 2026-11-18): a selection across a
+ * rendered formula was painted glyph by glyph — KaTeX draws a formula as
+ * nested inline boxes of different heights, and the browser highlights each
+ * box: patchy blocks, gaps between, a display formula's parts boxed apart.
+ * Here a formula the selection touches is highlighted as one box
+ * (`.math-sel`, `mathBase.css`) and its glyphs' own highlight is switched
+ * off (`:root.math-sel-on .katex *::selection`). The selection itself — and
+ * what a copy takes — is the browser's, unchanged.
+ *
+ * `formulasIn` is the rule, pure over a range; the listener applies it once
+ * per frame. The desktop only: a phone draws its own selection handles and
+ * ignores `::selection`.
+ */
+export function formulasIn(range: Range | null): Element[] {
+  if (!range || range.collapsed) return [];
+  const root = range.commonAncestorContainer;
+  const scope = root instanceof Element ? root : root.parentElement;
+  if (!scope) return [];
+  const inside = scope.closest(".katex");
+  const all = inside ? [inside] : Array.from(scope.querySelectorAll(".katex"));
+  return all.filter((el) => range.intersectsNode(el));
+}
+
+let selInstalled = false;
+export function installMathSelection(): void {
+  if (selInstalled || typeof document === "undefined") return;
+  selInstalled = true;
+  document.documentElement.classList.add("math-sel-on");
+  let marked: Element[] = [];
+  let queued = false;
+  const apply = () => {
+    queued = false;
+    const sel = document.getSelection();
+    const next = sel && sel.rangeCount > 0 ? formulasIn(sel.getRangeAt(0)) : [];
+    const keep = new Set(next);
+    for (const el of marked) if (!keep.has(el)) el.classList.remove("math-sel");
+    for (const el of next) el.classList.add("math-sel");
+    marked = next;
+  };
+  document.addEventListener("selectionchange", () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(apply);
+  });
 }

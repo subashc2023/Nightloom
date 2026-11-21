@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { connectorWords } from "../remote/rules";
   import { tip } from "./tip";
   import { tick, untrack } from "svelte";
   import { app, resolveApproval } from "./state.svelte";
@@ -11,10 +12,20 @@
   import { viewGet, viewSet } from "./viewState";
   import type { ApprovalRequest, AskQuestion, FolderGrant } from "./types";
   import AskQuestions from "./AskQuestions.svelte";
+  import AskLock from "./AskLock.svelte";
+  import { flyAnswer } from "./askMotion";
   import { answeredRows, buildAnswer } from "./askQuestions";
   import { recordAnswers } from "./askAnswers.svelte";
   import PlaywrightCard from "./PlaywrightCard.svelte";
   import { isPlaywright } from "./playwright";
+  // Item 784: the runaway guard's card.
+  import StuckCard from "./StuckCard.svelte";
+  import { isStuck } from "./stuck";
+  import SecretCard from "./SecretCard.svelte";
+  import { isSecretRequest } from "./secret";
+  // Item 872 step 5: Home asks him to take the page.
+  import DriveCard from "./DriveCard.svelte";
+  import { isDriveRequest } from "./drive";
   import { trackCard } from "./waitingNotice.svelte";
 
   let { req }: { req: ApprovalRequest } = $props();
@@ -69,8 +80,14 @@
     plan: "Keep planning — the note is why; the model reads it and plans again. Approve — the plan starts; the note is sent as your next message when that turn ends.",
   } as const;
 
+  // Item 743 (blocker 2029's default): the phone card's set-aside, on the Mac
+  // too, with the phone's note as its hover text.
+  // Item 783: the read-only chat's connector card.
+  const ALWAYS_READ_TIP = "Runs without asking in every read-only chat, Mac and Away.\nTake it back in Approval rules on the phone.";
+  const LATER_TIP = "Not now: Claude does the rest of the task without this, then asks you again at the end.";
+
   function decide(
-    decision: "allow" | "always" | "deny",
+    decision: "allow" | "always" | "deny" | "later",
     answer?: unknown,
     then?: "ask" | "auto",
     fallback?: string,
@@ -270,6 +287,8 @@
   });
   let picks = $state<Record<number, string[]>>({});
   let others = $state<Record<number, string>>({});
+  // Item 712: his comment on each option, sent with a picked one (`Label (note: …)`).
+  let notes = $state<Record<number, Record<string, string>>>({});
 
   function toggle(i: number, label: string, multi: boolean) {
     const cur = picks[i] ?? [];
@@ -289,9 +308,13 @@
   );
 
   function answerQuestions() {
-    const payload = buildAnswer(req.input, questions, picks, others) as { answers: Record<string, string> };
+    const payload = buildAnswer(req.input, questions, picks, others, notes) as { answers: Record<string, string> };
     // Kept by call id for the answered table under the call (354).
     recordAnswers(req.id, answeredRows(questions, payload.answers));
+    // Wave K (his pick, blocker 2031): the thread carries the answer down into the message box and the card
+    // folds to a receipt — a copy over the page; the real card goes at once, as before.
+    const said = Object.values(payload.answers ?? {});
+    flyAnswer(box, box?.querySelector<HTMLElement>(".aq-opt.on") ?? null, said.length === 1 ? said[0] : `${said.length} answers`);
     decide("allow", payload);
   }
 
@@ -384,7 +407,16 @@
   </div>
 {/snippet}
 
-{#if deferred && isPlaywright(req.name)}
+{#if isStuck(req.name)}
+  <!-- 784: a run nobody watched repeated itself; Continue or Stop. -->
+  <StuckCard {req} />
+{:else if deferred && isSecretRequest(req.name)}
+  <!-- 766: the chat asks for a secret; typed here, never in the chat. -->
+  <SecretCard {req} />
+{:else if deferred && isDriveRequest(req.name)}
+  <!-- 872: Home asks him to take the page in Claude's browser, then hand it back. -->
+  <DriveCard {req} />
+{:else if deferred && isPlaywright(req.name)}
   <!-- Playwright, Claude's own browser (backlog 367): its own card. -->
   <PlaywrightCard {req} />
 {:else if kind === "question"}
@@ -392,7 +424,7 @@
        them in the card's one scroll, a Next after each, the lit tab following the scroll (AskQuestions). The
        card grows to its content up to the cap and then scrolls as one; the strip stays at its top. -->
   <div
-    class="ask qcard"
+    class="ask qcard lk-shell"
     class:folded
     bind:this={box}
     use:trackCard={req.id}
@@ -401,6 +433,7 @@
     aria-label="the model asks {questions.length} question{questions.length === 1 ? '' : 's'}"
     style:max-height={sized.maxHeight !== null ? `${sized.maxHeight}px` : null}
   >
+    <AskLock />
     <AskQuestions
       {questions}
       idBase={req.id}
@@ -408,6 +441,8 @@
       {others}
       ontoggle={toggle}
       onother={(i, v) => (others[i] = v)}
+      {notes}
+      onnote={(i, label, v) => (notes[i] = { ...(notes[i] ?? {}), [label]: v })}
       {folded}
     >
       {#snippet tail()}
@@ -460,7 +495,9 @@
         {#if plan !== null}
           <!-- The plan is model text, in the transcript's face; the rule
                under it keeps it from reading as part of the form. -->
-          <div class="planv">
+          <!-- data-plan-text (item 754): the transcript's selection pill
+               offers Reply and Comment on a passage of the plan. -->
+          <div class="planv" data-plan-text>
             <div class="markdown">{@html renderMarkdown(plan)}</div>
           </div>
         {:else}
@@ -534,10 +571,19 @@
           >Let {folderScope === "project" ? "the project" : "this chat"} see <code>{outsideLeaf || req.name}</code
           >?</span
         >
+      {:else if req.kind === "remember"}
+        <!-- Item 783: a read-only chat proposes a memory; he approves it. -->
+        <span data-card-kind="remember">Remember this?</span>
+      {:else if req.kind === "home_write"}
+        <!-- Item 845 (846 §5 #3): one of Home's mail or calendar changes — asked every time, never allowed always. -->
+        <span data-card-kind="home_write">Let Home <code>{connectorWords(req.name)}</code>?</span>
+      {:else if req.kind === "connector"}
+        <!-- Item 783: a connector action that is not a plain read, in a read-only chat. -->
+        <span data-card-kind="connector">Let <code>{connectorWords(req.name)}</code> run?</span>
       {:else}
         <span>Run <code>{req.name}</code>?</span>
       {/if}
-      <span class="effect">paused · waiting for you</span>
+      <span class="effect">{req.back ? "set aside earlier · waiting for you" : "paused · waiting for you"}</span>
       <span class="sp"></span>
       {@render foldButton()}
     </div>
@@ -586,9 +632,24 @@
           </div>
         </div>
       {/if}
+      {#if req.kind}
+        <div class="arg">
+          <div class="why open" data-card-note>
+            {req.kind === "remember"
+              ? "This chat is read-only, so Claude asks before it adds to your memory."
+              : req.kind === "home_write"
+                ? "Home changes your mail, calendar or reminders only on your tap — this one change, once. The next one asks again."
+                : "This chat is read-only, and this connector action's name does not say whether it only reads or also changes something."}
+          </div>
+        </div>
+      {/if}
       <div class="actions">
-        <button class="ns-btn accent" onclick={() => decide("allow")}>Allow</button>
-        {#if !addsFolder}
+        <button class="ns-btn accent" data-act="allow" onclick={() => decide("allow")}
+          >{req.kind === "remember" ? "Remember it" : req.kind === "connector" || req.kind === "home_write" ? "Allow once" : "Allow"}</button
+        >
+        {#if req.kind === "connector"}
+          <button class="ns-btn" data-act="always" use:tip={ALWAYS_READ_TIP} onclick={() => decide("always")}>Allow always</button>
+        {:else if !addsFolder && req.kind !== "remember" && req.kind !== "home_write"}
           <button
             class="ns-btn"
             use:tip={`every later ${req.name} in this chat runs unasked`}
@@ -596,6 +657,8 @@
           >
         {/if}
         <button class="ns-btn danger" bind:this={denyButton} onclick={() => decide("deny")}>Deny</button>
+        <!-- Item 743: the phone card's "Not now — carry on", same words, the `later` reply the window takes. -->
+        <button class="ns-btn" data-act="later" use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>
         <span class="keys">⏎ allow · esc deny · the note goes with either</span>
       </div>
     {/if}
@@ -632,6 +695,7 @@
     <button class="btn deny" bind:this={denyButton} onclick={onDeny}>
       {denying ? "Deny" : "Deny…"}
     </button>
+    <button class="btn" data-act="later" use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>
   </div>
 
   {#if denying}
@@ -1026,6 +1090,19 @@
     --aq-stick: 0px;
     --aq-strip-margin: 0 -14px;
     --aq-strip-pad: 4px 10px 0 14px;
+  }
+  /* Item 713: the question card in Jarvis — the composer's measures (8 px
+     corner, the raised surface), its lit edge (the accent border with
+     `--glow-main`), and the chat's dot ground behind the questions. The
+     tokens are empty under calm, so calm draws the plain card; Classic
+     keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .ask.qcard {
+    border-radius: var(--r2);
+    background-color: var(--raised);
+    background-image: var(--chat-dots, none);
+    background-size: 18px 18px;
+    box-shadow: var(--glow-main, none);
+    --aq-bg: var(--raised);
   }
   .ask.qcard.folded {
     padding: 0 14px;

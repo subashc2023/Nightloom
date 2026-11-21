@@ -4,6 +4,7 @@
   import { pruneDraftCopies, restoreStashed } from "./lib/attachFiles.svelte";
   import { tip } from "./lib/tip";
   import { onMount, untrack } from "svelte";
+  import { probeWatch } from "./lib/errorWatch.svelte";
   import {
     activateTab,
     browseFree,
@@ -26,6 +27,7 @@
     answerAsideDiscard,
     setPaneWidth,
     splitTab,
+    tabOpening,
     syncUndoMenu,
     setSidebarWidth,
     sidebarColumn,
@@ -60,6 +62,7 @@
   import WebView from "./lib/WebView.svelte";
   import { closeOrphans, initWebTabs, routeLink } from "./lib/webtabs.svelte";
   import RunningTasks from "./lib/RunningTasks.svelte";
+  import NeedsYou from "./lib/NeedsYou.svelte";
   import { allRunning, cancelQuit, listenForQuit, pushQuitLines, quitAnyway, quitAsk } from "./lib/running.svelte";
   import { quitBlockers } from "./lib/running";
   import { isMac } from "./lib/platform";
@@ -75,21 +78,32 @@
   import TitleBar from "./lib/TitleBar.svelte";
   import TopBar from "./lib/TopBar.svelte";
   import SettingsModal from "./lib/SettingsModal.svelte";
+  import RecoveredDrafts from "./lib/RecoveredDrafts.svelte";
   import WrapAsidesDialog from "./lib/WrapAsidesDialog.svelte";
   import ContextPanel from "./lib/ContextPanel.svelte";
   import RightRail from "./lib/RightRail.svelte";
+  // Item 856: Classic's aside-tab column (605).
+  import RightRailClassic from "./lib/RightRailClassic.svelte";
   import { railFold, RAIL_SLIDE_MS } from "./lib/railFold.svelte";
   import PromptLibrary from "./lib/PromptLibrary.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import Composer from "./lib/Composer.svelte";
+  import StartCards from "./lib/StartCards.svelte";
+  import { isHome } from "./lib/home";
+  import JobChatCard from "./remote/JobChatCard.svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import type { Job } from "./remote/jobs";
   import NoteView from "./lib/NoteView.svelte";
   import GraphView from "./lib/GraphView.svelte";
   import Welcome from "./lib/Welcome.svelte";
+  import HomeStage from "./lib/homeStage/Stage.svelte";
   import WaitingChat from "./lib/WaitingChat.svelte";
   import { scheduledFor } from "./lib/scheduled.svelte";
   import { chatPage } from "./lib/waitingChat";
   import NewProject from "./lib/NewProject.svelte";
   import Palette from "./lib/Palette.svelte";
+  import FeedbackBox from "./lib/FeedbackBox.svelte";
+  import { feedback } from "./lib/feedback.svelte";
   import NightshiftSurface from "./lib/NightshiftSurface.svelte";
   import { isKeptKind, keptBox, keptIn } from "./lib/keptTabs.svelte";
   import { placeKey, tabPlace } from "./lib/tabPlace";
@@ -233,6 +247,22 @@
   /** The tab whose chat is the open one; its pane draws the transcript. */
   const liveTab = $derived(tabs.liveTab(app.tabs, app.activeSessionId));
   /**
+   * Item 882: the tab that draws the open chat's view (transcript, composer, top bar, the chat column). Most of the
+   * time the live tab; while a tab click opens another chat in the same pane (`tabOpening`), that tab — so the view
+   * stays mounted and its transcript and composer turn to the opened chat in place when its log lands (what a click
+   * on the chat in the sidebar always did), instead of the pane drawing a stand-in transcript, then building the
+   * whole view (transcript, composer, rail, top bar) afresh. Another pane's click keeps the old rule: one view at a time.
+   */
+  const liveDraw = $derived.by(() => {
+    const opening = tabOpening.chat;
+    if (opening && liveTab) {
+      const p = tabs.paneOf(app.tabs, liveTab.id);
+      const front = p ? tabs.activeTab(p) : null;
+      if (front && front.id !== liveTab.id && front.content.kind === "chat" && front.content.session === opening) return front;
+    }
+    return liveTab;
+  });
+  /**
    * The pane that carries the top bar: the bar describes the open chat, so
    * it sits over the pane whose *active* tab is that chat, and over the
    * focused pane when no pane shows it but a note is in front there (the
@@ -241,9 +271,9 @@
    * is a chat's (backlog 140).
    */
   const barPane = $derived.by(() => {
-    if (liveTab) {
-      const p = tabs.paneOf(app.tabs, liveTab.id);
-      if (p && p.active === liveTab.id) return p.id;
+    if (liveDraw) {
+      const p = tabs.paneOf(app.tabs, liveDraw.id);
+      if (p && p.active === liveDraw.id) return p.id;
     }
     const focused = tabs.focusedPane(app.tabs);
     return tabs.activeTab(focused).content.kind === "note" ? focused.id : null;
@@ -279,8 +309,8 @@
       !app.asidePanel &&
       !blank &&
       splitWidth >= RAIL_MIN_SPLIT &&
-      !!liveTab &&
-      app.tabs.panes.some((p) => p.active === liveTab?.id),
+      !!liveDraw &&
+      app.tabs.panes.some((p) => p.active === liveDraw?.id),
   );
   /**
    * Item 605 (his "shouldn't asides still have cost, context, all of the
@@ -290,7 +320,9 @@
    * when both are in front: one column at the edge.
    */
   const railAsideTab = $derived.by(() => {
-    if (classic() || app.asidePanel || splitWidth < RAIL_MIN_SPLIT || chatColumn) return null;
+    // ~~Not under Classic~~ — item 856: Classic's aside tab gets the column too
+    // (RightRailClassic shares RightRail's logic); a chat still has none (542).
+    if (app.asidePanel || splitWidth < RAIL_MIN_SPLIT || chatColumn) return null;
     const f = tabs.focusedPane(app.tabs);
     for (const p of [f, ...app.tabs.panes.filter((x) => x.id !== f.id)]) {
       const c = tabs.activeTab(p).content;
@@ -406,6 +438,12 @@
     // Over the strip the strip answers (it stops the event); this guard
     // is for a strip that has not — a synthetic event, say.
     if (e.target instanceof Element && e.target.closest(".tab-strip")) return;
+    // Item 877: the band under the strip is the strip's drop too; the half
+    // a drag up from the content drew comes down as it reaches the band.
+    if (e.target instanceof Element && e.target.closest(".strip-catch")) {
+      if (dropHalf?.pane === paneId) dropHalf = null;
+      return;
+    }
     const el = e.currentTarget as HTMLElement;
     const r = el.getBoundingClientRect();
     e.preventDefault();
@@ -421,7 +459,7 @@
   function onPaneDrop(e: DragEvent, paneId: string) {
     const half = dropHalf;
     dropHalf = null;
-    if (e.target instanceof Element && e.target.closest(".tab-strip")) return;
+    if (e.target instanceof Element && e.target.closest(".tab-strip, .strip-catch")) return;
     // A terminal's shell (backlog 113's 12b; blocker 155, 2026-09-22):
     // into this pane's dock — a second dock if it has none, the dock
     // itself if it was its only shell; the shells run on.
@@ -570,7 +608,8 @@
     // its next/previous pane (nightshift backlog 109) — and the app's
     // provider and model digits wait for it to close. `SettingsModal`'s
     // own window handler takes them; this one only stands aside.
-    if (app.showSettings && primary && !e.shiftKey && /^(Digit[1-9]|Bracket(Left|Right))$/.test(e.code)) {
+    // ⌘F too (item 844): it focuses Settings' search box, not the transcript's find bar behind it.
+    if (app.showSettings && primary && !e.shiftKey && /^(Digit[1-9]|Bracket(Left|Right)|KeyF)$/.test(e.code)) {
       return false;
     }
     if (primary && /^Digit[1-9]$/.test(e.code)) {
@@ -600,7 +639,7 @@
     // palette, not a chord.
     const zoom = zoomChord(e, primary, isMac);
     if (zoom) {
-      void runZoom(zoom);
+      void runZoom(zoom, "key");
       return true;
     }
     // ⌘F opens find in page (nightshift backlog 106), or refocuses the
@@ -660,6 +699,8 @@
     runMenuCommand(id);
     return true;
   }
+  // Item 874: the liveness probe lives in the App's own tree — the part that stops when Svelte gives up on an effect.
+  $effect(() => probeWatch());
 </script>
 
 <!--
@@ -776,14 +817,23 @@
             {#if classic()}<TabStripClassic {pane} />{:else}<TabStrip {pane} />{/if}
             {#if barPane === pane.id}
               {#if classic()}<TopBarClassic />{:else}<TopBar />{/if}
-            {:else if t.content.kind === "aside" && !classic()}
+            {:else if t.content.kind === "aside"}
               <!-- Item 605: an aside tab's bar — the chat's TopBar, given
-                   the aside (Filament only: Classic keeps 1d4ca17's look). -->
-              <TopBar
-                aside={asideOf(t.content.session, asideTabThread(t.content) ?? null)}
-                asideChat={t.content.session}
-                bell={asideBellPane === pane.id}
-              />
+                   the aside. ~~Filament only: Classic keeps 1d4ca17's look~~ —
+                   item 856: Classic's bar shares TopBar's logic and draws it too. -->
+              {#if classic()}
+                <TopBarClassic
+                  aside={asideOf(t.content.session, asideTabThread(t.content) ?? null)}
+                  asideChat={t.content.session}
+                  bell={asideBellPane === pane.id}
+                />
+              {:else}
+                <TopBar
+                  aside={asideOf(t.content.session, asideTabThread(t.content) ?? null)}
+                  asideChat={t.content.session}
+                  bell={asideBellPane === pane.id}
+                />
+              {/if}
             {/if}
             <!-- Item 487: the note and the read-only views stay mounted
                  once shown, hidden while another tab is in front, so a
@@ -883,9 +933,21 @@
                   <WebView tabId={t.id} content={t.content} />
                 {/key}
               </div>
-            {:else if liveTab?.id === t.id}
+            {:else if liveDraw?.id === t.id}
               <div class="content">
-                {#if waiting && app.activeSessionId}
+                {#if isHome(app.project)}
+                  <!-- Item 845: Home opens on its stage — its own new-chat page (Watch) and its own
+                       chat screen (the transcript inside the stage's Chat tab), in both layouts. -->
+                  <HomeStage blank={blank && !waiting}>
+                    {#if waiting && app.activeSessionId}
+                      <WaitingChat key={app.activeSessionId} />
+                    {:else if classic()}
+                      <TranscriptClassic />
+                    {:else}
+                      <Transcript />
+                    {/if}
+                  </HomeStage>
+                {:else if waiting && app.activeSessionId}
                   <WaitingChat key={app.activeSessionId} />
                 {:else if blank}
                   <Welcome />
@@ -900,7 +962,21 @@
                      rather than in any of them. -->
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
-              {#if !blank || waiting}
+              {#if !blank || waiting || isHome(app.project)}
+                <!-- Item 780: a recurring job's chat carries its approval card. -->
+                {#if app.activeSessionId}
+                  <div class="job-card-dock">
+                    <JobChatCard
+                      chat={app.activeSessionId}
+                      where="its project"
+                      load={(chat) => invoke<Job | null>("job_for_chat", { chat })}
+                      send={(id, patch) => invoke("job_answer", { id, patch })}
+                      press={(id) => invoke("job_run_now", { id })}
+                    />
+                  </div>
+                {/if}
+                <!-- Item 763 H5: Home's Start cards sit over its box. -->
+                {#if isHome(app.project)}<div class="start-cards-dock"><StartCards /></div>{/if}
                 <Composer />
               {/if}
             {:else if t.content.kind === "chat" && t.content.session !== null}
@@ -914,9 +990,11 @@
               {@const session = t.content.session}
               {@const v = paneChat(session)}
               <div class="content">
-                {#key session}
-                  {#if classic()}<TranscriptClassic chat={session} />{:else}<Transcript chat={session} />{/if}
-                {/key}
+                {#if tabOpening.chat !== session}
+                  {#key session}
+                    {#if classic()}<TranscriptClassic chat={session} />{:else}<Transcript chat={session} />{/if}
+                  {/key}
+                {/if}
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
               <div class="pane-line" class:waiting={(v?.approvals.length ?? 0) > 0} class:running={!!v?.running} role="status">
@@ -986,7 +1064,11 @@
         {:else if railColumn}
           {#if railAsideTab}
             <!-- Item 605: the column beside an aside tab, reading the aside. -->
-            <RightRail column aside={asideOf(railAsideTab.session, asideTabThread(railAsideTab) ?? null)} asideChat={railAsideTab.session} />
+            {#if classic()}
+              <RightRailClassic column aside={asideOf(railAsideTab.session, asideTabThread(railAsideTab) ?? null)} asideChat={railAsideTab.session} />
+            {:else}
+              <RightRail column aside={asideOf(railAsideTab.session, asideTabThread(railAsideTab) ?? null)} asideChat={railAsideTab.session} />
+            {/if}
           {:else}
             <RightRail column />
           {/if}
@@ -1046,6 +1128,12 @@
     {/if}
     <!-- Running tasks (nightshift backlog 152): the open chat's subagents,
          on the same overlay, from the top bar's agents chip. -->
+    <!-- Needs you (nightshift item 753): everything waiting on him, ready
+         for review or working, in every project, answerable in place. -->
+    {#if app.showNeeds}
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+      <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showNeeds = false; }}><NeedsYou /></div>
+    {/if}
     {#if app.showTasks}
       <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
       <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showTasks = false; }}><RunningTasks /></div>
@@ -1067,7 +1155,14 @@
         onclose={cancelQuit}
       />
     {/if}
+    <!-- Item 871: kept note drafts whose note is gone, offered back. -->
+    {#if app.showRecoveredDrafts}
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+      <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showRecoveredDrafts = false; }}><RecoveredDrafts /></div>
+    {/if}
     <Palette />
+    <!-- His feedback to the agent (item 805): the draft outlives the box. -->
+    {#if feedback.open}<FeedbackBox />{/if}
     <!-- The wrap-up's aside picker (nightshift item 285). -->
     <WrapAsidesDialog />
     <!-- Closing an aside with unsent text (backlog 228, practices §7):
@@ -1096,6 +1191,24 @@
 </div>
 
 <style>
+  /* Item 780: the job's approval card, the composer card's width. */
+  .start-cards-dock {
+    max-width: 760px;
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0 auto;
+    /* The review: the cards' edges on the box's (they sat 16 px inside it). */
+    padding: 0;
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+  .job-card-dock {
+    max-width: 760px;
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0 auto;
+    padding: 0 16px;
+  }
   .shell {
     display: flex;
     flex-direction: column;

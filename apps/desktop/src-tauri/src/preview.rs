@@ -16,6 +16,7 @@ static SOCKET: OnceLock<PathBuf> = OnceLock::new();
 
 /// Why the previews are not served in this app process, when they are
 /// not (item 444): every bind attempt's error, for the window to show.
+#[cfg(unix)]
 static UNAVAILABLE: OnceLock<String> = OnceLock::new();
 
 pub struct Host {

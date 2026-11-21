@@ -9,6 +9,9 @@
 // context, so an exact quote is what lets it place the passage; the
 // ordinal ("your 3rd reply") is a second handle for the same thing.
 
+import { wholeTableEnds } from "./mathCopy";
+import { quoteText } from "./mathPaste";
+
 /** What he highlighted, and where. */
 export interface AsideQuote {
   /** The selected text, as the selection read it (whitespace as is). */
@@ -167,6 +170,32 @@ function walk(node: Node, out: string[]): void {
   if (block) out.push("\n");
 }
 
+/**
+ * Item 814: the passage's HTML when it holds a table or a list — the walk below writes a table as
+ * loose lines (his `$z$ .00 .05 −1.5 0.0668 …`, 2026-11-17) and drops list markers. A selection
+ * inside one table (one row to another) is that table cut to the rows it takes, its header row
+ * kept, as the copy does (item 684). Empty for any other passage, which the walk reads as before.
+ */
+function structuredHtml(r: Range): string {
+  const anc = r.commonAncestorContainer;
+  const at = anc instanceof Element ? anc : anc.parentElement;
+  if (!at || at.closest("td, th, li")) return "";
+  const inTable = at.closest("table");
+  if (inTable) {
+    const t = document.createElement("table");
+    Array.from(inTable.rows)
+      .filter((row, i) => i === 0 || r.intersectsNode(row))
+      .forEach((row) => t.appendChild(row.cloneNode(true)));
+    return t.outerHTML;
+  }
+  const frag = r.cloneContents();
+  if (!frag.querySelector("table, tr, li")) return "";
+  const box = document.createElement("div");
+  box.appendChild(frag);
+  wholeTableEnds(box, r);
+  return box.innerHTML;
+}
+
 /** The selected passage with every equation as its LaTeX source. */
 export function selectionText(range: Range): string {
   const r = range.cloneRange();
@@ -174,6 +203,9 @@ export function selectionText(range: Range): string {
   const endEq = katexOf(r.endContainer);
   if (startEq) r.setStartBefore(startEq);
   if (endEq) r.setEndAfter(endEq);
+  const structured = structuredHtml(r);
+  const asText = structured ? quoteText(structured) : null;
+  if (asText !== null) return asText;
   const out: string[] = [];
   walk(r.cloneContents(), out);
   return out
@@ -183,4 +215,78 @@ export function selectionText(range: Range): string {
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+// --- A quoted passage as a chip's one line (item 814) -------------------------
+
+/** A Markdown table row's cells, `\|` kept as a pipe. */
+function rowCells(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split(/(?<!\\)\|/)
+    .map((c) => c.replace(/\\\|/g, "|").trim());
+}
+
+/** `$x$` and `$$x$$` as their TeX alone: a chip shows no dollar signs. */
+function unfence(s: string): string {
+  return s.replace(/\$\$([^$]+)\$\$|\$([^$\n]+)\$/g, (_m, a: string | undefined, b: string | undefined) => (a ?? b ?? "").trim());
+}
+
+const RULE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+
+/**
+ * Item 814 (his "wtf is this whole \"about: \" section", 2026-11-17): a quoted passage as one short
+ * line for a chip or a tip — each Markdown table in it as "Table · its first headers · N rows"
+ * rather than its cells run together, maths without its `$…$`, whitespace as single spaces, cut to
+ * `max` characters with an ellipsis. Pure. Item 880: `math: true` keeps each formula as inline
+ * `$…$` (never cut inside) for a chip that typesets it with `MathText`; tips and dialogs stay plain.
+ */
+export function quoteSummary(text: string, max: number, opts: { math?: boolean } = {}): string {
+  const plain = opts.math ? (s: string) => s : unfence;
+  const lines = (opts.math ? inlineFence(text) : text).split("\n");
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*\|/.test(lines[i]) && i + 1 < lines.length && RULE.test(lines[i + 1])) {
+      const heads = rowCells(lines[i]).map(unfence).filter(Boolean);
+      let j = i + 2;
+      while (j < lines.length && /^\s*\|/.test(lines[j])) j++;
+      const rows = j - i - 2;
+      const shown = heads.length > 4 ? [...heads.slice(0, 3), "…"] : heads;
+      out.push(["Table", ...(shown.length ? [shown.join(", ")] : []), `${rows} ${rows === 1 ? "row" : "rows"}`].join(" · "));
+      i = j - 1;
+      continue;
+    }
+    out.push(plain(lines[i]));
+  }
+  const one = out.join(" ").replace(/\s+/g, " ").trim();
+  // Item 880: formulas kept for `MathText`; the cut never splits one.
+  if (opts.math) return cutOutsideMath(one, max);
+  return one.length > max ? `${one.slice(0, max).trimEnd()}…` : one;
+}
+
+/** Item 880: every formula as inline `$x$` on one line — `$$x$$`, `\[x\]`
+ *  and `\(x\)`, across lines too — since a chip has one line. */
+function inlineFence(s: string): string {
+  return s.replace(
+    /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)/g,
+    (_m, a: string | undefined, b: string | undefined, c: string | undefined) => `$${(a ?? b ?? c ?? "").replace(/\s+/g, " ").trim()}$`,
+  );
+}
+
+/** `one` cut to `max` characters, never inside a `$…$` formula: a cut that
+ *  would land in one cuts before it (after it, when it opens the line). */
+function cutOutsideMath(one: string, max: number): string {
+  if (one.length <= max) return one;
+  let at = max;
+  for (const m of one.matchAll(/(?<!\\)\$[^$]+\$/g)) {
+    const from = m.index;
+    const to = from + m[0].length;
+    if (from < at && at < to) {
+      at = from > 0 ? from : to;
+      break;
+    }
+  }
+  return at >= one.length ? one : `${one.slice(0, at).trimEnd()}…`;
 }

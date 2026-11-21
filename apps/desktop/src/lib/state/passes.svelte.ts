@@ -1,5 +1,6 @@
 // Moved out of state.svelte.ts by item 641 (pure move; state.svelte.ts re-exports every name it exported).
 import * as api from "../api";
+import { listen } from "@tauri-apps/api/event";
 import { clockText } from "../schedule";
 import { CURATED, thinkingString, type ConnectionDraft } from "../catalog";
 import { refreshWithin } from "../afterWrite";
@@ -85,6 +86,9 @@ export async function runCapture(quiet = false): Promise<void> {
   const target = passTarget();
   app.capturing = true;
   try {
+    // Outside Claude Code sessions first (item 751), so the pass reads
+    // what was said there up to now.
+    await syncOutside();
     const r = await api.capture(target);
     // An automatic pass that read nothing (every chat deferred) says
     // nothing (item 278: "skip silently when nothing is pending").
@@ -355,19 +359,43 @@ export async function stopDream(): Promise<void> {
  * the first refresh of a window, which would announce the whole backlog.
  */
 let centreSeen: Set<string> | null = null;
+/** Item 758's canary: the alarms this window has already toasted (each one
+ *  toasts once, and stays in the bell until dismissed). */
+const canaryToasted = new Set<string>();
+let canaryListening = false;
+
+/** The backend's `flat-canary` (a new chat's second request read under 95%
+ *  with the switch on): the bell re-reads at once, which toasts it. */
+function watchCanary(): void {
+  if (canaryListening) return;
+  canaryListening = true;
+  void listen("flat-canary", () => void refreshCentre()).catch(() => {
+    canaryListening = false;
+  });
+}
+
 export async function refreshCentre(): Promise<void> {
-  const [proposals, commits, applied, rows, stamp] = await Promise.all([
+  watchCanary();
+  const cliBinary = app.connection?.engine === "claude-code" ? (app.connection.agent?.binary ?? null) : null;
+  const [proposals, commits, applied, rows, stamp, memory, canary] = await Promise.all([
     api.centreProposals().catch(() => []),
     api.centreDreamCommits(10).catch(() => []),
     api.centreApplied(10).catch(() => []),
     api.nightshiftProjects().catch(() => [] as NightshiftRow[]),
     api.buildStamp().catch(() => null),
+    // Claude Code's own memory (item 751): synced into Nightloom's history
+    // folder on the way, so a change since the last refresh is a card now.
+    api.centreClaudeMemory(10).catch(() => []),
+    // Item 758's canary: the CLI's file re-read once per install (so after
+    // an update too), and the second-request alarms logged since.
+    api.flatCanary(cliBinary).catch(() => []),
   ]);
   app.centre.rows = rows;
   app.centre.notices = buildNotices({
     proposals,
     commits,
     applied,
+    memory,
     rows,
     read: app.nightshift.read,
     stamp,
@@ -375,7 +403,14 @@ export async function refreshCentre(): Promise<void> {
     dismissed: app.centre.dismissed,
     cli: cli.status,
     curated: CURATED.anthropic ?? [],
+    canary,
   });
+  for (const n of app.centre.notices) {
+    if (n.kind === "canary" && !canaryToasted.has(n.id)) {
+      canaryToasted.add(n.id);
+      addToast(n.title);
+    }
+  }
   // A first run has no stamp on record: the one seen now becomes it, so
   // the next roll is the first release the bell announces.
   if (stamp?.exe_modified && !app.centre.seenStamp) {
@@ -392,6 +427,37 @@ export async function refreshCentre(): Promise<void> {
     }
   }
   centreSeen = ids;
+}
+
+/** How often Claude Code's memory and outside sessions are re-read while
+ *  the app is open (item 751): a change made in the terminal or the Claude
+ *  desktop app is a card, and searchable, within this. */
+export const MEMORY_CLOCK_MS = 10 * 60 * 1000;
+let memoryClock: ReturnType<typeof setInterval> | null = null;
+let outsideRunning = false;
+
+/** Mirror the Claude Code sessions Nightloom did not start (one at a time). */
+export async function syncOutside(): Promise<void> {
+  if (outsideRunning) return;
+  outsideRunning = true;
+  try {
+    await api.outsideSync();
+  } catch {
+    // A sync that fails leaves the mirror as it was; the next tick retries.
+  } finally {
+    outsideRunning = false;
+  }
+}
+
+/** On launch and every `MEMORY_CLOCK_MS`: the outside mirror, then the bell
+ *  (whose refresh versions Claude Code's memory). */
+export function startMemoryClock(): void {
+  if (memoryClock) return;
+  void syncOutside();
+  memoryClock = setInterval(() => {
+    void syncOutside();
+    void refreshCentre();
+  }, MEMORY_CLOCK_MS);
 }
 
 /** The bell's count: everything listed. */
@@ -537,9 +603,12 @@ export async function runDailyPass(): Promise<void> {
       if (ups.length > 0) {
         const moved = ups.reduce((n, u) => n + u.struck_moved + u.merged.length, 0);
         const flagged = ups.reduce((n, u) => n + u.flags.length, 0);
+        // Item 708: an over-cap thread gets a "trim thread.md" row first in its Queue.
+        const trims = ups.filter((u) => u.trim_queued).length;
         said.push(
           `threads: ${moved} line${moved === 1 ? "" : "s"} archived or merged` +
-            (flagged > 0 ? `, ${flagged} flag${flagged === 1 ? "" : "s"} for the next wrap-up` : ""),
+            (flagged > 0 ? `, ${flagged} flag${flagged === 1 ? "" : "s"} for the next wrap-up` : "") +
+            (trims > 0 ? `, ${trims} trim${trims === 1 ? "" : "s"} queued for the next chat` : ""),
         );
       }
     } catch (e) {

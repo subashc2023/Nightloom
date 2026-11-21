@@ -14,6 +14,10 @@
 //! | `GET /sync/outbox/{chat}/log` | one outbox chat's Nightloom log |
 //! | `GET /sync/outbox/{chat}/cli` | its Claude Code session file |
 //! | `POST /sync/ack` | `{chats}`: these are on the Mac now |
+//! | `POST /sync/lease` | `{job, due}`: may the Mac run it (item 781, `sync::lease`) |
+//! | `POST /sync/jobs` | the Mac's away jobs, whole (item 781) |
+//!
+//! Every request here marks the Mac as heard from ([`crate::sync::lease::mac_seen`]).
 
 use std::sync::Arc;
 
@@ -56,7 +60,52 @@ where
         .route("/sync/outbox/{chat}/log", get(outbox_log))
         .route("/sync/outbox/{chat}/cli", get(outbox_cli))
         .route("/sync/ack", post(ack))
+        .route("/sync/lease", post(lease))
+        .route(
+            "/sync/jobs",
+            post(mac_jobs).layer(DefaultBodyLimit::max(MANIFEST_LIMIT)),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(sync.clone(), heard))
         .with_state(sync)
+}
+
+/// Item 781: any sync request is the Mac awake.
+async fn heard(
+    State(sync): State<Arc<SyncServer>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    crate::sync::lease::mac_seen(sync.layout().home(), chrono::Utc::now());
+    next.run(req).await
+}
+
+/// `POST /sync/lease`: the Mac asks to run one run of a job.
+async fn lease(
+    State(sync): State<Arc<SyncServer>>,
+    Json(req): Json<crate::sync::lease::LeaseRequest>,
+) -> Response {
+    let home = sync.layout().home().to_path_buf();
+    let claim = crate::sync::lease::claim(
+        &home,
+        &req.job,
+        req.due,
+        crate::sync::lease::MAC,
+        chrono::Utc::now(),
+    );
+    Json(claim).into_response()
+}
+
+/// `POST /sync/jobs`: the Mac's away jobs, kept whole.
+async fn mac_jobs(
+    State(sync): State<Arc<SyncServer>>,
+    Json(jobs): Json<Vec<crate::jobs::Job>>,
+) -> Response {
+    let home = sync.layout().home().to_path_buf();
+    match blocking(move || crate::sync::lease::put_mac_jobs(&home, &jobs).map_err(io_failure)).await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(r) => *r,
+    }
 }
 
 fn io_status(e: &std::io::Error) -> StatusCode {

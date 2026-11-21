@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
+  import { tabPlace } from "./tabPlace"; // Item 715: the view keeps its scroll across close and reopen.
   /**
    * Running tasks (nightshift backlog 152, 2026-09-17): the subagents of
    * the open chat, one row each, like the Claude app's panel — type,
@@ -275,7 +276,7 @@
   {#if mine.length > 0 || app.turnBudget}
     <div class="caps" use:tip={budgetTitle(app.turnBudget)}>{caps}</div>
   {/if}
-  <div class="pane">
+  <div class="pane" use:tabPlace={"tasks:" + (app.activeSessionId ?? "new")}>
     {#if !classic() && runs.length > 0}
       <!-- Item 558: by project, then chat, then what runs inside it. -->
       {#each byProject as p (p.key)}
@@ -683,6 +684,13 @@
   }
   .row.failed .dot {
     background: var(--failed);
+  }
+  /* Item 700: an Agent call the harness did not run — amber, not a failure. */
+  .row.soft .state {
+    color: var(--partial);
+  }
+  .row.soft .dot {
+    background: var(--partial);
   }
   .name {
     display: flex;

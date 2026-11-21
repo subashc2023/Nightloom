@@ -10,7 +10,10 @@ import centre from "./NotificationCentre.svelte?raw";
 import council from "./CouncilPopover.svelte?raw";
 import asideItems from "./AsideMenuItems.svelte?raw";
 import composer from "./Composer.svelte?raw";
-import sidebar from "./Sidebar.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import sidebarLogicRaw from "./sidebar/logic.svelte.ts?raw";
+import sidebarRaw from "./Sidebar.svelte?raw";
+const sidebar = asOneFile(sidebarRaw, sidebarLogicRaw);
 
 /*
  * Item 570 (Filament IV stage 6: menus, palette, dialogs). Classic must not

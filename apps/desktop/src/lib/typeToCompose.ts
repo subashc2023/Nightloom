@@ -19,9 +19,9 @@
  * - an IME composing (the composition stays where it started);
  * - the focus in anything he types in (search, the find bar, a note, a
  *   rename, the question card's Other field, the terminal, an aside's box);
- * - the focus outside the chat's pane (the sidebar, the other pane), or in
- *   a floating aside card (its own box is the one he means); with two
- *   panes, the chat's pane not the focused one (`inFocusedPane`);
+ * - the focus outside the box's pane (the sidebar, the other pane), or in
+ *   an aside card that is not the box's; with two panes, the box's pane
+ *   not the focused one (`inFocusedPane`);
  * - a modal, menu, popover, scrim, the palette or the find bar open;
  * - no chat composer drawn (Settings over it, a note or web tab).
  *
@@ -42,6 +42,15 @@
  * for a pasted image). The same blocks as typing apply, and on a focused
  * control (a button, a link, a tab) Enter stays the control's. The rule is
  * `enterSends`, pure.
+ *
+ * **Which box (item 853, 2026-11-18, his "Asides dont automatically start
+ * typing … the way main chat does").** Every box takes the keys the chat's
+ * box takes, as the chat's does — `composerTarget` picks the one meant:
+ * an aside card (floating, at the foot, or the side panel's) the focus is
+ * in or he last pressed on → its box; else the box in the focused pane —
+ * the chat's, or an aside tab's when that tab is in front; else the chat's
+ * box anywhere, as before (which `inFocusedPane` then refuses). Typing,
+ * Enter, ⌘V from outside (`pasteToCompose.ts`) and ⌘L all ask it.
  */
 import { AUTO_FOCUS_BLOCKERS, CMD_L_BLOCKERS, isEditable, type ElLike } from "./composerCaret";
 
@@ -55,7 +64,7 @@ export type FocusKind =
   | "control"
   /** Something he types in. */
   | "editable"
-  /** Outside the chat's pane, or in a floating aside card. */
+  /** Outside the box's pane, or in an aside card that is not the box's. */
   | "elsewhere";
 
 /** The slice of a keydown the rule reads. */
@@ -128,8 +137,11 @@ export const CONTROL_SELECTOR = [
   '[role="menuitem"]',
 ].join(", ");
 
-/** Where the floating aside cards are: their own box is the one meant. */
-export const ASIDE_SELECTOR = ".aside-card, .composer.aside";
+/** An aside card — floating, at the composer's foot, or the side panel's.
+ *  ~~`.aside-card, .composer.aside`~~ (item 853): an aside tab's box is a
+ *  box like the chat's, not "elsewhere"; only a card that is not the box's
+ *  own refuses the keys. */
+export const ASIDE_SELECTOR = ".aside-card";
 
 /** The slice of an element `focusKindOf` reads. */
 export interface FocusEl extends ElLike {
@@ -137,9 +149,10 @@ export interface FocusEl extends ElLike {
 }
 
 /**
- * The focused element's kind. `region` is the chat's pane (the composer's
- * `section.pane`, or the composer's parent when it has none); `isRoot`
- * says the element is the body or the document element.
+ * The focused element's kind. `region` is the box's region: the pane (the
+ * composer's `section.pane`, or the composer's parent when it has none),
+ * or, for an aside card's box, the card itself; `isRoot` says the element
+ * is the body or the document element.
  */
 export function focusKindOf(
   active: FocusEl | null,
@@ -149,7 +162,10 @@ export function focusKindOf(
   if (!active || isRoot) return "none";
   if (isEditable(active)) return "editable";
   if (!region || !region.contains(active)) return "elsewhere";
-  if (active.closest(ASIDE_SELECTOR)) return "elsewhere";
+  // A card inside the region that is not the region (a floating card over
+  // the chat's transcript, when the chat's box is the one asked).
+  const card = active.closest(ASIDE_SELECTOR);
+  if (card && card !== region) return "elsewhere";
   if (active.matches(CONTROL_SELECTOR)) return "control";
   return "content";
 }
@@ -172,17 +188,166 @@ export function inFocusedPane(
 /** What blocks the rule: everything that blocks the composer's own auto-focus, and the palette. */
 export const TYPE_BLOCKERS = `${AUTO_FOCUS_BLOCKERS}, ${CMD_L_BLOCKERS}`;
 
-/** The open chat's composer and its box (the textarea, or the formatted editor's content). */
-export function chatComposerBox(doc: Document): { root: HTMLElement; box: HTMLElement } | null {
-  for (const root of Array.from(doc.querySelectorAll<HTMLElement>(".composer:not(.aside)"))) {
+/** Which kind of box: the chat's, an aside tab's, or an aside card's. */
+export type BoxKind = "chat" | "tab" | "card";
+
+/** A box that could take the keys, as `pickTarget` reads it. */
+export interface Candidate<R = unknown, B = unknown, C = unknown> {
+  root: R;
+  box: B;
+  kind: BoxKind;
+  /** The card it sits in (`kind === "card"`), else null. */
+  card: C | null;
+  /** In the focused pane (true with no pane marked focused). */
+  inPane: boolean;
+}
+
+/**
+ * The box meant (item 853), pure: a card the focus is in or he last
+ * pressed on, when it still draws a box → that box; else the chat's or an
+ * aside tab's box in the focused pane; else the chat's box anywhere, then
+ * any tab's. `inPane` on the answer says whether the keys may go to it
+ * (a card he pressed on always may).
+ */
+export function pickTarget<R, B, C>(
+  cands: Candidate<R, B, C>[],
+  focusCard: C | null,
+  lastCard: C | null,
+): Candidate<R, B, C> | null {
+  for (const card of [focusCard, lastCard]) {
+    if (card == null) continue;
+    const hit = cands.find((c) => c.kind === "card" && c.card === card);
+    if (hit) return { ...hit, inPane: true };
+  }
+  const docked = cands.filter((c) => c.kind !== "card");
+  return docked.find((c) => c.inPane) ?? docked.find((c) => c.kind === "chat") ?? docked[0] ?? null;
+}
+
+/** The card he last pressed on (a pointerdown anywhere else clears it). */
+let pressedCard: Element | null = null;
+
+/** Where he last pressed (item 853, fix 2): the card, else the pane
+ *  (`section.pane`), else null (the sidebar, the title bar, the rail). */
+let pressedRegion: Element | null = null;
+
+/** The last mark was a scroll (item 853, blocker 2204 — his "if youre
+ *  scrolling it should be over the object youre scrolling no?"): the place
+ *  scrolled is the place meant, even over a card the focus sits in. */
+let scrolled = false;
+
+/** A press is under way: the focus it moves (or the ancestor it lands on)
+ *  is its own, not a move away from it. */
+let pressing = false;
+
+/**
+ * Whether the focus was left behind by his last press (item 853, fix 2 —
+ * his "typing while in an aside if im not focused on the bar doesnt do
+ * shit", and the same in the main chat). A press that WebKit gives no
+ * focus — the card's head and grip (their mousedown starts a move and is
+ * prevented), a button (never focused on the Mac) — leaves the focus where
+ * it was: the chat's transcript, a tab, the other box. The box meant is the
+ * pressed region's, so that old focus is stale and reads as nothing
+ * focused. Pure: `pressed` the region pressed (null: none, or outside any
+ * pane or card), `region` the target box's region (`composerTarget`).
+ */
+export function isStaleFocus(
+  pressed: { contains(el: unknown): boolean } | null,
+  region: unknown,
+  active: unknown,
+  isRoot: boolean,
+  activeCard: unknown = null,
+): boolean {
+  if (!pressed || isRoot || !active) return false;
+  if (pressed !== region) return false;
+  // Outside the place, or in a card inside it that is not the place (a
+  // scroll over the chat's transcript while the focus sits in an anchored
+  // card's box — blocker 2204).
+  return !pressed.contains(active) || (activeCard !== null && activeCard !== region);
+}
+
+/** The window's pointerdown (capture), wired with the keys. */
+export function noteCardPress(e: Event): void {
+  const t = e.target as Element | null;
+  const ok = !!t && typeof t.closest === "function";
+  pressedCard = ok ? t.closest(ASIDE_SELECTOR) : null;
+  pressedRegion = ok ? (pressedCard ?? t.closest("section.pane")) : null;
+  scrolled = false;
+  pressing = true;
+  setTimeout(() => (pressing = false), 0);
+}
+
+/**
+ * The window's wheel (capture, passive) — a scroll, by wheel or trackpad,
+ * marks the place under it as a press does (blocker 2204): an aside card's
+ * answer (docked, floating, the side panel's) → its box; the chat's
+ * transcript or another pane → that pane's box. It moves no focus and
+ * touches no selection; the keys are routed only when he types. A scroll
+ * inside the place whose box he is typing in leaves that box his.
+ */
+export function noteScroll(e: Event): void {
+  const t = e.target as Element | null;
+  const ok = !!t && typeof t.closest === "function";
+  pressedCard = ok ? t.closest(ASIDE_SELECTOR) : null;
+  pressedRegion = ok ? (pressedCard ?? t.closest("section.pane")) : null;
+  scrolled = pressedRegion !== null;
+}
+
+/** The window's focusin (capture): a focus that moves out of the pressed
+ *  region by itself — Tab, a field that takes it — ends the press's claim;
+ *  the press's own focus move (pressing) and ours into its box do not. */
+export function noteFocusMove(e: Event): void {
+  if (pressing || !pressedRegion) return;
+  const t = e.target as Node | null;
+  if (t && pressedRegion.contains(t)) return;
+  pressedRegion = null;
+  pressedCard = null;
+  scrolled = false;
+}
+
+/** The pane he last scrolled (not a card in it), while that mark stands. */
+export function scrolledPane(): HTMLElement | null {
+  const r = pressedRegionNow();
+  return scrolled && r && pressedCard === null && r.matches("section.pane") ? (r as HTMLElement) : null;
+}
+
+/** The pressed region, for `pasteToCompose.ts`. */
+export function pressedRegionNow(): Element | null {
+  return pressedRegion && pressedRegion.isConnected ? pressedRegion : null;
+}
+
+/** The box meant, from the document (item 853; `pickTarget` decides). */
+export function composerTarget(doc: Document): (Candidate<HTMLElement, HTMLElement, Element> & { region: HTMLElement | null }) | null {
+  // A pane he scrolled is the pane meant (2204), the focused one otherwise.
+  const focusedPane = scrolledPane() ?? doc.querySelector("section.pane.focused");
+  const cands: Candidate<HTMLElement, HTMLElement, Element>[] = [];
+  for (const root of Array.from(doc.querySelectorAll<HTMLElement>(".composer"))) {
     if (root.closest("[inert]")) continue;
     const box = root.querySelector<HTMLElement>(".ta-wrap textarea, .ta-wrap .cm-content");
     if (!box) continue;
     if (box instanceof HTMLTextAreaElement && box.disabled) continue;
     if (box.getAttribute("contenteditable") === "false") continue;
-    return { root, box };
+    const card = root.closest(ASIDE_SELECTOR);
+    const kind: BoxKind = card ? "card" : root.classList.contains("aside") ? "tab" : "chat";
+    cands.push({ root, box, kind, card, inPane: inFocusedPane(root, focusedPane) });
   }
-  return null;
+  const active = doc.activeElement;
+  // A scroll over a pane outside the focused card means that pane (2204).
+  const marked = pressedRegionNow();
+  const activeCard = active && active !== doc.body ? active.closest(ASIDE_SELECTOR) : null;
+  const overrule = scrolled && pressedCard === null && marked !== null && activeCard !== null;
+  const focusCard = overrule ? null : activeCard;
+  const card = pressedCard && pressedCard.isConnected ? pressedCard : null;
+  const hit = pickTarget(cands, focusCard, card);
+  if (!hit) return null;
+  const region = hit.kind === "card" ? (hit.card as HTMLElement) : (hit.root.closest<HTMLElement>("section.pane") ?? hit.root.parentElement);
+  return { ...hit, region };
+}
+
+/** ~~The open chat's composer and its box~~ — the box meant (item 853),
+ *  kept by this name for its callers. */
+export function chatComposerBox(doc: Document): { root: HTMLElement; box: HTMLElement } | null {
+  const t = composerTarget(doc);
+  return t ? { root: t.root, box: t.box } : null;
 }
 
 /** Focus the box with the caret at the end of its text. */
@@ -206,6 +371,8 @@ export function typeToComposeKeydown(
   e: KeyboardEvent,
   endOfEditor?: (el: HTMLElement) => boolean,
   boxText?: (el: HTMLElement) => string,
+  /** Make this pane the focused one (a pane he scrolled, 2204). */
+  focusPaneOf?: (pane: HTMLElement) => void,
 ): void {
   if (e.defaultPrevented) return;
   // Cheap rejections first: most keys he presses are in the box already.
@@ -213,15 +380,26 @@ export function typeToComposeKeydown(
   const enter = e.key === "Enter";
   if (!enter && !isPrintable(e.key)) return;
   const doc = document;
-  const found = chatComposerBox(doc);
+  const found = composerTarget(doc);
   const active = doc.activeElement as (HTMLElement & FocusEl) | null;
-  const region = found ? (found.root.closest<HTMLElement>("section.pane") ?? found.root.parentElement) : null;
+  const isRoot = active === doc.body || active === doc.documentElement;
   const ctx: ComposeContext = {
-    composer: found !== null && inFocusedPane(found.root, doc.querySelector("section.pane.focused")),
+    composer: found !== null && found.inPane,
     blocked: !!doc.querySelector(TYPE_BLOCKERS),
-    focus: focusKindOf(active, active === doc.body || active === doc.documentElement, region),
+    focus: isStaleFocus(pressedRegionNow(), found?.region ?? null, active, isRoot, active && !isRoot ? active.closest(ASIDE_SELECTOR) : null) ? "none" : focusKindOf(active, isRoot, found?.region ?? null),
   };
+  // A scrolled pane with no box of its own (the other split pane's chat,
+  // drawn read-only until focused): the key focuses it, which opens its box.
+  const sp = scrolledPane();
+  if (sp && sp.querySelector(".transcript") && !(found && sp.contains(found.root)) && !enter && !e.altKey && !isEditable(active) && !doc.querySelector(TYPE_BLOCKERS)) {
+    focusPaneOf?.(sp);
+    return;
+  }
   if (!found) return;
+  const pane = found.root.closest<HTMLElement>("section.pane");
+  const follow = () => {
+    if (pane && !pane.classList.contains("focused")) focusPaneOf?.(pane);
+  };
   if (enter) {
     const text = boxText?.(found.box) ?? (found.box instanceof HTMLTextAreaElement ? found.box.value : "");
     const draft = text.trim() !== "" || found.root.querySelector(".attachments .attachment") !== null;
@@ -230,10 +408,12 @@ export function typeToComposeKeydown(
     // the transcript's or the window's.
     e.preventDefault();
     e.stopPropagation();
+    follow();
     focusBoxAtEnd(found.box, endOfEditor);
     found.box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
     return;
   }
   if (!sendsToComposer(e, ctx)) return;
+  follow();
   focusBoxAtEnd(found.box, endOfEditor);
 }

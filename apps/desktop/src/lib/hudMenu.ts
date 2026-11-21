@@ -272,36 +272,44 @@ export function hudIn(node: HTMLElement, arg?: HudArg) {
   };
 }
 
-/** `out:hudOut|global` — the close: a pick when a row was just chosen, else a dismiss. */
+/**
+ * `out:hudOut|global` — the close: a pick when a row was just chosen, else a dismiss.
+ * ~~Returns a function, as `hudIn` does.~~ Item 840 (2026-11-18): a config,
+ * worked out as the close begins. Svelte holds a function-form transition
+ * behind a stand-in until a microtask later, and a close reversed before
+ * then (the menu's page leaving and coming back in one step) called
+ * `reset` on the stand-in's missing animation: a TypeError that stopped
+ * every later update, the window frozen half-drawn. A config has no
+ * stand-in. The one difference: a close reversed and then closed again
+ * reuses the first close's length without re-marking the phase.
+ */
 export function hudOut(node: HTMLElement, _arg?: HudArg) {
-  return () => {
-    const l = live.get(node);
-    if (classic() || !l) return { duration: 0 };
-    const reduced = reducedMotion();
-    if (l.timer) clearTimeout(l.timer);
-    const row = hudExit(node, now(), pick, enterAt);
-    pick = null;
-    if (row) {
-      const m = node.getBoundingClientRect();
-      const r = row.getBoundingClientRect();
-      const s = l.frame.style;
-      s.setProperty("--px", `${r.left - m.left}px`);
-      s.setProperty("--py", `${r.top - m.top}px`);
-      s.setProperty("--pw", `${r.width}px`);
-      s.setProperty("--ph", `${r.height}px`);
-      row.classList.add("hud-picked");
-    }
-    setPhase(node, l, row ? "pick" : "out", reduced);
-    // The menu stays for the length of its close; the full-window scrim
-    // beside it must not eat a click meant for the app in that time.
-    scrim(node, false);
-    const ms = reduced ? HUD_FADE_MS : row ? HUD_PICK_MS : HUD_CLOSE_MS;
-    // The frame goes with the menu (the tracker drops it when the node
-    // leaves); this is the backstop for a node removed some other way.
-    if (held()) return { duration: ms };
-    l.timer = setTimeout(() => {
-      if (!node.isConnected || node.classList.contains("hud-out") || node.classList.contains("hud-pick")) drop(node);
-    }, ms + 400);
-    return { duration: ms };
-  };
+  const l = live.get(node);
+  if (classic() || !l) return { duration: 0 };
+  const reduced = reducedMotion();
+  if (l.timer) clearTimeout(l.timer);
+  const row = hudExit(node, now(), pick, enterAt);
+  pick = null;
+  if (row) {
+    const m = node.getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    const s = l.frame.style;
+    s.setProperty("--px", `${r.left - m.left}px`);
+    s.setProperty("--py", `${r.top - m.top}px`);
+    s.setProperty("--pw", `${r.width}px`);
+    s.setProperty("--ph", `${r.height}px`);
+    row.classList.add("hud-picked");
+  }
+  setPhase(node, l, row ? "pick" : "out", reduced);
+  // The menu stays for the length of its close; the full-window scrim
+  // beside it must not eat a click meant for the app in that time.
+  scrim(node, false);
+  const ms = reduced ? HUD_FADE_MS : row ? HUD_PICK_MS : HUD_CLOSE_MS;
+  // The frame goes with the menu (the tracker drops it when the node
+  // leaves); this is the backstop for a node removed some other way.
+  if (held()) return { duration: ms };
+  l.timer = setTimeout(() => {
+    if (!node.isConnected || node.classList.contains("hud-out") || node.classList.contains("hud-pick")) drop(node);
+  }, ms + 400);
+  return { duration: ms };
 }

@@ -16,6 +16,7 @@
 // beside `nightloom.last-connection` where the draft itself already lives.
 
 import type { ConnectionDraft, Engine } from "./catalog";
+import { HOME_EFFORT, HOME_MODEL } from "./home";
 
 export const CHAT_CHOICE_KEY = "nightloom.chat-choice";
 
@@ -32,6 +33,12 @@ export interface ChatChoices {
   /** What a New chat takes (and a chat recorded before this item). */
   default: ChatChoice | null;
   chats: Record<string, ChatChoice>;
+  /** Item 763 (blocker 2041): Home's effort, apart from the window's —
+   *  `low` until he picks another while in Home. */
+  homeEffort?: string;
+  /** The window's effort, kept while a Home chat is shown and put back
+   *  when he leaves; null when nothing is held. */
+  windowEffort?: string | null;
 }
 
 export function choiceOf(d: ConnectionDraft): ChatChoice {
@@ -64,6 +71,9 @@ export function loadChoices(storage: Pick<Storage, "getItem">): ChatChoices {
         if (choice) out.chats[id] = choice;
       }
     }
+    const raw2 = parsed as { homeEffort?: unknown; windowEffort?: unknown };
+    if (typeof raw2.homeEffort === "string") out.homeEffort = raw2.homeEffort;
+    if (typeof raw2.windowEffort === "string") out.windowEffort = raw2.windowEffort;
   } catch {
     // a torn value reads as nothing recorded
   }
@@ -110,5 +120,35 @@ export function applyChoice(d: ConnectionDraft, c: ChatChoice): boolean {
   d.provider = c.provider;
   d.model = c.model;
   d.agentModel = c.agentModel;
+  return true;
+}
+
+// ---- Home's model and effort (item 763 finish, blocker 2041) ----
+
+/** A Home chat with no choice of its own: Claude Code on Opus 5.5, the
+ *  rest of `base` kept. Once recorded it is the chat's like any. */
+export function homeChoice(base: ChatChoice): ChatChoice {
+  return { ...base, engine: "claude-code", agentModel: HOME_MODEL };
+}
+
+/**
+ * Put Home's effort on the draft while a Home chat is shown (`inHome`),
+ * holding the window's to put back when he leaves; true when the draft's
+ * effort changed. Effort is otherwise the window's (backlog 205), so only
+ * Home carries its own.
+ */
+export function applyHomeEffort(choices: ChatChoices, d: ConnectionDraft, inHome: boolean): boolean {
+  if (inHome) {
+    if (choices.windowEffort == null) choices.windowEffort = d.agentEffort;
+    const want = choices.homeEffort ?? HOME_EFFORT;
+    if (d.agentEffort === want) return false;
+    d.agentEffort = want;
+    return true;
+  }
+  if (choices.windowEffort == null) return false;
+  const back = choices.windowEffort;
+  choices.windowEffort = null;
+  if (d.agentEffort === back) return false;
+  d.agentEffort = back;
   return true;
 }

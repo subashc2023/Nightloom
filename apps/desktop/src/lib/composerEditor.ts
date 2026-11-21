@@ -23,11 +23,12 @@ import { markdownLanguage } from "@codemirror/lang-markdown";
 import { history, historyKeymap, insertNewline, isolateHistory, standardKeymap } from "@codemirror/commands";
 import { findFences } from "./codeDetect";
 import { LANGUAGES, segments } from "./codeHighlight";
-import { findMath, type MathSpan } from "./math";
+import { findMath, typedMathOk, type MathSpan } from "./math";
 import { renderMathHtml, renderReply } from "./markdown";
 import { quoteLine, quoteNeedsRender, quoteRuns } from "./replyQuote.svelte";
 import { crossesLine } from "./emphasisLines";
-import { GridBackWidget, TableGridWidget, showGridSource, sourceShown, tableBlocks, tableGridSupport, tablePicked } from "./tableGrid";
+import { findBoxLinks, openHint } from "./boxLinks";
+import { GridBackWidget, TableGridWidget, focusGridAt, gridEdit, showGridSource, sourceShown, tableBlocks, tableGridSupport, tablePicked } from "./tableGrid";
 
 /**
  * What the box draws (item 689): "all" with the Format switch on; "plain"
@@ -37,7 +38,7 @@ import { GridBackWidget, TableGridWidget, showGridSource, sourceShown, tableBloc
  */
 export type BoxDrawing = "all" | "plain";
 export const boxDrawing = Facet.define<BoxDrawing, BoxDrawing>({ combine: (v) => v[v.length - 1] ?? "all" });
-const PLAIN_KINDS = new Set<LiveKind>(["table", "quote", "quote-render", "codeblock"]);
+const PLAIN_KINDS = new Set<LiveKind>(["table", "quote", "quote-render", "codeblock", "link"]);
 
 /** Node types whose content is code: nothing inside is math or emphasis. */
 const CODE_NODES = new Set(["InlineCode", "FencedCode", "CodeBlock", "HTMLBlock", "CommentBlock"]);
@@ -102,28 +103,21 @@ function onLines(state: EditorState, from: number, to: number): boolean {
   return false;
 }
 
-const WORD = /[A-Za-z0-9_]/;
-
 /**
  * The composer's extra rule over the replies' `$…$` guards (`math.ts`): a
  * one-dollar span whose closing `$` runs straight into a word, or whose
  * opening one follows a word, is shell, not math — `$HOME/bin:$PATH`,
  * `echo $USER$HOST`, `a$b$c`. The replies' renderer keeps its own rules;
- * a message being typed meets far more shell than a reply does.
+ * a message being typed meets far more shell than a reply does. Since item
+ * 837 the rule lives in `math.ts` (`typedMathOk`), where his sent message
+ * reads it too.
  */
 export function composerMathOk(text: string, m: MathSpan): boolean {
-  if (m.display || m.openLen !== 1) return true;
-  const before = m.from > 0 ? text[m.from - 1] : "";
-  const after = m.to < text.length ? text[m.to] : "";
-  // A `$` touching another `$` is part of a `$$` run, never a one-dollar
-  // delimiter: `$$abc$` is a display formula half typed, not a `$` and
-  // then `$abc$` (his first bug, 2026-10-01), and `$a$$` is not `$a$`.
-  if (before === "$" || after === "$") return false;
-  return !WORD.test(before) && !WORD.test(after);
+  return typedMathOk(text, m);
 }
 
 /** What a stretch of the box is drawn as — the testable shape of the decorations. */
-export type LiveKind = "math" | "math-block" | "heading" | "strong" | "em" | "strike" | "code" | "codeblock" | "quote" | "quote-render" | "table";
+export type LiveKind = "math" | "math-block" | "heading" | "strong" | "em" | "strike" | "code" | "codeblock" | "quote" | "quote-render" | "table" | "link";
 export interface LiveSpan {
   kind: LiveKind;
   from: number;
@@ -132,6 +126,8 @@ export interface LiveSpan {
   level?: number;
   /** The source is showing because the cursor or selection is in it. */
   open: boolean;
+  /** Item 696: where a link opens. */
+  href?: string;
 }
 
 /**
@@ -271,6 +267,14 @@ export function liveSpans(state: EditorState): LiveSpan[] {
       }
     },
   });
+
+  // Item 696: links (a bare URL, a `[text](url)`), in the link colour,
+  // Format on and off; never inside code (`boxLinks.ts`), a formula or a
+  // typeset quote. Drawn over the source, which stays as typed.
+  for (const l of findBoxLinks(text)) {
+    if (inMath(l.from, l.to) || inRendered(l.from, l.to)) continue;
+    out.push({ kind: "link", from: l.from, to: l.to, href: l.href, open: false });
+  }
 
   // Quote lines as the plain box's layer draws them (item 223): the same
   // per-line rule, so a quote looks the same with the toggle on or off.
@@ -541,6 +545,10 @@ export function composerDecorations(state: EditorState): DecorationSet {
         );
         break;
       }
+      case "link": {
+        out.push(Decoration.mark({ class: "cm-clink", attributes: { "data-href": s.href ?? "" } }).range(s.from, s.to));
+        break;
+      }
       case "quote": {
         out.push(Decoration.line({ class: "cm-cquote" }).range(s.from));
         const q = quoteLine(doc.sliceString(s.from, s.to));
@@ -651,6 +659,61 @@ export function composerKeymap(): Extension {
   ];
 }
 
+/**
+ * Item 696: ⌘-click (Ctrl elsewhere) on a drawn link opens it through
+ * `open` (the app's link route); a plain click is CodeMirror's and places
+ * the caret (blocker 1994). Over a link the box says how to open it; with
+ * ⌘ held it shows the pointer. Before CodeMirror's own mousedown, which
+ * would take ⌘-click as "add a cursor".
+ */
+export function boxLinkClicks(open: (href: string) => void, mac: boolean): Extension {
+  let over: HTMLElement | null = null;
+  const linkOf = (t: EventTarget | null) => (t instanceof Element ? t.closest<HTMLElement>(".cm-clink[data-href]") : null);
+  const mark = (view: EditorView, mod: boolean) => {
+    for (const el of view.dom.querySelectorAll(".cm-clink-hot")) el.classList.remove("cm-clink-hot");
+    const href = over?.dataset.href;
+    if (href && mod) {
+      for (const el of view.dom.querySelectorAll<HTMLElement>(".cm-clink[data-href]")) {
+        if (el.dataset.href === href) el.classList.add("cm-clink-hot");
+      }
+    }
+    view.dom.classList.toggle("cm-modlink", !!href && mod);
+    if (href) view.dom.setAttribute("title", openHint(mac));
+    else view.dom.removeAttribute("title");
+  };
+  const modOf = (e: MouseEvent | KeyboardEvent) => (mac ? e.metaKey : e.ctrlKey);
+  return Prec.highest(
+    EditorView.domEventHandlers({
+      mousedown(e) {
+        if (e.button !== 0 || !modOf(e)) return false;
+        const href = linkOf(e.target)?.dataset.href;
+        if (!href) return false;
+        e.preventDefault();
+        open(href);
+        return true;
+      },
+      mousemove(e, view) {
+        over = linkOf(e.target);
+        mark(view, modOf(e));
+        return false;
+      },
+      mouseleave(_e, view) {
+        over = null;
+        mark(view, false);
+        return false;
+      },
+      keydown(e, view) {
+        if (over && (e.key === "Meta" || e.key === "Control")) mark(view, true);
+        return false;
+      },
+      keyup(e, view) {
+        if (over && (e.key === "Meta" || e.key === "Control")) mark(view, false);
+        return false;
+      },
+    }),
+  );
+}
+
 /** The theme: the plain box's face, size and padding, and modest headings. */
 export const composerTheme = EditorView.theme({
   "&": {
@@ -695,6 +758,16 @@ export const composerTheme = EditorView.theme({
   ".cm-ch3": { fontSize: "1.07em" },
   ".cm-ch4, .cm-ch5": { fontSize: "1em" },
   ".cm-ch6": { fontSize: "1em", color: "var(--dim)" },
+  // Item 696: a link, as the plain box's layer draws one (`BoxLayer.svelte`
+  // `.lk`); with ⌘ held over it, the pointer and a full underline.
+  ".cm-clink": {
+    color: "var(--accent)",
+    textDecoration: "underline",
+    textDecorationColor: "color-mix(in srgb, var(--accent) 35%, transparent)",
+    textUnderlineOffset: "2px",
+  },
+  "&.cm-modlink .cm-clink-hot": { cursor: "pointer", textDecorationColor: "var(--accent)" },
+  "&.cm-modlink .cm-content": { cursor: "pointer" },
   ".cm-cem": { fontStyle: "italic" },
   ".cm-cstrong": { fontWeight: "650" },
   ".cm-cstrike": { textDecoration: "line-through" },
@@ -751,13 +824,18 @@ export const composerTheme = EditorView.theme({
     margin: "4px 10px 4px 0",
     border: "1px solid var(--line2)",
     borderRadius: "8px",
-    overflow: "hidden",
+    // Item 689 check: `clip`, not `hidden` — `hidden` made the grid a scroll
+    // container, and the bar's `sticky` below would stick to it, not the box.
+    overflow: "clip",
     background: "color-mix(in srgb, var(--sheet) 55%, transparent)",
     whiteSpace: "normal",
   },
   ".cm-cgrid.cm-cgrid-picked": { outline: "2px solid var(--accent)", outlineOffset: "1px" },
   ".cm-cgrid-scroll": { overflowX: "auto" },
-  ".cm-cgrid-table": { width: "100%", borderCollapse: "collapse", tableLayout: "fixed" },
+  // Separate borders at no spacing look the same (each cell draws only its
+  // right and bottom edge); collapsed ones made the table 1px wider than its
+  // scroll area, which drew a 10px scroll bar under every grid (689 check).
+  ".cm-cgrid-table": { width: "100%", borderCollapse: "separate", borderSpacing: "0", tableLayout: "fixed" },
   ".cm-cgrid-table th, .cm-cgrid-table td": {
     padding: "0",
     verticalAlign: "top",
@@ -784,14 +862,50 @@ export const composerTheme = EditorView.theme({
     whiteSpace: "pre-wrap",
     overflowWrap: "break-word",
     caretColor: "var(--ink)",
+    // A cell scrolled into view (`focusCell`, Tab, a click) lands above the
+    // pinned bar (~25px), not under it (689 check).
+    scrollMarginBottom: "28px",
   },
   "th .cm-cgrid-cell": { fontWeight: "620" },
+  // Item 814: a cell's maths rendered over its textarea while he is not in it (`cellMathHtml`); the
+  // textarea's own text goes clear under it, and clicking in shows the source again.
+  ".cm-cgrid-hasmath": { position: "relative" },
+  ".cm-cgrid-hasmath .cm-cgrid-cell:not(:focus)": { color: "transparent" },
+  ".cm-cgrid-math": {
+    position: "absolute",
+    inset: "0",
+    padding: "5px 8px",
+    fontSize: "0.9em",
+    lineHeight: "1.4",
+    color: "var(--ink)",
+    pointerEvents: "none",
+    overflow: "hidden",
+    whiteSpace: "pre-wrap",
+    overflowWrap: "break-word",
+  },
+  "th .cm-cgrid-math": { fontWeight: "620" },
+  ".cm-cgrid-hasmath:focus-within .cm-cgrid-math": { display: "none" },
   ".cm-cgrid-cell:focus": {
     background: "color-mix(in srgb, var(--accent) 9%, transparent)",
     boxShadow: "inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 70%, transparent)",
   },
-  ".cm-cgrid-bar": { display: "flex", gap: "2px", padding: "2px 4px", opacity: "0.75" },
-  ".cm-cgrid:hover .cm-cgrid-bar, .cm-cgrid:focus-within .cm-cgrid-bar": { opacity: "1" },
+  // Item 689 check: the bar is pinned to the box's foot while any of the grid
+  // is in view, so a grid taller than the box (or one not scrolled to its
+  // end) never hides + Row / Markdown / Delete table under the edge. Opaque
+  // (the header's fill) so the rows scroll under it; the dimming moved to the
+  // buttons, as the bar's own opacity would let the rows show through.
+  ".cm-cgrid-bar": {
+    position: "sticky",
+    bottom: "0",
+    zIndex: "1",
+    display: "flex",
+    gap: "2px",
+    padding: "2px 4px",
+    background: "var(--panel)",
+    boxShadow: "0 -1px 0 var(--line)",
+  },
+  ".cm-cgrid-bar > *": { opacity: "0.75" },
+  ".cm-cgrid:hover .cm-cgrid-bar > *, .cm-cgrid:focus-within .cm-cgrid-bar > *": { opacity: "1" },
   ".cm-cgrid-btn, .cm-cgrid-back": {
     padding: "1px 7px",
     border: "1px solid transparent",
@@ -915,6 +1029,11 @@ export class LiveBoxHandle implements ComposerBox {
   get clientHeight(): number {
     return this.view.dom.clientHeight;
   }
+  /** Item 827: the element that scrolls — CodeMirror's scroller, inside
+   *  `element` — where the box's scroll-bar rule is set. */
+  get scroller(): HTMLElement {
+    return this.view.scrollDOM;
+  }
   get scrollTop(): number {
     return this.view.scrollDOM.scrollTop;
   }
@@ -989,6 +1108,27 @@ export class LiveBoxHandle implements ComposerBox {
       userEvent: ed.insert === "" && to > from ? "delete.backward" : "input.type",
       scrollIntoView: true,
     });
+  }
+  /** Item 890: a slash insert as one undo step of its own, past the grid's
+   *  input filter (it is a whole block, not typing against a table); a
+   *  table's first cell focused once its grid is drawn. */
+  insertBlock(ed: { from: number; to: number; insert: string; anchor: number; head: number; tableAt?: number }): void {
+    const len = this.view.state.doc.length;
+    const from = Math.max(0, Math.min(ed.from, len));
+    const to = Math.max(from, Math.min(ed.to, len));
+    const after = len - (to - from) + ed.insert.length;
+    const clamp = (p: number) => Math.max(0, Math.min(p, after));
+    this.view.focus();
+    this.view.dispatch({
+      changes: { from, to, insert: ed.insert },
+      selection: EditorSelection.range(clamp(ed.anchor), clamp(ed.head)),
+      userEvent: "input",
+      annotations: [isolateHistory.of("full"), gridEdit.of(true)],
+      scrollIntoView: true,
+    });
+    const at = ed.tableAt;
+    if (at === undefined) return;
+    if (!focusGridAt(this.view, at)) requestAnimationFrame(() => focusGridAt(this.view, at));
   }
   getBoundingClientRect(): DOMRect {
     return this.view.dom.getBoundingClientRect();

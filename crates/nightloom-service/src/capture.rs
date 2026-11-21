@@ -188,6 +188,10 @@ pub struct SessionDir {
     /// `remember` tool stamps (a name, or nothing for an unfiled chat).
     pub project: Option<String>,
     pub dir: PathBuf,
+    /// Logs last written before this are not captured — the mirror of
+    /// Claude Code sessions outside Nightloom (item 751) is captured from
+    /// the day it began, not over years of history. `None` elsewhere.
+    pub since: Option<DateTime<Utc>>,
 }
 
 impl SessionDir {
@@ -212,12 +216,26 @@ pub fn session_dirs(config: &Path) -> Vec<SessionDir> {
         .map(|p| SessionDir {
             dir: config.join(PROJECTS_DIR).join(&p.id).join(SESSIONS_DIR),
             project: Some(p.name),
+            since: None,
         })
         .collect();
     dirs.push(SessionDir {
         project: None,
         dir: config.join(UNFILED).join(SESSIONS_DIR),
+        since: None,
     });
+    // Claude Code sessions Nightloom did not start (item 751), once the
+    // desktop has mirrored them: last, so Nightloom's own chats take a
+    // capture run's turns first. Its name is every observation's `source`
+    // — no project has it, so the dream files them in the vault, tagged.
+    let outside = crate::outside::sessions_dir(config);
+    if outside.is_dir() {
+        dirs.push(SessionDir {
+            project: Some(crate::outside::OUTSIDE_NAME.to_string()),
+            dir: outside,
+            since: crate::outside::since(config),
+        });
+    }
     dirs
 }
 
@@ -237,7 +255,8 @@ struct Unread {
 /// an empty list: no chat has been recorded there yet. If a watermark
 /// points past the end of its file, the log was replaced and is read from
 /// the top, the rule the dream's watermark follows.
-fn unread_in(dir: &Path, state: &CaptureState) -> Vec<Unread> {
+fn unread_in(sd: &SessionDir, state: &CaptureState) -> Vec<Unread> {
+    let dir = sd.dir.as_path();
     if !dir.is_dir() {
         return Vec::new();
     }
@@ -247,6 +266,7 @@ fn unread_in(dir: &Path, state: &CaptureState) -> Vec<Unread> {
     let mut out: Vec<Unread> = logs
         .into_iter()
         .filter(|log| state.since.is_none_or(|t| log.modified >= t))
+        .filter(|log| sd.since.is_none_or(|t| log.modified >= t))
         .filter_map(|log| {
             let key = log.path.to_string_lossy().into_owned();
             let seen = state.consumed.get(&key).copied();
@@ -275,7 +295,7 @@ pub fn pending_count_in(config: &Path) -> usize {
     let state = state_in(config);
     session_dirs(config)
         .iter()
-        .map(|d| unread_in(&d.dir, &state).len())
+        .map(|d| unread_in(d, &state).len())
         .sum()
 }
 
@@ -790,7 +810,7 @@ async fn run_with(
     let dirs = session_dirs(config);
     let unread: Vec<(&SessionDir, Vec<Unread>)> = dirs
         .iter()
-        .map(|d| (d, unread_in(&d.dir, &state)))
+        .map(|d| (d, unread_in(d, &state)))
         .filter(|(_, u)| !u.is_empty())
         .collect();
     if unread.is_empty() {
@@ -1440,6 +1460,99 @@ mod tests {
         assert!(again.is_none());
     }
 
+    /// Claude Code sessions outside Nightloom (item 751): once mirrored,
+    /// capture folds them through the said-only filter, stamps each
+    /// observation's `source` with where they came from, reads only what
+    /// was said since the mirror began, and never sees a program's run —
+    /// a Nightloom incognito chat on the Claude Code engine among them.
+    #[tokio::test]
+    async fn outside_sessions_are_captured_said_only_and_tagged_with_their_source() {
+        let (config, _unfiled) = fixture("outside");
+        let claude = config.parent().unwrap().join("claude");
+        let folder = claude.join("projects").join("-Users-me-code-app");
+        fs::create_dir_all(&folder).unwrap();
+        // The first sync sets the horizon; a session older than it is
+        // searchable but not captured.
+        let line = |ty: &str, entry: &str, at: DateTime<Utc>, content: serde_json::Value| {
+            serde_json::json!({
+                "type": ty, "entrypoint": entry, "cwd": "/Users/me/code/app",
+                "timestamp": at.to_rfc3339(),
+                "message": {"role": ty, "content": content, "model": "claude-opus-5-5"},
+            })
+            .to_string()
+                + "\n"
+        };
+        let old = Utc::now() - chrono::Duration::days(30);
+        fs::write(
+            folder.join("00000000-0000-0000-0000-00000000000a.jsonl"),
+            line("user", "cli", old, "OLD-HISTORY".into()),
+        )
+        .unwrap();
+        crate::outside::sync(&config, &claude).unwrap();
+        let now = Utc::now() + chrono::Duration::seconds(5);
+        let mut body = String::new();
+        for i in 0..2 {
+            body += &line(
+                "user",
+                "claude-desktop",
+                now,
+                format!("OUTSIDE-QUESTION-{i}").into(),
+            );
+            body += &line(
+                "user",
+                "claude-desktop",
+                now,
+                serde_json::json!([{"type":"tool_result","tool_use_id":"t","content":"OUTSIDE-TOOL-OUTPUT"}]),
+            );
+            body += &line(
+                "assistant",
+                "claude-desktop",
+                now,
+                serde_json::json!([{"type":"text","text":format!("outside answer {i}")}]),
+            );
+        }
+        fs::write(
+            folder.join("00000000-0000-0000-0000-00000000000b.jsonl"),
+            body,
+        )
+        .unwrap();
+        let mut sdk = String::new();
+        for _ in 0..2 {
+            sdk += &line("user", "sdk-cli", now, "INCOGNITO-ON-THE-CLI".into());
+        }
+        fs::write(
+            folder.join("00000000-0000-0000-0000-00000000000c.jsonl"),
+            sdk,
+        )
+        .unwrap();
+        crate::outside::sync(&config, &claude).unwrap();
+        let dirs = session_dirs(&config);
+        assert_eq!(
+            dirs.last().unwrap().project.as_deref(),
+            Some(crate::outside::OUTSIDE_NAME)
+        );
+
+        let (mut chat, seen) =
+            chat_recording(vec![says("user_stated | Ships from the desktop app.")]);
+        let cancel = CancellationToken::new();
+        let outcome = run(&mut chat, &config, false, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("the mirrored chat is unread");
+        assert_eq!(outcome.logs_read, 1, "{outcome:?}");
+        let sent = all_text(&seen);
+        assert!(sent.contains("OUTSIDE-QUESTION-0"), "{sent}");
+        for absent in ["OUTSIDE-TOOL-OUTPUT", "INCOGNITO-ON-THE-CLI", "OLD-HISTORY"] {
+            assert!(!sent.contains(absent), "{absent} reached the model: {sent}");
+        }
+        let backlog = observe::backlog_in(&config);
+        assert_eq!(
+            backlog.pending[0].obs.source.as_deref(),
+            Some(crate::outside::OUTSIDE_NAME)
+        );
+        assert_eq!(backlog.pending[0].obs.kind, ObservationKind::UserStated);
+    }
+
     /// Two small logs pack into one turn; the reply's two good lines land
     /// in the inbox with the right kinds, no source (unfiled), and the
     /// excerpt's date; the malformed line is counted; both watermarks
@@ -1893,6 +2006,9 @@ mod tests {
         s.record_user("second message, past the budget");
         s.record_user("third");
         let path = unfiled.join(format!("{}.jsonl", s.id));
+        // Closed before the listing: Windows' directory listing (where the
+        // size is read) shows an open file's old size (item 864).
+        drop(s);
         // Seen before (a watermark at 0), so not "first", and fresh, so not
         // settled: the two ways the old rule let a short excerpt through.
         let mut state = CaptureState::default();

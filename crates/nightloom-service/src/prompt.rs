@@ -64,6 +64,14 @@ When tools are available, use them to check rather than guessing, and say plainl
 
 A command for the user to run themselves goes in its own ```bash block, one command per block: the desktop app gives that block a Run button and sends you its output.
 
+A page inside a reply: a fenced block opened with ```html page is drawn in the reply as a live, sandboxed page with no network at all. Use one when a figure or something to click beats prose — a chart, a diagram, a sortable table, a small simulation; use a saved picture file for a photo or a plot a script made, and plain text when a sentence does. Four libraries ship in the app and load by name, nothing else loads: <script src=\"kit:vega-lite\"></script> (then nightloom.chart(element, spec)), kit:mermaid (diagram in <pre class=\"mermaid\">), kit:katex ($…$ in the page is typeset), kit:three (THREE, with OrbitControls). The app's colours are CSS variables (--ink, --dim, --line, --accent, --series-1 to --series-8) on a transparent ground: set no background or text colour. Inline script and style only. A plain ```html block stays code.
+
+Diagram blocks: a fenced ```mermaid block is drawn as its diagram in any reply or note (with a Source toggle), and a fenced ```svg block holding one <svg> element is drawn as a picture (scripts, handlers and outside links in it are stripped); for a static diagram prefer either to an ```html page. In an svg, draw lines and text in currentColor, never black, so it reads on dark themes.
+
+Drawing tools on this Mac: Graphviz dot (dot -Tpng g.dot -o g.png), and ~/.nightloom/draw-env/bin/python with matplotlib, seaborn, pandas, sympy, networkx and manim (~/.nightloom/draw-env/bin/manim -ql scene.py Name writes media/videos/scene/480p15/Name.mp4). Write ![caption](absolute path) where a saved picture or video should appear in the reply; a path named alone shows it at the end.
+
+Ending a turn on a question: if your reply asks the user to choose, confirm or decide anything — including a closing line such as \"Which do you want?\" — do not end on a plain-text question. End the reply with this block instead, with nothing after it:\n<ask>\nThe question, in full sentences.\n- Your default answer\n- The other answer\n</ask>\nOne question, one or two answers, your default first. Nightloom draws the block as a card whose buttons send the answer; a plain-text question gets no card.
+
 Whenever you write a prompt for the next chat (a hand-off), put it between a line holding only <handoff> and a line holding only </handoff> — plain prose, no code fence, no [brackets] or placeholders; Nightloom shows it as a card with a button that starts the next chat with it.";
 
 /// The instruction file honoured in every directory on the walk, and in the
@@ -111,6 +119,14 @@ pub struct PromptConfig {
     /// than memory (one kind of chat, every model), still refined by the
     /// folder's rules on the engine where a Chat has a folder to speak of.
     pub chat_instructions: bool,
+    /// Include the practices layer — `~/.claude/practices/nightloom-chat.md`,
+    /// how the user works, for every chat (nightshift item 738). A switch,
+    /// like the Chat instructions: the shells set it from the preamble and
+    /// his Settings switch ([`practices_layer_on`]), and the Claude Code
+    /// shell leaves it off where the folder's `CLAUDE.md` already imports
+    /// the full practices file ([`practices_imported`]). Off by default, so
+    /// an eval or a test reads nothing from the home folder unasked.
+    pub practices: bool,
     /// The project this chat belongs to, if any: its name and the shared
     /// notes directory to index.
     ///
@@ -158,6 +174,7 @@ impl Default for PromptConfig {
             user_memory: true,
             model: None,
             chat_instructions: false,
+            practices: false,
             project: None,
             knowledge: None,
             thread: None,
@@ -188,6 +205,7 @@ impl PromptConfig {
                 SegmentKind::UserMemory => self.user_memory = false,
                 SegmentKind::ModelInstructions => self.model = None,
                 SegmentKind::ChatInstructions => self.chat_instructions = false,
+                SegmentKind::Practices => self.practices = false,
                 SegmentKind::ProjectInstructions => self.project_instructions = false,
                 SegmentKind::ProjectNotes => self.project = None,
                 SegmentKind::Knowledge => self.knowledge = None,
@@ -264,6 +282,13 @@ pub fn assemble(config: &PromptConfig) -> SystemPrompt {
         if let Some(seg) = seg {
             prompt.push(seg);
         }
+    }
+    // How he works, for every chat (item 738): after the user's own texts,
+    // before the project's rules, which refine it.
+    if config.practices
+        && let Some(seg) = practices_segment()
+    {
+        prompt.push(seg);
     }
     if config.project_instructions {
         match config.edits.get(&SegmentKind::ProjectInstructions) {
@@ -817,6 +842,14 @@ pub fn subagent_rules_body(rules: &SubagentRules<'_>) -> String {
          ~150k\"); one with none, or past 250k, is refused: split it into helpers of under \
          250k each.\n",
     );
+    // Backlog 707: helpers anchored on the caps they were given.
+    out.push_str(
+        "- The estimate is for Nightloom's check and your planning, and is removed before the \
+         helper sees the task; do not write budgets or tool-call caps into a helper's task — say \
+         what done looks like and what to skip. Nightloom itself tells a helper past 285k to \
+         finish if a step or two from done, else finish its step and report what is left, and \
+         tells you when it has.\n",
+    );
     out.push_str(match l.model {
         SubagentModel::Choose => {
             "- Subagents' model: yours to choose on each launch, within the user's rule: opus by \
@@ -973,10 +1006,24 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     text.push_str(CITE_NOTE);
     text.push(' ');
     text.push_str(RUN_BLOCK_NOTE);
+    // Item 770: a page inside a reply, and the kit it may load by name.
+    text.push(' ');
+    text.push_str(PAGE_NOTE);
+    // Item 821: a ```mermaid or ```svg block draws as its diagram.
+    text.push(' ');
+    text.push_str(DIAGRAM_NOTE);
+    // Item 822: the drawing toolchain (Graphviz, the draw-env) and how its
+    // output reaches the reply (820's strip).
+    text.push(' ');
+    text.push_str(DRAW_NOTE);
     // Item 583: the tag rule rode only in Nightloom's own wrap-up message,
     // so a hand-off he asked for in words came back as a fenced block.
     text.push(' ');
     text.push_str(HANDOFF_NOTE);
+    // Item 753: a turn-end question is one tagged block, drawn as a card —
+    // last in the note (a Haiku turn ignored it mid-note, 2026-11-16).
+    text.push(' ');
+    text.push_str(ASK_NOTE);
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
@@ -1000,6 +1047,41 @@ pub const CONTINUE_LATER_NOTE: &str = "To be continued later without the user �
 pub const RUN_BLOCK_NOTE: &str = "A command for the user to run themselves goes in its own \
      ```bash block, one command per block: the desktop app gives that block a Run button and \
      sends you its output.";
+
+/// A page inside a reply (nightshift item 770, 2026-11-18): the fence the
+/// desktop and the phone draw as a sandboxed page (`apps/desktop/src/lib/replyPage.ts`),
+/// the four kit libraries bundled in the app and their names
+/// (`pageKit.ts`; a test there pins these names against this sentence),
+/// and when a page is the right form rather than a picture or prose. In
+/// every chat's engine note and the API engine's identity, as the Run
+/// block's sentence is. ~135 words in every chat (blocker note in the
+/// 770 report: his call whether that is worth its tokens): the kit is
+/// useless to a model that has not been told its names.
+pub const PAGE_NOTE: &str = "A page inside a reply: a fenced block opened with ```html page is drawn in the reply as a live, sandboxed page with no network at all. Use one when a figure or something to click beats prose — a chart, a diagram, a sortable table, a small simulation; use a saved picture file for a photo or a plot a script made, and plain text when a sentence does. Four libraries ship in the app and load by name, nothing else loads: <script src=\"kit:vega-lite\"></script> (then nightloom.chart(element, spec)), kit:mermaid (diagram in <pre class=\"mermaid\">), kit:katex ($…$ in the page is typeset), kit:three (THREE, with OrbitControls). The app's colours are CSS variables (--ink, --dim, --line, --accent, --series-1 to --series-8) on a transparent ground: set no background or text colour. Inline script and style only. A plain ```html block stays code.";
+
+/// Diagram blocks (nightshift item 821, 2026-11-18): the two fences every
+/// markdown surface draws (`apps/desktop/src/lib/diagramBlock.ts`) — Mermaid
+/// from 770's kit, SVG as a sanitised picture. One sentence beside
+/// [`PAGE_NOTE`], in the same places.
+pub const DIAGRAM_NOTE: &str = "Diagram blocks: a fenced ```mermaid block is drawn as its diagram in any reply or note (with a Source toggle), and a fenced ```svg block holding one <svg> element is drawn as a picture (scripts, handlers and outside links in it are stripped); for a static diagram prefer either to an ```html page. In an svg, draw lines and text in currentColor, never black, so it reads on dark themes.";
+
+/// The drawing toolchain on his Mac (nightshift item 822, 2026-11-18):
+/// Graphviz from Homebrew and the uv env `~/.nightloom/draw-env` (checked by
+/// nightshift-code `bin/drawcheck`), one usage line each, and the rule that
+/// makes the output show — an absolute path in the reply is what 820's
+/// strip (`apps/desktop/src/lib/replyMedia.ts`) picks up, and Manim's own
+/// relative `media/...` path is not. Said whether or not the tools are
+/// installed: the prompt stays byte-stable for the cache, and a missing
+/// tool fails loudly in the shell. In every chat's engine note and the API
+/// engine's identity, beside [`DIAGRAM_NOTE`].
+pub const DRAW_NOTE: &str = "Drawing tools on this Mac: Graphviz dot (dot -Tpng g.dot -o g.png), and ~/.nightloom/draw-env/bin/python with matplotlib, seaborn, pandas, sympy, networkx and manim (~/.nightloom/draw-env/bin/manim -ql scene.py Name writes media/videos/scene/480p15/Name.mp4). Write ![caption](absolute path) where a saved picture or video should appear in the reply; a path named alone shows it at the end.";
+
+/// How a turn-end question is written (nightshift item 753, 2026-11-16): one
+/// tagged block, last in the reply, which the desktop and the phone draw as
+/// a card with a button per answer (`apps/desktop/src/lib/askTag.ts`); a
+/// click sends the answer and files it as an answered blocker. Beside the
+/// hand-off rule in every chat's engine note and the API engine's identity.
+pub const ASK_NOTE: &str = "Ending a turn on a question: if your reply asks the user to choose, confirm or decide anything — including a closing line such as \"Which do you want?\" — do not end on a plain-text question. End the reply with this block instead, with nothing after it:\n<ask>\nThe question, in full sentences.\n- Your default answer\n- The other answer\n</ask>\nOne question, one or two answers, your default first. Nightloom draws the block as a card whose buttons send the answer; a plain-text question gets no card.";
 
 /// Where a prompt for the next chat goes (nightshift item 583, 2026-11-10):
 /// the wrap-up's own sentence (`HANDOFF_ASK`, `apps/desktop/src/lib/handoffTag.ts`)
@@ -1047,7 +1129,7 @@ fn incognito_engine_note_segment() -> Segment {
          tool mcp__nightloom__fetch_page (ToolSearch it by that full name). For the whole \
          text of a page use fetch_page (WebFetch summarises and truncates); if fetch_page \
          reports a JavaScript shell or returns only a title, use WebFetch on that URL instead \
-         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE} {HANDOFF_NOTE}\n</engine-note>"
+         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE} {PAGE_NOTE} {DIAGRAM_NOTE} {DRAW_NOTE} {HANDOFF_NOTE} {ASK_NOTE}\n</engine-note>"
     );
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
@@ -1232,6 +1314,7 @@ pub fn layer_source(kind: SegmentKind, model: Option<&str>, cwd: &Path) -> Optio
             read_capped(&model_instruction_path(model)?)
         }
         SegmentKind::ChatInstructions => read_capped(&chat_instruction_path()?),
+        SegmentKind::Practices => read_capped(&practices_path()?),
         SegmentKind::ProjectInstructions => {
             let mut bodies: Vec<String> = Vec::new();
             for dir in cwd.ancestors() {
@@ -1400,6 +1483,106 @@ pub fn chat_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
+/// The practices layer's file, under the practices folder.
+const PRACTICES_DIR: &str = "practices";
+const PRACTICES_FILE: &str = "nightloom-chat.md";
+/// His Settings switch for the layer, in the config dir: `{"on": false}`
+/// turns it off for every chat; no file is on.
+const PRACTICES_SWITCH_FILE: &str = "practices-layer.json";
+
+/// How he works, for every chat (nightshift item 738): his practices
+/// file's chat-sized layer, `~/.claude/practices/nightloom-chat.md`.
+///
+/// Read from the practices folder rather than copied into the config dir:
+/// that repo owns the text and keeps it in step with practices.md
+/// (`bin/chatlayer.py check`), so a copy would drift where nothing checks
+/// it. A missing or empty file emits nothing — a machine without the
+/// practices repo costs no prompt. Not editable per chat: the file is
+/// re-worded in its repo, not in a chat.
+pub fn practices_segment() -> Option<Segment> {
+    let content = read_capped(&practices_path()?)?;
+    if content.trim().is_empty() {
+        return None;
+    }
+    Some(practices_segment_from(&content))
+}
+
+/// The practices segment around a given body. One function for the file
+/// and the tests so the wrapper cannot drift.
+pub fn practices_segment_from(body: &str) -> Segment {
+    let content = truncate(body.trim().to_string());
+    Segment::new(
+        SegmentKind::Practices,
+        "practices",
+        format!("<practices>\n{content}\n</practices>"),
+    )
+}
+
+/// Where [`practices_segment`] reads from: `~/.claude/practices/nightloom-chat.md`.
+pub fn practices_path() -> Option<PathBuf> {
+    Some(
+        crate::usage::claude_dir()?
+            .join(PRACTICES_DIR)
+            .join(PRACTICES_FILE),
+    )
+}
+
+/// His Settings switch for the practices layer (item 738): on unless the
+/// config dir's switch file says `"on": false`.
+pub fn practices_layer_on() -> bool {
+    crate::project::config_dir().is_none_or(|dir| practices_layer_on_in(&dir))
+}
+
+/// [`practices_layer_on`] against a given config dir.
+pub fn practices_layer_on_in(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join(PRACTICES_SWITCH_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.get("on").and_then(serde_json::Value::as_bool))
+        .unwrap_or(true)
+}
+
+/// Record his Settings switch for the practices layer in `dir`.
+pub fn save_practices_layer(dir: &Path, on: bool) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(
+        dir.join(PRACTICES_SWITCH_FILE),
+        serde_json::json!({ "on": on }).to_string(),
+    )
+}
+
+/// Whether Claude Code, run in `cwd`, already loads the full practices
+/// file: an `@…/practices/practices.md` import line in `~/.claude/CLAUDE.md`
+/// or in a `CLAUDE.md` / `CLAUDE.local.md` of `cwd` or a folder above it.
+/// There the chat-sized layer would be a second, shorter copy of rules the
+/// model already reads, so the Claude Code shell leaves it out. Direct
+/// imports only: a practices file reached through a chain of imports is
+/// not seen, and the layer is sent (a duplicate, never a gap).
+pub fn practices_imported(cwd: &Path) -> bool {
+    let home = crate::usage::claude_dir().map(|d| d.join("CLAUDE.md"));
+    practices_imported_in(cwd, home.as_deref())
+}
+
+/// [`practices_imported`] with the user-level file given.
+pub fn practices_imported_in(cwd: &Path, user_file: Option<&Path>) -> bool {
+    let imports = |path: &Path| {
+        std::fs::read_to_string(path).is_ok_and(|text| {
+            text.lines().any(|l| {
+                let l = l.trim();
+                l.starts_with('@') && l.contains("practices/practices.md")
+            })
+        })
+    };
+    if user_file.is_some_and(imports) {
+        return true;
+    }
+    cwd.ancestors().any(|dir| {
+        ["CLAUDE.md", "CLAUDE.local.md"]
+            .iter()
+            .any(|name| imports(&dir.join(name)))
+    })
+}
+
 /// An index of the project's shared notes — the state every conversation in
 /// this project starts from.
 ///
@@ -1455,8 +1638,9 @@ pub fn project_notes_segment(project: &ProjectContext) -> Segment {
          Worth writing down: a task list that outlives one conversation, a decision and \
          why it was made, a map of something that took real work to figure out. Not worth \
          writing down: anything already obvious from the code, or a summary of what you \
-         just said. Revise a stale note rather than adding a second one beside it — a \
-         wrong note costs more than a missing one.\n"
+         just said. Correct a stale note in that note, not in a second note beside it: \
+         strike the old claim through with the date and put the new claim next to it — \
+         a wrong note costs more than a missing one.\n"
     ));
     if notes.is_empty() {
         text.push_str(
@@ -1876,6 +2060,7 @@ mod tests {
             user_memory: false,
             model: None,
             chat_instructions: false,
+            practices: false,
             project: None,
             knowledge: None,
             thread: None,
@@ -3089,6 +3274,79 @@ As of now — the front.
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Item 770: every chat is told a page fence exists, the four kit
+    /// names it may load, and when a page beats a picture — in the engine
+    /// note (incognito's too) and the API engine's identity.
+    #[test]
+    fn every_chat_is_told_how_to_write_a_page_and_what_the_kit_holds() {
+        assert!(PAGE_NOTE.contains("```html page"));
+        for name in ["kit:vega-lite", "kit:mermaid", "kit:katex", "kit:three"] {
+            assert!(PAGE_NOTE.contains(name), "{name}");
+        }
+        assert!(PAGE_NOTE.contains("no network"));
+        assert!(PAGE_NOTE.contains("picture file"));
+        assert!(DEFAULT_IDENTITY.contains(PAGE_NOTE), "{DEFAULT_IDENTITY}");
+        for seg in [
+            engine_note_segment(None),
+            engine_note_segment(Some(&KnowledgeContext {
+                dir: PathBuf::from("/kb"),
+            })),
+            incognito_engine_note_segment(),
+        ] {
+            assert!(seg.text.contains(PAGE_NOTE), "{}", seg.text);
+        }
+        // Its size shows on the new-chat dial.
+        assert!(PAGE_NOTE.split_whitespace().count() <= 150);
+    }
+
+    /// Item 821: every chat is told the two diagram fences, beside the page note.
+    #[test]
+    fn every_chat_is_told_the_two_diagram_fences() {
+        assert!(DIAGRAM_NOTE.contains("```mermaid"));
+        assert!(DIAGRAM_NOTE.contains("```svg"));
+        // Item 879: svg drawn in the theme's colour, not black on a dark card.
+        assert!(DIAGRAM_NOTE.contains("currentColor"));
+        assert!(
+            DEFAULT_IDENTITY.contains(DIAGRAM_NOTE),
+            "{DEFAULT_IDENTITY}"
+        );
+        for seg in [
+            engine_note_segment(None),
+            engine_note_segment(Some(&KnowledgeContext {
+                dir: PathBuf::from("/kb"),
+            })),
+            incognito_engine_note_segment(),
+        ] {
+            assert!(seg.text.contains(DIAGRAM_NOTE), "{}", seg.text);
+        }
+        assert!(DIAGRAM_NOTE.split_whitespace().count() <= 70);
+    }
+
+    /// Item 822: every chat is told the drawing toolchain and that an
+    /// absolute path to the output is what shows it under the reply.
+    #[test]
+    fn every_chat_is_told_the_drawing_toolchain() {
+        for name in [
+            "dot -Tpng",
+            "~/.nightloom/draw-env/bin/python",
+            "/bin/manim",
+            "absolute path",
+        ] {
+            assert!(DRAW_NOTE.contains(name), "{name}");
+        }
+        assert!(DEFAULT_IDENTITY.contains(DRAW_NOTE), "{DEFAULT_IDENTITY}");
+        for seg in [
+            engine_note_segment(None),
+            engine_note_segment(Some(&KnowledgeContext {
+                dir: PathBuf::from("/kb"),
+            })),
+            incognito_engine_note_segment(),
+        ] {
+            assert!(seg.text.contains(DRAW_NOTE), "{}", seg.text);
+        }
+        assert!(DRAW_NOTE.split_whitespace().count() <= 60);
+    }
+
     /// Item 583: the <handoff> rule stands in every chat's prompt — the
     /// engine note (incognito's too) and the API engine's identity — so a
     /// hand-off asked for in words is tagged, not only Nightloom's wrap-up.
@@ -3115,6 +3373,19 @@ As of now — the front.
         }
         // Short: its size shows on the new-chat dial.
         assert!(HANDOFF_NOTE.split_whitespace().count() <= 60);
+    }
+
+    /// Item 753: every chat is told how a turn-end question is written — the
+    /// engine notes and the API engine's identity carry the same sentence.
+    #[test]
+    fn every_chat_is_told_how_to_end_a_turn_on_a_question() {
+        assert!(ASK_NOTE.contains("\n<ask>\n") && ASK_NOTE.contains("\n</ask>\n"));
+        assert!(ASK_NOTE.contains("do not end on a plain-text question"));
+        assert!(DEFAULT_IDENTITY.contains(ASK_NOTE), "{DEFAULT_IDENTITY}");
+        for seg in [engine_note_segment(None), incognito_engine_note_segment()] {
+            assert!(seg.text.contains(ASK_NOTE), "{}", seg.text);
+        }
+        assert!(ASK_NOTE.split_whitespace().count() <= 90);
     }
 
     /// Nightshift 573: under `Choose`, both layers name gathering — search,
@@ -3901,6 +4172,110 @@ As of now — the front.
             "{text}"
         );
         assert!(text.contains("refused: split it"), "{text}");
+        // 707: no budgets in a helper's task; Nightloom's own 285k stop.
+        assert!(
+            text.contains("removed before the helper sees the task")
+                && text.contains("do not write budgets or tool-call caps")
+                && text.contains("past 285k"),
+            "{text}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- the practices layer (item 738) ----
+
+    /// After the user's own texts and before the project's rules, in the
+    /// ladder every view and the prompt hold order by.
+    #[test]
+    fn the_practices_layer_sits_between_the_chat_and_the_project() {
+        let at = |k| SegmentKind::LAYERS.iter().position(|x| *x == k).unwrap();
+        assert_eq!(
+            at(SegmentKind::Practices),
+            at(SegmentKind::ChatInstructions) + 1
+        );
+        assert!(at(SegmentKind::Practices) < at(SegmentKind::ProjectInstructions));
+        assert!(!SegmentKind::EDITABLE.contains(&SegmentKind::Practices));
+    }
+
+    #[test]
+    fn the_practices_segment_wraps_the_file_and_switches_off() {
+        let seg = practices_segment_from("- **Rule one.**\n");
+        assert_eq!(seg.kind, SegmentKind::Practices);
+        assert_eq!(seg.text, "<practices>\n- **Rule one.**\n</practices>");
+        let config = PromptConfig {
+            practices: true,
+            ..bare(temp_dir("practices-off"))
+        };
+        assert!(!config.clone().without(&[SegmentKind::Practices]).practices);
+        // Off by default: an eval reads nothing from the home folder.
+        assert!(!PromptConfig::default().practices);
+        // Off assembles nothing of it, whatever the file says.
+        let off = assemble(&config.without(&[SegmentKind::Practices]));
+        assert!(
+            off.segments()
+                .iter()
+                .all(|s| s.kind != SegmentKind::Practices)
+        );
+    }
+
+    #[test]
+    fn the_settings_switch_is_on_until_turned_off() {
+        let dir = temp_dir("practices-switch");
+        assert!(practices_layer_on_in(&dir), "no file is on");
+        save_practices_layer(&dir, false).unwrap();
+        assert!(!practices_layer_on_in(&dir));
+        save_practices_layer(&dir, true).unwrap();
+        assert!(practices_layer_on_in(&dir));
+        std::fs::write(dir.join(PRACTICES_SWITCH_FILE), "not json").unwrap();
+        assert!(practices_layer_on_in(&dir), "unreadable is the default");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A folder whose CLAUDE.md imports practices.md already gives the
+    /// model the full rules: the chat-sized copy is left out there.
+    #[test]
+    fn a_folder_that_imports_practices_is_seen() {
+        let root = temp_dir("practices-import");
+        let inner = root.join("a").join("b");
+        std::fs::create_dir_all(&inner).unwrap();
+        let user = root.join("user-CLAUDE.md");
+        std::fs::write(&user, "# mine\n").unwrap();
+        assert!(!practices_imported_in(&inner, Some(&user)));
+        // A mention in prose is not an import.
+        std::fs::write(root.join("CLAUDE.md"), "see practices/practices.md\n").unwrap();
+        assert!(!practices_imported_in(&inner, Some(&user)));
+        std::fs::write(
+            root.join("a").join("CLAUDE.md"),
+            "# Project\n\n@~/.claude/practices/practices.md\n",
+        )
+        .unwrap();
+        assert!(practices_imported_in(&inner, Some(&user)));
+        assert!(
+            !practices_imported_in(&root, Some(&user)),
+            "only from cwd up"
+        );
+        std::fs::write(&user, "@~/.claude/practices/practices.md\n").unwrap();
+        assert!(practices_imported_in(&root, Some(&user)));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The notes index no longer tells the model to overwrite a stale
+    /// claim: it says to strike it with the date (item 738, his supersede
+    /// rule).
+    #[test]
+    fn the_notes_index_says_strike_with_a_date() {
+        let dir = temp_dir("strike-note");
+        let seg = project_notes_segment(&ProjectContext {
+            name: "P".into(),
+            notes_dir: dir.join(".agents"),
+        });
+        assert!(
+            seg.text
+                .contains("strike the old claim through with the date"),
+            "{}",
+            seg.text
+        );
+        assert!(!seg.text.contains("Revise a stale note rather than"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

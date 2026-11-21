@@ -21,6 +21,15 @@
   import { fileSegments } from "./codeHighlight";
   import { firstTexError, isTexPath } from "./latexLog";
   import { viewGet, viewSet } from "./viewState";
+  import HtmlPage from "./HtmlPage.svelte";
+  import { fileFind } from "./fileFind.svelte";
+  import { utf16Range } from "./evidenceBlock";
+  import { svgBacking, withInk, type SvgBacking } from "./diagramBlock";
+  // Item 879: a transparent PNG/GIF/WebP with dark ink sits on white paper, as an SVG does.
+  import { paperIfDarkInk } from "./rasterBacking";
+  // Item 885: a click zooms in at that spot (again: back to fit), pinch / ctrl-wheel zoom, a drag pans; kept per file.
+  import { zoomable } from "./pictureZoomAction";
+  import { readKitTheme } from "./pageTheme";
 
   let { content }: { content: Extract<TabContent, { kind: "file" }> } = $props();
 
@@ -34,12 +43,9 @@
     plain = viewGet(plainKey, false);
   });
   $effect(() => viewSet(untrack(() => plainKey), plain, false));
-  const fullKey = $derived(`file.full:${content.path}`);
-  let full = $state(false);
-  $effect.pre(() => {
-    full = viewGet(fullKey, false);
-  });
-  $effect(() => viewSet(untrack(() => fullKey), full, false));
+  // Item 495, as a zoom since item 885: a picture's zoom and pan, kept per file past this view.
+  const zoomKey = $derived(`file.zoom:${content.path}`);
+  const kept = $derived(viewGet(zoomKey, ""));
   let reads = $state(0);
 
   $effect(() => {
@@ -65,7 +71,32 @@
   // Item 567: the path as folder (dim under Filament IV) + name; drawn as
   // one run of text, so Classic, which styles neither part, is unchanged.
   const pathCut = $derived(content.path.lastIndexOf("/") + 1);
-  const src = $derived(file?.data ? `data:${file.media_type};base64,${file.data}` : null);
+  // Item 879: an SVG file is its own document as an <img>, so its default black cannot follow the theme. One
+  // with no background of its own is drawn on white paper; one drawn in `currentColor` (or light colours) gets
+  // the theme's text colour — the same rule as a reply's ```svg block (`svgBacking`), redrawn on a theme change.
+  const isSvgFile = $derived(file?.kind === "image" && /^image\/svg\+xml\b/i.test(file?.media_type ?? ""));
+  let themeTick = $state(0);
+  $effect(() => {
+    if (!isSvgFile || typeof MutationObserver === "undefined") return;
+    const mo = new MutationObserver(() => themeTick++);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-scheme", "data-palette", "data-layout"] });
+    return () => mo.disconnect();
+  });
+  const svgShown = $derived.by((): { url: string; backing: SvgBacking } | null => {
+    void themeTick;
+    if (!isSvgFile || !file?.data) return null;
+    try {
+      const text = new TextDecoder().decode(Uint8Array.from(atob(file.data), (c) => c.charCodeAt(0)));
+      const backing = svgBacking(text);
+      if (backing !== "theme") return { url: `data:${file.media_type};base64,${file.data}`, backing };
+      const scheme = document.documentElement.dataset.scheme === "light" ? "light" : "dark";
+      const inked = withInk(text, readKitTheme(null, scheme).ink);
+      return { url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(inked)}`, backing };
+    } catch {
+      return null;
+    }
+  });
+  const src = $derived(svgShown?.url ?? (file?.data ? `data:${file.media_type};base64,${file.data}` : null));
   // Item 380: text drawn in the chat's code colours, by the file's extension
   // (plain past the highlighter's cap).
   const segs = $derived(file?.text != null ? fileSegments(file.text, content.path) : []);
@@ -105,6 +136,51 @@
   const pdfSrc = $derived(render?.pdf ? `data:application/pdf;base64,${render.pdf}` : null);
   const texError = $derived(render && !render.pdf && render.log ? firstTexError(render.log) : null);
 
+  // Item 798: an evidence table's cell opens its source's stored text here,
+  // scrolled to the quote and marked — once per request, so a later visit
+  // to the tab keeps its own scroll.
+  let textPre = $state<HTMLElement | null>(null);
+  let foundSeq = 0;
+  $effect(() => {
+    const t = fileFind.target;
+    const pre = textPre;
+    const text = file?.text;
+    if (!t || t.path !== content.path || !pre || text == null || t.seq === foundSeq) return;
+    foundSeq = t.seq;
+    const [a, b] = utf16Range(text, t.start, t.end);
+    queueMicrotask(() => markRange(pre, a, b));
+  });
+  function markRange(pre: HTMLElement, a: number, b: number): void {
+    const walk = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    let at = 0;
+    let started = false;
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      const len = n.nodeValue?.length ?? 0;
+      if (!started && a <= at + len) {
+        range.setStart(n, Math.max(0, a - at));
+        started = true;
+      }
+      if (started && b <= at + len) {
+        range.setEnd(n, Math.max(0, b - at));
+        break;
+      }
+      at += len;
+    }
+    if (!started) return;
+    const hl = (globalThis as { Highlight?: new (r: Range) => unknown }).Highlight;
+    const reg = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
+    if (hl && reg) reg.set("evidence-quote", new hl(range));
+    else {
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    }
+    const r = range.getBoundingClientRect();
+    const box = pre.getBoundingClientRect();
+    pre.scrollTop += r.top - box.top - pre.clientHeight / 3;
+  }
+
   async function reveal(): Promise<void> {
     try {
       await api.revealFile(content.path);
@@ -132,6 +208,15 @@
       </span>
     {/if}
     <span class="spacer"></span>
+    {#if file?.kind === "html"}
+      <!-- Item 819: Page (the default) or Source, kept by the file's path as
+           Plain/Formatted is; `plain` is Source. -->
+      <button
+        class="ns-btn ghost small"
+        onclick={() => (plain = !plain)}
+        use:tip={plain ? "Draw the page" : "Show the HTML source"}>{plain ? "Page" : "Source"}</button
+      >
+    {/if}
     {#if file?.kind === "markdown"}
       <button class="ns-btn ghost small" onclick={() => (plain = !plain)} use:tip={"Show the Markdown source or the formatted text"}
         >{plain ? "Formatted" : "Plain"}</button
@@ -156,22 +241,23 @@
   {:else if !file}
     <p class="dim">Reading…</p>
   {:else if file.kind === "image" && src}
-    <div class="media" class:scroll={full}>
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="media" data-picture-viewer use:zoomable={{ initial: kept, onchange: (v) => viewSet(zoomKey, v, "") }}>
       <img
         class="img"
-        class:full
+        class:paper={svgShown?.backing === "paper"}
         {src}
+        use:paperIfDarkInk
         alt={content.path}
-        use:tip={full ? "Click to fit the pane" : "Click for the image's own size"}
-        onclick={() => (full = !full)}
+        draggable="false"
+        use:tip={"Click to zoom in there (again to fit) · pinch to zoom · drag to pan"}
       />
     </div>
   {:else if file.kind === "pdf" && src}
     <div class="media">
       <embed class="pdf" {src} type={file.media_type} title={content.path} />
     </div>
+  {:else if file.kind === "html" && !plain}
+    <HtmlPage html={file.text ?? ""} place={`file:${content.path}`} title={content.path} />
   {:else if file.kind === "markdown" && !plain}
     <div class="body markdown">{@html renderMarkdown(file.text ?? "")}</div>
   {:else if tex && !render?.missing_tex}
@@ -199,11 +285,11 @@
         </div>
       </div>
     </div>
-  {:else if file.kind === "markdown" || file.kind === "text"}
+  {:else if file.kind === "markdown" || file.kind === "text" || file.kind === "html"}
     {#if tex && render?.missing_tex}
       <p class="tex-note">No TeX is installed on this Mac (Nightloom looks in /Library/TeX/texbin, where MacTeX puts it), so only the source is shown.</p>
     {/if}
-    <pre class="body text mono"><code>{#each segs as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre>
+    <pre class="body text mono" bind:this={textPre}><code>{#each segs as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre>
   {:else}
     <div class="note-card">
       <p>Nightloom does not draw this kind of file. Its own application can open it.</p>
@@ -277,10 +363,6 @@
     background: var(--well);
     overflow: hidden;
   }
-  .media.scroll {
-    display: block;
-    overflow: auto;
-  }
   .img {
     max-width: 100%;
     max-height: 100%;
@@ -288,10 +370,12 @@
     cursor: zoom-in;
     display: block;
   }
-  .img.full {
-    max-width: none;
-    max-height: none;
-    cursor: zoom-out;
+  /* Item 879: an SVG with default (black) lines and no background of its own, on white paper. */
+  .img.paper {
+    background: #fff;
+    padding: 10px;
+    border-radius: 6px;
+    box-sizing: border-box;
   }
   .pdf {
     width: 100%;

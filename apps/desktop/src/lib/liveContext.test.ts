@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { liveFor, liveLegend, liveTip, liveTokens, liveValue, type LiveContext } from "./liveContext";
 import { shortTokens } from "./contextDial";
 import dialSrc from "./ContextDial.svelte?raw";
-import railSrc from "./RightRail.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import rightRailLogicRaw from "./rightRail/logic.svelte.ts?raw";
+import railSrcRaw from "./RightRail.svelte?raw";
+const railSrc = asOneFile(railSrcRaw, rightRailLogicRaw);
 import stateSrc from "./state.svelte.ts?raw";
 
 const r = (o: Partial<LiveContext> = {}): LiveContext => ({ exact: 120_000, estimate: 0, rough: false, steps: 1, at: 2_000, ...o });

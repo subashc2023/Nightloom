@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import cardSrc from "./AsideCard.svelte?raw";
 import viewSrc from "./AsideView.svelte?raw";
-import threadSrc from "./AsideThread.svelte?raw";
-import transcriptSrc from "./Transcript.svelte?raw";
+import asideTranscriptSrc from "./AsideTranscript.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
 import composerSrc from "./Composer.svelte?raw";
 import {
   ATTACHMENTS_ONLY,
@@ -23,11 +23,15 @@ import {
 } from "./state.svelte";
 import { asideDraftKey, asideFromStored, loadAsides, serializeAsides, storedAsideOf, ASIDES_KEY } from "./asides";
 import { addAttachment, drafts, enqueueMessage, historyFor, readDraft, setDraftText } from "./drafts.svelte";
+import { rewoundOffer } from "./rewindDraft.svelte";
 import { ASIDE_HIDDEN, ASIDE_KEPT, composerShows, type ChatOnlyControl } from "./asideControls";
 import { foldBlocked } from "./asideFold";
 import "./asides.svelte";
 import * as api from "./api";
 import type { Attachment } from "./types";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
 
 /**
  * Nightshift backlog 283 (2026-10-02): an aside's box is the chat's
@@ -254,7 +258,11 @@ describe("the message tools in an aside (283)", () => {
     const gone = rewindAside(d, 1);
     expect(gone.map((t) => t.question)).toEqual(["two", "three"]);
     expect(d.turns.map((t) => t.question)).toEqual(["one"]);
-    expect(readDraft(asideDraftKey(d)).text).toBe("two\ntyped");
+    // ~~"two\ntyped" (in front of what was typed)~~ — superseded 2026-11-18
+    // by item 724: his draft stays; the question goes to the drafts, offered.
+    expect(readDraft(asideDraftKey(d)).text).toBe("typed");
+    expect(historyFor(asideDraftKey(d))[0].text).toBe("two");
+    expect(rewoundOffer).toMatchObject({ key: asideDraftKey(d), text: "two" });
     expect(restoreAsideTurns(d, 1, gone)).toBe(true);
     expect(d.turns.map((t) => t.question)).toEqual(["one", "two", "three"]);
     // To the first: the thread is a question box again, its chip in the box.
@@ -279,7 +287,7 @@ describe("what an aside draws and hides (283)", () => {
   const files: Record<string, string> = {
     "./AsideCard.svelte": cardSrc,
     "./AsideView.svelte": viewSrc,
-    "./AsideThread.svelte": threadSrc,
+    "./AsideTranscript.svelte": asideTranscriptSrc,
     "./Transcript.svelte": transcriptSrc,
     "./Composer.svelte": composerSrc,
   };
@@ -298,21 +306,19 @@ describe("what an aside draws and hides (283)", () => {
     for (const f of ["./AsideCard.svelte", "./AsideView.svelte"]) {
       const s = src(f);
       expect(s).toMatch(/<Composer \{aside\}/);
-      expect(s).toMatch(/<AsideThread \{aside\}/);
+      // test-change: item 856 — Classic draws the shared thread too (AsideThread mounts nowhere).
+      expect(s).toMatch(/<AsideTranscript\b/);
+      expect(s).not.toMatch(/<AsideThread\b/);
       expect(s).not.toMatch(/<AsideBox/);
       // Item 673: the tab's head reads "ASIDE · of ‹chat›" (the kicker).
       expect(s).toMatch(f.includes("View") ? /class="aside-kick">Aside<\/span>[\s\S]{0,400}>of <em>/ : /Aside of <em>/);
     }
     // The thread draws his words with the transcript's own bubble and the
     // answer with the chat's reply piece; the transcript uses the bubble too.
-    // test-change: item 674 step 7 — AsideThread is Classic's alone (blocker
-    // 1989), so its pieces are the Classic ones; Filament's are Transcript's.
-    expect(src("./AsideThread.svelte")).toMatch(/<UserBubbleClassic /);
-    expect(src("./AsideThread.svelte")).toMatch(/<AssistantMessageClassic\b/);
-    expect(src("./AsideThread.svelte")).not.toMatch(/<UserBubble |<AssistantMessage\s|classic\(\)/);
+    // ~~test-change: item 674 step 7 — AsideThread is Classic's alone~~ —
+    // test-change: item 856: AsideThread.svelte is deleted; both looks draw
+    // an aside through their transcript, each with its own bubble.
     expect(src("./Transcript.svelte")).toMatch(/<UserBubble/);
-    // Fork and Remove-from-context are not in the aside's thread.
-    expect(src("./AsideThread.svelte")).not.toMatch(/Fork helpers from here"/);
   });
 
   it("the composer gates the chat-only pieces through the list", () => {
@@ -330,8 +336,9 @@ describe("what an aside draws and hides (283)", () => {
     for (const f of ["./AsideCard.svelte", "./AsideView.svelte"]) {
       const s = src(f);
       expect(s).toMatch(/<AsideFoldPanel \{aside\} part="button"/);
-      expect(s).toMatch(/<AsideFoldPanel \{aside\} part="panel"/);
     }
+    // test-change: item 856 — the panel is the shared thread's, at its column's end, in both looks.
+    expect(src("./AsideTranscript.svelte")).toMatch(/<AsideFoldPanel \{aside\} part="panel"/);
   });
 });
 

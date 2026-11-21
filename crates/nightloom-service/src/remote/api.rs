@@ -39,6 +39,10 @@ pub mod feature {
     pub const RUNNING: &str = "running";
     /// `GET /api/usage`.
     pub const USAGE: &str = "usage";
+    /// `GET /api/cache-rates?model=` (wave O, 2026-11-17): the rates the
+    /// chat's cache chip prices the next send at, as the Mac's chip reads
+    /// them (`usage::cache_rates_in`) — `null` with no figure.
+    pub const CACHE_RATES: &str = "cache_rates";
     /// `GET /api/search`.
     pub const SEARCH: &str = "search";
     /// `POST /api/projects`, `…/open`, `…/rename`, `…/forget`.
@@ -77,6 +81,28 @@ pub mod feature {
     pub const CHECKPOINT: &str = "checkpoint";
     pub const BUDGET: &str = "budget";
     pub const RESUME_LIMIT: &str = "resume_limit";
+    /// `/api/push…` (item 739): the key, Subscribe, the off switch. The
+    /// listener lists it itself, only while the host has push
+    /// ([`super::super::Host::push`]); a host never names it, and it is
+    /// not in [`ALL`].
+    pub const PUSH: &str = "push";
+    /// `GET`/`POST /api/rules` (item 743): the approval rules in force.
+    pub const RULES: &str = "rules";
+    /// `POST /api/approve` takes `decision: "later"` (item 743): "Not now
+    /// — carry on".
+    pub const LATER: &str = "later";
+    /// `/api/jobs…` (item 746): recurring jobs. Listed by the listener
+    /// itself, only while the host has jobs ([`super::super::Host::jobs`]);
+    /// not in [`ALL`].
+    pub const JOBS: &str = "jobs";
+    /// `POST /api/feedback` (item 805): the phone's feedback sheet.
+    pub const FEEDBACK: &str = "feedback";
+    /// `POST /api/feedback` takes `images` (item 815): the sheet's photo
+    /// button. Listed beside [`FEEDBACK`] wherever it is.
+    pub const FEEDBACK_IMAGES: &str = "feedback_images";
+    /// `POST /api/chats/{id}/media` (item 820): a picture or a video a
+    /// reply names, drawn under the reply.
+    pub const REPLY_MEDIA: &str = "reply_media";
     /// Every name, for a host that serves the lot and for tests.
     pub const ALL: &[&str] = &[
         ACT,
@@ -103,6 +129,11 @@ pub mod feature {
         CHECKPOINT,
         BUDGET,
         RESUME_LIMIT,
+        RULES,
+        LATER,
+        FEEDBACK,
+        FEEDBACK_IMAGES,
+        REPLY_MEDIA,
     ];
 }
 
@@ -474,6 +505,12 @@ pub struct Running {
     pub asides: Vec<serde_json::Value>,
     pub dream: Option<serde_json::Value>,
     pub capture: Option<serde_json::Value>,
+    /// Each running chat's context now, in tokens, by chat id — the newest
+    /// reply's prompt and output (item 741: the phone's Home lists what
+    /// runs with its size). A chat absent here has not replied yet, or its
+    /// host does not know.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub contexts: std::collections::BTreeMap<String, u64>,
 }
 
 /// The drawer's usage line: the plan's windows and the ledger's summary
@@ -483,6 +520,11 @@ pub struct UsageReply {
     pub plan: PlanUsage,
     #[serde(default)]
     pub ledger: serde_json::Value,
+    /// Item 824: the plan's pace (`pace::read`, the Mac's `plan_pace`),
+    /// for the phone's dials (the projected percent at the reset). Null
+    /// with no plan reading (the away server); absent from an older host.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub pace: serde_json::Value,
 }
 
 /// `GET /api/search?q=&scope=`: this chat's project, every project, or

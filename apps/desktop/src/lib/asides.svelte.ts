@@ -17,6 +17,10 @@ import { app, asideStash, chatMode } from "./state.svelte";
 import type { Aside } from "./state.svelte";
 import { asideDraftKey, cleanAsideName, isPrivateChat, markChatMode, saveAsides, setAsideHeld } from "./asides";
 import { drafts } from "./drafts.svelte";
+import { setNoteSkip } from "./asideNotes.svelte";
+
+// Item 775: a private chat's pending aside notes are kept for the window only.
+setNoteSkip((chat) => isPrivateChat(chat, app.sessions));
 
 // Backlog 283: a thread's composer keeps its chips and held messages in
 // the drafts store; a draft card holding only those is still his.
@@ -110,6 +114,11 @@ if (typeof window !== "undefined") {
         void a.model;
         void a.effort;
         void a.uid;
+        // Item 734: where he moved the card, written with the thread.
+        void a.moved;
+        // Item 735: minimized, and its new-reply dot.
+        void a.minimized;
+        void a.newReply;
         for (const t of a.turns) {
           void t.partial;
           void t.answer;

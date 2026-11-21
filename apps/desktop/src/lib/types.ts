@@ -193,6 +193,10 @@ export interface AgentTurnResult {
   /** The CLI's estimate of what this turn would have cost on the API. Not a
    *  bill: nothing here is charged per token under a subscription. */
   cost_usd: number | null;
+  /** Item 699: `cost_usd`'s share of the plan at the fitted rates, for the
+   *  cache-miss toast; null before the fit has enough replies. Absent from
+   *  an older backend. */
+  plan_est?: { five_hour: number | null; seven_day: number | null; replies: number } | null;
   rounds: number | null;
   /** Present only on an OAuth run, which makes it the one honest signal that
    *  the turn was billed to the plan and not to a key. */
@@ -361,6 +365,9 @@ export interface ProjectInfo {
    *  (backlog 102): a New chat in it is a Chat though it has a folder.
    *  Absent on an older shape. */
   unfiled?: boolean;
+  /** What made the project, when something did (item 763): `nightloom:home`
+   *  is Home, pinned first and never removed. Absent on an older shape. */
+  source?: string | null;
 }
 
 /** One extra folder as the rail and the Context popover show it (backlog 143). */
@@ -507,6 +514,27 @@ export interface DreamCommit {
   files: ChangedFile[];
 }
 
+/** A change to Claude Code's own memory (`~/.claude/projects/<dir>/memory/`),
+ *  seen by a sync into Nightloom's history folder (item 751). Paths are
+ *  `<dir>/<file>`; `places` names each `<dir>` for a person. */
+export interface MemoryCommit {
+  hash: string;
+  /** RFC 3339: when the sync saw it. */
+  at: string;
+  subject: string;
+  files: ChangedFile[];
+  places: string[];
+}
+
+/** What a sync of Claude Code sessions outside Nightloom did (item 751). */
+export interface OutsideSync {
+  sources: number;
+  mirrored: number;
+  messages: number;
+  excluded: Record<string, number>;
+  admitted: number;
+}
+
 /** A dream's write to an `AGENTS.md` that no git commit carries (backlog
  *  344): the user's own file, or a project outside git. Revert restores
  *  the copy kept from before. */
@@ -579,6 +607,22 @@ export interface CliNewModel {
   has_window: boolean;
 }
 
+/** Item 758's canary (the backend's `flat_canary::Alarm`): the installed
+ *  CLI lost a string the cache switch relies on (`bundle`), or a new chat's
+ *  second request read under 95% from the cache with the switch on (`cache`). */
+export interface FlatAlarm {
+  id: string;
+  item: number;
+  kind: "bundle" | "cache";
+  cli_version: string | null;
+  title: string;
+  detail: string;
+  /** Local time, for the log. */
+  time: string;
+  at_ms: number;
+  chat: string | null;
+}
+
 /** One version check (backlog 182): `claude --version` against the release
  *  feed. A failed lookup leaves `latest` null and says why in `error`. */
 export interface CliStatus {
@@ -635,6 +679,64 @@ export interface PlanUsage {
   /** `turn` is the frontend's own: the last agent turn's `rate_limit_event`
    *  (see `AgentTurnResult.plan.unifiedWindows`), fresher than any file. */
   source: "desktop" | "cli-cache" | "cli-usage" | "none" | "turn";
+}
+
+/** How the forecast did on past windows (item 769, `pace.rs`). */
+export interface PaceBacktest {
+  /** Mean miss of the forecast, points, `horizon_hours` ahead. */
+  err_pts: number | null;
+  /** Mean miss of a straight line from the window's start. */
+  linear_err_pts: number | null;
+  checks: number;
+}
+
+/**
+ * One window's pace (item 769): when it is expected to reach 80% (his stop
+ * line) and 100%, forecast from his own reading history by hour of the
+ * week, with its measured error. Times are unix ms; null when not before
+ * the reset.
+ */
+export interface WindowPace {
+  window: "five_hour" | "seven_day";
+  pct: number;
+  at_ms: number;
+  resets_at_ms: number | null;
+  /** Enough past checks to show a time. */
+  ready: boolean;
+  at80_ms: number | null;
+  at100_ms: number | null;
+  end_pct: number;
+  horizon_hours: number;
+  backtest: PaceBacktest;
+  readings: number;
+  history_hours: number;
+}
+
+/** One window's forecast knobs, re-fitted weekly from the log (item 769). */
+export interface PaceKnobs {
+  recent_ms: number;
+  fade_ms: number;
+  slot_scale: number;
+}
+
+export interface PaceKindFit {
+  /** The pair in use; `fitted` is the grid's choice on older checks. */
+  tuning: PaceKnobs;
+  fitted: PaceKnobs;
+  fitted_at_ms: number;
+  how: "held-out" | "in-sample" | "default-thin" | "default-kept";
+  fit_checks: number;
+  holdout_checks: number;
+  holdout_err_pts: number | null;
+  default_holdout_err_pts: number | null;
+}
+
+export interface PlanPace {
+  five_hour: WindowPace | null;
+  seven_day: WindowPace | null;
+  computed_at_ms: number;
+  /** Absent from a pace read before the weekly fit existed. */
+  fit?: { five_hour: PaceKindFit; seven_day: PaceKindFit };
 }
 
 /**
@@ -968,15 +1070,6 @@ export interface ForkedFrom {
   reason?: string;
 }
 
-/** A session that matched a search. Flattened on the Rust side, so it is a
- *  `SessionMeta` with the two extra fields rather than a wrapper. */
-export interface SessionHit extends SessionMeta {
-  /** How many messages contain the query. */
-  hits: number;
-  /** Text around the first one, prefixed with who said it. */
-  excerpt: string;
-}
-
 // ---- search everywhere (nightshift backlog 117, with 106's second half) ----
 // Mirrors `store/search.rs`: the panel's answer, per message grouped by
 // chat, and per line grouped by note.
@@ -1099,6 +1192,9 @@ export interface Attachment {
   label?: string;
   /** An office file still converting: no `data` yet, and Send waits. */
   pending?: boolean;
+  /** Item 868: when its conversion started and to what — the chip says
+   *  "converting slides · 1:12" so a long deck never looks stuck. */
+  converting?: { since: number; to: "pdf" | "text" };
   /** Text pasted as an attachment (item 284): there is no file on disk to
    *  drop again, so the drafts store keeps it like the box's own text. */
   pasted?: boolean;
@@ -1114,6 +1210,10 @@ export interface Attachment {
    *  `stash_draft_file` id), so a relaunch keeps a chip too big for the
    *  drafts store. */
   stash?: string;
+  /** A picked element (item 797): the crop is this image; what it is —
+   *  component, selector, text, size, zoom, theme — goes with the turn as
+   *  a text block (`pickDocuments`), so the model can name the file. */
+  pick?: import("./pick").PickInfo;
 }
 
 /** A file for the Claude Code engine (item 277), as `send_agent` takes it. */
@@ -1150,9 +1250,31 @@ export interface ApprovalRequest {
   /** The model's text just before the call — Playwright's card shows it as
    *  the reason (nightshift backlog 367). Only on a Playwright call. */
   reason?: string;
+  /** A read-only chat's own card (nightshift item 783): `connector` — an
+   *  action that is not a plain read: Allow once / Allow always / Deny,
+   *  where always adds it to what read-only chats may run; `remember` — a
+   *  proposal to add to his memory; `home_write` (item 845) — one of Home's
+   *  mail, calendar or Reminders changes (item 872): Allow once / Deny, never always. Absent: the
+   *  ordinary card. */
+  kind?: "connector" | "remember" | "home_write";
+  /** Set aside earlier in this reply and back for its answer (743, 783). */
+  back?: boolean;
 }
 
-export type ApprovalDecision = "allow" | "always" | "deny";
+/** An unanswered card's `approval-nudge` (item 783): the reminder is due,
+ *  or the call was set aside and its card goes. */
+export interface ApprovalNudge {
+  id: string;
+  name: string;
+  chat?: string;
+  /** `unattended` (783's finish): a read-only chat's card in a run nobody
+   *  was there for — never shown, set aside at once, listed at the end. */
+  stage: "remind" | "set_aside" | "unattended";
+}
+
+/** `later` is "Not now — carry on" (nightshift item 743): the call is set
+ *  aside, the turn does the rest and asks again at the end. */
+export type ApprovalDecision = "allow" | "always" | "deny" | "later";
 
 /** The approval card's folder grant (backlog 143, pass 2): the folder and
  *  who keeps it — the chat's log, or the project's registry. */
@@ -1318,6 +1440,17 @@ export type SessionEvent =
       at: string;
     }
   | { event: "compaction"; summary: string; at: string }
+  // Item 763 (H3, blocker 2021's answer): the chat handed off in place — the
+  // model starts fresh from `brief` while he keeps scrolling one chat. Drawn
+  // as a divider where it sits; `context` is the size it left at.
+  | { event: "hand_off"; brief: string; context: number; reason: "soft" | "hard"; at: string }
+  // The chat's automatic hand-off thresholds: metadata, never drawn.
+  | { event: "auto_hand_off"; soft: number; hard: number; at: string }
+  // Item 842: his rename or removal of one chapter (item 799), by the
+  // chapter's key (`<kind>:<log index of the mark>` or `start`). The whole
+  // edit — no title is the code's name — and the latest line per key wins,
+  // over the whole log (a rewind does not undo a name). Never drawn.
+  | { event: "chapter_edit"; key: string; title?: string | null; removed?: boolean; at: string }
   // A log entry the backend could not read: an event from a newer build, or a
   // line the disk damaged. It holds its index so that `rewind` and `elide`,
   // which address events by position, still point where they were aimed. There
@@ -1349,7 +1482,7 @@ export type TurnEvent =
   /** The context the reply has built so far (nightshift backlog 590; Claude
    *  Code engine): the last exact figure plus an estimate of what has streamed
    *  since, by characters; `rough` when thinking is in the estimate. */
-  | { type: "context_live"; exact_tokens: number; estimate_tokens: number; rough: boolean; steps: number }
+  | { type: "context_live"; exact_tokens: number; estimate_tokens: number; rough: boolean; steps: number; writing_chars?: number }
   /** What the Claude Code session has, from the CLI's `system/init` line —
    *  the first event of every turn on that engine (nightshift backlog 077). */
   | ({ type: "agent_init" } & AgentInit)
@@ -1472,6 +1605,11 @@ export interface AsideResult {
   /** The newest round's cache read (item 677): the share of the chat's
    *  prefix the aside found warm (`cache_read` sums the rounds). */
   round_read?: number;
+  /** Item 699: the first round's cache read and write — the miss test's
+   *  (a later round reads back what the first wrote). Null when no round
+   *  reported; absent from an older backend. */
+  first_read?: number | null;
+  first_write?: number | null;
   /** Item 674: the answer's share of the plan, estimated from `cost_usd`
    *  at the rates fitted over lone chat replies; null before the fit has
    *  enough replies. Absent from an older backend. */
@@ -1479,6 +1617,8 @@ export interface AsideResult {
   /** Item 674: the plan's usage limit stopped the answer — the shape a
    *  turn's result carries (`AgentTurnResult.limit`). */
   limit?: AgentTurnResult["limit"];
+  /** Item 775: the files the aside changed. Absent from an older backend. */
+  changes?: unknown;
 }
 
 /** What an aside's question carries besides its words (backlog 283): the
@@ -1638,6 +1778,9 @@ export type PromptLayer =
   /** How a Chat talks — `~/.nightloom/CHAT.md`, read into a chat of the
    *  Chat kind and no other (nightshift backlog 102). Both engines. */
   | "chat_instructions"
+  /** How he works, for every chat — `~/.claude/practices/nightloom-chat.md`
+   *  (nightshift item 738). Both engines; one Settings switch for all. */
+  | "practices"
   | "project_instructions"
   | "project_notes"
   /** The bound research thread's `## Start here` (nightshift backlog 271).
@@ -1743,6 +1886,10 @@ export interface ThreadUpkeep {
   merged: [string, string][];
   saved: number;
   last_round: string | null;
+  /** thread.md is still over its ~10k cap after the moves (item 708). */
+  over_cap?: boolean;
+  /** The id of the "trim thread.md" Queue row this run added, if any. */
+  trim_queued?: string | null;
 }
 
 /** The daily pass's thread step in one project (backlog 271). */
@@ -2050,24 +2197,6 @@ export interface NoteEntry {
   is_dir: boolean;
   size: number;
   modified: string;
-}
-
-/** One entry of `schedule.json` (§7). */
-export interface Schedule {
-  id: string;
-  enabled: boolean;
-  days: string[];
-  start: string;
-  until: string | null;
-  max_units: number | null;
-  budget_usd: number | null;
-  /** `"global-order"` or a list of ids; kept as `unknown` since the two
-   *  shapes share nothing. */
-  items: unknown;
-}
-
-export interface Schedules {
-  schedules: Schedule[];
 }
 
 /** What a revert would discard, or did discard, of one shift. */

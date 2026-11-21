@@ -35,10 +35,21 @@
 //! note ([`Pending::take_rules_note`]) — once per change, recorded in the
 //! hold as `rules_noted`. This is blocker 322's append route, built for
 //! this layer only.
+//!
+//! **The volatile layers** (nightshift item 725, 2026-11-15) — the notes
+//! index, the thread's Start here, the vault index — change with the
+//! chat's own writes, so they are held like the rest, and each message
+//! carries what moved in them since as a short note after it
+//! ([`Pending::take_layer_note`], `nightloom_service::layer_note`), so the
+//! model is not left reading a stale index. A connect also checks the
+//! chat's own log before it believes the window's "cold"
+//! ([`log_warm`]): measured that night, a connect at 11:28 PM took the
+//! changed layers on a chat whose last reply was 13 minutes old under a
+//! 1-hour cache, and the next turn read 17% of its history from cache.
 
 use nightloom_core::{Segment, SegmentKind, SystemPrompt};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// One chat's hold, as its file stores it.
@@ -61,6 +72,11 @@ pub struct Hold {
     /// Cleared when the layer is taken or the change is undone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules_noted: Option<String>,
+    /// A volatile layer's text a message has already told the model of
+    /// (item 725): the next note tells only what moved after it. Dropped
+    /// when the layer is taken or the file is back to the held text.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub noted: BTreeMap<SegmentKind, String>,
 }
 
 /// What a pending layer's mark offers, as the Context page shows it.
@@ -109,6 +125,9 @@ pub struct Pending {
     /// what its first turn sends, kept until that turn creates the chat
     /// and [`Pending::bind_new_chat`] writes it under the chat's id.
     pub unsaved: tokio::sync::Mutex<Option<Hold>>,
+    /// Where the connection's volatile layers are read from (item 725),
+    /// for the note each message carries.
+    pub sources: tokio::sync::Mutex<nightloom_service::layer_note::LayerSources>,
 }
 
 impl Pending {
@@ -160,6 +179,45 @@ impl Pending {
             }
         }
         Some(note)
+    }
+
+    /// What moved in the volatile layers since `session`'s held text (or
+    /// the last note), for this message (item 725); recorded in the hold so
+    /// the next message does not repeat it. `None` when the connection is
+    /// another chat's, the chat has no hold, or nothing moved.
+    pub async fn take_layer_note(&self, session: &str) -> Option<String> {
+        let view = self.view.lock().await;
+        if view.session.as_deref() != Some(session) {
+            return None;
+        }
+        let file = self.file.lock().await.clone()?;
+        let sources = self.sources.lock().await.clone();
+        drop(view);
+        tokio::task::spawn_blocking(move || {
+            let mut hold = load(&file)?;
+            let mut held: BTreeMap<SegmentKind, String> = BTreeMap::new();
+            for kind in nightloom_service::layer_note::VOLATILE {
+                let g = group(&hold.segments, kind);
+                if !g.is_empty() {
+                    held.insert(kind, text_of(&g));
+                }
+            }
+            let before = hold.noted.clone();
+            let note = nightloom_service::layer_note::update_note(
+                &held,
+                &mut hold.noted,
+                &sources.fresh(),
+            );
+            if hold.noted != before
+                && let Err(e) = save(&file, &hold)
+            {
+                eprintln!("prompt hold not saved at {}: {e}", file.display());
+            }
+            note
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// A click on a mark of `session`'s layer `kind`, written to that
@@ -316,6 +374,7 @@ pub fn resolve(fresh: &SystemPrompt, hold: Option<&Hold>, has_cli: bool, ask: &A
         scheduled: BTreeSet::new(),
         snapshot_off: hold.snapshot_off,
         rules_noted: None,
+        noted: BTreeMap::new(),
     };
     let mut pending = Vec::new();
     let mut rules_note = None;
@@ -370,6 +429,10 @@ pub fn resolve(fresh: &SystemPrompt, hold: Option<&Hold>, has_cli: bool, ask: &A
                 newer: text_of(&new_group),
                 choice,
             });
+            // What a message already told of this layer still stands.
+            if let Some(n) = hold.noted.get(&kind) {
+                next.noted.insert(kind, n.clone());
+            }
             next.segments.extend(held_group);
         }
     }
@@ -392,6 +455,74 @@ pub fn resolve(fresh: &SystemPrompt, hold: Option<&Hold>, has_cli: bool, ask: &A
         pending,
         rules_note,
     }
+}
+
+/// The newest live reply that went to the cache: its send, the lifetime it
+/// recorded, and its context. A reply with no send time, no lifetime or no
+/// usage — a turn stopped before its answer, or cut by a quit (item 893:
+/// the 4:12 PM install cut one, and the connect after it read the chat as
+/// cold under a 1-hour cache 16 minutes old) — is passed over for the one
+/// before it, which is a lower bound: whatever the cut request did to the
+/// cache only kept it warmer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CachedReply {
+    pub sent_ms: i64,
+    pub ttl_ms: i64,
+    pub context: u64,
+}
+
+pub fn cached_reply(session: &nightloom_core::Session) -> Option<CachedReply> {
+    session
+        .live_events()
+        .iter()
+        .rev()
+        .find_map(|(_, e)| match e {
+            nightloom_core::SessionEvent::AssistantMessage {
+                sent_at: Some(sent),
+                cache_ttl: Some(ttl),
+                usage,
+                ..
+            } if usage.input_tokens + usage.output_tokens > 0 => Some(CachedReply {
+                sent_ms: sent.timestamp_millis(),
+                ttl_ms: i64::try_from(ttl.duration().as_millis()).unwrap_or(i64::MAX),
+                context: usage.input_tokens + usage.output_tokens,
+            }),
+            _ => None,
+        })
+}
+
+/// Whether `session`'s own log says its cache is still warm at `now_ms`
+/// (item 725): its newest live reply that went to the cache
+/// ([`cached_reply`]) recorded when it was sent and the lifetime it left,
+/// and that lifetime has not run out. A lower bound — a keep-warm ping or
+/// an aside only lengthens it ([`touched_warm`] reads those) — so a
+/// connect that believes it over the window's "cold" never takes a layer
+/// on a warm cache, and one that does not still takes on a truly cold one.
+pub fn log_warm(session: &nightloom_core::Session, now_ms: i64) -> bool {
+    cached_reply(session).is_some_and(|r| r.sent_ms.saturating_add(r.ttl_ms) > now_ms)
+}
+
+/// Whether the chat's keep-warm pings or its newest aside kept `reply`'s
+/// cache warm to `now_ms` (item 893): the chat's `ask/<id>` folder, read
+/// by the rule `hand_off::cold_at` uses — a ping that hit holds it an hour
+/// from its send; an aside that read at least half the reply's context,
+/// the reply's lifetime from its send. Measured: the ICS 51 chat's 2:36 PM
+/// ping held its cache, its last reply was 1:41 PM, and the 2:46 PM
+/// connect took the changed file list as if cold — 13,136 of 167,028 read.
+pub fn touched_warm(reply: &CachedReply, ask_dir: &Path, now_ms: i64) -> bool {
+    let mut cold = reply.sent_ms.saturating_add(reply.ttl_ms);
+    for p in nightloom_service::keep_warm::read_pings(ask_dir) {
+        if p.hit && p.sent_ms > reply.sent_ms {
+            cold = cold.max(p.sent_ms + nightloom_service::keep_warm::TTL_MS);
+        }
+    }
+    if let Some(a) = nightloom_service::hand_off::last_aside_read(ask_dir)
+        && a.sent_ms > reply.sent_ms
+        && a.cache_read.saturating_mul(2) >= reply.context
+    {
+        cold = cold.max(a.sent_ms.saturating_add(reply.ttl_ms));
+    }
+    cold > now_ms
 }
 
 /// Record a click on a pending layer's mark in `hold`. `Auto` clears both.
@@ -838,4 +969,193 @@ mod tests {
         assert!(load(&path).unwrap().kept.contains(&SegmentKind::UserMemory));
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// Item 725: a warm chat whose notes index and Start here moved sends
+    /// the held text byte for byte, keeps what a note already told, and
+    /// takes the new text only at a cold moment.
+    #[test]
+    fn a_warm_chat_holds_the_volatile_layers_and_keeps_its_notes() {
+        let layers = |notes: &str, thread: &str| {
+            let mut p = SystemPrompt::new();
+            p.push(Segment::new(
+                SegmentKind::ProjectNotes,
+                "project-notes",
+                notes,
+            ));
+            p.push(Segment::new(SegmentKind::Thread, "thread/t", thread));
+            p
+        };
+        let before = layers("thread.md (69.2 KB)", "1. Q-29: open");
+        let mut hold = Hold {
+            segments: before.segments().to_vec(),
+            ..Hold::default()
+        };
+        hold.noted
+            .insert(SegmentKind::Thread, "1. Q-30: told already".into());
+        let after = layers("thread.md (70.3 KB)", "1. Q-30: told already");
+        let warm = Ask {
+            cold: false,
+            auto: true,
+            now: Vec::new(),
+        };
+        let r = resolve(&after, Some(&hold), true, &warm);
+        assert_eq!(flat(&r), before.render_flat().unwrap());
+        assert_eq!(r.pending.len(), 2);
+        assert_eq!(
+            r.hold.noted.get(&SegmentKind::Thread).map(String::as_str),
+            Some("1. Q-30: told already")
+        );
+        let cold = Ask { cold: true, ..warm };
+        let r = resolve(&after, Some(&hold), true, &cold);
+        assert_eq!(flat(&r), after.render_flat().unwrap());
+        assert!(
+            r.hold.noted.is_empty(),
+            "a taken layer has nothing left to tell"
+        );
+    }
+
+    /// Item 725: the chat's own log decides warmth when it can — a reply
+    /// 13 minutes old under a 1-hour cache is warm, one past its hour is
+    /// not, and one that recorded no lifetime claims nothing.
+    #[test]
+    fn the_log_says_warm_only_within_its_reply_lifetime() {
+        use nightloom_core::{CacheTtl, Session, Usage};
+        let usage = Usage {
+            input_tokens: 70_000,
+            output_tokens: 500,
+            cache_read_tokens: Some(60_000),
+            ..Usage::default()
+        };
+        let sent = chrono::Utc::now() - chrono::Duration::minutes(13);
+        let mut s = Session::new();
+        s.record_user("hi");
+        s.record_assistant_timed(
+            "m",
+            Vec::new(),
+            None,
+            usage,
+            None,
+            sent,
+            Some(CacheTtl::OneHour),
+        );
+        let now = chrono::Utc::now().timestamp_millis();
+        assert!(log_warm(&s, now));
+        assert!(!log_warm(&s, now + 50 * 60_000));
+        let mut five = Session::new();
+        five.record_user("hi");
+        five.record_assistant_timed(
+            "m",
+            Vec::new(),
+            None,
+            usage,
+            None,
+            sent,
+            Some(CacheTtl::FiveMinutes),
+        );
+        assert!(!log_warm(&five, now));
+        let mut none = Session::new();
+        none.record_user("hi");
+        none.record_assistant_timed(
+            "m",
+            Vec::new(),
+            None,
+            Usage::default(),
+            None,
+            sent,
+            Some(CacheTtl::OneHour),
+        );
+        assert!(!log_warm(&none, now));
+        assert!(!log_warm(&Session::new(), now));
+    }
+
+    /// Item 893, the 4:13 PM miss: an install quit the app mid-turn, the
+    /// cut reply recorded no usage, and the connect after it read the
+    /// chat as cold under a 1-hour cache 16 minutes old. The cut reply is
+    /// passed over for the one before it.
+    #[test]
+    fn a_cut_reply_does_not_make_a_warm_chat_read_cold() {
+        use nightloom_core::{CacheTtl, Session, Usage};
+        let usage = Usage {
+            input_tokens: 170_000,
+            output_tokens: 500,
+            cache_read_tokens: Some(160_000),
+            ..Usage::default()
+        };
+        let now = chrono::Utc::now();
+        let mut s = Session::new();
+        s.record_user("hi");
+        s.record_assistant_timed(
+            "m",
+            Vec::new(),
+            None,
+            usage,
+            None,
+            now - chrono::Duration::minutes(16),
+            Some(CacheTtl::OneHour),
+        );
+        s.record_user("again");
+        s.record_assistant_timed(
+            "m",
+            Vec::new(),
+            Some("stopped".into()),
+            Usage::default(),
+            None,
+            now - chrono::Duration::minutes(1),
+            Some(CacheTtl::OneHour),
+        );
+        let ms = now.timestamp_millis();
+        assert!(log_warm(&s, ms));
+        assert!(!log_warm(&s, ms + 45 * 60_000));
+    }
+
+    /// Item 893, the 2:46 PM miss: the last reply was 65 minutes old, but
+    /// the chat's keep-warm ping 10 minutes before had read its cache —
+    /// warm for the hour after the ping. An aside that read at least half
+    /// the context counts the same way; one that read less, or a ping that
+    /// missed, does not.
+    #[test]
+    fn a_ping_or_an_aside_since_the_reply_keeps_the_chat_warm() {
+        let dir = std::env::temp_dir().join(format!(
+            "nightloom-893-touch-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let min = 60_000;
+        let now = 1_795_128_389_220_i64;
+        let reply = CachedReply {
+            sent_ms: now - 65 * min,
+            ttl_ms: 60 * min,
+            context: 167_000,
+        };
+        assert!(!touched_warm(&reply, &dir, now), "no ping, no aside");
+        let ping = |sent: i64, hit: bool| {
+            format!(
+                "{{\"sent_ms\":{sent},\"cache_read\":167026,\"cache_write\":0,\"input\":4,\"output\":4,\"context\":168993,\"hit\":{hit}}}\n"
+            )
+        };
+        let pings = dir.join(nightloom_service::keep_warm::PINGS_FILE);
+        std::fs::write(&pings, ping(now - 10 * min, false)).unwrap();
+        assert!(!touched_warm(&reply, &dir, now), "a missed ping");
+        std::fs::write(&pings, ping(now - 10 * min, true)).unwrap();
+        assert!(touched_warm(&reply, &dir, now), "the 2:36 PM ping");
+        assert!(
+            !touched_warm(&reply, &dir, now + 51 * min),
+            "its hour ran out"
+        );
+        std::fs::remove_file(&pings).unwrap();
+        nightloom_service::hand_off::note_aside_read(&dir, now - 5 * min, 50_000);
+        assert!(
+            !touched_warm(&reply, &dir, now),
+            "an aside that read little"
+        );
+        nightloom_service::hand_off::note_aside_read(&dir, now - 4 * min, 160_000);
+        assert!(touched_warm(&reply, &dir, now), "an aside that read it");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
+
+/// Item 727's "fixed by 725" cases, through the hold (their own file).
+#[cfg(test)]
+#[path = "prompt_hold_727_tests.rs"]
+mod cache_hold_727_tests;

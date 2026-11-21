@@ -11,7 +11,14 @@
    */
   import { onMount } from "svelte";
   import { takeBlockKey } from "../lib/codeBlockKeys";
+  import { promptBox } from "./promptBox"; // Item 800: saved prompts after a `/`.
   import { renderMarkdown } from "../lib/markdown";
+  import MathText from "../lib/MathText.svelte";
+  // Item 820: pictures an aside's answer names, as under a chat's reply.
+  import ReplyMedia from "../lib/ReplyMedia.svelte";
+  import { replyMediaInline, stripMedia } from "../lib/replyMediaInline";
+  // Item 770: a page an answer wrote, drawn where its block stands (asides mirror the chat).
+  import { replyPages } from "../lib/replyPages";
   import { COPIED_MS, copyIconSvg } from "../lib/copyIcon";
   import { loadDraft, saveDraft, type Aside, type PastAside } from "./client";
   import { missingSentence } from "./hosts";
@@ -21,18 +28,25 @@
     title: string;
     /** The host serves asides (`features`). */
     available: boolean;
+    /** Item 820: the host serves `/api/chats/{id}/media` (`reply_media`). */
+    media?: boolean;
     /** `/api/state`'s `host`, for the sentence when it does not. */
     host?: string | null;
     /** The aside asked from this page on this chat, if any. */
     aside: Aside | null;
     past: PastAside[] | null;
     problem: string | null;
+    /** Item 786: the chat's cache, which the aside reads — its time left
+     *  ("41 min"), "cold", or null with no clock. */
+    cache?: string | null;
+    /** Wave O: the chat chip's price (`next ≈ $0.37 · cold ≈ $4.32`), or null. */
+    price?: string | null;
     /** Resolves true when the Mac took the question. */
     onask: (text: string) => Promise<boolean>;
     onstop: () => void;
     oncopy: (text: string) => void;
   }
-  let { chat, title, available, host = undefined, aside, past, problem, onask, onstop, oncopy }: Props = $props();
+  let { chat, title, available, media = false, host = undefined, aside, past, problem, cache = null, price = null, onask, onstop, oncopy }: Props = $props();
 
   const key = $derived(`aside:${chat}`);
   let text = $state("");
@@ -68,14 +82,17 @@
 
 <div class="as-title">Ask aside</div>
 <div class="as-sub">Beside “{title}” — the answer stays out of the chat.</div>
+<!-- Item 786: the chat's cache, as its header line reads it — the aside reads the same. -->
+{#if available && cache}<div class="as-cache" class:cold={cache === "cold"}>cache <b>{cache === "cold" ? "cold" : cache}</b>{cache === "cold" ? " · the ask writes it again" : " left"}{#if price}<span class="as-price">{" · "}{price}</span>{/if}</div>{/if}
 {#if !available}
   <p class="as-note">{missingSentence(host, "This Mac's Nightloom is older than the phone page: update it to ask asides from here.")}</p>
 {:else}
   {#if aside}
     <div class="as-card">
-      <div class="as-q">{aside.question}</div>
+      <div class="as-q"><MathText text={aside.question} /></div>
       {#if aside.answer}
-        <div class="as-md">{@html renderMarkdown(aside.answer)}</div>
+        <div class="as-md" use:replyPages={asking ? { off: true } : { copy: oncopy }} use:replyMediaInline={{ chat, off: !media }}>{@html renderMarkdown(aside.answer, { localImagesAsText: true })}</div>
+        {#if media && !asking}<ReplyMedia items={stripMedia(aside.answer, [])} {chat} />{/if}
       {:else if asking}
         <span class="as-thinking"><i></i><i></i><i></i></span>
       {/if}
@@ -99,6 +116,7 @@
   <textarea
     class="as-box"
     data-kept
+    use:promptBox
     rows="3"
     placeholder={asking ? "Wait for this answer…" : "A quick question, beside the chat…"}
     bind:value={text}
@@ -115,9 +133,10 @@
     <div class="as-past">
       {#each past as p, i (i)}
         <details>
-          <summary>{p.question}</summary>
+          <summary><MathText text={p.question} /></summary>
           <small class="as-thread">{p.thread}</small>
-          <div class="as-md">{@html renderMarkdown(p.answer)}</div>
+          <div class="as-md" use:replyPages={{ copy: oncopy }} use:replyMediaInline={{ chat, off: !media }}>{@html renderMarkdown(p.answer, { localImagesAsText: true })}</div>
+          {#if media}<ReplyMedia items={stripMedia(p.answer, [])} {chat} />{/if}
         </details>
       {/each}
     </div>
@@ -125,6 +144,18 @@
 {/if}
 
 <style>
+  .as-cache {
+    font-size: 12px;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .as-cache b {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .as-cache.cold b {
+    color: var(--dim);
+  }
   .as-title {
     font-weight: 600;
     font-size: 17px;

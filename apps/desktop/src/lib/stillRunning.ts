@@ -132,3 +132,20 @@ export function lineView(seg: StillRunningSegment, rows: readonly StillRow[]): L
 export function lineText(v: LineView): string {
   return `${v.head} ${v.count} (${v.names.map((x) => `“${x.label}”`).join(", ")})${v.tail ? ` ${v.tail}` : ""}`;
 }
+
+/**
+ * Item 700 (his "also should be some more animation during that period"):
+ * how many agents a live turn waits on — the main reply has ended (its
+ * still-running line is the reply's last segment, nothing after it) and the
+ * line's subagents still run. Null when the turn is not waiting on agents:
+ * a segment came after the line (the main agent was woken), he pressed
+ * Stop, or none of them runs any more (the turn is about to move).
+ */
+export function waitingOn(segs: readonly { kind: string }[], rows: readonly StillRow[]): number | null {
+  const last = segs[segs.length - 1];
+  if (!last || last.kind !== "still_running") return null;
+  const seg = last as unknown as StillRunningSegment;
+  if (seg.stopped) return null;
+  const n = lineView(seg, rows).names.filter((x) => x.state === "running").length;
+  return n > 0 ? n : null;
+}

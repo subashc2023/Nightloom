@@ -3,6 +3,7 @@ import * as api from "../api";
 import { modelInstructionFile } from "../catalog";
 import { EDITABLE_LAYERS, type NoteScope, type EditableLayer, type PromptLayer, type PromptLayerEdits, type SessionEvent } from "../types";
 import { chatIsCold, reconnectBeforeTurn, saveLayerPrefs } from "../promptVersions";
+import { makeConnectRetry } from "../connectRetry";
 import { showNote, currentModelId, noteDraftKey } from "./notes.svelte";
 import { chatScope, pushUndo } from "./edits.svelte";
 import { app, chatChoice, applyTimer, lastSent, sentKey, restoreChatChoice, applyDraft, applyAgentDraft, filesChangedGen, filesSeenGen, refreshSessions, pendingChatKey, adoptCreatedChat, writePendingThread, promoteThreadText, addToast, liveFlags } from "../state.svelte";
@@ -101,6 +102,8 @@ const LAYER_ORDER: PromptLayer[] = [
   "environment",
   "user_memory",
   "model_instructions",
+  "chat_instructions",
+  "practices",
   "project_instructions",
   "project_notes",
   "thread",
@@ -325,9 +328,15 @@ export async function syncPromptLayers(): Promise<void> {
     if (app.connectError && key !== lastSent && key !== lastAutoRetry) {
       lastAutoRetry = key;
       await applyDraft();
+      return;
     }
+    // Item 888: the same chat is tried again on its own after a growing
+    // wait (5 s, 15 s, 30 s, then each minute), so a connect that failed
+    // on a slow disk cannot leave the composer dimmed until a relaunch.
+    if (app.connectError) connectRetry.arm();
     return;
   }
+  connectRetry.reset();
   try {
     const { off, built, edits, built_edits, mode, built_mode, kind, built_kind, thread, built_thread } =
       await api.promptLayers();
@@ -372,6 +381,11 @@ let lastFailedSync: string | null = null;
 /** The (chat, draft) a failed connect was last retried for on its own
  *  (item 261), so a retry that fails too is not repeated forever. */
 let lastAutoRetry: string | null = null;
+/** Item 888: the timed retry of a failed connect; see `connectRetry.ts`. */
+export const connectRetry = makeConnectRetry({
+  due: () => !app.connection && !!app.connectError && !app.connecting && !app.busy,
+  run: () => applyDraft(),
+});
 
 /**
  * Try the connection again after it failed (item 261): the Retry on the
@@ -383,5 +397,6 @@ export async function retryConnect(): Promise<void> {
   app.connectError = null;
   lastFailedSync = null;
   lastAutoRetry = null;
+  connectRetry.reset();
   await applyDraft();
 }

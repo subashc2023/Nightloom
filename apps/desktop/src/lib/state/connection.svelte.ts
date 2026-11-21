@@ -2,13 +2,18 @@
 import * as api from "../api";
 import { suggestions } from "../suggestions.svelte";
 import { isProviderVisible, modelsFor, newPromptId, sanitizeThinking, saveLastConnection, savePrefs, savePrompts, thinkingString, type CatalogPrefs, type Engine } from "../catalog";
-import { applyChoice, choiceOf, loadChoices, noteConnected, noteMade, saveChoices, wantedChoice, type ChatChoice, type ChatChoices } from "../chatChoice";
+import { applyChoice, applyHomeEffort, choiceOf, homeChoice, loadChoices, noteConnected, noteMade, saveChoices, wantedChoice, type ChatChoice, type ChatChoices } from "../chatChoice";
+import { isHome } from "../home";
 import { adoptNewChat, emptyRules, loadRules, rulesFor, saveRules, setRulesFor, useDefaultFor, type SubagentRulesStore } from "../subagentRules";
 import { probeAuth } from "../claudeAuth.svelte";
 import { chatIsCold } from "../promptVersions";
 import { CONNECT_DEADLINE_MS, withDeadline } from "../deadline";
 import type { PromptLayer, ProviderInfo } from "../types";
 import { refreshPlanUsage } from "./usage.svelte";
+import { cli } from "../cliUpdate.svelte";
+import { currentCliVersion } from "../modelSeen";
+import { modelSeen } from "../modelSeen.svelte";
+import { windowModelFor } from "../knownWindow";
 import { app } from "../state.svelte";
 
 /** A provider the backend can actually construct a client for right now. */
@@ -188,7 +193,12 @@ function connectStarting(): void {
  *  only while that chat is still the one on screen. */
 function chatConnected(chat: string | null, c: ChatChoice): void {
   if (app.activeSessionId !== chat) return;
-  noteConnected(chatChoice.choices, chat, c);
+  // Item 763 (blocker 2041): an effort picked in Home is Home's; a New
+  // chat in Home is on Home's default, which must not become every New
+  // chat's.
+  const inHome = isHome(app.project);
+  if (inHome) chatChoice.choices.homeEffort = app.draft.agentEffort;
+  if (!(inHome && chat === null)) noteConnected(chatChoice.choices, chat, c);
   saveChatChoices();
 }
 
@@ -205,19 +215,25 @@ export function restoreChatChoice(): boolean {
   if (!chatChoice.ready) return false;
   const chat = app.activeSessionId;
   if (chat === chatChoice.shownFor) return false;
-  const wanted = wantedChoice(chatChoice.choices, chat);
+  const inHome = isHome(app.project);
+  let wanted = wantedChoice(chatChoice.choices, chat);
+  // Item 763 (blocker 2041): a Home chat with no choice of its own starts
+  // on Opus 5.5; recorded below, so his later pick in it sticks.
+  if (inHome && (chat === null || !chatChoice.choices.chats[chat])) wanted = homeChoice(wanted ?? choiceOf(app.draft));
   const engineChanged = wanted !== null && wanted.engine !== app.draft.engine;
   // While a turn runs on screen the rail may show the chat's model, but
   // not tear down the connection that turn belongs to: an engine change
   // waits for the turn's end.
   if (engineChanged && (app.busy || app.connecting)) return false;
   chatChoice.shownFor = chat;
-  if (!wanted) return false;
+  const effortMoved = applyHomeEffort(chatChoice.choices, app.draft, inHome);
+  if (effortMoved) saveChatChoices();
+  if (!wanted) return effortMoved;
   if (chat !== null) {
     noteMade(chatChoice.choices, chat, wanted);
     saveChatChoices();
   }
-  if (!applyChoice(app.draft, wanted)) return false;
+  if (!applyChoice(app.draft, wanted)) return effortMoved;
   sanitizeThinking(app.draft);
   if (engineChanged) {
     // As `useEngine`: the other engine's connection, plan window and
@@ -256,7 +272,10 @@ export async function applyDraft(): Promise<void> {
   app.connecting = true;
   app.connectError = null;
   try {
-    const res = await api.connect({
+    // Item 873: the window's deadline on this connect too, as on the agent's
+    // (item 220) — without it a provider connect that never answers held
+    // "connecting…" in the top bar for good.
+    const res = await withDeadline(api.connect({
       provider: d.provider,
       model: d.model.trim() || undefined,
       baseUrl: d.baseUrl.trim() || undefined,
@@ -270,7 +289,7 @@ export async function applyDraft(): Promise<void> {
       selfCompact: d.selfCompact,
       knowledge: d.knowledge,
       workspace: d.workspace.trim() || undefined,
-    });
+    }), CONNECT_DEADLINE_MS, "Connecting to the provider");
     app.connection = {
       provider: res.provider,
       model: res.model,
@@ -384,6 +403,9 @@ export async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true
       agent: res.agent ?? null,
       folders: res.folders ?? [],
     };
+    // The window before any turn reports it (item 714): from the model the
+    // alias is known to name, looked up in the same limits table.
+    if (app.connection.contextLimit == null) void fillKnownWindow(app.connection, d.agentModel, res.agent?.version ?? null);
     // Whether Claude Code is signed in (backlog 409), for the engine chip:
     // a local `claude auth status`, zero tokens, not awaited.
     void probeAuth(res.agent?.binary ?? null);
@@ -555,4 +577,19 @@ export async function fetchModels(kind: string, force = false): Promise<void> {
 export function setPrefs(mutate: (p: CatalogPrefs) => void): void {
   mutate(app.prefs);
   savePrefs(JSON.parse(JSON.stringify(app.prefs)) as CatalogPrefs);
+}
+
+/**
+ * Fill a Claude Code connection's unknown window from the model its alias
+ * is known to name (item 714). Only while this connection is still the
+ * app's and nothing — a turn's report — has filled it meanwhile.
+ */
+async function fillKnownWindow(conn: NonNullable<typeof app.connection>, alias: string, atConnect: string | null): Promise<void> {
+  const pick = windowModelFor(modelSeen.byAlias, alias, currentCliVersion(cli.status?.installed, atConnect));
+  if (!pick) return;
+  const [w] = await api.contextLimits("anthropic", [pick.id]).catch(() => [null]);
+  if (w == null || app.connection !== conn || conn.contextLimit != null) return;
+  conn.contextLimit = w;
+  conn.windowFrom = pick.from;
+  conn.windowName = pick.name;
 }

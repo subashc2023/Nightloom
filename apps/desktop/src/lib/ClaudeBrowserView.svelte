@@ -43,6 +43,8 @@
   import { app, cancelTurn, runningWork } from "./state.svelte";
   import { liveHost } from "./browse";
   import { browserSteps, sameChat, stopHolds } from "./browserSteps";
+  import { HAND_BACK_TIP, driveWhy } from "./drive";
+  import { handBack, pendingDrive } from "./driveAsk.svelte";
   import {
     browsers,
     dismissDialog,
@@ -302,6 +304,18 @@
   const parts = $derived(addressParts(draft, status?.url));
   const strip = $derived(holdStrip(status, ph));
 
+  // Item 872 step 5: Home's ask to take this page, while it waits — he can
+  // hand back from here, with the note he typed on its card.
+  const driveReq = $derived(pendingDrive(session));
+  let handing = $state(false);
+  let handError = $state<string | null>(null);
+  async function handBackHere() {
+    if (!driveReq || handing) return;
+    handing = true;
+    handError = await handBack(driveReq);
+    handing = false;
+  }
+
   // Item 567: the chat's running turn, if any, and its browser calls —
   // read from the state that says what runs (`runningWork`), so the log
   // and Stop are there exactly while the sidebar says the chat runs.
@@ -393,6 +407,15 @@
       {/if}
     </div>
   {/if}
+  {#if driveReq}
+    <div class="cb-line notice" role="status" data-drive-ask>
+      <span class="notice-text">Home asked you to take this page{driveWhy(driveReq.input) ? `: ${driveWhy(driveReq.input)}` : "."}</span>
+      <button class="ns-btn small accent" data-act="hand-back" disabled={handing} use:tip={HAND_BACK_TIP} onclick={() => void handBackHere()}>Hand back</button>
+    </div>
+  {/if}
+  {#if handError}
+    <div class="cb-line err" role="alert">{handError}</div>
+  {/if}
   {#if addrError || navError}
     <div class="cb-line err" role="alert">{addrError ?? navError}</div>
   {/if}
@@ -471,7 +494,8 @@
           <b class="st-tool">{st.tool}</b>
           <span class="st-target"
             >{st.target ?? ""}{#if st.state === "running"}<span class="st-state">{st.target ? " · " : ""}running</span
-              >{:else if st.state === "failed"}<span class="st-state">{st.target ? " · " : ""}failed</span>{/if}</span
+              >{:else if st.state === "failed"}<span class="st-state">{st.target ? " · " : ""}failed</span
+              >{:else if st.state === "soft"}<span class="st-state">{st.target ? " · " : ""}not run</span>{/if}</span
           >
         </li>
       {/each}
@@ -797,5 +821,8 @@
   }
   .cb-step[data-state="failed"] .st-state {
     color: var(--failed);
+  }
+  .cb-step[data-state="soft"] .st-state {
+    color: var(--partial);
   }
 </style>

@@ -53,6 +53,9 @@ import type { AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
 import { loadFold, loadFoldRecords, storedFold, type AsideFold, type FoldRecord } from "./asideFold";
 import type { Attachment } from "./types";
+import type { AsideMoved } from "./state/asides.svelte";
+import { cleanMoved } from "./asideMove";
+import { cleanChanges, type AsideChange } from "./asideNotes";
 
 export const ASIDES_KEY = "nightloom.asides";
 let loadedSeq = 0;
@@ -209,6 +212,9 @@ interface StoredTurn {
    *  cache read, so its refresh of the chat's cache outlives a relaunch. */
   readAt?: number;
   roundRead?: number;
+  /** Item 775: the files the answer changed, and its note's name. */
+  changes?: AsideChange[];
+  noteId?: string;
 }
 
 // ---- Backlog 283 (2026-10-02): the aside's composer is the chat's ----
@@ -268,6 +274,12 @@ interface StoredAside {
   uid?: string;
   model?: string;
   effort?: string;
+  /** Item 734: where he moved the card, in the chat column's px
+   *  (`asideMove.ts`), so a relaunch puts it back there. */
+  moved?: AsideMoved;
+  /** Item 735: minimized to one line, and an answer landed since. */
+  minimized?: true;
+  newReply?: true;
 }
 
 function storeTurn(t: AsideTurn): StoredTurn | null {
@@ -287,6 +299,10 @@ function storeTurn(t: AsideTurn): StoredTurn | null {
   if (typeof t.readAt === "number" && typeof t.roundRead === "number") {
     out.readAt = t.readAt;
     out.roundRead = t.roundRead;
+  }
+  if (t.changes && t.changes.length > 0 && t.noteId) {
+    out.changes = t.changes.map((c) => ({ ...c }));
+    out.noteId = t.noteId;
   }
   const end = t.at ? Date.parse(t.at) : NaN;
   if (t.startedAt != null && Number.isFinite(end)) out.ms = Math.max(0, end - t.startedAt);
@@ -340,6 +356,12 @@ function storeAside(a: Aside): StoredAside | null {
   const model = cleanPick(a.model);
   if (model !== null) out.model = model;
   if (typeof a.effort === "string") out.effort = a.effort.trim().slice(0, 80);
+  const moved = a.moved ? cleanMoved(a.moved) : null;
+  if (moved) out.moved = moved;
+  if (a.minimized) {
+    out.minimized = true;
+    if (a.newReply) out.newReply = true;
+  }
   return out;
 }
 
@@ -453,6 +475,12 @@ function loadAside(v: unknown): Aside | null {
       turn.readAt = m.readAt;
       turn.roundRead = m.roundRead;
     }
+    // Item 775: what it changed, for the thread's line.
+    const changes = cleanChanges(m.changes);
+    if (changes.length > 0 && typeof m.noteId === "string") {
+      turn.changes = changes;
+      turn.noteId = m.noteId;
+    }
     // Item 674 step 6: the thinking and calls; an older entry has none
     // and reads as its text.
     const segs = loadSegs(m.segs, turn.partial);
@@ -468,6 +496,14 @@ function loadAside(v: unknown): Aside | null {
     const m = cleanPick(a.model);
     if (m !== null) x.model = m;
     if (typeof a.effort === "string") x.effort = a.effort.trim().slice(0, 80);
+    // Item 734: where he moved the card; one kept from a passage needs it.
+    const moved = cleanMoved(a.moved);
+    if (moved && (moved.from === "column" || anchor)) x.moved = moved;
+    // Item 735: minimized, and its dot.
+    if (a.minimized === true) {
+      x.minimized = true;
+      if (a.newReply === true) x.newReply = true;
+    }
     return x;
   };
   if (a.draft === true) {

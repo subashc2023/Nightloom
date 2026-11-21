@@ -5,16 +5,26 @@
  * while the Mac is unreachable. Nothing here touches the DOM, so all of it
  * is under `client.test.ts`; `Remote.svelte` is the screen over it.
  */
-import type { ApprovalRequest, DocumentInput, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
+import type { Source } from "../lib/listen";
+import type { HomeRoute, RoutePick, RoutesReply } from "../lib/homeRoutes";
+import type { HomeSource, SourceId } from "../lib/homeSources";
+import type { HomeTask } from "../lib/homeStage/host";
+import type { Job, JobPatch, JobsReply, NewJob } from "./jobs";
+import type { ApprovalRequest, DocumentInput, ImageInput, PlanPace, SessionEvent, TurnEvent } from "../lib/types";
+import type { RuleEdit, RulesListing } from "./rules";
 import type { SubagentLimits } from "../lib/catalog";
 import type { WireView } from "../lib/types";
+import type { CacheRatesWire } from "../lib/cachePrice";
 import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
 import { isCouncilBlock } from "../lib/council";
+import { isSecretRequest, type BwItem, type BwReady } from "../lib/secret";
+import { isDriveRequest } from "../lib/drive";
 import { parseSubagentBlock } from "../lib/subagent";
 import { cleanPassage, shownText, splitAttachNote } from "../lib/keep";
 import { isSendFile, parseSentFile, sentFileRoute, type SentFile } from "../lib/sentFiles";
 import { aimOf } from "../lib/aim";
 import { isPlaywright } from "../lib/playwright";
+import { isStuck } from "../lib/stuck";
 import { applyRetry, type RetrySegment } from "../lib/retryLine";
 // Pure over the log (only a type import inside): the desktop's per-reply
 // sizes, so the phone's line under a reply says the Mac's number.
@@ -82,6 +92,14 @@ export interface LimitPauseWire {
   subagents?: string[];
   /** Set while the host has a resume scheduled (reset + 30 s). */
   resume_at?: number | string | null;
+}
+
+/** `?chat=…&project=…` for the rules routes; neither when no chat is named. */
+export function rulesQuery(chat: string | null, project: string | null): string {
+  if (!chat) return "";
+  const q = new URLSearchParams({ chat });
+  if (project) q.set("project", project);
+  return `?${q.toString()}`;
 }
 
 /** Whether the host serves `name` (design §4's `features`). */
@@ -190,6 +208,8 @@ export interface Running {
   asides?: unknown[];
   dream?: unknown | null;
   capture?: unknown | null;
+  /** Item 741 (763 H8): each running chat's context now, in tokens, by chat id. */
+  contexts?: Record<string, number>;
 }
 
 /** The plan's windows (`PlanUsage` in the service crate): percent used. */
@@ -206,6 +226,9 @@ export interface PlanUsage {
 export interface Usage {
   plan: PlanUsage;
   ledger?: unknown;
+  /** Item 824: the plan's pace (`pace::read`), for the dials' projected
+   *  mark; absent from an older host or one with no reading history. */
+  pace?: PlanPace | null;
 }
 
 /** A council turn's request (the desktop's `CouncilRequest`, council.ts). */
@@ -229,6 +252,14 @@ export interface SendExtras {
   /** Wave 4 C1: the same on every try of one message, so a try after a
    *  lost reply is answered, not run again ([`nonceFor`]). */
   nonce?: string;
+}
+
+/** `POST /api/feedback`'s answer (item 805). */
+export interface FeedbackSent {
+  filed: { project: string; item: string; file: string } | null;
+  pending_why: string | null;
+  saved: string | null;
+  also_filed: { project: string; item: string; file: string }[];
 }
 
 /** A fresh nonce: 32 hex digits. `crypto.getRandomValues`, not
@@ -405,6 +436,24 @@ export type AsideEvent =
   | { kind: "done"; seq: number; answer: string | null; error: string | null; cancelled: boolean };
 // (An `error` event — `{kind: "error", seq, error, answer, cancelled}` — is
 // read as a `done` with its `error` set.)
+
+/**
+ * Item 786: the desktop's word on a chat's cache expiry (`tellPhoneCache`
+ * in `remoteHandlers.ts`), on the `aside-event` stream: `{kind: "cache",
+ * chat, warm_until}`, `warm_until` ms epoch or null. Null for anything else.
+ */
+export function parseCacheEvent(data: string): { chat: string; warmUntil: number | null } | null {
+  try {
+    const v: unknown = JSON.parse(data);
+    if (!v || typeof v !== "object") return null;
+    const o = v as Record<string, unknown>;
+    if (o.kind !== "cache" || typeof o.chat !== "string") return null;
+    const w = o.warm_until;
+    return { chat: o.chat, warmUntil: typeof w === "number" && Number.isFinite(w) ? w : null };
+  } catch {
+    return null;
+  }
+}
 
 export function parseAsideEvent(data: string): AsideEvent | null {
   let v: Record<string, unknown>;
@@ -735,6 +784,62 @@ export async function countedFetch(url: string, init: RequestInit): Promise<Resp
   }
 }
 
+// ---- item 763 H8: what the phone's Home reads ---------------------------------
+
+/** `GET /api/home/today` (built by 763's H6): `points` is the percent of
+ *  the week Home's unattended runs used today, `cap` its daily cap,
+ *  `stop` why those runs are stopped now. */
+export interface HomeTodayWire {
+  points: number;
+  cap: number;
+  week: number | null;
+  five_hour: number | null;
+  stop: string | null;
+}
+
+/** One row of Home's feed (`home/feed.jsonl`). */
+export interface HomeFeedRowWire {
+  at: string;
+  kind: string;
+  label?: string | null;
+  chat?: string | null;
+  project?: string | null;
+  line: string;
+}
+
+export interface HomeFeedWire {
+  rows: HomeFeedRowWire[];
+  seen_at: string | null;
+  /** When the feed was last written, unix ms. */
+  as_of: number | null;
+  home: { project: string | null; chat: string | null };
+}
+
+export interface HomeScanWire {
+  date: string;
+  text: string;
+  ran_at: number | null;
+  today: boolean;
+  skipped: string | null;
+}
+
+export interface HeldBlockerWire {
+  project: string;
+  project_name: string;
+  id: string;
+  item: string;
+  question: string;
+}
+
+/** One row of `/push/feed`: the last thing in a chat he has not opened. */
+export interface PushFeedWire {
+  what: string;
+  chat: string;
+  label?: string | null;
+  project?: string | null;
+  at: number;
+}
+
 export class Client {
   /** `base`: the host's origin (`hosts.ts`); empty is the page's own. */
   constructor(
@@ -759,6 +864,66 @@ export class Client {
     }
     if (!r.ok) throw new ApiError(r.status, (await r.text()) || r.statusText, this.base);
     return r;
+  }
+
+  /** His feedback to the agent (item 805): one backlog item on the host,
+   *  his words verbatim; `nonce` makes a resend after a lost reply the
+   *  same item. */
+  async feedback(body: {
+    text: string;
+    chat?: string | null;
+    chat_title?: string | null;
+    project?: string | null;
+    nonce?: string;
+    /** Item 815 (`feedback_images`): photos or pasted screenshots, base64. */
+    images?: { data: string; kind: "paste" }[];
+  }): Promise<FeedbackSent> {
+    return (await this.call("/feedback", { method: "POST", body: JSON.stringify(body) })).json();
+  }
+
+  /** Item 801: `text` read aloud by the host's Piper voice, one WAV file;
+   *  `brief` first rewrites it for the ear (its words come back too). */
+  async listen(text: string, brief: boolean): Promise<{ blob: Blob; words?: string }> {
+    const r = await this.call("/listen", { method: "POST", body: JSON.stringify({ text, brief }) });
+    const raw = r.headers.get("x-brief-words");
+    let words: string | undefined;
+    if (raw) {
+      try {
+        words = decodeURIComponent(raw);
+      } catch {
+        words = undefined;
+      }
+    }
+    return { blob: await r.blob(), words };
+  }
+
+  /** Item 862: the Brief's words alone, then read a part at a time. */
+  async listenBrief(text: string): Promise<string> {
+    const r = (await (await this.call("/listen/brief", { method: "POST", body: JSON.stringify({ text }) })).json()) as { words?: string };
+    if (!r.words?.trim()) throw new Error("the Brief came back empty");
+    return r.words;
+  }
+
+  /** Item 862: part `i` of `text` read aloud, and how many parts there are
+   *  (`x-listen-parts`; a host older than 862 sends the whole file, one part). */
+  async listenPart(text: string, i: number): Promise<{ bytes: ArrayBuffer; parts: number }> {
+    const r = await this.call("/listen", { method: "POST", body: JSON.stringify({ text, part: i }) });
+    const parts = Number(r.headers.get("x-listen-parts"));
+    return { bytes: await r.arrayBuffer(), parts: Number.isFinite(parts) && parts > 0 ? parts : 1 };
+  }
+
+  /** Item 862: this host as Listen's source. */
+  listenSource(): Source {
+    return { brief: (t) => this.listenBrief(t), part: (t, i) => this.listenPart(t, i) };
+  }
+
+  /** Item 820: a picture or a video a reply names, read by the Mac under
+   *  its own rules; the type rides in `x-media-type` (the body is always
+   *  `application/octet-stream`), and the blob is built with it. */
+  async replyMedia(chat: string, path: string): Promise<{ mediaType: string; bytes: Blob }> {
+    const r = await this.call(`/chats/${encodeURIComponent(chat)}/media`, { method: "POST", body: JSON.stringify({ path }) });
+    const mediaType = r.headers.get("x-media-type") ?? "application/octet-stream";
+    return { mediaType, bytes: new Blob([await r.blob()], { type: mediaType }) };
   }
 
   /** A file a reply sent (backlog 343), with the bearer like every call. */
@@ -827,6 +992,144 @@ export class Client {
 
   async usage(): Promise<Usage> {
     return (await this.call("/usage")).json();
+  }
+
+  /** Wave O: the cache chip's rates for `model` on this host — `null` with
+   *  no figure (the `cache_rates` feature). */
+  async cacheRates(model: string): Promise<CacheRatesWire | null> {
+    return (await this.call(`/cache-rates?model=${encodeURIComponent(model)}`)).json();
+  }
+
+  // ---- item 763 H8: the phone's Home screen (`homeFirst.ts`) ----
+
+  /** Today's spend for Home's own runs (the parent's `/home/today`);
+   *  null when this host has no such route yet — the header then goes
+   *  without the percent, never an error. */
+  async homeToday(): Promise<HomeTodayWire | null> {
+    try {
+      return (await this.call("/home/today")).json();
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return null;
+      throw e;
+    }
+  }
+
+  /** Item 763 H5: Home's Start cards; an older host has none. */
+  async homeRoutes(): Promise<RoutesReply> {
+    try {
+      return (await this.call("/home/routes")).json();
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return { cards: [], held: [], started: [] };
+      throw e;
+    }
+  }
+
+  /** His tap on a Start card: the prompt as he left it, his pick on a cold card. */
+  async homeRouteStart(id: string, prompt: string | null, pick: RoutePick | null): Promise<HomeRoute> {
+    return (await this.call(`/home/routes/${encodeURIComponent(id)}/start`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt, pick }) })).json();
+  }
+
+  async homeRouteDismiss(id: string): Promise<HomeRoute> {
+    return (await this.call(`/home/routes/${encodeURIComponent(id)}/dismiss`, { method: "POST" })).json();
+  }
+
+  async homeFeed(): Promise<HomeFeedWire> {
+    return (await this.call("/home/feed")).json();
+  }
+
+  async homeSeen(): Promise<{ seen_at: string }> {
+    return (await this.call("/home/seen", { method: "POST" })).json();
+  }
+
+  async homeScan(): Promise<{ scan: HomeScanWire | null }> {
+    return (await this.call("/home/scan")).json();
+  }
+
+  async homeHeld(): Promise<{ blockers: HeldBlockerWire[] }> {
+    return (await this.call("/home/held")).json();
+  }
+
+  /** Item 808: Messages, Contacts, Reminders and the Calendar app as the
+   *  Mac reads them now; null when this host has no such route yet. */
+  async homeSources(): Promise<HomeSource[] | null> {
+    try {
+      return (await this.call("/home/sources")).json();
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return null;
+      throw e;
+    }
+  }
+
+  /** Item 845: the tasks on Home's stage, oldest first; an older host has none (empty, quietly). */
+  async homeTasks(): Promise<HomeTask[]> {
+    try {
+      const v = await (await this.call("/home/tasks")).json();
+      return Array.isArray(v) ? v : [];
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return [];
+      throw e;
+    }
+  }
+
+  /** Item 872: Home's steps — the last turns of Home's chat, its messages only (`GET /home/steps`); none when the
+   *  host has no Home chat or an older host has no route. Reading it never marks Home's chat seen. */
+  async homeSteps(): Promise<SessionEvent[]> {
+    try {
+      const v = await (await this.call("/home/steps")).json();
+      return Array.isArray(v) ? v : [];
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return [];
+      throw e;
+    }
+  }
+
+  /** Item 845: one click of his on a task view, for Home's next look (kind B). The Mac only. */
+  async homeTaskEvent(task: string, view: string, line: string): Promise<void> {
+    await this.call("/home/tasks/event", { method: "POST", body: JSON.stringify({ task, view, line }) });
+  }
+
+  /** Item 845 (846 §7 step 3): the phone's view in focus, sent just before his Tell Home message. The Mac only. */
+  async homeStageFocus(view: string, task: string): Promise<void> {
+    await this.call("/home/tasks/focus", { method: "POST", body: JSON.stringify({ view, task }) });
+  }
+
+  /** Item 845: his × on a task's tab — the tab goes; the work is not stopped. The Mac only. */
+  async homeTaskClose(id: string): Promise<void> {
+    await this.call(`/home/tasks/${encodeURIComponent(id)}/close`, { method: "POST" });
+  }
+
+  /** Item 808: ask the Mac for a source — Settings → Home opens there at
+   *  its row; the macOS dialog waits for his press on the Mac. */
+  async homeSourceAsk(id: SourceId): Promise<{ said: string }> {
+    return (await this.call(`/home/sources/${id}/ask`, { method: "POST" })).json();
+  }
+
+  /** Item 741: the last note of every chat he has not opened since. */
+  async pushFeed(): Promise<{ rows: PushFeedWire[] }> {
+    return (await this.call("/push/feed")).json();
+  }
+
+  // ---- item 746: recurring jobs (`jobs.ts`, `JobsSheet.svelte`) ----
+
+  async jobs(): Promise<JobsReply> {
+    return (await this.call("/jobs")).json();
+  }
+
+  /** A 400 is the host's sentence for a schedule it cannot read. */
+  async jobNew(req: NewJob): Promise<Job> {
+    return (await this.call("/jobs", { method: "POST", body: JSON.stringify(req) })).json();
+  }
+
+  async jobPatch(id: string, patch: JobPatch): Promise<Job> {
+    return (await this.call(`/jobs/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(patch) })).json();
+  }
+
+  async jobRun(id: string): Promise<Job> {
+    return (await this.call(`/jobs/${encodeURIComponent(id)}/run`, { method: "POST" })).json();
+  }
+
+  async jobDelete(id: string): Promise<void> {
+    await this.call(`/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
 
   // ---- wave 2B's patch note (246w2-patch-p2b-to-p2c, ~4:15 AM) ----
@@ -959,15 +1262,61 @@ export class Client {
     return parseSendReply(await r.text());
   }
 
+  /** Item 800: the saved message prompts `/name` offers in the boxes —
+   *  name and body, in Settings' order. Read only: the Mac edits them. */
+  async savedPrompts(): Promise<{ name: string; body: string }[]> {
+    const r = (await (await this.call("/saved-prompts")).json()) as { prompts?: { name: string; body: string }[] };
+    return Array.isArray(r.prompts) ? r.prompts : [];
+  }
+
+  /** Item 743: the approval rules in force — every chat's, and `chat`'s
+   *  when one is named (`project` as `act`'s). */
+  async rules(chat: string | null, project: string | null = null): Promise<RulesListing> {
+    return (await this.call(`/rules${rulesQuery(chat, project)}`)).json();
+  }
+
+  /** One change to the rules; the reply is the listing after it. A 409's
+   *  text is the host's sentence for why not. */
+  async editRules(chat: string | null, project: string | null, edit: RuleEdit): Promise<RulesListing> {
+    return (await this.call(`/rules${rulesQuery(chat, project)}`, { method: "POST", body: JSON.stringify(edit) })).json();
+  }
+
   async approve(req: {
     id: string;
     name: string;
-    decision: "allow" | "always" | "deny";
+    /** `later` is "Not now — carry on" (item 743), where the host has the `later` feature. */
+    decision: "allow" | "always" | "deny" | "later";
     reason?: string;
     answer?: unknown;
     then?: "ask" | "auto";
   }): Promise<void> {
     await this.call("/approve", { method: "POST", body: JSON.stringify(req) });
+  }
+
+  /** Keep a secret typed on the phone's `request_secret` card (item 766) on
+   *  this host, before the card's Allow. The body goes nowhere else. */
+  async storeSecret(chat: string, name: string, value: string): Promise<void> {
+    await this.call("/secret", { method: "POST", body: JSON.stringify({ chat, name, value }) });
+  }
+
+  /** Item 766 part 2: whether this host can read from Bitwarden. */
+  async bitwardenReady(): Promise<BwReady> {
+    const r = await this.call("/bitwarden/ready");
+    return ((await r.json()) as { ready: BwReady }).ready;
+  }
+
+  /** Vault items matching `query` on this host: names and field names only. */
+  async bitwardenSearch(query: string): Promise<BwItem[]> {
+    const r = await this.call("/bitwarden/search", { method: "POST", body: JSON.stringify({ query }) });
+    return ((await r.json()) as { items: BwItem[] }).items;
+  }
+
+  /** Read one item's field into the chat's private file on this host. */
+  async bitwardenStore(chat: string, name: string, itemId: string, field: string, alwaysFor: string | null): Promise<void> {
+    await this.call("/bitwarden/store", {
+      method: "POST",
+      body: JSON.stringify({ chat, name, item_id: itemId, field, always_for: alwaysFor }),
+    });
   }
 
   /** Stop `chat`'s turn — the chat this page shows, which need not be the
@@ -1063,6 +1412,10 @@ export interface ToolRow {
   textAt?: number;
   /** The file a `send_file` call sent (backlog 343): its chip. */
   sent?: SentFile;
+  /** A file-editing call's input (item 742: the reply's Changes row), kept
+   *  only for the calls `editDiffOf` reads; `turnChanges.ts` turns it into
+   *  a diff when the row is drawn. */
+  input?: unknown;
 }
 
 /** The files a reply's calls sent, in order (backlog 343). */
@@ -1144,6 +1497,14 @@ export function toolSummary(name: string, input: unknown): string {
   return s.length > 120 ? s.slice(0, 117) + "…" : s;
 }
 
+/** Item 742: the tools whose input is a diff (`editDiffOf`'s names). */
+const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "edit_file", "write_file"]);
+
+/** `{ input }` for a file-editing call, else nothing — spread into a row. */
+export function editInput(name: string, input: unknown): { input?: unknown } {
+  return EDIT_TOOLS.has(name) ? { input } : {};
+}
+
 function findTool(rows: ToolRow[], id: string): ToolRow | null {
   for (const r of rows) {
     if (r.id === id) return r;
@@ -1167,7 +1528,7 @@ export function foldTurnEvent(live: LiveTurn, ev: TurnEvent): LiveTurn {
       return {
         ...live,
         retry: null,
-        tools: [...live.tools, { id: ev.id, name: ev.name, summary: toolSummary(ev.name, ev.input), ok: null, children: [], textAt: live.text.length }],
+        tools: [...live.tools, { id: ev.id, name: ev.name, summary: toolSummary(ev.name, ev.input), ok: null, children: [], textAt: live.text.length, ...editInput(ev.name, ev.input) }],
       };
     case "tool_result": {
       const tools = structuredClone(live.tools);
@@ -1425,6 +1786,7 @@ export function transcriptRows(events: SessionEvent[]): Row[] {
               index: i,
               block: n,
               removed: whole || !!gone?.has(n),
+              ...editInput(b.name, b.input),
             };
             tools.push(row);
             pushSeg(seq, { kind: "tools", tools: [row] });
@@ -1663,8 +2025,14 @@ export function newQueued(
 // ---- the cards --------------------------------------------------------------
 
 /** The card a prompt draws, by the tool the CLI paused on. */
-export function cardKind(req: ApprovalRequest): "question" | "plan" | "playwright" | "call" {
+export function cardKind(req: ApprovalRequest): "question" | "plan" | "playwright" | "stuck" | "secret" | "drive" | "call" {
   if (req.name === "AskUserQuestion") return "question";
+  // Item 872 step 5: Home asks him to take the page — only the Mac can.
+  if (isDriveRequest(req.name)) return "drive";
+  // Item 766: the chat asks for a secret — typed on the card, never in the chat.
+  if (isSecretRequest(req.name)) return "secret";
+  // Item 784: the runaway guard paused a run — Continue or Stop.
+  if (isStuck(req.name)) return "stuck";
   // Playwright, Claude's own browser (backlog 367): the desktop's card,
   // here too — the phone renders questions, so it renders this.
   if (isPlaywright(req.name)) return "playwright";
@@ -1681,11 +2049,16 @@ export function questionAnswer(
   input: unknown,
   picks: Record<number, string[]>,
   others: Record<number, string>,
+  notes: Record<number, Record<string, string>> = {},
 ): unknown {
   const qs = (input as { questions?: { question: string }[] } | null)?.questions ?? [];
   const answers: Record<string, string> = {};
   qs.forEach((q, i) => {
-    const chosen = [...(picks[i] ?? [])];
+    // Item 712: a picked option carries his comment, `Label (note: …)`, as the desktop's `withNote`.
+    const chosen = (picks[i] ?? []).map((l) => {
+      const n = (notes[i]?.[l] ?? "").replace(/\s+/g, " ").trim();
+      return n ? `${l} (note: ${n})` : l;
+    });
     const other = (others[i] ?? "").trim();
     if (other) chosen.push(other);
     answers[q.question] = chosen.join(", ");

@@ -1,7 +1,10 @@
 // Item 616: Combo (the default) and Reticle join Sweep as the Thinking
 // motion. The rules are read from the component's source, as 610's are.
 import { describe, expect, it } from "vitest";
-import messageSrc from "./AssistantMessage.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+import messageSrcRaw from "./AssistantMessage.svelte?raw";
+const messageSrc = asOneFile(messageSrcRaw, assistantMessageLogicRaw);
 import { HELPER_WINDOW } from "./stepMotion.svelte";
 
 const css = messageSrc.slice(messageSrc.indexOf("<style"));

@@ -1,102 +1,72 @@
 <script lang="ts">
   import { hudIn, hudOut } from "./hudMenu";
   /**
-   * A chat's open asides, listed under its sidebar row when its asides
-   * toggle is open (item 265; the design is in `asideSidebar.svelte.ts`).
-   * Indented like its forks, but each row carries the asides glyph and
-   * "aside" on its second line, and the rule at its left is dotted where
-   * a fork's is solid. A click shows the thread in a tab (the one already
-   * showing it, else a new one beside); a double-click or the ··· menu's
-   * Rename names it; the menu's Close moves it to the chat's Past list, as
-   * the card's × does (text in its box asks first).
-   */
-  import { app, asideAsking, asideInTab, requestDismissAside } from "./state.svelte";
-  import type { Aside } from "./state.svelte";
-  import * as tabs from "./tabs";
+  * A chat's open asides, listed under its sidebar row when its asides
+  * toggle is open (item 265; the design is in `asideSidebar.svelte.ts`).
+  * Indented like its forks, but each row carries the asides glyph and
+  * "aside" on its second line, and the rule at its left is dotted where
+  * a fork's is solid. A click shows the thread in a tab (the one already
+  * showing it, else a new one beside); a double-click or the ··· menu's
+  * Rename names it; the menu's Close moves it to the chat's Past list, as
+  * the card's × does (text in its box asks first).
+  */
+  import { requestDismissAside } from "./state.svelte";
   import Icon from "./Icon.svelte";
   import AsideNameEdit from "./AsideNameEdit.svelte";
+  import { quoteSummary } from "./asideQuote";
   import { tip } from "./tip";
   import { asideLabel } from "./asides";
   import { renameAside } from "./asides.svelte";
-  import { asidesListedOf, openAsideTab } from "./asideSidebar.svelte";
+  import { openAsideTab } from "./asideSidebar.svelte";
+  import { sidebarAsidesLogic, type SidebarAsidesLogicProps } from "./sidebarAsides/logic.svelte";
 
-  let { session, depth = 0 }: { session: string; depth?: number } = $props();
-
-  const list = $derived(asidesListedOf(session));
-  const front = $derived(tabs.activeTab(tabs.focusedPane(app.tabs)).content);
-  let naming = $state<number | null>(null);
-  let menu = $state<{ a: Aside; x: number; y: number; up: boolean } | null>(null);
-
-  function statusOf(a: Aside): string {
-    if (asideAsking(a)) return "asking…";
-    if (a.draft) return "not asked yet";
-    const n = a.turns.length;
-    const s = `${n} ${n === 1 ? "exchange" : "exchanges"}`;
-    return asideInTab(session, a.id) ? `${s} · in a tab` : s;
-  }
-  function isFront(a: Aside): boolean {
-    return front.kind === "aside" && front.session === session && front.thread === a.id;
-  }
-  function openMenu(e: MouseEvent, a: Aside, fromButton: boolean) {
-    e.preventDefault();
-    e.stopPropagation();
-    if (fromButton) {
-      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      const up = r.bottom + 120 > window.innerHeight;
-      menu = { a, x: r.left, y: up ? window.innerHeight - r.top + 4 : r.bottom + 4, up };
-    } else {
-      menu = { a, x: e.clientX, y: e.clientY, up: false };
-    }
-  }
-  function pick(fn: (a: Aside) => void) {
-    const a = menu?.a;
-    menu = null;
-    if (a) fn(a);
-  }
+  // Item 856: the behaviour lives once, in `sidebarAsides/logic.svelte.ts`; this file is the look.
+  const props: SidebarAsidesLogicProps = $props();
+  const T = sidebarAsidesLogic(() => props);
 </script>
 
 <svelte:window
   onkeydown={(e) => {
-    if (menu && e.key === "Escape") {
+    if (T.menu && e.key === "Escape") {
       e.preventDefault();
-      menu = null;
+      T.menu = null;
     }
   }}
 />
 
-{#each list as a (a.id)}
-  <div class="aside-item" class:active={isFront(a)} style:--depth={depth + 1}>
-    {#if naming === a.id}
+{#each T.list as a (a.id)}
+  <div class="aside-item" class:active={T.isFront(a)} style:--depth={T.depth + 1}>
+    {#if T.naming === a.id}
       <AsideNameEdit
         value={a.name ?? ""}
         placeholder={asideLabel({ ...a, name: undefined })}
         oncommit={(v) => {
-          naming = null;
+          T.naming = null;
           renameAside(a, v);
         }}
-        oncancel={() => (naming = null)}
+        oncancel={() => (T.naming = null)}
       />
     {:else}
       <button
         class="aside-row"
-        onclick={() => void openAsideTab(session, a.id)}
-        ondblclick={() => (naming = a.id)}
-        oncontextmenu={(e) => openMenu(e, a, false)}
-        use:tip={a.quote ? `About: ${a.quote.text.slice(0, 160)}` : "An aside asked from the composer"}
+        onclick={() => void openAsideTab(T.session, a.id)}
+        ondblclick={() => (T.naming = a.id)}
+        oncontextmenu={(e) => T.openMenu(e, a, false)}
+        use:tip={a.quote ? `About: ${quoteSummary(a.quote.text, 160)}` : "An aside asked from the composer"}
       >
         <span class="snippet"
           ><span class="glyph" aria-hidden="true"><Icon name="think" size={11} /></span>{asideLabel(a)}</span
         >
-        <span class="meta">aside · {statusOf(a)}</span>
+        <span class="meta">aside · {T.statusOf(a)}</span>
       </button>
       <button
         class="more-btn"
-        class:open={menu?.a === a}
+        class:open={T.menu?.a === a}
         aria-label="More for this aside"
         aria-haspopup="menu"
-        aria-expanded={menu?.a === a}
+        aria-expanded={T.menu?.a === a}
         use:tip={"Open, rename, close…"}
-        onclick={(e) => openMenu(e, a, true)}
+        onclick={(e) => T.openMenu(e, a, true)}
       >
         <svg viewBox="0 0 20 20" aria-hidden="true" width="14" height="14" fill="currentColor"
           ><circle cx="4.5" cy="10" r="1.6" /><circle cx="10" cy="10" r="1.6" /><circle cx="15.5" cy="10" r="1.6" /></svg
@@ -106,21 +76,21 @@
   </div>
 {/each}
 
-{#if menu}
-  <button class="scrim" aria-label="Close" onclick={() => (menu = null)} oncontextmenu={(e) => { e.preventDefault(); menu = null; }}></button>
+{#if T.menu}
+  <button class="scrim" aria-label="Close" onclick={() => (T.menu = null)} oncontextmenu={(e) => { e.preventDefault(); T.menu = null; }}></button>
   <div
     class="row-menu hud-m"
     role="menu"
     in:hudIn|global
     out:hudOut|global
-    style:left="{menu.x}px"
-    style:top={menu.up ? undefined : `${menu.y}px`}
-    style:bottom={menu.up ? `${menu.y}px` : undefined}
+    style:left="{T.menu.x}px"
+    style:top={T.menu.up ? undefined : `${T.menu.y}px`}
+    style:bottom={T.menu.up ? `${T.menu.y}px` : undefined}
   >
-    <button role="menuitem" onclick={() => pick((a) => void openAsideTab(session, a.id))}>Open in a tab</button>
-    <button role="menuitem" onclick={() => pick((a) => (naming = a.id))}>Rename</button>
+    <button role="menuitem" onclick={() => T.pick((a) => void openAsideTab(T.session, a.id))}>Open in a tab</button>
+    <button role="menuitem" onclick={() => T.pick((a) => (T.naming = a.id))}>Rename</button>
     <div class="row-sep"></div>
-    <button role="menuitem" onclick={() => pick((a) => requestDismissAside(a))}
+    <button role="menuitem" onclick={() => T.pick((a) => requestDismissAside(a))}
       >Close <span class="row-key">to the chat's Past list</span></button
     >
   </div>

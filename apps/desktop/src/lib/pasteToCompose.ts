@@ -26,8 +26,12 @@
  *   leaves to the browser, the composer then puts in at its caret.
  *
  * Left alone: any focused text field (search, a note, a rename, an aside's
- * box, the message-edit box, the terminal) keeps its own paste; a floating
- * aside card's controls (its own box is the one meant); a modal, menu,
+ * box, the message-edit box, the terminal) keeps its own paste; ~~a floating
+ * aside card's controls (its own box is the one meant)~~ — since item 853
+ * every box takes it as the chat's does: the box meant is `composerTarget`'s
+ * (an aside card he is in or last pressed on, else the focused pane's box,
+ * an aside tab's included), and only a card that is not that box's refuses;
+ * a modal, menu,
  * popover, the palette or the find bar open; no chat composer drawn; with
  * two panes, the chat not in the focused one (316's `inFocusedPane`); ⌘⇧V
  * (the clipboard history) and a held key's repeats. The rule is
@@ -36,7 +40,7 @@
  */
 import { isEditable } from "./composerCaret";
 import { isPasteAsAttachmentKey } from "./pasteAttach";
-import { ASIDE_SELECTOR, TYPE_BLOCKERS, chatComposerBox, inFocusedPane, type FocusEl } from "./typeToCompose";
+import { ASIDE_SELECTOR, TYPE_BLOCKERS, composerTarget, isStaleFocus, pressedRegionNow, type FocusEl } from "./typeToCompose";
 
 /** Which paste a key asks for. */
 export type PasteKind = "plain" | "attach";
@@ -65,7 +69,7 @@ export function pasteChord(e: PasteKeyLike, mac: boolean): PasteKind | null {
 export type PasteFocus =
   /** A text field of any kind: its paste is its own. */
   | "editable"
-  /** Inside a floating aside card: its own box is the one meant. */
+  /** Inside an aside card that is not the target box's. */
   | "aside"
   /** Anything else — the body, the transcript, a button, the sidebar. */
   | "outside";
@@ -83,11 +87,14 @@ export function pastesToComposer(ctx: PasteContext): boolean {
   return ctx.composer && !ctx.blocked && ctx.focus === "outside";
 }
 
-/** The focused element's kind for the rule; `isRoot` says it is the body or the document element. */
-export function pasteFocusOf(active: FocusEl | null, isRoot: boolean): PasteFocus {
+/** The focused element's kind for the rule; `isRoot` says it is the body
+ *  or the document element; `ownCard` the card the target box sits in
+ *  (item 853), whose controls are the box's own. */
+export function pasteFocusOf(active: FocusEl | null, isRoot: boolean, ownCard: unknown = null): PasteFocus {
   if (!active || isRoot) return "outside";
   if (isEditable(active)) return "editable";
-  if (active.closest(ASIDE_SELECTOR)) return "aside";
+  const card = active.closest(ASIDE_SELECTOR);
+  if (card && card !== ownCard) return "aside";
   return "outside";
 }
 
@@ -111,12 +118,15 @@ export function registerPasteHandler(root: Element, h: PasteHandler): () => void
 function target(): PasteHandler | null {
   if (typeof document === "undefined") return null;
   const doc = document;
-  const found = chatComposerBox(doc);
+  const found = composerTarget(doc);
   const active = doc.activeElement as (HTMLElement & FocusEl) | null;
   const ctx: PasteContext = {
-    composer: found !== null && inFocusedPane(found.root, doc.querySelector("section.pane.focused")),
+    composer: found !== null && found.inPane,
     blocked: !!doc.querySelector(TYPE_BLOCKERS),
-    focus: pasteFocusOf(active, active === doc.body || active === doc.documentElement),
+    // Item 853 fix 2: a focus his last press left behind is no field of his.
+    focus: isStaleFocus(pressedRegionNow(), found?.region ?? null, active, active === doc.body || active === doc.documentElement, active?.closest(ASIDE_SELECTOR) ?? null)
+      ? "outside"
+      : pasteFocusOf(active, active === doc.body || active === doc.documentElement, found?.card ?? null),
   };
   if (!found || !pastesToComposer(ctx)) return null;
   return handlers.get(found.root) ?? null;

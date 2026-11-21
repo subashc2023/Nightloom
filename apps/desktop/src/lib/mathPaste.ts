@@ -396,10 +396,21 @@ export function mathPasteText(html: string): string | null {
   // Review 2026-10-12: any failure (a paste nested deeper than the stack)
   // leaves the paste to go in as it always did.
   try {
-    return convert(html);
+    // Item 814: a table holding a formula (his `$z$` header) is still a table — before, this path
+    // ran first on any copy with maths in it and wrote the table as loose tab-parted lines.
+    return convert(wrapRows(html), undefined, true);
   } catch {
     return null;
   }
+}
+
+/**
+ * Item 814: table rows with no `<table>` round them — what a copy whose range lies inside one table
+ * (from one row to another) clones: its common ancestor is the `<tbody>`, so the fragment is bare
+ * `<tr>`s — wrapped in one, so they read as the table they came from, not as loose lines.
+ */
+function wrapRows(html: string): string {
+  return /<tr[\s>]/i.test(html) && !/<table[\s>]/i.test(html) ? `<table>${html}</table>` : html;
 }
 
 /**
@@ -416,9 +427,9 @@ export function mathPasteText(html: string): string | null {
  * the walk below writes it (math still as TeX). Null when there is no table, or on any failure.
  */
 export function tablePasteText(html: string): string | null {
-  if (!html || !/<table[\s>]/i.test(html)) return null;
+  if (!html || !/<t(able|r)[\s>]/i.test(html)) return null;
   try {
-    return convert(html, undefined, true);
+    return convert(wrapRows(html), undefined, true);
   } catch {
     return null;
   }
@@ -427,6 +438,20 @@ export function tablePasteText(html: string): string | null {
 /** A cell's text for a Markdown table: one line, `|` escaped. */
 function mdCell(s: string): string {
   return s.replace(/\s+/g, " ").trim().replace(/\|/g, "\\|");
+}
+
+/**
+ * Item 860: the paste as a note's Markdown — `htmlPasteText`'s walk with
+ * tables as Markdown tables (item 684) and headings as `#` lines. Null on
+ * any failure, so the paste goes in as it always did.
+ */
+export function htmlNoteText(html: string, onImage: (img: El) => string | null): string | null {
+  if (!html) return null;
+  try {
+    return convert(wrapRows(html), onImage, true, true, true);
+  } catch {
+    return null;
+  }
 }
 
 export function htmlPasteText(html: string, onImage: (img: El) => string | null): string | null {
@@ -438,7 +463,27 @@ export function htmlPasteText(html: string, onImage: (img: El) => string | null)
   }
 }
 
-function convert(html: string, onImage?: (img: El) => string | null, tables = false): string | null {
+/**
+ * Item 814: a quoted passage (an aside's, a comment's, a reply's — `asideQuote.ts` `selectionText`)
+ * that holds a table or a list, as text: each table a Markdown table, each list item with its
+ * marker, maths as TeX — never the loose lines the passage's own walk made of them. Null on failure.
+ */
+export function quoteText(html: string): string | null {
+  if (!html) return null;
+  try {
+    return convert(wrapRows(html), undefined, true, true);
+  } catch {
+    return null;
+  }
+}
+
+function convert(
+  html: string,
+  onImage?: (img: El) => string | null,
+  tables = false,
+  always = false,
+  headings = false,
+): string | null {
   const root = parseHtml(html);
   // MathJax v2 pairs: frame id `MathJax-Element-3-Frame` ↔ script id `MathJax-Element-3`.
   const scripts = new Map<string, El>();
@@ -580,6 +625,8 @@ function convert(html: string, onImage?: (img: El) => string | null, tables = fa
       }
       const block = PARA.has(c.tag) ? 2 : LINE.has(c.tag) ? 1 : 0;
       if (block) nl(block);
+      // Item 860: a note keeps the copy's headings as Markdown headings.
+      if (headings && /^h[1-6]$/.test(c.tag)) put(`${"#".repeat(Number(c.tag[1]))} `);
       if (c.tag === "li") {
         const list = c.parent;
         if (list?.tag === "ol") {
@@ -605,7 +652,7 @@ function convert(html: string, onImage?: (img: El) => string | null, tables = fa
     }
   };
   walk(root, false);
-  if (found === 0 && images === 0 && tablesFound === 0) return null;
+  if (!always && found === 0 && images === 0 && tablesFound === 0) return null;
   return parts
     .join("")
     .split("\n")

@@ -306,6 +306,13 @@ pub fn unrewind(session: &mut Session, cli: Option<OnCli<'_>>, of: usize) -> Res
             .agent_session()
             .filter(|(agent, _)| *agent == AGENT)
             .map(|(_, id)| id.to_string());
+        // Helpers launched since the rewind go back with the chat (item 710).
+        if let (Some(b), Some(c), Some(cwd)) = (&before, &current, Some(cli.workspace.as_path()))
+            && b != c
+            && let Some(projects) = cli_session::projects_dir()
+        {
+            carry_subagents_by_id(&projects, cwd, c, b);
+        }
         let change = match (before, current) {
             (Some(b), Some(c)) if b == c => CliChange::Untouched,
             (Some(b), _) => CliChange::Resume(b),
@@ -916,11 +923,126 @@ pub fn edit_cli_file(
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let parsed = CliSession::parse(&text).map_err(|e| e.to_string())?;
     match change(&parsed).map_err(|e| e.to_string())? {
-        Some(edited) => cli_session::write_copy(&path, &edited)
-            .map(CliChange::Resume)
-            .map_err(|e| e.to_string()),
+        Some(edited) => {
+            let copy = cli_session::write_copy(&path, &edited).map_err(|e| e.to_string())?;
+            // The copy keeps the chat's helpers (item 710).
+            carry_subagents(&path, &copy);
+            Ok(CliChange::Resume(copy))
+        }
         None => Ok(CliChange::Fresh),
     }
+}
+
+/// The folder the CLI keeps a session's helper transcripts in:
+/// `<project folder>/<session id>/subagents/`, beside `<session id>.jsonl`.
+const SUBAGENTS_DIR: &str = "subagents";
+
+/// Carry the helpers of the CLI session whose file is `from_file` into the
+/// session `to_id` beside it (nightshift item 710): every file of
+/// `<from>/subagents/` (each helper's `agent-*.jsonl`, `.meta.json` and
+/// the rest) that `<to>/subagents/` does not already have, hard-linked —
+/// one transcript on disk, so a helper continued in either chat is the same
+/// helper — and copied where a link cannot be made. Measured cause
+/// (`710-report-2026-11-15.md`): a reword, rewind, fork or continue made a
+/// new CLI session with an empty helper folder, so a SendMessage to a
+/// helper launched before it failed ("No transcript found") and the
+/// launch list (`agent/brief.rs`) named no earlier helper. Best-effort: a
+/// helper that cannot be carried never refuses the edit. Returns how many
+/// files were carried.
+pub fn carry_subagents(from_file: &Path, to_id: &str) -> usize {
+    let (Some(dir), Some(from_id)) = (
+        from_file.parent(),
+        from_file.file_stem().and_then(|s| s.to_str()),
+    ) else {
+        return 0;
+    };
+    if from_id == to_id {
+        return 0;
+    }
+    let src = dir.join(from_id).join(SUBAGENTS_DIR);
+    let Ok(entries) = std::fs::read_dir(&src) else {
+        return 0;
+    };
+    let dest = dir.join(to_id).join(SUBAGENTS_DIR);
+    let mut carried = 0;
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        let target = dest.join(entry.file_name());
+        if target.exists() {
+            continue;
+        }
+        if std::fs::create_dir_all(&dest).is_err() {
+            return carried;
+        }
+        if std::fs::hard_link(entry.path(), &target).is_ok()
+            || std::fs::copy(entry.path(), &target).is_ok()
+        {
+            carried += 1;
+        }
+    }
+    carried
+}
+
+/// [`carry_subagents`] by ids: `from`'s file found under `projects` for
+/// `cwd`, carried to `to` in the same folder. 0 when `from` has no file.
+pub fn carry_subagents_by_id(projects: &Path, cwd: &Path, from: &str, to: &str) -> usize {
+    match cli_session::find(projects, cwd, from) {
+        Ok(file) => carry_subagents(&file, to),
+        Err(_) => 0,
+    }
+}
+
+/// After a turn that recorded CLI session `new_id` (item 710): the helpers
+/// of the session the chat resumed before it — or, for the first turn of
+/// a chat continued from a hand-off, its parent's — carried in. Covers the
+/// copies the CLI makes itself (`--fork-session` on an edit-and-send) and
+/// the hand-off's fresh session, which [`edit_cli_file`] never sees. A turn
+/// that resumed the same id carries nothing and reads no folder.
+pub fn carry_subagents_after_turn(session: &Session, cwd: &Path, new_id: &str) -> usize {
+    match cli_session::projects_dir() {
+        Some(projects) => carry_subagents_after_turn_in(session, &projects, cwd, new_id),
+        None => 0,
+    }
+}
+
+/// [`carry_subagents_after_turn`] with the CLI's projects root given.
+pub fn carry_subagents_after_turn_in(
+    session: &Session,
+    projects: &Path,
+    cwd: &Path,
+    new_id: &str,
+) -> usize {
+    if session.mode() == ChatMode::Ephemeral {
+        return 0;
+    }
+    let before = session
+        .agent_session()
+        .filter(|(agent, _)| *agent == AGENT)
+        .map(|(_, id)| id.to_string())
+        .or_else(|| handoff_parent_cli_session(session));
+    let Some(before) = before.filter(|b| b != new_id) else {
+        return 0;
+    };
+    carry_subagents_by_id(projects, cwd, &before, new_id)
+}
+
+/// The CLI session a hand-off parent last resumed, read from its log beside
+/// this chat's; `None` for any chat not continued from a hand-off.
+fn handoff_parent_cli_session(session: &Session) -> Option<String> {
+    let from = session.forked_from()?;
+    if from.reason.as_deref() != Some("handoff") {
+        return None;
+    }
+    let path = session
+        .log_path()?
+        .with_file_name(format!("{}.jsonl", from.session));
+    let parent = Session::load(path).ok()?;
+    parent
+        .agent_session()
+        .filter(|(agent, _)| *agent == AGENT)
+        .map(|(_, id)| id.to_string())
 }
 
 /// What an edit to a turn changed: the transcript, and the id of the chat
@@ -1014,9 +1136,10 @@ pub fn restore_cli_file(
         None => current.restore(&original, target),
     }
     .map_err(|e| e.to_string())?;
-    cli_session::write_copy(&path, &restored)
-        .map(CliChange::Resume)
-        .map_err(|e| e.to_string())
+    let copy = cli_session::write_copy(&path, &restored).map_err(|e| e.to_string())?;
+    // The copy keeps the chat's helpers (item 710).
+    carry_subagents(&path, &copy);
+    Ok(CliChange::Resume(copy))
 }
 
 #[cfg(test)]
@@ -1342,6 +1465,144 @@ mod tests {
         let second = parent.events().len() - 1;
         let fork = fork_in(&parent, &root, None, second, None).unwrap();
         assert!(fork.title().is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- item 710: a session copy keeps the chat's helpers ----
+
+    /// A CLI project folder with session `sid` and two helpers under it.
+    fn with_helpers(sid: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("nightloom-710-{}", uuid::Uuid::new_v4()));
+        let (projects, cwd) = (root.join("projects"), root.join("work"));
+        std::fs::create_dir_all(&cwd).unwrap();
+        let folder = projects.join(cli_session::project_folder(&cwd));
+        let helpers = folder.join(sid).join(SUBAGENTS_DIR);
+        std::fs::create_dir_all(&helpers).unwrap();
+        std::fs::write(folder.join(format!("{sid}.jsonl")), stopped_first_turn(sid)).unwrap();
+        std::fs::write(helpers.join("agent-a1.jsonl"), "{\"helper\":1}\n").unwrap();
+        std::fs::write(helpers.join("agent-a1.meta.json"), "{}").unwrap();
+        (root, projects, cwd, folder)
+    }
+
+    fn helpers_of(folder: &Path, sid: &str) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(folder.join(sid).join(SUBAGENTS_DIR))
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_carry_links_every_helper_once_and_leaves_the_source() {
+        let sid = "11111111-1111-4111-8111-111111111111";
+        let (root, _, _, folder) = with_helpers(sid);
+        let file = folder.join(format!("{sid}.jsonl"));
+        assert_eq!(carry_subagents(&file, "copy-1"), 2);
+        assert_eq!(
+            helpers_of(&folder, "copy-1"),
+            vec!["agent-a1.jsonl", "agent-a1.meta.json"]
+        );
+        // One transcript on disk: a hard link, not a second copy (the inode
+        // is Unix's; stable Rust has no Windows file index to compare).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let a = std::fs::metadata(folder.join(sid).join(SUBAGENTS_DIR).join("agent-a1.jsonl"))
+                .unwrap();
+            let b = std::fs::metadata(
+                folder
+                    .join("copy-1")
+                    .join(SUBAGENTS_DIR)
+                    .join("agent-a1.jsonl"),
+            )
+            .unwrap();
+            assert_eq!(a.ino(), b.ino());
+        }
+        // Again: nothing new to carry; a file the copy already has is kept.
+        assert_eq!(carry_subagents(&file, "copy-1"), 0);
+        assert_eq!(helpers_of(&folder, sid).len(), 2, "the source is untouched");
+        // Onto itself, or from a session with no helpers: nothing.
+        assert_eq!(carry_subagents(&file, sid), 0);
+        assert_eq!(carry_subagents(&folder.join("none.jsonl"), "copy-2"), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Reword, rewind, fork and remove all go through `edit_cli_file`:
+    /// the copy it writes has the helpers of the session it was cut from.
+    #[test]
+    fn an_edited_copy_of_the_cli_session_keeps_its_helpers() {
+        let sid = "22222222-2222-4222-8222-222222222222";
+        let (root, projects, cwd, folder) = with_helpers(sid);
+        let change = edit_cli_file(&projects, &cwd, sid, |s| Ok(Some(s.clone()))).unwrap();
+        let CliChange::Resume(copy) = change else {
+            panic!("a copy to resume");
+        };
+        assert_ne!(copy, sid);
+        assert_eq!(
+            helpers_of(&folder, &copy),
+            vec!["agent-a1.jsonl", "agent-a1.meta.json"]
+        );
+        // The launch list reads the copy's folder and names the helper.
+        let listed =
+            crate::agent::brief::earlier_agents(&folder.join(format!("{copy}.jsonl")), None);
+        assert_eq!(
+            listed.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            vec!["a1"]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A turn that comes back on a new CLI session (the CLI's own fork on
+    /// an edit-and-send) carries the helpers of the one it resumed; a turn
+    /// on the same session reads nothing.
+    #[test]
+    fn a_turn_on_a_new_cli_session_carries_the_helpers() {
+        let sid = "33333333-3333-4333-8333-333333333333";
+        let (root, projects, cwd, folder) = with_helpers(sid);
+        let logs = root.join("sessions");
+        std::fs::create_dir_all(&logs).unwrap();
+        let mut chat = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        chat.record_agent_session(AGENT, sid);
+        assert_eq!(
+            carry_subagents_after_turn_in(&chat, &projects, &cwd, sid),
+            0
+        );
+        assert_eq!(
+            carry_subagents_after_turn_in(&chat, &projects, &cwd, "new-1"),
+            2
+        );
+        assert_eq!(helpers_of(&folder, "new-1").len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A chat continued from a hand-off has no CLI session of its own until
+    /// its first turn: that turn carries the parent's helpers.
+    #[test]
+    fn a_handoffs_first_turn_carries_the_parents_helpers() {
+        let sid = "44444444-4444-4444-8444-444444444444";
+        let (root, projects, cwd, folder) = with_helpers(sid);
+        let logs = root.join("sessions");
+        std::fs::create_dir_all(&logs).unwrap();
+        let mut parent = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        parent.record_user("one");
+        parent.record_agent_session(AGENT, sid);
+        let next = continue_from(&parent, &logs, None).unwrap();
+        assert!(next.agent_session().is_none());
+        assert_eq!(
+            carry_subagents_after_turn_in(&next, &projects, &cwd, "next-1"),
+            2
+        );
+        assert_eq!(helpers_of(&folder, "next-1").len(), 2);
+        // A chat with no CLI session and no hand-off parent carries nothing.
+        let fresh = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        assert_eq!(
+            carry_subagents_after_turn_in(&fresh, &projects, &cwd, "next-2"),
+            0
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -1260,6 +1260,100 @@ Playwright's viewer apps (they can fall through to Google Chrome). Test
 `nothing_ever_configures_chrome_or_the_devtools_capability` fails if either
 server shape or the helper names one.
 
+## The secret-request card (2026-11-17, nightshift item 766)
+
+A chat that needs a token, a password or a key calls
+`mcp__nightloom__request_secret` (`secret.rs`) with a `name`
+(GITHUB_TOKEN-shaped) and a `why`; it never passes a value. The call has
+its own `PreToolUse` gate in every position, beside `add_folder`'s
+(`AgentSpec::secret_gate_entry`, failing closed; the Ask hook's `mcp__`
+alternative leaves it out so two hooks never race for one decision file):
+a subagent's or a side process's call is refused in words, a bad name is
+refused with the reason, anything else defers for the card. No rule can
+answer it (`approval_rules::check`).
+
+**The value's one road**: the card (`SecretCard.svelte`, the phone's card in
+`Remote.svelte`) sends it to the host's store first — the `store_secret`
+command, or `POST /api/secret` from the phone — and only then answers a
+bare Allow. `secret::Store` keeps it at `$TMPDIR/nightloom-secrets/<chat>/<NAME>`,
+folders `0700`, the file `0600`, swept after a day (at launch, before every
+turn, on every store). On the Allow the turn reads it back, notes the
+*path* in `<ask dir>/secrets-stored.json`, and the resumed tool answers
+with that path and how to read it inside a command (`"$(cat '<path>')"`).
+An Allow with nothing stored is his refusal.
+
+**Everything that could echo it is scrubbed** (`secret::Scrub`, shared by
+the turn's agent, recorder and end, loaded from the store at the turn's
+start): each raw line the CLI prints (JSON-escaped and raw forms), the bash
+tails, each block the recorder logs (whole blocks, so a value split across
+deltas is caught), the text deltas the window and the phone are sent
+(`DeltaHold` holds back a delta's end that could be a value's start), the
+turn's final text, and at the turn's end the CLI's own session file and
+everything under its `<session>/` folder. Values under six characters are
+not scrubbed (they would garble ordinary text). `Secret`'s `Debug` hides
+the value. Since the merge-round-T review (2026-11-17): thinking deltas are
+held as prose is; an aside's and a council seat's deltas and final text go
+through the same hold (`ask_aside`, `run_with`; the aside's caller loads
+the chat's values with `learn_secrets`); the browser card's reason is
+scrubbed; a value pasted with spaces around it is scrubbed trimmed too; a
+rewritten CLI file keeps its `0600` mode; a failed turn's session file is
+scrubbed by the id it resumed; and the store is swept every ten minutes
+while the app is open (`keep_swept`). Not covered, by design: the model reads a command's output in
+its own context, and the CLI's background-output files under its temp
+folder are not rewritten. The check: `secret_766_tests.rs`.
+
+### From Bitwarden (item 766 part 2)
+
+Below the typed field, the card has **or from Bitwarden** (`BitwardenPick.svelte`, used on the Mac and on the
+phone). It lists vault items by name, with the website's host and the names of their fields. It never shows a value:
+they come from `bw list items --search`, and the backend (`bitwarden.rs`) drops the values before anything is
+returned. He picks one item and one field. Then:
+
+- **Use once:** the backend reads that one value (`bw get item <id>`) and writes it into the same 0600 store a typed
+  value goes to. The card then answers with a bare Allow, so every scrub path above is unchanged.
+- **Always for `<prefix>`:** does the same, and also writes a rule (secret name, item id, field, command prefix) to
+  `~/.nightloom/bitwarden-rules.json`. The prefix is the first plain words of the `command` the model passed to
+  `request_secret` (`command_prefix`). Later, a `request_secret` call for that name, whose command starts with the
+  prefix, is answered before any card is drawn, if a session is open (`answer_by_rule`, in `agent_turn`). Any other
+  command, any other name, or a locked vault shows the card. Settings → Subscription → Bitwarden lists the rules and
+  removes them.
+
+The session: he pastes the key that `bw unlock --raw` prints, once, on the Mac's card. It is kept in memory only and
+reaches `bw` as `BW_SESSION`, never as an argument. It is forgotten after 30 minutes without use, on *Forget now*, or
+at quit. Nightloom never runs `bw unlock` or `bw login`, and runs `bw status` only when a card is drawn. When the
+card cannot use Bitwarden, it says why in one line, with what to do: not installed (`brew install bitwarden-cli`),
+signed out (`bw login`), or locked (`bw unlock --raw`, then paste; the phone says to do it on the Mac). ~~Not enforced:
+the `command` is only what the model declared, and once the file exists any command in that chat can read it during
+its day.~~ (struck 2026-11-17: item 825 enforces it, below.)
+
+### Always, enforced where the command runs (item 825)
+
+The declared `command` now only *finds* the rule. A rule's answer is **held** (`Store::hold`): the value waits in
+`<store>/<chat>/.held/<NAME>` (0600), the file the model is told of stays empty, and the chat's folder gets
+`secrets-held.json` (the two paths and the rule's prefix, never a value). The tool's reply says the file is filled only
+while a command that starts with the prefix runs.
+
+The brief hook (`brief::decide_holding`), which runs on every call of every process in the turn, asks
+`secret::release_gate` first (`secret_release.rs`):
+
+- Every call first takes back a copy an earlier call was given (`rehold`); the card loop and the turn's end do too.
+- A call that names the file, the held copy, a `.held` folder or the note is refused with the reason, unless it is the
+  main chat's foreground Bash command that runs the rule (`runs_rule`): one plain command (no unquoted `;`, `&`, `|`,
+  parentheses or line break, no backtick or other `$(`), reading the file only as `"$(cat '<path>')"`, with no
+  assignment in front but `NAME="$(cat '<path>')"`, whose program is no wrapper and whose program words start with
+  the prefix word for word.
+- That command alone gets the value copied into the file just before it runs (`release`).
+
+Wrappers (`bitwarden::WRAPPERS`: shells, `env`, `sudo`, `xargs`, `eval`, `exec`, `command`, `nohup`, `time`, …, and
+`bitwarden::INTERPRETERS` alone: `python3`, `node`, `perl`, `npx`, …) cannot be kept as Always: `add_rule` refuses,
+and the card greys the button with one line (`wrapperRefusal` in `lib/secret.ts`). A rule kept before is dropped when
+the rules are read (`read_rules`), rewritten out of the file and noted in its `dropped` list. Settings shows the note
+until OK (`bitwarden_clear_dropped`), and a turn whose read dropped one says so in the chat.
+
+Not stopped, said plainly: a command that reaches the file by a name the gate cannot read (built at run time, encoded)
+in the same moment as the released command, and a program found first on `PATH` under the rule's name. A chat with
+the preamble off has no brief hook, so its held value is never released (it fails closed).
+
 ## What `--append-system-prompt` carries
 
 Three parts, in this order, joined by blank lines (`prompt::agent_prompt`

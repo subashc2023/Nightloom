@@ -33,12 +33,13 @@ describe("item 662: typing moves the sea", () => {
     expect(at(0.2)).toBeLessThan(0.1); // no key moves it by itself
   });
 
-  it("falls under 10% within 1.5 s of the last key", () => {
+  it("falls under 10% within 2.6 s of the last key, not before 1.9 s (item 695: 1.75× the old 1.33 s)", () => {
     for (const rate of [3, 5, 8]) {
       const { pts, last } = run(3, rate);
       const under = pts.find(([t, e]) => t > last && e < 0.1);
       expect(under).toBeDefined();
-      expect(under![0] - last).toBeLessThan(1.5);
+      expect(under![0] - last).toBeLessThan(2.6);
+      expect(under![0] - last).toBeGreaterThan(1.9);
     }
   });
 

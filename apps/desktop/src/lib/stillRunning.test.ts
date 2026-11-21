@@ -3,13 +3,18 @@ import { app, applyTurnEvent } from "./state.svelte";
 import { lineText, lineView, matchTasks, stopNote, type StillRunningSegment } from "./stillRunning";
 import { openTasksOn, tasksFocus } from "./tasksFocus.svelte";
 import lineSrc from "./StillRunningLine.svelte?raw";
-import messageSrc from "./AssistantMessage.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import messageSrcRaw from "./AssistantMessage.svelte?raw";
+const messageSrc = asOneFile(messageSrcRaw, assistantMessageLogicRaw);
 import tasksSrc from "./RunningTasks.svelte?raw";
-import transcriptSrc from "./Transcript.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
 import composerSrc from "./Composer.svelte?raw";
 import editAttachSrc from "./EditAttachments.svelte?raw";
 import apiSrc from "./api.ts?raw";
 import type { SubagentStatus, TurnEvent } from "./types";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
 
 /**
  * Nightshift backlog 357 (2026-10-13, his screenshot): the line a reply
@@ -178,10 +183,13 @@ describe("592: no sideways scroll in the transcript", () => {
 });
 
 describe("607: the attach buttons are the plus alone under Filament", () => {
-  it("named by tooltip and label, the word hidden outside Classic", () => {
+  it("named by tooltip and label, the word hidden outside Classic", async () => {
     expect(composerSrc).toContain('aria-label="Attach files"');
     expect(composerSrc).toContain('use:tip={"Attach files"}');
-    expect(composerSrc).toMatch(/:global\(:where\(:root:not\(\[data-layout="classic"\]\)\)\) \.attach \.fold-word \{\s*display: none;/);
+    // Item 716: the rule moved to src/composerControls.css, re-rooted on `.composer`.
+    const fs = (await import(/* @vite-ignore */ "node:" + "fs")) as { readFileSync(u: URL, enc: string): string };
+    const controlsCss = fs.readFileSync(new URL("../composerControls.css", import.meta.url), "utf8");
+    expect(controlsCss).toMatch(/:where\(:root:not\(\[data-layout="classic"\]\)\) \.composer \.attach \.fold-word \{\s*display: none;/);
     expect(editAttachSrc).toContain('aria-label="Attach files"');
     expect(editAttachSrc).toMatch(/:global\(:where\(:root:not\(\[data-layout="classic"\]\)\)\) \.attach-word \{\s*display: none;/);
   });

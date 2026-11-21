@@ -1,427 +1,64 @@
 <script lang="ts">
   import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
-  import {
-    activateTab,
-    app,
-    closeTab,
-    dropContent,
-    droppedContent,
-    moveTab,
-    noteDraftKey,
-    renameSession,
-    splitTab,
-  } from "./state.svelte";
-  import { renamedTo, selectAllOnMount } from "./renameField";
-  import { hasBoxDraft, newDraftKey } from "./drafts.svelte";
+  import { dragScroll } from "./dragScroll";
+  import { activateTab, app, closeTab, moveTab, splitTab } from "./state.svelte";
+  import { UNSAVED_TIP } from "./unsavedCue";
+  import { selectAllOnMount } from "./renameField";
   import * as tabs from "./tabs";
-  import { FORK_GLYPH, type ForkMark } from "./forkMark";
-  import { TAB_DRAG, TERM_DRAG, type Pane } from "./tabs";
-  import { draggedShell } from "./terminal.svelte";
+  import { FORK_GLYPH } from "./forkMark";
   import Icon from "./Icon.svelte";
   import { tabIn, tabOut } from "./tabMotion";
-  import { TabFreeze } from "./tabFreeze";
   import TabChooser from "./TabChooser.svelte";
   import RunningBadge from "./RunningBadge.svelte";
+  import NeedsYouBadge from "./NeedsYouBadge.svelte";
   import { isMac } from "./platform";
   import { web, webLabel } from "./webtabs.svelte";
-  import { plan, startTabDrag } from "./tabDrag";
   import { tabDrag } from "./tabDrag.svelte";
-  import { asideTabName } from "./asideSidebar.svelte";
   // Item 299: Make main on a fork's tab, as on its sidebar row.
   import { canMakeMain } from "./versions";
   import { makeMainChat, versions } from "./versions.svelte";
-  // Item 477: the tab menu fits the window (item 425's placement).
-  import { placeMenu } from "./menuPlace";
+  import { tabStripLogic, type TabStripLogicProps } from "./tabStrip/logic.svelte";
 
-  /**
-   * One pane's strip of tabs (nightshift backlog 099, boards 9a and 9d):
-   * a glyph for the kind, the title, a pulsing dot while the chat's turn
-   * runs, the needs-you dot when it waits on him, ~~✎~~ a hollow accent
-   * ring for a draft (backlog 221, blocker 480's mark A), × on
-   * hover. ~~`+` opens a new chat in a new tab (⌘T).~~ Since nightshift
-   * backlog 140 (2026-09-17) `+` opens a chooser under the strip
-   * (`TabChooser.svelte`) — New chat and its kinds, a new note, the
-   * notes, Nightshift, the graph, the projects — and the new tab is what
-   * he picks; ⌘T stays the one-key new chat. The active tab is the
-   * sheet; the focused pane's active tab carries the accent rule on top,
-   * so with two panes one strip says which the keys act on.
-   *
-   * Tabs drag: within the strip to reorder, onto the other pane's strip
-   * to move, onto a pane's half to split — the halves are `App.svelte`'s
-   * drop zones; this strip owns the reorder and the move. The drag carries
-   * the tab's id under its own type, so a file or text dropped here is
-   * nothing to it. Content from outside (backlog 140 pass 2: a sidebar
-   * chat row, a note row, the Nightshift and Graph buttons, a project
-   * row, the aside card) drops here as a new tab at the slot; the
-   * terminal dock's strip (backlog 113's 12b) drops here to move the dock
-   * under this pane.
-   */
-  let { pane }: { pane: Pane } = $props();
-
-  const focused = $derived(app.tabs.focused === pane.id);
-  const live = $derived(tabs.liveTab(app.tabs, app.activeSessionId));
-
-  function title(t: tabs.Tab): string {
-    // A named aside is called by its name (item 265).
-    const named = t.content.kind === "aside" ? asideTabName(t.content.session, t.content.thread) : null;
-    if (named) return `Aside · ${named}`;
-    return tabs.tabTitle(t.content, app.sessions, app.projects);
-  }
-
-  function draft(t: tabs.Tab): boolean {
-    const c = t.content;
-    if (c.kind === "note") {
-      // The draft's key carries the project for per-project files
-      // (backlog 133); `noteDraftKey` is the one place it is spelled.
-      return app.noteDrafts[noteDraftKey(c.scope, c.name)] !== undefined;
-    }
-    if (c.kind !== "chat") return false;
-    return hasBoxDraft(c.session ?? newDraftKey(app.project?.id, app.pendingMode, app.pendingThread));
-  }
-
-  /** The chat's turn runs, or waits on him. ~~Only the live tab can~~ —
-   *  since backlog 159 the running chat may be parked behind another on
-   *  screen, and its tab keeps the mark. */
-  function running(t: tabs.Tab): boolean {
-    // A chat running in the background (backlog 159, A2) keeps its mark.
-    if (t.content.kind === "chat" && t.content.session && app.background[t.content.session]) return true;
-    if (!app.busy) return false;
-    if (app.parked) return t.content.kind === "chat" && t.content.session === app.parked.session;
-    return live?.id === t.id;
-  }
-  function needsYou(t: tabs.Tab): boolean {
-    // A background chat's prompt waits in its own tab (A2, guess pass 5).
-    const bg = t.content.kind === "chat" && t.content.session ? app.background[t.content.session] : undefined;
-    // A4: or a budget stop the hook holds for his answer (backlog 189).
-    if (bg) return bg.approvals.length > 0 || !!bg.budget?.pending_since_ms;
-    return live?.id === t.id && app.pendingApprovals.length > 0;
-  }
-
-  /** A chat tab's short id and mode, for its hover (board d, nightshift
-   *  backlog 175 pass 2): the top bar's title row and id went, so the tab
-   *  that names the chat carries them. */
-  function chatTail(c: tabs.TabContent): string {
-    if (c.kind !== "chat" || !c.session) return "";
-    const meta = app.sessions.find((s) => s.id === c.session);
-    const mode = meta?.mode === "incognito" ? " · incognito" : "";
-    return ` · ${c.session.slice(0, 8)}${mode}`;
-  }
-
-  /** A fork's tab (backlog 379): the mark before its title, and the
-   *  chat it came from named on hover — of the mark and of the tab. */
-  function fork(t: tabs.Tab): ForkMark | null {
-    return tabs.tabFork(t.content, app.sessions);
-  }
-  function forkTail(t: tabs.Tab): string {
-    const f = fork(t);
-    return f ? ` · ${f.tip}` : "";
-  }
-
-  function hint(t: tabs.Tab): string {
-    const c = t.content;
-    const base =
-      c.kind === "note"
-        ? `${c.name} — a note`
-        : c.kind === "project"
-          ? `${title(t)} — a project`
-          : c.kind === "aside"
-            ? `${title(t)} — a side conversation, not in the chat`
-            : c.kind === "attachment"
-              ? `${title(t)} — an attachment of a message, kept as a tab`
-              : c.kind === "subagent"
-                ? `${title(t)} — a subagent's transcript: its calls, results and words`
-                : c.kind === "file"
-                  ? `${c.path} — a file a reply named, read-only`
-                  : c.kind === "thread"
-                    ? `${title(t)} — what the thread stores (.agents/threads/${c.slug}/), read-only`
-                    : title(t) + chatTail(c) + forkTail(t);
-    const state = needsYou(t) ? " · waiting on you" : running(t) ? " · a turn is running" : "";
-    return `${base}${state} — ${isMac ? "⌘W" : "Ctrl+W"} closes`;
-  }
-
-  /** The + chooser (backlog 140): open under this strip's + button. */
-  let chooser = $state(false);
-
-  // ---- drag and drop ----
-
-  /** Where a dragged tab would land in this strip, as an index; null when
-   *  nothing is over it. */
-  let dropAt = $state<number | null>(null);
-  let stripEl = $state<HTMLElement | null>(null);
-
-  // ---- item 603: closing tabs as Chrome does (`tabFreeze.ts`) ----
-  // A close from the strip holds every tab at the width it had, so the next
-  // close button slides in under the pointer; the strip re-fits when the
-  // pointer leaves it or rests a few seconds. ⌘W (pointer elsewhere) does not
-  // freeze: nothing is under the pointer to keep in place.
-  let frozenW = $state<number | null>(null);
-  const freeze = new TabFreeze((w) => (frozenW = w));
-  $effect(() => () => freeze.thaw());
-  function closeFromStrip(e: MouseEvent, t: tabs.Tab): void {
-    const el = (e.currentTarget as Element | null)?.closest<HTMLElement>(".tab");
-    freeze.closed(el?.getBoundingClientRect().width ?? 0);
-    void closeTab(t.id);
-  }
-
-  // ---- a tab dragged: pointer events (nightshift backlog 195) ----
-  //
-  // ~~The tab was `draggable` and moved by WebKit's native drag~~ — since
-  // 195 (2026-09-25) a press past `DRAG_SLOP` px drags a ghost of the tab
-  // (`tabDrag.ts`); a press that never travels is the click it was. The
-  // release reorders (the active tab stays active), moves into the other
-  // pane (the focus follows), splits — or snaps the ghost back, visibly.
-  // The strip's native handlers below stay for what still drags natively
-  // into it: a sidebar row, a note, the aside card, the terminal dock.
-
-  /** The ghost under the pointer: the tab's look, where it was grabbed. */
-  let ghost = $state<{
-    tab: tabs.Tab;
-    width: number;
-    dx: number;
-    dy: number;
-    /** Set while it flies home after a drag that did nothing. */
-    home: { left: number; top: number } | null;
-  } | null>(null);
-  const SNAP_MS = 160;
-
-  /** The slot marker for a tab drag over this strip, when the release
-   *  would land there — none over its own slot, which is a snap. */
-  const dragMark = $derived(
-    tabDrag.id &&
-      tabDrag.target?.kind === "strip" &&
-      tabDrag.target.pane === pane.id &&
-      (tabDrag.plan?.kind === "reorder" || tabDrag.plan?.kind === "move")
-      ? tabDrag.target.index
-      : null,
-  );
-
-  function onTabPointerDown(e: PointerEvent, t: tabs.Tab) {
-    // The × is a button of its own; its click must stay a click.
-    if (e.target instanceof Element && e.target.closest(".close")) return;
-    const el = e.currentTarget as HTMLElement;
-    const r = el.getBoundingClientRect();
-    const grab = { dx: e.clientX - r.left, dy: e.clientY - r.top };
-    startTabDrag(e, {
-      onStart() {
-        ghost = { tab: t, width: r.width, ...grab, home: null };
-        tabDrag.id = t.id;
-        app.draggingTab = t.id;
-      },
-      onMove(p, target) {
-        tabDrag.x = p.x;
-        tabDrag.y = p.y;
-        tabDrag.target = target;
-        tabDrag.plan = plan(app.tabs, t.id, target);
-      },
-      onDrop(target) {
-        const p = plan(app.tabs, t.id, target);
-        endDrag();
-        if (p.kind === "snap") return snapHome(t.id);
-        ghost = null;
-        if (p.kind === "reorder") tabs.reorder(app.tabs, t.id, p.index);
-        else if (p.kind === "move") void moveTab(t.id, p.pane, p.index);
-        else void splitTab(t.id, p.side);
-      },
-      onCancel() {
-        endDrag();
-        snapHome(t.id);
-      },
-    });
-  }
-  function endDrag() {
-    tabDrag.id = null;
-    tabDrag.target = null;
-    tabDrag.plan = null;
-    app.draggingTab = null;
-  }
-  /** Fly the ghost back to the tab it came from, then drop it. */
-  function snapHome(id: string) {
-    const el = stripEl?.querySelector<HTMLElement>(`[data-tab="${id}"]`);
-    if (!ghost || !el) {
-      ghost = null;
-      return;
-    }
-    const r = el.getBoundingClientRect();
-    ghost.home = { left: r.left, top: r.top };
-    setTimeout(() => (ghost = null), SNAP_MS);
-  }
-
-  function indexAt(e: DragEvent): number {
-    if (!stripEl) return pane.tabs.length;
-    const els = Array.from(stripEl.querySelectorAll<HTMLElement>("[data-tab]"));
-    for (let i = 0; i < els.length; i++) {
-      const r = els[i].getBoundingClientRect();
-      if (e.clientX < r.left + r.width / 2) return i;
-    }
-    return els.length;
-  }
-  function onDragOver(e: DragEvent) {
-    if (!app.draggingTab && !app.draggingContent && !app.draggingTerm) return;
-    e.preventDefault();
-    // The strip's drop is the strip's: the pane behind it draws the
-    // *open beside* halves for a drag over its content, not over its tabs.
-    e.stopPropagation();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = app.draggingContent ? "copy" : "move";
-    // The dock has no slot in the strip: dropping it anywhere here docks
-    // it under this pane, so no accent bar.
-    dropAt = app.draggingTerm ? null : indexAt(e);
-  }
-  function onDragLeave(e: DragEvent) {
-    if (stripEl && e.relatedTarget instanceof Node && stripEl.contains(e.relatedTarget)) return;
-    dropAt = null;
-  }
-  function onDrop(e: DragEvent) {
-    const at = dropAt ?? indexAt(e);
-    dropAt = null;
-    // A terminal's shell (backlog 113's 12b; blocker 155): into this
-    // pane's dock — a second dock if it has none.
-    if (e.dataTransfer?.types.includes(TERM_DRAG) || app.draggingTerm) {
-      e.preventDefault();
-      e.stopPropagation();
-      app.draggingTerm = false;
-      draggedShell(e, pane.id);
-      return;
-    }
-    // Content from outside (backlog 140 pass 2): a new tab at the slot.
-    const content = droppedContent(e);
-    if (content) {
-      e.preventDefault();
-      e.stopPropagation();
-      app.draggingContent = null;
-      void dropContent(content, { pane: pane.id, index: at });
-      return;
-    }
-    const id = e.dataTransfer?.getData(TAB_DRAG) || app.draggingTab;
-    if (!id) return;
-    e.preventDefault();
-    e.stopPropagation();
-    app.draggingTab = null;
-    void moveTab(id, pane.id, at);
-  }
-
-  // ---- the tab's menu (right-click) ----
-
-  let menuFor = $state<string | null>(null);
-  let menuAt = $state({ x: 0, y: 0 });
-  function openMenu(e: MouseEvent, t: tabs.Tab) {
-    e.preventDefault();
-    menuFor = t.id;
-    menuAt = { x: e.clientX, y: e.clientY };
-  }
-  /**
-   * Item 477: the menu fits the window at every edge, as the sidebar's
-   * does (`placeMenu`, item 425) — measured once drawn, so a tab near the
-   * right edge opens it leftward and a short window lifts it. Placed again
-   * when its size or the window's changes.
-   */
-  function placeTabMenu(el: HTMLElement, at: { x: number; y: number }) {
-    let anchor = at;
-    const place = () => {
-      const size = { w: el.offsetWidth, h: el.scrollHeight + (el.offsetHeight - el.clientHeight) };
-      const p = placeMenu({ x: anchor.x, below: anchor.y, above: anchor.y }, size, { w: window.innerWidth, h: window.innerHeight });
-      el.style.left = `${p.left}px`;
-      el.style.top = `${p.top}px`;
-      el.style.maxHeight = p.maxHeight === undefined ? "" : `${p.maxHeight}px`;
-    };
-    place();
-    const ro = new ResizeObserver(place);
-    ro.observe(el);
-    window.addEventListener("resize", place);
-    return {
-      update(next: { x: number; y: number }) {
-        anchor = next;
-        place();
-      },
-      destroy() {
-        ro.disconnect();
-        window.removeEventListener("resize", place);
-      },
-    };
-  }
-  /**
-   * A menu item's action on the tab the menu is for, the menu closed.
-   * The tab is read **before** `menuFor` clears (found by backlog 376's
-   * harness, 2026-10-18): the markup's `{@const t}` re-derives from
-   * `menuFor`, so read after the clear it was `undefined` and every item
-   * guarded by `if (t)` did nothing.
-   */
-  function menuAct(f: (t: tabs.Tab) => void) {
-    const t = pane.tabs.find((x) => x.id === menuFor);
-    menuFor = null;
-    if (t) f(t);
-  }
-  function closeOthers(id: string) {
-    for (const t of [...pane.tabs]) if (t.id !== id) void closeTab(t.id);
-  }
-  const canSplit = $derived(app.tabs.panes.length < tabs.MAX_PANES && pane.tabs.length > 1);
-
-  // ---- a chat tab renamed in place (backlog 376) ----
-  //
-  // The menu's Rename turns the tab's title into a field with the whole
-  // name selected: typing replaces it, ↵ or a click away keeps it, Esc
-  // leaves the name as it was. The same rename as the sidebar row's
-  // (`renameSession`, on the list's undo stack).
-  let renamingTab = $state<string | null>(null);
-  let tabDraft = $state("");
-  let tabRenameFrom = "";
-  function chatName(session: string): string {
-    const meta = app.sessions.find((s) => s.id === session);
-    return meta?.title ?? meta?.first_user ?? "";
-  }
-  function startTabRename(t: tabs.Tab) {
-    if (t.content.kind !== "chat" || !t.content.session) return;
-    tabRenameFrom = chatName(t.content.session) || title(t);
-    tabDraft = tabRenameFrom;
-    renamingTab = t.id;
-  }
-  async function commitTabRename(t: tabs.Tab) {
-    // Only the tab still being renamed commits: Esc clears `renamingTab`
-    // first, and the blur the field's removal fires must not undo that.
-    if (renamingTab !== t.id) return;
-    renamingTab = null;
-    const name = renamedTo(tabDraft, tabRenameFrom);
-    if (name && t.content.kind === "chat" && t.content.session) await renameSession(t.content.session, name);
-  }
-  const other = $derived(tabs.otherPane(app.tabs, pane.id));
-  /** The running badge (backlog 309) sits once, at the window's right:
-   *  the last pane's strip. */
-  const lastPane = $derived(app.tabs.panes[app.tabs.panes.length - 1]?.id === pane.id);
+  // Item 856: the behaviour lives once, in `tabStrip/logic.svelte.ts`; this file is the look.
+  const props: TabStripLogicProps = $props();
+  const T = tabStripLogic(() => props);
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions a11y_interactive_supports_focus -->
 <div
   class="tab-strip"
-  class:focused
+  use:dragScroll={{ axis: "x" }}
+  class:focused={T.focused}
   role="tablist"
   tabindex="-1"
-  bind:this={stripEl}
-  ondragover={onDragOver}
-  ondragleave={onDragLeave}
-  ondrop={onDrop}
-  onpointermove={() => freeze.moved()}
-  onpointerleave={() => freeze.thaw()}
+  bind:this={T.stripEl}
+  ondragover={T.onDragOver}
+  ondragleave={T.onDragLeave}
+  ondrop={T.onDrop}
+  onpointermove={() => T.freeze.moved()}
+  onpointerleave={() => T.freeze.thaw()}
 >
-  {#each pane.tabs as t, i (t.id)}
+  {#each T.pane.tabs as t, i (t.id)}
     {@const favicon = t.content.kind === "web" ? web.live[webLabel(t.id)]?.favicon : undefined}
-    {#if dropAt === i || dragMark === i}<span class="tab-drop"></span>{/if}
+    {#if T.dropAt === i || T.dragMark === i}<span class="tab-drop"></span>{/if}
     <!-- A div, not a button: a button cannot hold the close button, and
          the strip's keys are the window's (⌘⇧] / ⌘⇧[). Focusable so the
          Tab key reaches it; ↵ and Space activate. -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="tab"
-      class:active={pane.active === t.id}
+      class:active={T.pane.active === t.id}
       class:dragging={app.draggingTab === t.id}
       role="tab"
       tabindex="0"
-      aria-selected={pane.active === t.id}
+      aria-selected={T.pane.active === t.id}
       data-tab={t.id}
-      style:flex={frozenW !== null ? `0 0 ${frozenW}px` : undefined}
+      style:flex={T.frozenW !== null ? `0 0 ${T.frozenW}px` : undefined}
       in:tabIn
       out:tabOut
-      use:tip={hint(t)}
-      onpointerdown={(e) => onTabPointerDown(e, t)}
+      use:tip={T.hint(t)}
+      onpointerdown={(e) => T.onTabPointerDown(e, t)}
       onclick={() => void activateTab(t.id)}
       onkeydown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -431,9 +68,9 @@
       }}
       onauxclick={(e) => {
         // The middle button closes, as in every browser.
-        if (e.button === 1) closeFromStrip(e, t);
+        if (e.button === 1) T.closeFromStrip(e, t);
       }}
-      oncontextmenu={(e) => openMenu(e, t)}
+      oncontextmenu={(e) => T.openMenu(e, t)}
     >
       <span class="glyph" aria-hidden="true"
         >{#if favicon}<img class="favicon" src={favicon} alt="" width="12" height="12" referrerpolicy="no-referrer" onerror={(e) => ((e.currentTarget as HTMLImageElement).style.display = "none")} />{:else}<Icon
@@ -441,36 +78,43 @@
             size={12}
           />{/if}</span
       >
-      {#if renamingTab === t.id}
+      {#if T.renamingTab === t.id}
         <input autocorrect="off" autocapitalize="off" spellcheck="false"
           class="name rename"
           aria-label="Chat name"
-          bind:value={tabDraft}
+          bind:value={T.tabDraft}
           use:selectAllOnMount
           onpointerdown={(e) => e.stopPropagation()}
           onclick={(e) => e.stopPropagation()}
-          onblur={() => void commitTabRename(t)}
+          onblur={() => void T.commitTabRename(t)}
           onkeydown={(e) => {
             // The tab's own keys (↵ and Space activate) stay out of the field.
             e.stopPropagation();
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-            else if (e.key === "Escape") renamingTab = null;
+            else if (e.key === "Escape") T.renamingTab = null;
           }}
         />
       {:else}
-        {@const f = fork(t)}
+        {@const f = T.fork(t)}
         <!-- Item 534: the state dot before the title, as the mockup's live
              tab — the signal while a turn runs, the accent while it waits
              on him. -->
-        {#if needsYou(t)}
+        {#if T.needsYou(t)}
           <span class="dot needs" use:tip={"Waiting on you"}></span>
-        {:else if running(t)}
+        {:else if T.running(t)}
           <span class="dot run" use:tip={"A turn is running"}></span>
         {/if}
         {#if f}<span class="fork" role="img" aria-label={f.tip} use:tip={f.tip}>{FORK_GLYPH}</span>{/if}
-        <span class="name">{title(t)}</span>
+        <span class="name">{T.title(t)}</span>
       {/if}
-      {#if draft(t)}<span class="mark" role="img" aria-label="has a draft" use:tip={"has a draft"}></span>{/if}
+      <!-- Item 867: on a note's tab the ring says its edits are not on disk yet. -->
+      {#if T.draft(t)}{@const words = t.content.kind === "note" ? UNSAVED_TIP : "has a draft"}<span
+          class="mark"
+          class:unsaved={t.content.kind === "note"}
+          role="img"
+          aria-label={words}
+          use:tip={words}
+        ></span>{/if}
       <button
         class="close"
         use:tip={`Close tab (${isMac ? '⌘W' : 'Ctrl+W'})`}
@@ -478,23 +122,23 @@
         tabindex="-1"
         onclick={(e) => {
           e.stopPropagation();
-          closeFromStrip(e, t);
+          T.closeFromStrip(e, t);
         }}
       >
         <Icon name="x" size={10} />
       </button>
     </div>
   {/each}
-  {#if dropAt === pane.tabs.length || dragMark === pane.tabs.length}<span class="tab-drop"></span>{/if}
+  {#if T.dropAt === T.pane.tabs.length || T.dragMark === T.pane.tabs.length}<span class="tab-drop"></span>{/if}
   <!-- The + (backlog 140): a chooser of what the new tab becomes. ⌘T is
        still the one-key new chat and lives in the File menu. -->
   <button
     class="tab-new"
-    class:open={chooser}
+    class:open={T.chooser}
     use:tip={"New tab… (⌘T is a new chat)"}
     aria-label="New tab"
-    aria-expanded={chooser}
-    onclick={() => (chooser = !chooser)}
+    aria-expanded={T.chooser}
+    onclick={() => (T.chooser = !T.chooser)}
   >
     <Icon name="plus" size={12} />
   </button>
@@ -502,50 +146,72 @@
        not here: the strip is the tabs' and stays the tabs'. The one
        exception is the running badge (backlog 309): the strip is the only
        bar drawn over every view. -->
-  {#if lastPane}<RunningBadge />{/if}
+  {#if T.lastPane}<NeedsYouBadge /><RunningBadge />{/if}
 </div>
-{#if ghost}
+{#if T.catching}
+  <!-- Item 877: the strip's drop, reached before the strip (and before the
+       top of the screen, where macOS opens Mission Control). -->
+  <div
+    class="strip-catch"
+    aria-hidden="true"
+    bind:this={T.catchEl}
+    style:top="{T.catchTop()}px"
+    style:height="{T.BAND_PX}px"
+    ondragover={T.onCatchDragOver}
+    ondragleave={T.onDragLeave}
+    ondrop={T.onDrop}
+  ></div>
+{/if}
+{#if T.ghost}
   <!-- The dragged tab under the pointer (backlog 195); after a drag that
        does nothing it flies back to its tab (`home`), then goes. -->
   <div
     class="tab-ghost"
-    class:home={ghost.home !== null}
+    class:home={T.ghost.home !== null}
     aria-hidden="true"
-    style:width="{ghost.width}px"
-    style:left="{ghost.home ? ghost.home.left : tabDrag.x - ghost.dx}px"
-    style:top="{ghost.home ? ghost.home.top : tabDrag.y - ghost.dy}px"
-    style:transition-duration="{SNAP_MS}ms"
+    style:width="{T.ghost.width}px"
+    style:left="{T.ghost.home ? T.ghost.home.left : tabDrag.x - T.ghost.dx}px"
+    style:top="{T.ghost.home ? T.ghost.home.top : tabDrag.y - T.ghost.dy}px"
+    style:transition-duration="{T.SNAP_MS}ms"
   >
-    <span class="glyph"><Icon name={tabs.tabGlyph(ghost.tab.content)} size={12} /></span>
-    {#if fork(ghost.tab)}<span class="fork" aria-hidden="true">{FORK_GLYPH}</span>{/if}
-    <span class="name">{title(ghost.tab)}</span>
+    <span class="glyph"><Icon name={tabs.tabGlyph(T.ghost.tab.content)} size={12} /></span>
+    {#if T.fork(T.ghost.tab)}<span class="fork" aria-hidden="true">{FORK_GLYPH}</span>{/if}
+    <span class="name">{T.title(T.ghost.tab)}</span>
   </div>
 {/if}
-{#if chooser}
-  <TabChooser paneId={pane.id} close={() => (chooser = false)} />
+{#if T.chooser}
+  <TabChooser paneId={T.pane.id} close={() => (T.chooser = false)} />
 {/if}
 
-{#if menuFor}
-  {@const t = pane.tabs.find((x) => x.id === menuFor)}
-  <button class="tab-scrim" aria-label="Close" onclick={() => (menuFor = null)} oncontextmenu={(e) => { e.preventDefault(); menuFor = null; }}></button>
-  <div class="tab-menu hud-m" role="menu" use:placeTabMenu={menuAt} in:hudIn|global out:hudOut|global>
-    <button role="menuitem" onclick={() => menuAct((x) => void closeTab(x.id))}>Close</button>
-    <button role="menuitem" disabled={pane.tabs.length < 2} onclick={() => menuAct((x) => closeOthers(x.id))}>Close others</button>
-    {#if other}
-      <button role="menuitem" onclick={() => menuAct((x) => void moveTab(x.id, other.id, other.tabs.length))}>Move to the other pane</button>
+{#if T.menuFor}
+  {@const t = T.pane.tabs.find((x) => x.id === T.menuFor)}
+  <button class="tab-scrim" aria-label="Close" onclick={() => (T.menuFor = null)} oncontextmenu={(e) => { e.preventDefault(); T.menuFor = null; }}></button>
+  <div class="tab-menu hud-m" role="menu" use:T.placeTabMenu={T.menuAt} in:hudIn|global out:hudOut|global>
+    <button role="menuitem" onclick={() => T.menuAct((x) => void closeTab(x.id))}>Close</button>
+    <button role="menuitem" disabled={T.pane.tabs.length < 2} onclick={() => T.menuAct((x) => T.closeOthers(x.id))}>Close others</button>
+    {#if T.other}
+      <button role="menuitem" onclick={() => T.menuAct((x) => void moveTab(x.id, T.other!.id, T.other!.tabs.length))}>Move to the other pane</button>
     {:else}
-      <button role="menuitem" disabled={!canSplit} use:tip={canSplit ? "" : "A pane keeps at least one tab"} onclick={() => menuAct((x) => void splitTab(x.id, "right"))}>Open beside</button>
+      <button role="menuitem" disabled={!T.canSplit} use:tip={T.canSplit ? "" : "A pane keeps at least one tab"} onclick={() => T.menuAct((x) => void splitTab(x.id, "right"))}>Open beside</button>
     {/if}
     {#if t?.content.kind === "chat" && t.content.session}
-      <button role="menuitem" onclick={() => menuAct(startTabRename)}>Rename</button>
+      <button role="menuitem" onclick={() => T.menuAct(T.startTabRename)}>Rename</button>
     {/if}
     {#if t?.content.kind === "chat" && t.content.session && canMakeMain(app.sessions, versions.map, t.content.session)}
-      <button role="menuitem" use:tip={"Put this fork in its original's row, name and place; the original stays a version under the edited message"} onclick={() => menuAct((x) => { if (x.content.kind === "chat" && x.content.session) void makeMainChat(x.content.session); })}>Make main</button>
+      <button role="menuitem" use:tip={"Put this fork in its original's row, name and place; the original stays a version under the edited message"} onclick={() => T.menuAct((x) => { if (x.content.kind === "chat" && x.content.session) void makeMainChat(x.content.session); })}>Make main</button>
     {/if}
   </div>
 {/if}
 
 <style>
+  /* Item 877: invisible; the strip's own drop marker is its cue. Over the
+     pane's open-beside zone (z-index 8), under menus. */
+  .strip-catch {
+    position: absolute;
+    left: 0;
+    right: 0;
+    z-index: 9;
+  }
   /* Item 534 (Filament IV): the strip is a panel; tabs are flat cells
      ruled at their right, the active one cut into the ground below with
      the accent along its top. */
@@ -684,6 +350,13 @@
     border-radius: 50%;
     border: 1.5px solid var(--accent);
     flex-shrink: 0;
+  }
+  /* Item 867: a note tab's ring (unsaved edits) is lit in his amber; Calm's
+     --glow-accent is none. */
+  .mark.unsaved {
+    width: 7px;
+    height: 7px;
+    box-shadow: var(--glow-accent, none);
   }
   .close {
     display: inline-flex;

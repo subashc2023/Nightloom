@@ -48,6 +48,7 @@ use tokio_util::sync::CancellationToken;
 /// The Claude Code agents the window holds, one per chat (backlog 159, A2).
 mod agents;
 mod away;
+mod bitwarden_touch;
 mod chat_name;
 /// The chats the backend holds, one lock per chat (backlog 159, A1).
 mod chats;
@@ -56,17 +57,33 @@ mod claude_browser;
 mod commands;
 /// A connect under a deadline that names its wait (item 220).
 mod connect_deadline;
+/// The cursor the page asks for kept on screen (nightshift item 828).
+mod cursor_keep;
 /// The composer's exact token count on the provider engine (backlog 155).
 mod draft_count;
 /// An AppKit exception in event dispatch is logged, not fatal (item 486).
 #[cfg(target_os = "macos")]
 mod event_guard;
+/// The feedback box (nightshift item 805).
+mod feedback;
 /// A file card's Open as a tab: which paths may be read, and reading them
 /// (nightshift backlog 161).
 mod filetab;
 mod for_you;
+/// Every hand-off and its next chat's first turns, logged for scoring (nightshift item 757).
+mod handoff_log;
+/// The image tool's count for Settings (nightshift item 823).
+mod image_calls;
 /// The notes Inbox's Sort inbox (nightshift backlog 488).
 mod inbox_sort;
+mod listen;
+// Recurring jobs' part on the Mac (item 746).
+mod home;
+mod jobs;
+// Item 781: `--jobs-runner`, the launchd agent's start.
+mod jobs_runner;
+/// Item 808: Messages, Contacts, Reminders and the Calendar app for Home.
+mod mac_sources;
 // The keep-warm clock (backlog 582).
 mod keep_warm;
 /// A `.tex` tab's rendered PDF (nightshift backlog 381).
@@ -76,6 +93,8 @@ mod model_list;
 mod nightshift;
 /// Edit a note by prompt (nightshift backlog 151).
 mod note_edit;
+/// The notes folders followed from outside Nightloom (item 869).
+mod notes_watch;
 /// A debug build's off-screen window for live tests (backlog 339). Not
 /// compiled into a release (backlog 341): there it is a stub that is off.
 #[cfg(debug_assertions)]
@@ -102,6 +121,8 @@ mod preview;
 /// A changed prompt layer waits for the chat's cold moment (backlog 174).
 mod prompt_hold;
 /// Quitting while work runs asks first (nightshift backlog 308).
+// Item 795: Quick Entry — a system-wide shortcut opens a small box.
+mod quick_entry;
 mod quit_guard;
 /// The phone page over the tailnet (nightshift backlog 091, Shape B).
 mod remote;
@@ -367,6 +388,9 @@ struct ProjectInfo {
     /// (`Project::is_unfiled_holder`): a New chat in it is a Chat even though
     /// it has a folder (nightshift backlog 102).
     unfiled: bool,
+    /// Where it came from (`nightloom:home` is Home, item 763; the frontend
+    /// pins it first and offers no Remove).
+    source: Option<String>,
 }
 
 impl ProjectInfo {
@@ -375,6 +399,7 @@ impl ProjectInfo {
             id: project.id.clone(),
             name: project.name.clone(),
             unfiled: project.is_unfiled_holder(),
+            source: project.source.clone(),
             root: project
                 .workspace
                 .as_ref()
@@ -385,7 +410,9 @@ impl ProjectInfo {
                 .map(|f| f.to_string_lossy().into_owned())
                 .collect(),
             notes_dir: project.notes_dir().to_string_lossy().into_owned(),
-            notes: project::list_notes(&project.notes_dir()).len(),
+            // Counted without opening a note (item 865): the cold first read
+            // opened ~480 iCloud files for summaries this row never shows.
+            notes: project::count_notes(&project.notes_dir()),
             // Counted, not listed. This runs on every rail refresh and once
             // per project in the project picker, and `list` reads every log
             // it names — a hundred megabytes, after an import, to learn a
@@ -1055,6 +1082,9 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let settings = MenuItemBuilder::with_id("settings", "Settings…")
         .accelerator("CmdOrCtrl+,")
         .build(app)?;
+    // Item 805: his own feedback box, from any screen (no key: ⌘⇧F is
+    // Fable's).
+    let feedback = MenuItemBuilder::with_id("feedback", "Send Feedback…").build(app)?;
     // The two kinds of chat (nightshift backlog 102, 2026-09-16, his
     // review of boards 8a/8b): ⌘N is a Claude Code chat — the folder, every
     // tool — and ⌥⌘N a Chat, reads only and no folder. ⌥⌘N was free:
@@ -1163,6 +1193,7 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .about(Some(about))
         .separator()
         .item(&settings)
+        .item(&feedback)
         .separator()
         .services()
         .separator()
@@ -1313,6 +1344,12 @@ fn refuse_to_open(why: &str) {
 }
 
 fn main() {
+    // Item 897: an app opened from the Dock inherits launchd's bare PATH,
+    // so chats could not find Homebrew's tools. Widen it once, first, so
+    // every child (the CLI, git, soffice, node…) inherits it.
+    // SAFETY (Rust 2024's `set_var`): the first statement of `main`, before
+    // any thread exists, so nothing can read the environment concurrently.
+    unsafe { std::env::set_var("PATH", nightloom_service::child_path()) };
     // The startup log's clock (item 220): every line's `+N ms` counts from here.
     startup_log::mark_launch();
     // Item 486: every panic is written to `~/.nightloom/logs/panic.log`;
@@ -1331,6 +1368,20 @@ fn main() {
         if let Err(e) = nightloom_service::mcp_server::run_blocking(&argv[1..]) {
             eprintln!("nightloom-desktop --mcp-serve: {e}");
             std::process::exit(1);
+        }
+        return;
+    }
+    // `nightloom-desktop --evidence-check <request.json> [--root <dir>]
+    // [--out <dir>] [--fetched <dir>]` (nightshift item 798): an evidence
+    // table's quote check for a night, which has no Nightloom chat to call
+    // `evidence_table` from. Prints what the tool says; opens no window.
+    if argv.first().map(String::as_str) == Some(nightloom_service::evidence::CLI_FLAG) {
+        match nightloom_service::evidence::run_cli(&argv[1..]) {
+            Ok(text) => println!("{text}"),
+            Err(e) => {
+                eprintln!("nightloom-desktop --evidence-check: {e}");
+                std::process::exit(1);
+            }
         }
         return;
     }
@@ -1359,6 +1410,15 @@ fn main() {
         return;
     }
 
+    // `nightloom-desktop --jobs-runner` (nightshift item 781): the launchd
+    // agent's start every minute — runs the jobs that are due while the app
+    // is quit, under the home's holder lock, then exits. Before Tauri, like
+    // the hooks: it opens no window.
+    if argv.first().map(String::as_str) == Some(nightloom_service::jobs::runner::FLAG) {
+        jobs_runner::run_from_launchd();
+        return;
+    }
+
     // The one-holder rule (nightshift item 268, step 1): the desktop and
     // `nightloom serve` never both hold one Nightloom home's chats. Each
     // takes `<config>/holder.lock` for its life; while `serve` holds it
@@ -1367,10 +1427,19 @@ fn main() {
     let _holder = match project::config_dir() {
         Some(config) => {
             match nightloom_service::serve::HomeLock::take(&config, "the Nightloom desktop app") {
-                Ok(lock) => Some(lock),
+                Ok(lock) => {
+                    nightloom_service::jobs::runner::clear_yield(&config);
+                    Some(lock)
+                }
+                // Item 781: the jobs runner mid-run — wait for it to end.
                 Err(e) => {
-                    refuse_to_open(&e);
-                    return;
+                    match jobs_runner::wait_for_runner(&config, "the Nightloom desktop app") {
+                        Some(lock) => Some(lock),
+                        None => {
+                            refuse_to_open(&e);
+                            return;
+                        }
+                    }
                 }
             }
         }
@@ -1394,6 +1463,22 @@ fn main() {
 
     builder
         .setup(|app| {
+            // Item 766: secrets typed on a card live a day at most.
+            nightloom_service::secret::Store::default().sweep(nightloom_service::secret::LIFETIME);
+            // And every ten minutes while the app is open (merge round T
+            // review): an idle app ran no sweep, so a value outlived its day.
+            nightloom_service::secret::keep_swept(
+                nightloom_service::secret::Store::default(),
+                nightloom_service::secret::LIFETIME,
+                std::time::Duration::from_secs(600),
+            );
+            // Item 808: Home's scan and the phone read the Mac's own stores
+            // through this reader (status only until he allows one).
+            mac_sources::install();
+            // Item 795: Quick Entry's empty slot — nothing of it runs at
+            // launch; the handler, the shortcut and the box all wait for his
+            // pick (`quick_entry_set_shortcut`) and its first press.
+            app.manage(quick_entry::install());
             // Item 486: an exception AppKit raises while dispatching an event
             // is logged instead of aborting the app through tao's `extern "C"`
             // `sendEvent:` (the 11:27 AM 2026-10-30 crash).
@@ -1402,6 +1487,8 @@ fn main() {
                 let what = event_guard::install();
                 eprintln!("event guard: {what}");
             }
+            // Item 781: the launchd agent that runs jobs while the app is quit.
+            jobs_runner::install_in_background();
             // A chat's preview (nightshift item 430): served from the start.
             preview::setup(app.handle());
             // Claude's browser (nightshift item 508): nothing starts until
@@ -1456,7 +1543,7 @@ fn main() {
                 pending_kind: tokio::sync::Mutex::new(ChatKind::Build),
                 cancel,
                 workspaces: tokio::sync::Mutex::new(Workspaces {
-                    registry: Registry::load(),
+                    registry: home::registry_with_home(),
                     // Nothing open at launch. The frontend reopens the last
                     // project if it had one, which keeps "which project was
                     // I in" a UI preference rather than a second source of
@@ -1478,6 +1565,7 @@ fn main() {
             });
             // The Nightshift file watches, beside `AppState` rather than in it.
             app.manage(nightshift::Watches::default());
+            app.manage(notes_watch::NotesWatches::default());
             app.manage(nightshift::PendingLaunches::default());
             app.manage(nightshift::Interviews::default());
             app.manage(prompt_hold::Pending::default());
@@ -1487,6 +1575,8 @@ fn main() {
             // the app.
             app.manage(power::Holder::default());
             power::watch_wake(app.handle().clone());
+            // Item 826: the Touch ID session goes at sleep and screen lock.
+            bitwarden_touch::watch_lock();
             // The schedule clock (backlog 535): Send later's and the limit
             // resume's times are kept here, not by the page's timers.
             app.manage(wake::Wakes::default());
@@ -1540,6 +1630,7 @@ fn main() {
             commands::sessions::search_sessions,
             commands::sessions::search_everywhere,
             commands::sessions::rename_session,
+            commands::sessions::set_chapter_edit,
             commands::sessions::new_session,
             commands::sessions::open_session,
             commands::sessions::peek_session,
@@ -1567,6 +1658,9 @@ fn main() {
             note_edit::cancel_note_edit,
             inbox_sort::inbox_sort_list,
             inbox_sort::inbox_sort_plan,
+            listen::listen_audio,
+            listen::listen_brief,
+            listen::listen_parts,
             inbox_sort::inbox_sort_cancel,
             inbox_sort::inbox_sort_apply,
             commands::turns::cancel,
@@ -1574,6 +1668,8 @@ fn main() {
             commands::edits::rewind,
             commands::edits::unrewind,
             commands::edits::set_aside_files,
+            commands::edits::rewind_files,
+            commands::edits::restore_rewound_files,
             commands::edits::edit_message,
             commands::edits::remove_message,
             commands::edits::restore_message,
@@ -1596,6 +1692,7 @@ fn main() {
             commands::chat::chat_home,
             commands::chat::arm_wake,
             commands::chat::schedule_log,
+            commands::system::frontend_error_log,
             commands::chat::schedule_probe,
             commands::chat::set_chat_kind,
             commands::chat::set_chat_folders,
@@ -1636,12 +1733,26 @@ fn main() {
             quit_guard::quit_dialog_shown,
             quit_guard::quit_now,
             commands::turns::approve_call,
+            commands::turns::store_secret,
+            commands::turns::bitwarden_ready,
+            commands::turns::bitwarden_use_session,
+            commands::turns::bitwarden_forget_session,
+            commands::turns::bitwarden_search,
+            commands::turns::bitwarden_store,
+            commands::turns::bitwarden_rules,
+            commands::turns::bitwarden_remove_rule,
+            commands::turns::bitwarden_clear_dropped,
+            commands::turns::bitwarden_touch_status,
+            commands::turns::bitwarden_touch_setup,
+            commands::turns::bitwarden_touch_unlock,
+            commands::turns::bitwarden_touch_forget,
+            commands::turns::bitwarden_arm,
+            commands::turns::bitwarden_disarm,
             commands::system::playwright_for_chat,
             commands::projects::pick_folder,
             commands::projects::pick_export,
             commands::projects::import_claude,
             commands::projects::list_projects,
-            commands::projects::active_project,
             commands::projects::create_project,
             commands::projects::projects_folder_info,
             commands::projects::set_projects_folder,
@@ -1649,14 +1760,19 @@ fn main() {
             commands::usage::refresh_usage_ledger,
             commands::usage::plan_usage,
             commands::usage::plan_usage_refresh,
+            commands::usage::plan_pace,
             commands::usage::plan_scoped_limits,
             commands::usage::session_figures,
+            commands::retro::retro_digest,
+            commands::retro::retro_save,
             commands::cli::cli_version_check,
             commands::cli::claude_auth_status,
             commands::cli::cli_update,
+            commands::cli::flat_canary,
             commands::usage::turn_budget,
             commands::usage::set_turn_cap,
             commands::usage::turn_usage,
+            commands::usage::cache_rates,
             commands::usage::note_presence,
             commands::usage::budget_override,
             commands::steer::steer_subagent,
@@ -1688,13 +1804,15 @@ fn main() {
             commands::notes::delete_note,
             commands::notes::trash_note_drafts,
             commands::notes::list_proposals,
-            commands::notes::read_proposal,
             commands::notes::dismiss_proposal,
             commands::notes::mark_applied,
             commands::notes::knowledge_info,
             startup_log::startup_mark,
+            handoff_log::handoff_log,
             commands::notes::model_instructions_dir,
             commands::notes::chat_instructions_path,
+            commands::notes::practices_layer,
+            commands::notes::set_practices_layer,
             commands::notes::set_knowledge_dir,
             commands::notes::knowledge_graph,
             commands::memory::dream_status,
@@ -1710,6 +1828,9 @@ fn main() {
             commands::memory::centre_applied_diff,
             commands::memory::centre_revert_applied,
             commands::memory::centre_dream_diff,
+            commands::memory::centre_claude_memory,
+            commands::memory::centre_claude_memory_diff,
+            commands::memory::outside_sync,
             commands::memory::centre_revert_file,
             commands::system::build_stamp,
             commands::memory::tidy_memory,
@@ -1718,9 +1839,15 @@ fn main() {
             commands::system::reveal_file,
             commands::system::open_file,
             paste_images::fetch_paste_image,
+            commands::saved_prompts::saved_prompts_read,
+            commands::saved_prompts::saved_prompts_write,
+            commands::saved_prompts::clipboard_text,
+            quick_entry::quick_entry_set_shortcut,
+            quick_entry::quick_entry_hide,
             sent_files::save_sent_file,
             sent_files::drag_sent_file,
             commands::system::read_file_tab,
+            commands::system::read_reply_media,
             latex::render_latex,
             commands::system::open_url,
             commands::system::notify,
@@ -1728,6 +1855,7 @@ fn main() {
             commands::system::set_power_prefs,
             commands::system::set_zoom,
             webview_fit::refit_webview,
+            cursor_keep::keep_cursor,
             remote::remote_status,
             remote::remote_start,
             remote::remote_stop,
@@ -1736,6 +1864,30 @@ fn main() {
             remote::remote_sent,
             remote::remote_done,
             remote::remote_claim,
+            remote::push_note,
+            jobs::job_for_chat,
+            home::home_info,
+            home::home_today,
+            home::home_feed,
+            home::home_mark_seen,
+            home::home_routes,
+            home::home_route_start,
+            home::home_route_dismiss,
+            home::home_save_brief,
+            home::home_reach,
+            home::home_reach_check,
+            home::home_reach_check_one,
+            home::home_reach_set,
+            home::home_tasks,
+            home::home_task_event,
+            home::home_task_close,
+            home::home_stage_focus,
+            mac_sources::home_sources,
+            mac_sources::home_source_allow,
+            mac_sources::home_source_set,
+            jobs::job_answer,
+            jobs::job_home_list,
+            jobs::job_run_now,
             remote::remote_self_test,
             away::away_status,
             away::away_set_url,
@@ -1750,18 +1902,21 @@ fn main() {
             terminal::terminal_resize,
             terminal::terminal_close,
             terminal::terminal_ack,
+            feedback::feedback_send,
+            feedback::feedback_flush,
+            feedback::feedback_page_shot,
+            image_calls::image_tool_calls,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,
             nightshift::nightshift_enable,
             nightshift::nightshift_disable,
             nightshift::nightshift_default_runner,
             nightshift::nightshift_items,
-            nightshift::nightshift_item,
             nightshift::nightshift_set_order,
             nightshift::nightshift_blockers,
             nightshift::nightshift_answer_blocker,
+            nightshift::ask_file_answer,
             nightshift::nightshift_shifts,
-            nightshift::nightshift_shift,
             nightshift::nightshift_shift_log,
             nightshift::nightshift_synth_plan,
             nightshift::nightshift_write_plan,
@@ -1779,9 +1934,6 @@ fn main() {
             nightshift::nightshift_morning,
             nightshift::nightshift_notes,
             nightshift::nightshift_read_file,
-            nightshift::nightshift_stream,
-            nightshift::nightshift_schedule,
-            nightshift::nightshift_set_schedule,
             nightshift::nightshift_diff,
             nightshift::nightshift_shift_diff,
             nightshift::nightshift_new_item,
@@ -1791,6 +1943,7 @@ fn main() {
             nightshift::nightshift_revert,
             nightshift::nightshift_watch,
             nightshift::nightshift_unwatch,
+            notes_watch::watch_notes,
             webtab::web_open,
             webtab::web_bounds,
             webtab::web_nav,

@@ -2,10 +2,16 @@ import { describe, expect, it } from "vitest";
 import { gearTarget, GRACE_S, LIGHT_S, newDrive, stepDrive, WIND_S, type Drive, type DriveInput } from "./dialDrive";
 import dialSrc from "./ContextDial.svelte?raw";
 import motionSrc from "./DialMotion.svelte?raw";
-import railSrc from "./RightRail.svelte?raw";
-import topSrc from "./TopBar.svelte?raw";
-import classicRail from "./RightRailClassic.svelte?raw";
-import classicTop from "./TopBarClassic.svelte?raw";
+import rightRailLogicRaw from "./rightRail/logic.svelte.ts?raw";
+import railSrcRaw from "./RightRail.svelte?raw";
+const railSrc = asOneFile(railSrcRaw, rightRailLogicRaw);
+import { asOneFile } from "../test/oneFile";
+import topBarLogicRaw from "./topBar/logic.svelte.ts?raw";
+import topSrcRaw from "./TopBar.svelte?raw";
+const topSrc = asOneFile(topSrcRaw, topBarLogicRaw);
+import classicRailRaw from "./RightRailClassic.svelte?raw";
+const classicRail = asOneFile(classicRailRaw, rightRailLogicRaw);
+import classicTopRaw from "./TopBarClassic.svelte?raw";
 
 // Item 654 (his pick B3, blocker 1962): the column's dial moves with a reply.
 
@@ -172,8 +178,13 @@ describe("wiring", () => {
     expect(topSrc).toMatch(/class:dimmed=\{liveEst\} class:landed=\{landFlash\}/);
   });
   it("Classic is untouched", () => {
-    for (const src of [classicRail, classicTop]) {
+    // test-change: item 856 — the logic is shared now, so Classic's own file
+    // (its markup) is what must not draw the drive or the flash.
+    // test-change: item 856 — Classic's rail now draws 605's column beside an
+    // aside tab (the shared logic, Jarvis's column), drive included; its top bar does not.
+    for (const src of [classicTopRaw]) {
       expect(src).not.toMatch(/ContextDrive|dialDrive|landFlash/);
     }
+    expect(classicRail).toMatch(/ContextDrive|dialDrive/);
   });
 });

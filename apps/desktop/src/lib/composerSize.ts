@@ -9,27 +9,42 @@
  * A drag (or ⌥⌘↑/↓) makes the height the box's size even when empty; a
  * send from that chat turns it into the most the text may grow the box
  * to, and the box goes back to one line. The next drag makes it a floor
- * again. Kept in memory for the app's run: after a restart the dragged
- * height opens the empty box again, as before this item.
+ * again. ~~Kept in memory for the app's run: after a restart the dragged
+ * height opens the empty box again, as before this item.~~
+ *
+ * Since item 849 (2026-11-18, his "I feel like this should reset" of the
+ * box left half the window tall after a hand-off) the floor holds the empty
+ * box open only for the visit the drag was made in: leaving the chat (a
+ * chat switch, a hand-off to the next chat, the box closing) and a relaunch
+ * end it as a send does, and the dragged height is a ceiling only from then
+ * on. The record is of the boxes held open, so an unknown key — every key
+ * after a relaunch — holds nothing.
  */
 export class SentSinceDrag {
-  private keys = new Set<string>();
+  /** The boxes a drag holds open now (item 849: was the keys sent from). */
+  private held = new Set<string>();
 
   /** A message left this chat's box: its floor becomes a ceiling. */
   sent(key: string): void {
-    this.keys.add(key);
+    this.held.delete(key);
   }
 
   /** The box was sized by hand (or reset): the floor holds it open again. */
   sized(key: string): void {
-    this.keys.delete(key);
+    this.held.add(key);
   }
 
-  /** The floor that holds the empty box open for `key`: `floor` until a
-   *  send, null after it. The ceiling is not this function's — the caller
-   *  keeps the dragged height in its cap either way. */
+  /** The box stopped showing this chat (item 849): a switch, a hand-off,
+   *  the box unmounted. The floor becomes a ceiling, as after a send. */
+  left(key: string): void {
+    this.held.delete(key);
+  }
+
+  /** The floor that holds the empty box open for `key`: `floor` from a
+   *  drag until a send or leaving, null otherwise. The ceiling is not this
+   *  function's — the caller keeps the dragged height in its cap either way. */
   floor(key: string, floor: number | null): number | null {
-    return this.keys.has(key) ? null : floor;
+    return this.held.has(key) ? floor : null;
   }
 }
 

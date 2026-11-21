@@ -2,11 +2,13 @@
 import { projectSwitch } from "../projectSwitch.svelte";
 import * as api from "../api";
 import { refreshWithin } from "../afterWrite";
+import { watchWhenMoved } from "../notesFollow";
 import { withProject, withoutProject } from "../projectRows";
 import { canDetach } from "../browse";
 import * as tabs from "../tabs";
 import { loadSavedWorkspaces, rebuild } from "../tabsStore";
 import type { ProjectInfo, NewProjectPath } from "../types";
+import { isHome } from "../home";
 import { switchAside } from "./asides.svelte";
 import { syncNightshiftProject } from "./nightshift.svelte";
 import { leaveNote } from "./notes.svelte";
@@ -15,13 +17,24 @@ import { saveLastProject, app, applyDraft, activateTab, refreshSessions, clearPe
 
 // ---- projects ----
 
+/** Item 865: reads may overlap (the launch's list runs beside the reopen,
+ *  which re-reads behind it), so a read that started before the one last
+ *  applied is dropped rather than putting an older list back. */
+let projectsAsked = 0;
+let projectsApplied = 0;
+
 export async function refreshProjects(): Promise<void> {
+  const asked = ++projectsAsked;
+  let rows: Awaited<ReturnType<typeof api.listProjects>>;
   try {
-    app.projects = await api.listProjects();
+    rows = await api.listProjects();
   } catch (e) {
     addToast(String(e));
     return;
   }
+  if (asked < projectsApplied) return;
+  projectsApplied = asked;
+  app.projects = rows;
   // Keep the open project in step with the list it is a row of. `app.project`
   // is otherwise a snapshot taken at open/connect/rename, and `exists` is a
   // fact about the disk that changes underneath it — so the Welcome pane went
@@ -49,15 +62,27 @@ export async function refreshProjects(): Promise<void> {
  * note the model just left appears in the sidebar without a reload. Both are
  * refreshed together because the model can write to either.
  */
+/** Item 869: the watch on the folders this list mirrors, re-asked for only
+ *  when the open project or the vault moved. */
+const followNotes = watchWhenMoved(() => api.watchNotes());
+
 export async function refreshNotes(): Promise<void> {
+  // Item 869: the list follows changes made outside Nightloom too.
+  try {
+    followNotes(`${app.project?.id ?? ""}|${app.knowledge?.dir ?? ""}`);
+  } catch {
+    // A test's api mock without the watch: the list still reads.
+  }
   // As a tree since item 457: the same notes, plus the folders (an empty
   // one is still a place to drop a note) and whether the list is whole.
   if (app.project) {
+    const listedFor = app.project.id;
     try {
       const t = await api.listNoteTree("project");
       app.notes = t.notes;
       app.noteFolders.project = t.folders;
       app.notesComplete.project = t.complete;
+      app.notesListed.project = listedFor;
     } catch {
       // A store that cannot be listed shows as empty; the failure surfaces
       // when something is actually read or written.
@@ -75,6 +100,7 @@ export async function refreshNotes(): Promise<void> {
     app.vault = t.notes;
     app.noteFolders.knowledge = t.folders;
     app.notesComplete.knowledge = t.complete;
+    app.notesListed.knowledge = true;
   } catch {
     app.vault = [];
     app.noteFolders.knowledge = [];
@@ -188,7 +214,7 @@ export async function useProject(id: string | null): Promise<void> {
   // is covered meanwhile (`projectSwitch.svelte.ts`, `Welcome.svelte`).
   projectSwitch.on = true;
   try {
-    saveLastProject(app.project?.id ?? null);
+    saveLastProject(app.project?.id ?? null, app.project?.name);
     // ~~The workspace just left is dropped~~ — since backlog 201 it is
     // written under its project first (while its chat is still the open
     // one, so an aside tab of it finds its threads), and the new project's
@@ -448,7 +474,11 @@ export async function importFromClaude(): Promise<void> {
 export async function renameProject(id: string, name: string): Promise<void> {
   try {
     const project = await api.renameProject(id, name);
-    if (app.project?.id === id) app.project = project;
+    if (app.project?.id === id) {
+      app.project = project;
+      // Item 865: the launch screen says the kept name before the list lands.
+      saveLastProject(id, project.name);
+    }
     // The row renamed in place; the re-read follows (backlog 211).
     app.projects = withProject(app.projects, project);
     void refreshWithin("renaming " + name, [refreshProjects]);
@@ -462,6 +492,11 @@ export async function renameProject(id: string, name: string): Promise<void> {
  * says so — a "remove" next to a folder full of work has to be unambiguous.
  */
 export async function forgetProject(id: string): Promise<void> {
+  // Item 763: Home is pinned and cannot leave the list.
+  if (isHome(app.projects.find((p) => p.id === id))) {
+    addToast("Home stays in the list — it is where the morning scan and the feed live.");
+    return;
+  }
   const wasOpen = app.project?.id === id;
   try {
     await api.forgetProject(id);

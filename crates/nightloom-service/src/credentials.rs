@@ -124,6 +124,18 @@ mod store {
         }
     }
 
+    /// [`try_get`] without the trim (item 826: a master password may
+    /// begin or end with a space).
+    pub(super) fn try_get_raw(entry: &str) -> Result<Option<String>, CredentialError> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, entry)
+            .map_err(|e| CredentialError::Store(e.to_string()))?;
+        match entry.get_password() {
+            Ok(k) => Ok((!k.is_empty()).then_some(k)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(CredentialError::Store(e.to_string())),
+        }
+    }
+
     pub(super) fn set(entry: &str, key: &str) -> Result<(), CredentialError> {
         keyring::Entry::new(KEYRING_SERVICE, entry)
             .and_then(|e| e.set_password(key))
@@ -157,6 +169,10 @@ mod store {
         Ok(None)
     }
 
+    pub(super) fn try_get_raw(_entry: &str) -> Result<Option<String>, CredentialError> {
+        Ok(None)
+    }
+
     pub(super) fn set(_entry: &str, _key: &str) -> Result<(), CredentialError> {
         Err(CredentialError::Unsupported)
     }
@@ -164,6 +180,26 @@ mod store {
     pub(super) fn clear(_entry: &str) -> Result<(), CredentialError> {
         Err(CredentialError::Unsupported)
     }
+}
+
+/// Item 826: the Keychain entry holding his Bitwarden master password,
+/// read only after Touch ID (`bitwarden_unlock`).
+const BITWARDEN_MASTER: &str = "bitwarden-master";
+
+/// The stored Bitwarden master password (item 826), untrimmed. Callers
+/// confirm presence (Touch ID) first; never logged.
+pub fn bitwarden_master() -> Result<Option<String>, CredentialError> {
+    store::try_get_raw(BITWARDEN_MASTER)
+}
+
+/// Keep the Bitwarden master password (item 826, set up once).
+pub fn set_bitwarden_master(password: &str) -> Result<(), CredentialError> {
+    store::set(BITWARDEN_MASTER, password)
+}
+
+/// Forget the stored Bitwarden master password (item 826).
+pub fn clear_bitwarden_master() -> Result<(), CredentialError> {
+    store::clear(BITWARDEN_MASTER)
 }
 
 /// Whether this build can store a key at all. A shell offering a `set`

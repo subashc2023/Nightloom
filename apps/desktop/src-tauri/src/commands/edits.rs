@@ -76,6 +76,107 @@ pub(crate) async fn set_aside_files(
     .await
 }
 
+/// What Rewind's "restore files too" would put back (item 765): the files
+/// the rewound turns changed, read off the chat's hidden snapshots
+/// (`nightloom_service::turn_snapshot`), each marked when it changed again since. `to` is
+/// the rewound message's log index; `workspace` the chat's folder.
+#[tauri::command]
+pub(crate) async fn rewind_files(
+    workspace: String,
+    chat: String,
+    to: usize,
+) -> Result<nightloom_service::turn_snapshot::Plan, String> {
+    blocking(move || -> Result<_, String> {
+        Ok(nightloom_service::turn_snapshot::plan(
+            Path::new(workspace.trim()),
+            &chat,
+            to,
+        ))
+    })
+    .await
+}
+
+/// What a restore did (item 765).
+#[derive(Serialize)]
+pub(crate) struct Restored {
+    /// Written back as they were (relative to the repository's top).
+    restored: Vec<String>,
+    /// Files the turns made, moved aside rather than deleted (item 259's
+    /// folder), and the files that could not be touched, with why.
+    aside: set_aside::SetAside,
+    skipped: Vec<set_aside::Skipped>,
+    /// The folder after the restore, for its undo's guard.
+    after: Option<String>,
+}
+
+/// Put the rewound turns' files back (item 765): each of `paths` as it is
+/// in commit `from`; each of `added` (made by the turns, absent in `from`)
+/// moved aside, never deleted. A path that changed since commit `guard`
+/// — by him, or another chat — is left alone. The undo of a restore is the
+/// same call with the plan's "now" as `from` and the restore's `after` as
+/// `guard`. Nothing touches his index, HEAD or branches.
+#[tauri::command]
+pub(crate) async fn restore_rewound_files(
+    chat: Option<String>,
+    root: String,
+    from: String,
+    guard: String,
+    paths: Vec<String>,
+    added: Vec<String>,
+) -> Result<Restored, String> {
+    let aside_root = project::config_dir()
+        .ok_or("no config folder to set the files aside in")?
+        .join("rewound");
+    let short: String = chat.unwrap_or_default().chars().take(8).collect();
+    let mut stamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
+    if !short.is_empty() {
+        stamp = format!("{stamp}-{short}");
+    }
+    blocking(move || -> Result<_, String> {
+        let root = PathBuf::from(root);
+        let since = nightloom_service::turn_snapshot::changed_since(&root, &guard)
+            .ok_or("could not read the folder as it is now; nothing was changed")?;
+        let mut skipped = Vec::new();
+        let mut keep = |p: &String| {
+            if since.contains(p) {
+                skipped.push(set_aside::Skipped {
+                    path: p.clone(),
+                    why: "changed since the turn ended — left alone".into(),
+                });
+                false
+            } else {
+                true
+            }
+        };
+        let write: Vec<String> = paths.into_iter().filter(|p| keep(p)).collect();
+        let mut added: Vec<String> = added.into_iter().filter(|p| keep(p)).collect();
+        // What `from` does not hold is moved aside, not written (an undo
+        // of a restore that brought a deleted file back).
+        let held = nightloom_service::turn_snapshot::present_in(&root, &from, &write);
+        let (write, gone): (Vec<String>, Vec<String>) =
+            write.into_iter().partition(|p| held.contains(p));
+        added.extend(gone);
+        let failed = nightloom_service::turn_snapshot::checkout(&root, &from, &write);
+        let restored = write
+            .into_iter()
+            .filter(|p| !failed.iter().any(|(f, _)| f == p))
+            .collect();
+        skipped.extend(
+            failed
+                .into_iter()
+                .map(|(path, why)| set_aside::Skipped { path, why }),
+        );
+        let aside = set_aside::set_aside(&aside_root, &stamp, Some(&root), &added);
+        Ok(Restored {
+            restored,
+            aside,
+            skipped,
+            after: nightloom_service::turn_snapshot::now(&root),
+        })
+    })
+    .await
+}
+
 /// Lift the rewind recorded at log index `of` — the undo of a rewind
 /// (nightshift backlog 064, 2026-09-15) — returning the transcript the way
 /// [`rewind`] does and for the same reason.
@@ -352,15 +453,48 @@ pub(crate) async fn fork_session(
 /// *Continue in a new chat* card. Nothing is summarised here in
 /// Nightloom's words; the hand-off is the model's file.
 #[tauri::command]
-pub(crate) async fn continue_session(state: State<'_, AppState>) -> Result<MessageEdit, String> {
+pub(crate) async fn continue_session(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MessageEdit, String> {
     let target = state.chats.target();
-    let mut agent_guard = lock_agent_at(&state, &target).await;
+    // Item 857 (his report, 2026-11-18): an aside on this chat — the card's
+    // *Review this chat* — holds its agent for its whole run (34 s, his),
+    // and *Continue* sat behind it with both buttons greyed. The agent is
+    // wanted here only to drop the parent's resume, which the aside does
+    // not touch; so while an aside is registered and the agent is not free
+    // within a beat, the chat continues now and the drop waits its turn on
+    // the agent in the background, queued where this call stood. The review
+    // runs on and its page still saves. The window refuses *Continue* while
+    // a turn runs, so the holder is the aside.
+    let mut agent_guard = match state.agents.slot(target.id()) {
+        agents::Found::Ready(slot) if !state.aside_cancel.is_empty() => {
+            let mut lock = Box::pin(slot.lock_owned());
+            tokio::select! {
+                biased;
+                held = &mut lock => agents::Guard::new(held),
+                _ = tokio::time::sleep(super::aside::ASIDE_QUEUED_AFTER) => {
+                    tauri::async_runtime::spawn(async move {
+                        lock.await.set_resume(None);
+                    });
+                    agents::Guard::none()
+                }
+            }
+        }
+        _ => lock_agent_at(&state, &target).await,
+    };
     let log_dir = state.log_dir().await;
     let session_guard = target.lock().await;
     let parent = session_guard
         .as_ref()
         .ok_or_else(|| "no active session".to_string())?;
     let next = chat_ops::continue_from(parent, &log_dir, agent_guard.as_mut())?;
+    // Item 728: the chat just handed off stops keeping its cache warm, once.
+    crate::keep_warm::handed_off(
+        &app,
+        &parent.id,
+        &crate::keep_warm::ask_dir(parent, &log_dir),
+    );
     let events = next.events().to_vec();
     let id = next.id.clone();
     // The new chat is held and focused; the parent's lock goes with the
@@ -385,6 +519,7 @@ pub(crate) async fn continue_session(state: State<'_, AppState>) -> Result<Messa
 /// and its project is not the open one.
 #[tauri::command]
 pub(crate) async fn continue_chat(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     chat: String,
     project: Option<String>,
@@ -405,6 +540,8 @@ pub(crate) async fn continue_chat(
     };
     let next = chat_ops::continue_from(parent, &dir, None)?;
     let id = next.id.clone();
+    let parent_id = parent.id.clone();
+    let parent_ask = crate::keep_warm::ask_dir(parent, &dir);
     drop(guard);
     if !state.agents.reserve_like(&chat, &id) && project != active {
         // Nothing to run it on off screen; the log just made is empty and
@@ -415,6 +552,8 @@ pub(crate) async fn continue_chat(
         return Err("its project is not open".to_string());
     }
     state.chats.hold(next);
+    // Item 728: the chat just handed off stops keeping its cache warm, once.
+    crate::keep_warm::handed_off(&app, &parent_id, &parent_ask);
     Ok(id)
 }
 

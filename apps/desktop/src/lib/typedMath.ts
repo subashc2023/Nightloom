@@ -104,7 +104,7 @@ function balanced(s: string): boolean {
 
 // ---- protected regions: code, quotes, existing maths, URLs, paths, flags ----
 
-function protectedRanges(text: string): [number, number][] {
+export function protectedRanges(text: string): [number, number][] {
   const out: [number, number][] = [];
   const add = (re: RegExp) => {
     for (const m of text.matchAll(re)) out.push([m.index, m.index + m[0].length]);
@@ -246,12 +246,16 @@ function strongToken(s: string, t?: Tok): string | null {
   if (m && balanced(m[2].replace(/\[/g, "(").replace(/\]/g, ")"))) {
     const name = m[1];
     const inner = m[2].slice(1, -1);
+    // Item 837 (his 834): a Greek name is a letter — as the argument
+    // (`L(lambda)`, which read as a word and cost the whole line its offer)
+    // and as the name (`Sigma(x)`, `Phi(z)`, `Gamma(n)`), capital or small.
+    const words = inner.replace(/\b(log|ln|sin|cos|tan|exp)\b/g, "").replace(/[A-Za-z]+/g, (w) => (GREEK.has(w) ? "g" : w));
     const ok =
       name === "sqrt" ||
       FUNCS.has(name) ||
-      ((name.length === 1 || name === "Var") &&
+      ((name.length === 1 || name === "Var" || GREEK.has(name)) &&
         /^[A-Za-z0-9|,=+\- ^_()']+$/.test(inner) &&
-        !/[A-Za-z]{3,}/.test(inner.replace(/\b(log|ln|sin|cos|tan|exp)\b/g, "")));
+        !/[A-Za-z]{3,}/.test(words));
     if (ok && (!m[3] || strongPow(m[3]))) return s;
   }
   // a primed variable: y', y''
@@ -283,7 +287,7 @@ function strongToken(s: string, t?: Tok): string | null {
   }
   // subscripts: x_1, a_n, theta_0, a_(n-1), lim_(x->0); not file_name, __init__
   m = /^([A-Za-z]+)_(\(.+\)|[A-Za-z0-9]{1,3})(\^.+)?$/.exec(s);
-  if (m && (isLetter(m[1]) || GREEK.has(m[1]) || FUNCS.has(m[1]) || m[1] === "sum" || m[1] === "int")) {
+  if (m && (isLetter(m[1]) || GREEK.has(m[1]) || FUNCS.has(m[1]) || m[1] === "sum" || m[1] === "int" || m[1] === "prod")) {
     const sub = m[2];
     const subOk = /^\(.+\)$/.test(sub)
       ? compactExpr(sub.slice(1, -1)) !== null || /^[A-Za-z0-9]+$/.test(sub.slice(1, -1))
@@ -569,7 +573,12 @@ const texMemo = new Map<string, string>();
 function texOf(src: string): string {
   let t = texMemo.get(src);
   if (t === undefined) {
-    t = tidy(am(src.replace(/\b([A-Za-z])_(hat|bar)\b/g, "$2($1)")));
+    // Item 837: a capital Sigma / Pi with a running index under it
+    // (`Sigma_(i=1)^n`) is the summation / product sign, not the letter
+    // with limits set beside it. A bare `Sigma`, `Sigma_x`, `Sigma^2` keep
+    // the letter he typed, capital for capital.
+    const big = src.replace(/\b(Sigma|Pi)_\(([^()]*=[^()]*)\)/g, (_m, g: string, lim: string) => `${g === "Sigma" ? "sum" : "prod"}_(${lim})`);
+    t = tidy(am(big.replace(/\b([A-Za-z])_(hat|bar)\b/g, "$2($1)")));
     if (texMemo.size >= 500) texMemo.clear();
     texMemo.set(src, t);
   }

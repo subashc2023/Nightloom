@@ -178,6 +178,19 @@ export function convertingLabel(name: string, converter: boolean): string {
   return converter ? `${officeUnit(name)} → PDF…` : `${officeUnit(name)} → text…`;
 }
 
+/** Item 868: a duration as m:ss ("1:12"). */
+export function clockTime(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** Item 868: the words while an office file converts, with the time it
+ *  has taken so far — a 184-slide deck takes ~2 min (~5 split in parts),
+ *  and a bare "→ PDF…" looked stuck. */
+export function convertingWords(name: string, to: "pdf" | "text", ms: number): string {
+  return `${to === "pdf" ? "converting" : "reading"} ${officeUnit(name)} · ${clockTime(ms)}`;
+}
+
 /** The chip's words once it has: what will be sent. */
 export function convertedLabel(name: string, via: "pdf" | "text", count: number | null): string {
   const unit = officeUnit(name);

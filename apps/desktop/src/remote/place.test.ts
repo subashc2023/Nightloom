@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { heldTap, joinDraft, placeFromHash, placeHash, plainError, readPlace, samePlace, triable } from "./place";
+import { HOME_PLACE, heldTap, joinDraft, placeFromHash, placeHash, plainError, readPlace, samePlace, triable } from "./place";
 import { tokenFromHash } from "./client";
 
 describe("the place in the hash (item 300, A21/A37)", () => {
@@ -133,5 +133,19 @@ describe("project rename and forget (A4, F1's patch note)", () => {
     }
     expect(seen[0]).toEqual({ url: "/api/projects/p%201/rename", body: JSON.stringify({ name: "New" }) });
     expect(seen[1]).toEqual({ url: "/api/projects/p%201/forget", body: null });
+  });
+});
+
+describe("the Home place (763 H8)", () => {
+  it("is #home in the hash and back, and never a chat", () => {
+    expect(placeHash(HOME_PLACE)).toBe("#home");
+    expect(placeFromHash("#home")).toEqual(HOME_PLACE);
+    expect(placeFromHash("#home&chat=abc")).toEqual({ chat: "abc", project: null, host: null });
+    expect(samePlace(placeFromHash("#home"), HOME_PLACE)).toBe(true);
+    expect(samePlace(HOME_PLACE, { chat: null, project: null, host: null })).toBe(false);
+  });
+  it("reads back from storage", () => {
+    expect(readPlace({ home: true, chat: null })).toEqual(HOME_PLACE);
+    expect(readPlace({ home: true, chat: "c" })).toEqual({ chat: "c", project: null, host: null });
   });
 });

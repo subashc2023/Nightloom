@@ -29,6 +29,7 @@ export const ICONS = {
   term: '<path d="M4 6l4 4-4 4M10 14h6"/>',
   cols: '<rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M10 4v12"/>',
   // The chat-surface redesign (nightshift notes/runner-design/surface-redesign-2026-09-13).
+  home: '<path d="M3.5 9.5 10 4l6.5 5.5"/><path d="M5.5 8.2V16h3.2v-4h2.6v4h3.2V8.2"/>',
   folder: '<path d="M3 6a1.5 1.5 0 0 1 1.5-1.5H8l2 2h5.5A1.5 1.5 0 0 1 17 8v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 15z"/>',
   // Item 673: the aside head's "about its Nth reply" pill.
   reply: '<path d="M8 5 4 9l4 4"/><path d="M4 9h7a5 5 0 0 1 5 5v1"/>',
@@ -65,6 +66,15 @@ export const ICONS = {
   image: '<rect x="3" y="4" width="14" height="12" rx="1.5"/><circle cx="7.5" cy="8" r="1.3"/><path d="m3.5 14.5 4-4 3 3 2-2 4 4"/>',
   checklist: '<path d="m3 5.5 1.5 1.5L7 4.5M3 12.5 4.5 14 7 11.5M10 6h7M10 13h7"/>',
   markdown: '<path d="m6.5 6-3.5 4 3.5 4M13.5 6l3.5 4-3.5 4M11 4.5l-2 11"/>',
+  /* Home's Sources (item 873): one mark per kind of connector, drawn in its service's tint. */
+  mail: '<rect x="3" y="5" width="14" height="10.5" rx="1.5"/><path d="m3.5 6 6.5 5 6.5-5"/>',
+  calendar: '<rect x="3.5" y="4.5" width="13" height="12" rx="1.5"/><path d="M3.5 8.5h13M7 3v3M13 3v3M7 11.5h2M11 11.5h2M7 14h2"/>',
+  drive: '<path d="M7.5 4h5l4.5 8-2.5 4.5h-9L3 12z"/><path d="M7.5 4 12 12h5M3 12h9l-3.5 4.5"/>',
+  slides: '<rect x="3" y="4.5" width="14" height="10" rx="1.5"/><path d="M10 14.5V17M7 17h6M6.5 8h7M6.5 11h4.5"/>',
+  sheet: '<rect x="4" y="3" width="12" height="14" rx="1.5"/><path d="M4 8h12M4 12.5h12M9 8v9"/>',
+  spark: '<path d="M10 3v14M3 10h14M5.1 5.1l9.8 9.8M14.9 5.1l-9.8 9.8"/>',
+  bubble: '<path d="M10 4c4 0 7 2.4 7 5.4s-3 5.4-7 5.4c-.9 0-1.8-.1-2.6-.4L4 16l.9-3C3.7 12 3 10.8 3 9.4 3 6.4 6 4 10 4z"/>',
+  person: '<circle cx="10" cy="7.5" r="3"/><path d="M4.5 16.5c.6-2.8 2.8-4.5 5.5-4.5s4.9 1.7 5.5 4.5"/><rect x="2.5" y="2.5" width="15" height="15" rx="3"/>',
 } as const;
 
 export type IconName = keyof typeof ICONS;

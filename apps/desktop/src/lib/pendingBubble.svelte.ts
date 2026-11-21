@@ -28,11 +28,21 @@
  * **Stop + send**: the turn stops (the reply so far stays) and the row goes
  * at once as the next message, exactly once, into its own chat. *Let it
  * arrive* no longer hides *Send now*.
+ *
+ * Item 720 (2026-11-16, his "the default should be slip … make the stop
+ * and send option always there (but dimmed)"): the two are split.
+ * **Send now** only ever slips the row in — handed to the turn, read at
+ * Claude's next gap, nothing stopped; a row already handed in says
+ * "waiting for a gap" and has no Send now left to press. **Interrupt and
+ * send** is beside it on every pending row: what *Send now* did before
+ * (`sendNowAny`) — Claude Code's own send now in the running process, and
+ * Stop + send only for a row the turn cannot take at all. It is dimmed
+ * while a gap is coming and lit when none is (`interruptLit.ts`).
  */
 import { takeBackInjected } from "./api";
 import { clearInjected, dropQueued, readDraft, recordDraft, takeBackQueued, type QueuedMessage } from "./drafts.svelte";
 import { requestComposerFocus } from "./rewindDraft.svelte";
-import { addToast, handReason, replyToPending, sendNowAny, sendNowPlan, type HandReason, type SendNowPlan } from "./state.svelte";
+import { addToast, handReason, replyToPending, sendNowAny, sendNowPlan, slipRow, type HandReason, type SendNowPlan } from "./state.svelte";
 
 export type PendingState = "next-step" | "now" | "turn-end" | "waiting" | "replying";
 
@@ -53,15 +63,15 @@ export function pendingState(q: Pick<QueuedMessage, "inject">, waiting = false):
 export function pendingLabel(s: PendingState, letArrive = false): string {
   switch (s) {
     case "now":
-      return "sending now — Claude was asked to stop the step it is in";
+      return "interrupting — Claude was asked to stop what it is doing and read this";
     case "turn-end":
-      return "not sent yet — goes when this turn ends, or send it now";
+      return "not sent yet — goes when this turn ends, or interrupt and send";
     case "waiting":
       return "not sent yet — Claude is waiting on your answer above; send this instead, or answer and it goes after";
     case "replying":
       return "sending — in place of an answer";
     default:
-      return letArrive ? "not sent yet — Claude reads it at its next step" : "not sent yet — Claude reads it at its next step, or send it now";
+      return letArrive ? "not sent yet — waiting for a gap: Claude reads it at its next step" : "not sent yet — waiting for a gap: Claude reads it at its next step, or interrupt and send";
   }
 }
 
@@ -71,12 +81,23 @@ export function offersChoice(s: PendingState, letArrive: boolean): boolean {
   return s === "next-step" && !letArrive;
 }
 
-/** Whether the bubble offers *Send now* (item 536): every state but one
- *  already going (`now`, `replying`) or waiting on a prompt (its own
- *  *Send now*, `offersReply`), whenever the plan can do something. */
-export function offersSendNow(s: PendingState, plan: SendNowPlan): boolean {
+/** Whether the bubble offers *Interrupt and send* (item 536's *Send
+ *  now*, renamed by 720): every state but one already going (`now`,
+ *  `replying`) or waiting on a prompt (its own *Send now*,
+ *  `offersReply`), whenever the plan can do something. */
+export function offersInterrupt(s: PendingState, plan: SendNowPlan): boolean {
   return (s === "next-step" || s === "turn-end") && (plan === "now" || plan === "hand" || plan === "stop");
 }
+
+/** Whether the bubble offers *Send now* (item 720: slip it in, never a
+ *  stop): only a row not yet handed in that the running turn can take.
+ *  One already handed in is waiting for its gap — nothing to press. */
+export function offersSendNow(s: PendingState, plan: SendNowPlan): boolean {
+  return s === "turn-end" && plan === "hand";
+}
+
+/** The *Send now* tip (item 720). */
+export const SLIP_TIP = "Slip it into the running turn: Claude reads it at its next gap (after the step it is in). Nothing is stopped.";
 
 /** Why a row is not handed in, in his words (item 536). */
 export function handNote(r: HandReason | null): string | null {
@@ -94,13 +115,23 @@ export function handNote(r: HandReason | null): string | null {
   }
 }
 
-/** The *Send now* tooltip: which of the two it will do (item 536). */
-export function sendNowTip(plan: SendNowPlan, why: HandReason | null = null): string {
-  if (plan === "now") return "Stop the step Claude is in (a long command, say) and give it this message at once — Claude Code's own send now. The reply so far stays and the turn goes on.";
+/** The *Interrupt and send* tooltip: which of the two it will do (item
+ *  536), and — item 720 — whether now is the time for it (`lit`). */
+export function interruptTip(plan: SendNowPlan, why: HandReason | null = null, lit: "writing" | "long" | null | undefined = undefined): string {
+  const when =
+    lit === "writing"
+      ? " Claude is writing its answer, so no gap is coming: this is the way to be read now."
+      : lit === "long"
+        ? " No gap has come for a while: this is the way to be read now."
+        : lit === null
+          ? " A gap is coming (a step is running), so the message will be read soon without this."
+          : "";
+  if (plan === "now")
+    return `Stop what Claude is doing (a long answer, a long command) and give it this message at once — Claude Code's own send now. The reply so far stays, the turn goes on in the same process, and background agents keep running.${when}`;
   const note = handNote(why);
   const stop = "Stop this turn and send this at once as the next message. The reply so far stays.";
   if (plan === "stop") return note ? `${stop} (It cannot go into the running turn: ${note}.)` : stop;
-  return `Give it to Claude at once (Claude Code's own send now: the step it is in stops, the turn goes on). If the running turn cannot take messages, Nightloom stops the turn instead — the reply so far stays — and sends this as the next message.${note ? ` Not handed in yet: ${note}.` : ""}`;
+  return `Give it to Claude at once (Claude Code's own send now: what it is doing stops, the turn goes on). If the running turn cannot take messages, Nightloom stops the turn instead — the reply so far stays — and sends this as the next message.${note ? ` Not handed in yet: ${note}.` : ""}${when}`;
 }
 
 /** The plan and the reason for the bubble (item 536). */
@@ -139,9 +170,16 @@ async function unsend(key: string, qid: number): Promise<boolean> {
   return true;
 }
 
-export async function sendNow(key: string, qid: number): Promise<void> {
+/** *Interrupt and send* (item 536's *Send now*; 720). */
+export async function interruptSend(key: string, qid: number): Promise<void> {
   const r = await sendNowAny(key, qid);
   if (r === "stopping") addToast("Stopping the turn — the reply so far stays, and your message goes the moment it has stopped.");
+}
+
+/** *Send now* (item 720): slip the row into the running turn; never a stop. */
+export async function sendNow(key: string, qid: number): Promise<void> {
+  const r = await slipRow(key, qid);
+  if (r === "none") addToast("It cannot go into the running turn yet — it goes when this turn ends. Interrupt and send is there if it cannot wait.");
 }
 
 /** Whether the bubble offers *Send now* as a reply to the prompt that waits (item 522). */
@@ -212,7 +250,7 @@ export function pendingHead(s: PendingState | null, arrive = false, held: HeldWh
   if (held === "idle") return "queued · waiting to send";
   switch (s) {
     case "now":
-      return "sending now · Claude was asked to stop its step";
+      return "interrupting · Claude was asked to stop and read it";
     case "turn-end":
       return "queued · goes when this turn ends";
     case "waiting":
@@ -220,7 +258,7 @@ export function pendingHead(s: PendingState | null, arrive = false, held: HeldWh
     case "replying":
       return "sending · in place of an answer";
     default:
-      return arrive ? "queued · Claude reads it at its next step" : "queued · goes at Claude's next step";
+      return arrive ? "waiting for a gap · Claude reads it at its next step" : "waiting for a gap · goes at Claude's next step";
   }
 }
 

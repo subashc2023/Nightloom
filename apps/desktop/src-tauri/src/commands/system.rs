@@ -97,6 +97,71 @@ pub(crate) async fn read_file_tab(
     chat: Option<String>,
 ) -> Result<filetab::FileTab, String> {
     let target = PathBuf::from(&path);
+    let (trees, written) = chat_file_facts(&state, chat.as_deref()).await;
+    // A file he opened from the Finder (backlog 378) or one the model
+    // marked for him (backlog 377) needs no chat to vouch for it.
+    if opened_files::is_opened(&target) || for_you::is_for_you(&target) {
+        return filetab::read(&target, filetab::Via::Chosen);
+    }
+    // Item 820: a picture the reply strip drew from a temp folder opens
+    // as a tab too, under the strip's own rule.
+    let via = match filetab::permitted(&target, &trees, &written) {
+        Ok(v) => v,
+        Err(e) if filetab::media_kind(&target).is_some() => {
+            filetab::media_permitted(&target, &trees, &written).map_err(|_| e)?
+        }
+        Err(e) => return Err(e),
+    };
+    filetab::read(&target, via)
+}
+
+/// A picture or a video a reply names, drawn inside the reply (item 820):
+/// read when a tab could read it (`read_file_tab`'s rules) or, for a
+/// picture or a video only, when it is under a temp folder — where a
+/// script's plot is saved. Past the reply's size limit the answer carries
+/// no bytes, and the strip says so.
+#[tauri::command]
+pub(crate) async fn read_reply_media(
+    state: State<'_, AppState>,
+    path: String,
+    chat: Option<String>,
+) -> Result<filetab::ReplyMedia, String> {
+    reply_media_in(&state, &path, chat.as_deref()).await
+}
+
+/// `read_reply_media` for any caller (the phone's route, item 820). A
+/// relative path is taken against the chat's first folder.
+pub(crate) async fn reply_media_in(
+    state: &AppState,
+    path: &str,
+    chat: Option<&str>,
+) -> Result<filetab::ReplyMedia, String> {
+    let (trees, written) = chat_file_facts(state, chat).await;
+    // `~/…` as the file cards write it.
+    let expanded = match (path.strip_prefix("~/"), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) if !home.is_empty() => format!("{home}/{rest}"),
+        _ => path.to_string(),
+    };
+    let raw = PathBuf::from(expanded);
+    let target = if raw.is_absolute() {
+        raw
+    } else if let Some(base) = trees.first() {
+        base.join(raw)
+    } else {
+        return Err(format!("{path} is not an absolute path"));
+    };
+    if !(opened_files::is_opened(&target) || for_you::is_for_you(&target)) {
+        filetab::media_permitted(&target, &trees, &written)?;
+    }
+    filetab::read_media(&target)
+}
+
+/// A chat's folders and the paths its tools wrote, for a file read
+/// (`read_file_tab`, `read_reply_media`).
+pub(crate) async fn chat_file_facts(
+    state: &AppState,
+    chat: Option<&str>,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let active = state.active().await;
     // The trees and the written paths, from the chat's log however it is
     // reached; `Session` is not `Clone`, so both are taken under one look.
@@ -125,11 +190,11 @@ pub(crate) async fn read_file_tab(
             .unwrap_or_default();
         (trees, written)
     };
-    let held = chat.as_deref().and_then(|id| state.chats.find(id));
+    let held = chat.and_then(|id| state.chats.find(id));
     let from_memory = held
         .as_ref()
         .and_then(|(_, log)| log.try_lock().ok().map(|s| facts(Some(&*s))));
-    let (trees, written) = match (from_memory, &chat) {
+    match (from_memory, chat) {
         (Some(f), _) => f,
         (None, Some(id)) => {
             let loaded = store::find_by_prefix(&state.log_dir().await, id)
@@ -138,14 +203,7 @@ pub(crate) async fn read_file_tab(
             facts(loaded.as_ref())
         }
         (None, None) => facts(None),
-    };
-    // A file he opened from the Finder (backlog 378) or one the model
-    // marked for him (backlog 377) needs no chat to vouch for it.
-    if opened_files::is_opened(&target) || for_you::is_for_you(&target) {
-        return filetab::read(&target, filetab::Via::Chosen);
     }
-    let via = filetab::permitted(&target, &trees, &written)?;
-    filetab::read(&target, via)
 }
 
 /// What a file the OS would run rather than show is, by extension or the
@@ -333,4 +391,37 @@ pub(crate) async fn playwright_for_chat(
         installed: nightloom_service::agent::own_browser::locate().is_some(),
         on: nightloom_service::agent::own_browser::for_chat(&dir),
     })
+}
+
+/// Item 874: an uncaught error from the window — a thrown event handler, a rejected promise, an effect the UI runtime
+/// gave up on — appended, stamped, to `<config dir>/logs/frontend-errors.log`, so a window that stops drawing is
+/// never undiagnosable again. One entry at most 4000 characters; past 2 MB the file moves to `.1` (one kept). Best
+/// effort: a failed write is dropped.
+#[tauri::command]
+pub(crate) fn frontend_error_log(text: String) {
+    use std::io::Write;
+    let text: String = text.chars().take(4000).collect();
+    let Some(dir) = nightloom_service::project::config_dir().map(|c| c.join("logs")) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("frontend-errors.log");
+    if std::fs::metadata(&path)
+        .map(|m| m.len() > 2_000_000)
+        .unwrap_or(false)
+    {
+        let _ = std::fs::rename(&path, dir.join("frontend-errors.log.1"));
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(
+            f,
+            "{} {}",
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            text.replace('\n', "\n    ")
+        );
+    }
 }

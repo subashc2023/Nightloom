@@ -34,6 +34,7 @@ import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import { app, addToast, followNoteMove, movedNoteName, noteDraftKey, onNoteMove, saveNote } from "./state.svelte";
 import type { NoteScope } from "./types";
+import { undoEditBlocked } from "./noteConflict";
 import {
   STORE_KEY,
   changedLines,
@@ -344,6 +345,20 @@ export async function undoNoteEdit(scope: NoteScope, name: string, current: stri
     });
   }
   const back = turn.before;
+  // Item 870: never over an outside change since the edit. A read that
+  // fails leaves the write to say what is wrong, as before.
+  if (turn.after !== undefined) {
+    let disk: string | null = null;
+    try {
+      disk = await api.readNote(scope, name);
+    } catch {
+      disk = null;
+    }
+    if (disk !== null && undoEditBlocked({ disk, after: turn.after, current })) {
+      addToast(`Not undone: ${name.split("/").pop()} changed outside Nightloom since the edit, so Undo would write over that change`);
+      return;
+    }
+  }
   if (await saveNote(scope, name, back)) {
     delete app.noteDrafts[key];
     turn.status = "undone";

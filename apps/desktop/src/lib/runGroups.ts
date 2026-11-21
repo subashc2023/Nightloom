@@ -136,6 +136,19 @@ export function chatRun(runs: readonly RunEntry[], session: string | null): Chat
   return { state: turn.waiting ? "waiting" : "running", startedAt: turn.startedAt, agents, doing: turn.doing };
 }
 
+/**
+ * Item 886 (his "aside does not have the running label … doesn't have the
+ * little dot on the tab"): an aside's own state, read from the same running
+ * list as the chat's — its asking turn's `aside:<id>:<seq>` row of its chat —
+ * so its sign is the chat's sign (`ChatRunSign`) and goes out with it. An
+ * aside has no subagents and no prompts of its own: running or idle.
+ */
+export function asideRun(runs: readonly RunEntry[], session: string | null, asideId: number): ChatRunState {
+  const row = runs.find((r) => r.kind === "aside" && r.session === session && r.id.startsWith(`aside:${asideId}:`));
+  if (!row) return { state: "idle", startedAt: null, agents: 0, doing: "" };
+  return { state: "running", startedAt: row.startedAt, agents: 0, doing: row.doing };
+}
+
 /** A project's folded line: `2 chats · 5 running`. */
 export function projectSummary(p: ProjectRuns): string {
   const chats = p.chats.filter((c) => c.session !== null || c.turn !== null).length;

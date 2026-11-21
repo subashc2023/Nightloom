@@ -59,9 +59,11 @@ const RELAY_CAPACITY: usize = 256;
 /// out under the same name, re-shaped by [`aside_delta_event`].
 /// `pass-event` (wave 5) is the window's word on a dream or a capture the
 /// phone started: `{kind, state: started|done|failed, text}`.
-const RELAYED: [&str; 5] = [
+const RELAYED: [&str; 6] = [
     "turn-event",
     "tool-approval",
+    // 783: an unanswered card's reminder and set-aside.
+    "approval-nudge",
     "turn-notice",
     "aside-event",
     "pass-event",
@@ -121,7 +123,21 @@ pub struct DesktopHost {
     /// The Nightshift projects as last detected, and when (detection
     /// reads every project's folder; `/api/state` asks on every poll).
     nightshift: Mutex<Option<(std::time::Instant, Vec<NightshiftProject>)>>,
+    /// Push to the phone (item 739): the key, the subscriptions and the
+    /// sender, under `~/.nightloom/remote/push/`. `None` with no home.
+    push: Option<Arc<nightloom_service::push::Push>>,
+    /// The recurring jobs (item 746), kept under the home like the push
+    /// state; `None` with no home folder.
+    jobs: Option<Arc<nightloom_service::jobs::Jobs>>,
 }
+
+/// How long a job's run waits for the window to say it started.
+const JOB_WAIT: Duration = Duration::from_secs(10);
+
+/// He is "at the Mac" (item 739) while its keyboard, mouse or trackpad was
+/// touched this recently: no push goes to the phone then — the Mac's own
+/// banner and the window say it.
+const AT_THE_MAC: Duration = Duration::from_secs(120);
 
 /// The window's `remote-window-state` payload.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -148,6 +164,9 @@ const STARTED_LATE: &str =
 /// The voice programs (two whisper servers and Piper, ~700 MB between
 /// them) stop after this long unused; the next socket starts them again.
 const VOICE_IDLE: Duration = Duration::from_secs(600);
+/// Item 801: a Brief is one short Haiku turn; give it a generous minute
+/// and a half.
+const BRIEF_WAIT: Duration = Duration::from_secs(90);
 
 impl DesktopHost {
     fn new(app: AppHandle) -> Arc<Self> {
@@ -164,6 +183,15 @@ impl DesktopHost {
             claimed: Mutex::new(std::collections::HashSet::new()),
             window: Mutex::new(WindowState::default()),
             nightshift: Mutex::new(None),
+            push: nightloom_service::project::config_dir().map(|home| {
+                nightloom_service::push::Push::open(
+                    nightloom_service::push::Push::dir_under(&home),
+                    "mac",
+                )
+            }),
+            jobs: nightloom_service::project::config_dir().map(|home| {
+                nightloom_service::jobs::Jobs::open(nightloom_service::jobs::Jobs::dir_under(&home))
+            }),
         })
     }
 
@@ -182,6 +210,21 @@ impl DesktopHost {
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .insert(id.to_string(), v.clone());
+                }
+                // 783: a card set aside for want of an answer is no longer
+                // one a phone that opens later should be shown.
+                if name == "approval-nudge"
+                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(ev.payload())
+                    && matches!(
+                        v.get("stage").and_then(|s| s.as_str()),
+                        Some("set_aside" | "unattended")
+                    )
+                    && let Some(id) = v.get("id").and_then(|i| i.as_str())
+                {
+                    host.seen
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .remove(id);
                 }
                 // No subscriber is not an error: nothing is listening until
                 // a phone opens the stream.
@@ -651,6 +694,123 @@ impl Host for DesktopHost {
     /// kept with its idle reaper; looked for again while it is absent, so
     /// running the setup script needs no relaunch. Finding it starts no
     /// program — the socket's `hello` does (`Engine::warm`).
+    fn push(&self) -> Option<Arc<nightloom_service::push::Push>> {
+        self.push.clone()
+    }
+
+    /// Item 743: `<the chat's log folder>/ask/<log stem>`, as `send_agent`
+    /// names it — found by the chat's id in the project the phone names.
+    async fn ask_dir(
+        &self,
+        project: Option<&str>,
+        chat: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        // The project the phone names, then the open one, then no project:
+        // the phone's id for "no project" is not one this host knows.
+        let state = self.state_of();
+        let mut dirs = Vec::new();
+        if let Ok(dir) = self.dir_of(project).await {
+            dirs.push(dir);
+        }
+        dirs.push(state.log_dir().await);
+        dirs.push(state.default_log_dir.clone());
+        let id = chat.to_string();
+        crate::blocking(move || -> Result<std::path::PathBuf, String> {
+            let path = dirs
+                .iter()
+                .find_map(|dir| store::find_by_prefix(dir, &id).ok())
+                .ok_or_else(|| format!("no chat {id}"))?;
+            nightloom_service::approval_rules::ask_dir_of_log(&path)
+        })
+        .await
+    }
+
+    fn jobs(&self) -> Option<Arc<nightloom_service::jobs::Jobs>> {
+        self.jobs.clone()
+    }
+
+    /// Item 808: the Mac's four stores as Settings → Home shows them.
+    async fn home_sources(&self) -> Vec<nightloom_service::home::sources::Row> {
+        crate::mac_sources::rows().await.unwrap_or_default()
+    }
+
+    /// Item 808: the phone asked — Settings → Home opens at the row; the
+    /// macOS dialog waits for his press on the Mac.
+    async fn home_source_ask(
+        &self,
+        source: nightloom_service::home::sources::Source,
+    ) -> Result<String, String> {
+        crate::mac_sources::ask_from_phone(&self.app, source)
+    }
+
+    /// He touched the Mac within [`AT_THE_MAC`] (item 780): a job's push
+    /// is held, as the turn-end ones are, and the chat's card shows it.
+    fn at_the_mac(&self) -> bool {
+        crate::wake::idle_seconds().is_some_and(|s| s < AT_THE_MAC.as_secs_f64())
+    }
+
+    /// Item 781: a job the away server keeps a copy of runs here only once
+    /// the server's lease says the Mac has it (the server may have run it
+    /// while the Mac slept); a failed ask waits a short window, then runs it
+    /// (the Mac goes first; item 803).
+    async fn job_claim(
+        &self,
+        job: &nightloom_service::jobs::Job,
+        due: chrono::DateTime<chrono::Utc>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> nightloom_service::sync::lease::Claim {
+        let Some(config) = nightloom_service::project::config_dir() else {
+            return nightloom_service::sync::lease::Claim::Granted;
+        };
+        let projects = {
+            let state = self.state_of();
+            let ws = state.workspaces.lock().await;
+            ws.registry.projects()
+        };
+        match nightloom_service::sync::lease::MacAway::load(&config, &projects) {
+            Some(away) => away.claim(job, due, now).await,
+            None => nightloom_service::sync::lease::Claim::Granted,
+        }
+    }
+
+    /// The job's chat and the agent its run will use (item 746, `jobs.rs`).
+    async fn job_prepare(&self, prep: nightloom_service::jobs::Prep) -> Result<String, String> {
+        crate::jobs::prepare(&self.state_of(), prep).await
+    }
+
+    /// The run: the window's off-screen send into the job's chat
+    /// (`remote-job`), so the chat on his screen stays where it is — not
+    /// `remote-send`, which opens the chat it names.
+    async fn job_send(
+        &self,
+        project: Option<&str>,
+        chat: &str,
+        text: &str,
+    ) -> Result<Handed, String> {
+        let body = serde_json::json!({ "chat": chat, "project": project, "text": text });
+        match self.call("remote-job", body, JOB_WAIT).await {
+            // Claimed and answered late: the turn is starting.
+            Ok(_) => Ok(Handed::Sent),
+            Err(e) if e == STARTED_LATE => Ok(Handed::Sent),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Item 801: the phone's Brief, run by the window (`remote-brief`), which
+    /// knows the agent binary and safe mode it runs every turn with.
+    async fn brief(&self, text: &str) -> Result<String, String> {
+        let v = self
+            .call(
+                "remote-brief",
+                serde_json::json!({ "text": text }),
+                BRIEF_WAIT,
+            )
+            .await?;
+        v.as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "the window answered the Brief with no words".to_string())
+    }
+
     fn voice(&self) -> Option<Arc<nightloom_service::voice::Engine>> {
         let mut slot = self.voice.lock().unwrap_or_else(|p| p.into_inner());
         if slot.is_none() {
@@ -711,6 +871,25 @@ impl Host for DesktopHost {
         from_json(DesktopHost::context(self, chat).await?)
     }
 
+    /// Item 820: the Mac's own reply-strip read (`reply_media_in`); past
+    /// the reply's size limit a refusal that names the size.
+    async fn reply_media(&self, chat: &str, path: &str) -> Result<(String, Vec<u8>), String> {
+        use base64::Engine as _;
+        let state = self.state_of();
+        let m = crate::commands::system::reply_media_in(&state, path, Some(chat)).await?;
+        let Some(data) = m.data else {
+            return Err(format!(
+                "{} is {} MB — too large to show in a reply",
+                m.path,
+                m.size / (1024 * 1024)
+            ));
+        };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|e| e.to_string())?;
+        Ok((m.media_type, bytes))
+    }
+
     async fn edit_context(
         &self,
         chat: &str,
@@ -754,6 +933,15 @@ impl Host for DesktopHost {
 
     async fn usage(&self) -> Result<api::UsageReply, String> {
         from_json(DesktopHost::usage(self).await?)
+    }
+
+    /// Wave O: the cache chip's rates, the Mac's own `cache_rates` read.
+    async fn cache_rates(
+        &self,
+        model: &str,
+    ) -> Result<Option<nightloom_service::usage::CacheRates>, String> {
+        let state = self.app.state::<crate::AppState>();
+        crate::commands::usage::cache_rates_for(&state, model.to_string()).await
     }
 
     async fn search(
@@ -924,7 +1112,7 @@ const RAIL_WAIT: Duration = Duration::from_secs(30);
 /// What this host serves of §4 (item 246 design), for `/api/state`'s
 /// `features`: the phone greys out what a host lacks. (`nightshift` the
 /// listener adds itself, while a project has it.)
-pub const FEATURES: [&str; 22] = [
+pub const FEATURES: [&str; 28] = [
     "act",
     "context",
     "layers",
@@ -951,6 +1139,17 @@ pub const FEATURES: [&str; 22] = [
     "checkpoint",
     "budget",
     "resume_limit",
+    // Item 743: `/api/rules`, and `decision: "later"` on `/api/approve`.
+    "rules",
+    "later",
+    // Wave O: `GET /api/cache-rates`, the cache chip's price.
+    "cache_rates",
+    // Item 805: `POST /api/feedback`, the phone's feedback sheet.
+    "feedback",
+    // Item 815: `POST /api/feedback` takes `images`.
+    "feedback_images",
+    // Item 820: `POST /api/chats/{id}/media`, pictures under a reply.
+    "reply_media",
 ];
 
 /// The phone's note deletes go here, never gone (the never-lose-work
@@ -1182,14 +1381,16 @@ impl DesktopHost {
             .await
     }
 
-    /// `{ plan, ledger }`: the plan window (5 h, week, resets) and the
-    /// ledger's summary, read off disk.
+    /// `{ plan, ledger, pace }`: the plan window (5 h, week, resets), the
+    /// ledger's summary, read off disk, and (item 824) the plan's pace for
+    /// the phone's dials — the Mac's own `plan_pace`.
     pub async fn usage(&self) -> Result<serde_json::Value, String> {
         let plan =
             crate::blocking(|| Ok::<_, String>(nightloom_service::plan_usage::read())).await?;
         let ledger =
             crate::blocking(|| Ok::<_, String>(nightloom_service::usage::summary())).await?;
-        Ok(serde_json::json!({ "plan": plan, "ledger": ledger }))
+        let pace = crate::blocking(|| Ok::<_, String>(nightloom_service::pace::read())).await?;
+        Ok(serde_json::json!({ "plan": plan, "ledger": ledger, "pace": pace }))
     }
 
     /// A new project by name (its folder under the projects folder, as
@@ -1509,6 +1710,11 @@ impl Remote {
         }
     }
 
+    /// Item 801: the host's voice engine, for the window's Listen.
+    pub(crate) fn voice_engine(&self) -> Option<Arc<nightloom_service::voice::Engine>> {
+        self.host.voice()
+    }
+
     fn persist(&self) {
         write_persisted(&Persisted {
             on: self.wanted(),
@@ -1820,6 +2026,130 @@ pub fn remote_sent(remote: State<'_, Remote>, id: u64, queued: bool, error: Opti
         None => Ok(Handed::Sent),
     };
     remote.host.answer(id, outcome);
+}
+
+/// The window's word that something happened in a chat the phone should
+/// hear of (item 739): a turn ended, failed or was paused by the plan's
+/// limit; an approval or a question waits. The window knows the chat's
+/// name and how the turn ended (`notify.ts`); this decides whether he is
+/// at the Mac — no push then — and sends. Nothing of the reply is passed
+/// in, so nothing of it can go out. Returns at once; the sends run on.
+#[tauri::command]
+pub fn push_note(
+    remote: State<'_, Remote>,
+    what: nightloom_service::push::What,
+    chat: Option<String>,
+    label: Option<String>,
+    project: Option<String>,
+    // Item 784: a stuck run's line ("Looks stuck: ran `…` 3 times, same
+    // result"); the push carries it for that kind alone.
+    detail: Option<String>,
+) {
+    let Some(push) = remote.host.push.clone() else {
+        return;
+    };
+    let at_the_mac = crate::wake::idle_seconds().is_some_and(|s| s < AT_THE_MAC.as_secs_f64());
+    tauri::async_runtime::spawn(async move {
+        push.notify(nightloom_service::push::Note {
+            what,
+            chat,
+            label,
+            project,
+            at_the_mac,
+            detail,
+        })
+        .await;
+    });
+}
+
+/// The Mac's jobs store (item 780), for the chat's approval card
+/// (`jobs.rs`'s commands): the one the listener's clock ticks, so an answer
+/// here and a tick there never save over each other. `None` with no home.
+pub fn jobs_store(app: &AppHandle) -> Option<Arc<nightloom_service::jobs::Jobs>> {
+    app.try_state::<Remote>()?.host.jobs.clone()
+}
+
+/// Item 2105: his Run now on a Home job row on the Mac — the phone's
+/// `POST /api/jobs/{id}/run` (`Jobs::press_run`, item 812) with this Mac's
+/// host for the usage reading, so past the spend guard it raises the same
+/// Run anyway card.
+pub async fn press_job(
+    app: &AppHandle,
+    id: &str,
+) -> Result<nightloom_service::jobs::JobView, String> {
+    let remote = app.try_state::<Remote>().ok_or("this Mac keeps no jobs")?;
+    let host = remote.host.clone();
+    let jobs = host.jobs.clone().ok_or("this Mac keeps no jobs")?;
+    jobs.press_run(host.as_ref(), id, chrono::Utc::now()).await
+}
+
+/// Item 763 H5: Home's Start cards and the chats it started, after a
+/// look of the routes' clock with this Mac's host — so a queued read-only
+/// start goes while the window is asking, phone listener on or off.
+pub async fn home_routes(
+    app: &AppHandle,
+) -> Result<nightloom_service::remote::RoutesReply, String> {
+    let config = nightloom_service::project::config_dir().ok_or("no Nightloom home")?;
+    if let Some(remote) = app.try_state::<Remote>() {
+        let host = remote.host.clone();
+        nightloom_service::home::route::tick(host.as_ref(), chrono::Utc::now()).await;
+    }
+    Ok(nightloom_service::remote::routes_reply(&config))
+}
+
+/// Item 763 H5: his tap on a Start card on the Mac — the phone's
+/// `POST /api/home/routes/{id}/start`, with this Mac's host.
+pub async fn home_route_start(
+    app: &AppHandle,
+    id: &str,
+    prompt: Option<&str>,
+    pick: Option<nightloom_service::home::route::Pick>,
+) -> Result<nightloom_service::home::route::Route, String> {
+    let remote = app
+        .try_state::<Remote>()
+        .ok_or("this Mac cannot start chats yet")?;
+    let host = remote.host.clone();
+    nightloom_service::home::route::confirm_and_run(
+        host.as_ref(),
+        id,
+        prompt,
+        pick,
+        chrono::Utc::now(),
+    )
+    .await
+}
+
+/// Nobody to answer a card on the Mac (item 783's finish): no input at
+/// the Mac for [`AT_THE_MAC`] and no phone page connected to the relay.
+/// An idle time it cannot read counts as someone there: the card waits.
+pub fn nobody_here(app: &AppHandle) -> bool {
+    let at_the_mac = !crate::wake::idle_seconds().is_some_and(|s| s >= AT_THE_MAC.as_secs_f64());
+    let phone = app
+        .try_state::<Remote>()
+        .is_some_and(|r| r.host.tx.receiver_count() > 0);
+    !at_the_mac && !phone
+}
+
+/// Item 784: the job `chat` runs for, from the jobs store — its name and
+/// its recent runs' tool calls, for the runaway guard.
+pub fn job_usual(app: &AppHandle, chat: &str) -> Option<nightloom_service::runaway::JobUsual> {
+    app.try_state::<Remote>()?
+        .host
+        .jobs
+        .as_ref()?
+        .usual_for_chat(chat)
+}
+
+/// Item 784: he has left the Mac — no key, mouse or trackpad for
+/// [`AT_THE_MAC`] — so nobody watches a running chat here.
+pub fn away_from_mac() -> bool {
+    crate::wake::idle_seconds().is_some_and(|s| s >= AT_THE_MAC.as_secs_f64())
+}
+
+/// The Mac's push state, for the away pass to hand its key to the away
+/// server (`away.rs`); `None` with no home folder.
+pub fn push_state(app: &AppHandle) -> Option<Arc<nightloom_service::push::Push>> {
+    app.try_state::<Remote>()?.host.push.clone()
 }
 
 /// The window, just before it starts a turn for a phone's call `id`: is
@@ -2361,7 +2691,15 @@ mod tests {
     #[test]
     fn features_name_every_route_this_host_serves() {
         for f in [
-            "act", "rail", "running", "usage", "notes", "images", "aside",
+            "act",
+            "rail",
+            "running",
+            "usage",
+            "notes",
+            "images",
+            "aside",
+            "cache_rates",
+            "reply_media",
         ] {
             assert!(FEATURES.contains(&f), "{f}");
         }

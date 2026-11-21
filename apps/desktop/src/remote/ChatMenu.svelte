@@ -39,6 +39,8 @@
     onkind: () => void;
     oncompact: () => void;
     oncontext: () => void;
+    /** Item 743: the approval rules sheet. */
+    onrules: () => void;
     onstop: () => void;
     ondelete: () => void;
   }
@@ -46,9 +48,8 @@
 
   let more = $state(false);
   const build = $derived(p.kind === "build");
-  const hasMore = $derived(
-    (!p.readOnly && (p.macRow || p.aside || p.council || p.context)) || (!p.readOnly && p.canAct),
-  );
+  // Item 743: Approval rules is always under More — read-only chats too, since the rules are the host's.
+  const hasMore = true;
 </script>
 
 <div class="cm">
@@ -101,6 +102,7 @@
       {#if !p.readOnly && p.context}
         <button data-act="context" onclick={p.oncontext}>{@render p.icon("pulse")} <span class="cm-grow">Context<small>What the model is sent, and how much room is left</small></span></button>
       {/if}
+      <button data-act="rules" onclick={p.onrules}>{@render p.icon("sliders")} <span class="cm-grow">Approval rules<small>What runs without asking, what asks, what is blocked</small></span></button>
       {#if !p.readOnly && p.macRow}
         <button onclick={p.onmac} disabled={p.macDisabled}>{@render p.icon("mac")} Open on the Mac</button>
       {/if}

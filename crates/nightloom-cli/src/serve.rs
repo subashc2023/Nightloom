@@ -64,6 +64,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     cfg.hook_exe = std::env::current_exe().ok();
     cfg.assets = args.assets;
     let host = ServeHost::new(cfg, Registry::load()) as Arc<dyn remote::Host>;
+    let host_for_idle = host.clone();
     // The away server on Fly (item 268 step 2, blocker 673): any address,
     // behind Fly's TLS, only when asked for by name; the tailnet rule
     // otherwise.
@@ -97,12 +98,54 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     };
     println!("phone setup: {setup}");
     println!("Ctrl-C stops it; the desktop app can open once it has.");
-    tokio::signal::ctrl_c()
-        .await
-        .context("waiting for Ctrl-C")?;
+    // Item 781: on the away server, exit by itself after a quiet spell
+    // (Fly's proxy auto-stop is off; it would cut a running job).
+    match idle_exit_minutes() {
+        Some(min) => {
+            println!("exits after {min} quiet minutes with no job due or running");
+            let host = host_for_idle;
+            let jobs = host.jobs();
+            let started = chrono::Utc::now();
+            let mut every = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                tokio::select! {
+                    r = tokio::signal::ctrl_c() => { r.context("waiting for Ctrl-C")?; break; }
+                    _ = every.tick() => {
+                        let now = chrono::Utc::now();
+                        let busy = host.state().await.busy;
+                        let keep = jobs.as_ref().is_some_and(|j| {
+                            j.keeps_up(now, chrono::Duration::minutes(serve::KEEP_UP_AHEAD_MINUTES))
+                        });
+                        if serve::idle_exit_due(
+                            started,
+                            remote::last_used(),
+                            now,
+                            chrono::Duration::minutes(min),
+                            busy,
+                            keep,
+                        ) {
+                            println!("quiet for {min} minutes with nothing due: stopping");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        None => tokio::signal::ctrl_c()
+            .await
+            .context("waiting for Ctrl-C")?,
+    }
     server.stop().await;
     drop(lock);
     Ok(())
+}
+
+/// `NIGHTLOOM_SERVE_IDLE_EXIT_MIN` (item 781): minutes, when set and > 0.
+fn idle_exit_minutes() -> Option<i64> {
+    std::env::var(serve::IDLE_EXIT_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|m| *m > 0)
 }
 
 /// `NIGHTLOOM_SERVE_PUBLIC=1`: bind `--ip` even when it is not a tailnet
@@ -151,5 +194,68 @@ fn write_private(path: &std::path::Path, text: &str) -> Result<()> {
 #[cfg(not(unix))]
 fn write_private(path: &std::path::Path, text: &str) -> Result<()> {
     std::fs::write(path, text)?;
+    Ok(())
+}
+
+/// `nightloom jobs-knock`: the wake-up workflow (item 781).
+#[derive(clap::Args, Debug)]
+pub struct KnockArgs {
+    /// The away server's URL (default: `~/.nightloom/away.json`'s).
+    #[arg(long)]
+    url: Option<String>,
+    /// The job list (default: `~/.nightloom/remote/jobs/jobs.json`).
+    #[arg(long)]
+    jobs: Option<PathBuf>,
+    /// Where to write it (default: print it).
+    #[arg(long)]
+    out: Option<PathBuf>,
+}
+
+pub fn knock(args: KnockArgs) -> Result<()> {
+    use nightloom_service::jobs::{Job, Jobs, knock};
+    use nightloom_service::sync::lease::MacAway;
+    let config = project::config_dir()
+        .ok_or_else(|| anyhow!("no Nightloom home — set HOME or NIGHTLOOM_HOME"))?;
+    let path = args
+        .jobs
+        .unwrap_or_else(|| Jobs::dir_under(&config).join("jobs.json"));
+    let all: Vec<Job> = match std::fs::read(&path) {
+        Ok(b) => serde_json::from_slice(&b).with_context(|| format!("{}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(anyhow!("{}: {e}", path.display())),
+    };
+    // Only the jobs the server keeps a copy of (projects marked away).
+    let projects = Registry::load().projects();
+    let away = MacAway::load(&config, &projects);
+    let jobs: Vec<Job> = match &away {
+        Some(a) => a.away_jobs(&all),
+        None => all,
+    };
+    let url = match args.url {
+        Some(u) => u,
+        None => {
+            #[derive(serde::Deserialize)]
+            struct F {
+                #[serde(default)]
+                url: String,
+            }
+            let f: F = serde_json::from_slice(&std::fs::read(config.join("away.json"))?)?;
+            f.url
+        }
+    };
+    if url.trim().is_empty() {
+        bail!("no away server URL — pass --url or set it in Settings → Away server");
+    }
+    let text = knock::workflow(&url, &jobs, chrono::Utc::now());
+    match args.out {
+        Some(out) => {
+            if let Some(dir) = out.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&out, text)?;
+            println!("wrote {} ({} job(s))", out.display(), jobs.len());
+        }
+        None => print!("{text}"),
+    }
     Ok(())
 }

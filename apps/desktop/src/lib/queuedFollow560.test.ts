@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import modern from "./Transcript.svelte?raw";
-import classic from "./TranscriptClassic.svelte?raw";
+import modernRaw from "./Transcript.svelte?raw";
+import classicRaw from "./TranscriptClassic.svelte?raw";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const modern = asOneFile(modernRaw, transcriptLogicRaw);
+const classic = asOneFile(classicRaw, transcriptLogicRaw);
 
 /** Item 560: a queued or scheduled message follows the foot like a reply.
  *  The follow effect re-runs only on what it reads; this guards that it

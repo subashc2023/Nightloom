@@ -2,7 +2,8 @@
 import * as api from "../api";
 import { noteChatProject } from "../handoff.svelte";
 import type { AsideFold, FoldRecord } from "../asideFold";
-import { nextAttachmentId, readDraft, setDraftAttachments, setDraftText, hasDraft, discardDraft } from "../drafts.svelte";
+import { bumpDraft, nextAttachmentId, readDraft, setDraftAttachments, setDraftText, hasDraft, discardDraft } from "../drafts.svelte";
+import { keepsBox, offerRewound } from "../rewindDraft.svelte";
 import { asideFollowUp, asideQuestion, type AsideQuote } from "../asideQuote";
 import { type AsideAnchor, MAX_OPEN_ASIDES, foldTheOldest } from "../asideCard";
 import type { AsideRead } from "../cache";
@@ -11,9 +12,15 @@ import { loadCouncilPrefs, type CouncilPrefs } from "../council";
 import * as tabs from "../tabs";
 import type { TabContent } from "../tabs";
 import { pdfFileName, pdfRoute } from "../attachKinds";
-import type { Attachment, AsideSendOptions, TurnEvent } from "../types";
+import type { Attachment, AsideResult, AsideSendOptions, TurnEvent } from "../types";
 import { type Segment, app, closeThinking, applyToSegments } from "../state.svelte";
 import { limitPauseFrom, type LimitPause } from "../limit";
+import { addToast } from "./toasts.svelte";
+import { lastPrompt, missToastFor } from "../cacheCost";
+import { cleanChanges, type AsideChange } from "../asideNotes";
+import { addAsideNote } from "../asideNotes.svelte";
+import { pickDocuments } from "../pick";
+import { scheduleAsideSave } from "../asides.svelte";
 
 /** One exchange of the open chat's aside (backlog 081; streamed since
  *  backlog 128; a thread of them since backlog 130) — see `app.aside`. */
@@ -94,6 +101,20 @@ export interface AsideTurn {
   /** When anything of it last arrived (item 404): the stalled notice
    *  counts from here (`asideWait`). */
   heardAt?: number;
+  /** Item 775: the files this answer changed (its edit calls, and what a
+   *  shell command moved), and the name its note to the main chat goes by
+   *  (`asideNotes.svelte.ts`) — the thread's line says whether the main
+   *  chat has heard yet. Written with the thread. */
+  changes?: AsideChange[];
+  noteId?: string;
+}
+
+/** A moved card's place (item 734), in the chat column's px — `asideMove.ts`. */
+export interface AsideMoved {
+  left: number;
+  top: number;
+  width: number;
+  from: "passage" | "column";
 }
 
 /** The open chat's aside (backlog 081, the passage form backlog 107) — see
@@ -105,6 +126,15 @@ export interface Aside {
   /** Folded to its head row (blocker 318): past `MAX_OPEN_ASIDES` open
    *  cards the oldest fold; a click on the strip opens it again. */
   folded?: boolean;
+  /** Minimized by his click (item 735, blocker 2008): the card in the
+   *  main chat is one small line — its first words — until he clicks it
+   *  open again, in the same place. Unlike `folded` (the crowd rule's),
+   *  his to set; written with the thread, so a chat switch and a relaunch
+   *  keep it. */
+  minimized?: boolean;
+  /** An answer landed while minimized (item 735): the line carries a dot
+   *  until he opens it. Written with the thread. */
+  newReply?: boolean;
   /** The highlighted passage the thread is about, if any. */
   quote: AsideQuote | null;
   /** Opened from a selection and not yet asked: the card is the question box. */
@@ -117,10 +147,18 @@ export interface Aside {
    *  aside, which has no passage; the card then sits above the composer
    *  (blocker 225). */
   anchor: AsideAnchor | null;
-  /** Where he moved the floating card, in window px (backlog 156): kept
+  /** ~~Where he moved the floating card, in window px (backlog 156): kept
    *  while the thread is open, never saved — a relaunch puts the card back
-   *  under its passage. Absent or null: the card is at its home. */
-  moved?: { left: number; top: number; width: number } | null;
+   *  under its passage.~~ (struck 2026-11-16, item 734: in window px the
+   *  card was fixed to the screen and stopped scrolling with the chat.)
+   *  Where he moved the card, in the chat column's own px (item 734), so it
+   *  scrolls with the text as an unmoved card does: `left` from the
+   *  column's left edge; `top` from the passage's top when `from` is
+   *  "passage" (it follows its passage through reflows and turns drawn
+   *  above), else from the column's content top. Written with the thread,
+   *  so a chat switch and a relaunch keep it (`asides.ts`). Absent or
+   *  null: the card is at its home. See `asideMove.ts`. */
+  moved?: AsideMoved | null;
   /** Text typed in the thread's box and not yet sent (backlog 228): the
    *  question in a draft's box, or the follow-up under an answered
    *  thread — the two never show at once. Kept here, not in the card, so
@@ -184,15 +222,18 @@ export function asideTabThread(content: TabContent): number | undefined {
 /**
  * Every answered aside's read of the chat's cache (item 677), for
  * `cacheState`: an aside is a fork of the chat on its cache, so one that
- * read it refreshed it. A cancelled or failed turn, and one answered
- * before 677, gives none.
+ * read it refreshed it. ~~A cancelled or failed turn, and one answered
+ * before 677, gives none.~~ Item 786 (2026-11-17): a stopped one counts
+ * when its read arrived — measured, a stopped aside had read the whole
+ * prefix before its first word (`cache.ts` `stoppedUnsure`'s note). A
+ * failed turn, a stop before any read, and one answered before 677 give none.
  */
 export function asideReads(session: string | null | undefined): AsideRead[] {
   if (!session) return [];
   const out: AsideRead[] = [];
   for (const a of asidesOf(session))
     for (const t of a.turns)
-      if (!t.cancelled && !t.error && t.readAt != null && t.roundRead != null) out.push({ at: t.readAt, read: t.roundRead });
+      if (!t.error && t.readAt != null && t.roundRead != null) out.push({ at: t.readAt, read: t.roundRead });
   return out;
 }
 
@@ -236,6 +277,9 @@ let asideSeq = 0;
  */
 export interface AsideAsk {
   attachments?: Attachment[];
+  /** Where a new card about `quote` opens (item 694): the message box's
+   *  held passage brings the anchor the pill's Ask aside would have. */
+  anchor?: AsideAnchor | null;
 }
 export async function askAside(
   question: string,
@@ -278,7 +322,7 @@ export async function askAside(
     own.turns.push(turn);
     thread = own;
   } else {
-    thread = openAsideThread({ id: nextAsideId(), quote, draft: false, turns: [turn], anchor: null });
+    thread = openAsideThread({ id: nextAsideId(), quote, draft: false, turns: [turn], anchor: quote ? (ask.anchor ?? null) : null });
   }
   await runAside(turn, sent, thread, chips);
 }
@@ -303,7 +347,8 @@ function openAsideThread(a: Aside): Aside {
 function foldCrowd(keep: Aside | null): void {
   const list = app.asides;
   const idx = keep ? list.indexOf(keep) : -1;
-  for (const i of foldTheOldest(list.map((a) => a.folded === true), idx < 0 ? null : idx, MAX_OPEN_ASIDES)) {
+  // Item 735: a minimized card takes no room, so it is not one of the open.
+  for (const i of foldTheOldest(list.map((a) => a.folded === true || a.minimized === true), idx < 0 ? null : idx, MAX_OPEN_ASIDES)) {
     list[i]!.folded = true;
   }
 }
@@ -313,6 +358,37 @@ function foldCrowd(keep: Aside | null): void {
 export function unfoldAside(a: Aside): void {
   a.folded = false;
   foldCrowd(a);
+}
+
+/** Item 735: his minimize click — the card becomes one line in place.
+ *  Nothing in it is dropped: the box's text lives in the drafts store and
+ *  the thread itself, not in the card. */
+export function minimizeAside(a: Aside): void {
+  a.minimized = true;
+}
+
+/** Item 735: the line clicked — the card opens again where it was, the
+ *  new-reply dot cleared; the oldest other open card folds if that makes
+ *  one too many (blocker 318's rule). */
+export function expandAside(a: Aside): void {
+  a.minimized = false;
+  a.newReply = false;
+  a.folded = false;
+  foldCrowd(a);
+}
+
+/** Item 735: an answer (or its error) landed on the turn `seq`: a
+ *  minimized thread's line gets its dot — in the open chat or a stashed
+ *  one. */
+export function noteAsideReply(seq: number): void {
+  const lists = [app.asides, ...asideStash.values()];
+  for (const list of lists) {
+    const a = list.find((x) => x.turns.some((t) => t.seq === seq));
+    if (a) {
+      if (a.minimized) a.newReply = true;
+      return;
+    }
+  }
 }
 
 /** `app.aside`, the front thread, kept equal to the newest of `app.asides`
@@ -346,10 +422,27 @@ export function asideWaiting(a: Aside | null): boolean {
  */
 async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = null, chips: Attachment[] = []): Promise<void> {
   const live = () => findAsideTurn(turn.seq);
+  // Item 699: the context the aside resumes — it forks the chat's session,
+  // so the newest live reply's prompt; 0 (no toast) before the first.
+  const resumed = lastPrompt(app.events);
+  // Item 775: the chat it forks, whose next message hears what it changed.
+  const chat = app.activeSessionId;
   try {
     const res = await api.askAside(sent, turn.seq, asideWire(thread, chips));
+    // Item 775: changed files wait for the main chat even when the card was
+    // dismissed meanwhile — the files changed all the same.
+    const changes = cleanChanges(res.changes);
+    const noteId = changes.length > 0 ? `${thread?.uid ?? "aside"}:${turn.seq}:${Date.now()}` : null;
+    if (chat && noteId) addAsideNote(chat, noteId, turn.question || "(attachments)", changes);
     const t = live();
-    if (!t || t.cancelled) return; // dismissed, replaced or cancelled meanwhile
+    if (!t) return; // dismissed or replaced meanwhile
+    if (t.cancelled) {
+      // Item 786: stopped — the text stands as it was, but the request's
+      // read of the chat's cache (reported on the CLI's way out, measured
+      // on 2.1.326) restarts the chat's countdown as an answer's does.
+      stoppedRead(t, res);
+      return;
+    }
     settleAsideSegments(t, res.answer);
     t.answer = res.answer;
     t.partial = res.answer;
@@ -372,11 +465,49 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
       t.readAt = res.sent_ms;
       t.roundRead = res.round_read;
     }
+    if (noteId) {
+      t.changes = changes;
+      t.noteId = noteId;
+    }
     t.at = new Date().toISOString();
+    noteAsideReply(turn.seq);
+    // Item 699: its first round read under 80% of that — what the miss cost.
+    if (!res.is_error && res.first_read != null) {
+      const miss = missToastFor({
+        what: "aside",
+        read: res.first_read,
+        context: resumed,
+        written: res.first_write ?? 0,
+        costUsd: res.cost_usd,
+        est: res.plan_est,
+      });
+      if (miss) addToast(miss);
+    }
   } catch (e) {
     const t = live();
-    if (t && !t.cancelled) t.error = String(e);
+    if (t && !t.cancelled) {
+      t.error = String(e);
+      noteAsideReply(turn.seq);
+    }
   }
+}
+
+/**
+ * A stopped exchange's figures (item 786): when the CLI reported the
+ * request's read before it ended (`first_read` set — the backend's round
+ * usage), its send time and read go on the turn, so `asideReads` restarts
+ * the chat's countdown and the aside's bar shows what it read. Its text is
+ * left as it stood. No report (stopped before the request was answered, or
+ * killed): nothing is claimed. Exported for the suite.
+ */
+export function stoppedRead(t: AsideTurn, res: Pick<AsideResult, "is_error" | "sent_ms" | "round_read" | "first_read" | "cache_read" | "context_tokens" | "cost_usd">): void {
+  if (res.is_error || res.first_read == null || typeof res.sent_ms !== "number" || typeof res.round_read !== "number") return;
+  t.readAt = res.sent_ms;
+  t.roundRead = res.round_read;
+  t.cacheRead = res.cache_read;
+  if (typeof res.context_tokens === "number") t.context = res.context_tokens;
+  if (typeof res.cost_usd === "number") t.added = res.cost_usd;
+  scheduleAsideSave();
 }
 
 /**
@@ -393,7 +524,8 @@ export function asideWire(thread: Pick<Aside, "model" | "effort"> | null, chips:
   const byPath = (c: Attachment) => pdfRoute(c, "claude-code") === "path";
   const documents = live
     .filter((c) => c.kind === "document" && !byPath(c))
-    .map(({ media_type, name, data }) => ({ media_type, name, data }));
+    .map(({ media_type, name, data }) => ({ media_type, name, data }))
+    .concat(pickDocuments(live));
   const files = [
     ...live.filter((c) => c.kind === "file").map(({ name, data }) => ({ name, data })),
     ...live.filter(byPath).map(({ name, data, pages }) => ({ name: pdfFileName(name), data, pages })),
@@ -454,7 +586,12 @@ export function rewindAside(a: Aside, index: number, intoBox = true): AsideTurn[
     const key = asideDraftKey(a);
     const now = readDraft(key).text;
     const q = first.question;
-    setAsideUnsent(a, q ? (now ? `${q}\n${now}` : q) : now);
+    // Item 724: a draft in the box stays there; the question goes to the
+    // box's drafts, offered alone above its drafts button.
+    if (q && keepsBox({ text: now })) {
+      bumpDraft(key, q);
+      offerRewound(key, q);
+    } else setAsideUnsent(a, q ? (now ? `${q}\n${now}` : q) : now);
     const chips = (first.attachments ?? []).filter((c) => c.data).map((c) => ({ ...c, id: nextAttachmentId() }));
     if (chips.length > 0) setDraftAttachments(key, [...readDraft(key).attachments, ...chips]);
   }
@@ -552,6 +689,24 @@ export function draftAside(quote: AsideQuote, anchor: AsideAnchor | null = null)
   const a = openAsideThread({ id: nextAsideId(), quote, draft: true, turns: [], anchor });
   app.asideFocus = a.id;
   return a;
+}
+
+/**
+ * An empty aside of the open chat, its box ready (item 704): what an
+ * aside tab whose thread is gone shows instead of a blank page. A draft
+ * with no passage — asked in place, as a passage's draft is — that the
+ * store does not keep and no card shows while it holds nothing of his
+ * (`blankDraft`). Null with no chat open or off the Claude Code engine.
+ */
+export function blankAside(): Aside | null {
+  if (app.activeSessionId === null || app.connection?.engine !== "claude-code") return null;
+  return openAsideThread({ id: nextAsideId(), quote: null, draft: true, turns: [], anchor: null });
+}
+
+/** A thread holding nothing of his (item 704): a draft with no passage,
+ *  no exchange and an empty box — `blankAside`'s, drawn only in its tab. */
+export function blankDraft(a: Aside): boolean {
+  return a.draft && a.quote === null && a.turns.length === 0 && !asideHasDraft(a);
 }
 
 /**

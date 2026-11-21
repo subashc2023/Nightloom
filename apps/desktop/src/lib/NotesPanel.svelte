@@ -1,6 +1,7 @@
 <script lang="ts">
   import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
+  import { recoveredDrafts } from "./recoveredDrafts";
   import {
     app,
     openProjectFolder,
@@ -16,16 +17,20 @@
     showNote,
     stopCapture,
     stopDream,
+    noteDraftKey,
   } from "./state.svelte";
+  import { UNSAVED_IN_FOLDER_TIP, UNSAVED_TIP, folderUnsaved, isUnsaved } from "./unsavedCue";
   import type { NoteScope } from "./types";
   import { relativeTime } from "./time";
   import * as api from "./api";
   import { onMount, tick, untrack } from "svelte";
   import { tabPlace } from "./tabPlace";
+  import { dragScroll } from "./dragScroll";
   import { viewGet, viewSet } from "./viewState";
   import { projectFilesChanged, refreshNotes } from "./state.svelte";
   import { carriesFiles } from "./dropLook";
-  import { acceptFiles, conversionJobs, readBase64 } from "./attachFiles.svelte";
+  import { acceptFiles, conversionJobs, partChips, readBase64 } from "./attachFiles.svelte";
+  import { clock, tickWhile } from "./convertClock.svelte";
   import { discardDraft, readDraft } from "./drafts.svelte";
   import {
     holdKeptNotices,
@@ -47,6 +52,8 @@
     holdTitle,
     keepDropped,
   } from "./notesDrop";
+  import { dismissPending, dropRows, pendingNotes } from "./notesPending.svelte";
+  import { placeRows, rowWords, type PendingNote } from "./notesPending";
   import { foldQuery, hitsByScope, narrowNotes } from "./notesSearch";
   import { canKeep } from "./keep";
   import { clashWords, holdWords, landingFolder, pointedFolder, safeFolder, type ClashAnswer } from "./notesTarget";
@@ -338,7 +345,6 @@
    */
   const hold = new Hold();
   let held = $state(false);
-  let keeping = $state(0);
   const sync = () => (held = hold.held(performance.now()));
 
   /*
@@ -435,8 +441,12 @@
       notesToast(`${pointed} is not a folder files can be kept in`);
       return;
     }
-    keeping += files.length;
     holdKeptNotices();
+    // Item 855: its rows land in that folder; open it so they are in view.
+    if (canKeep(app.project)) {
+      collapsed.project = false;
+      openAncestors("project", folder, true);
+    }
     try {
       await keepDropped(files, {
         project: () => app.project,
@@ -444,11 +454,20 @@
         attach: acceptFiles,
         jobs: conversionJobs,
         chips: (k) => readDraft(k).attachments,
+        parts: partChips,
         state: keepStateOf,
         forget: (k) => delete keeps[k],
         keep: async (_k, name, mediaType, from, source) => {
-          await keepInto(folder, name, mediaType, from.data, { source, toast: notesToast, ask: askClash });
+          let failed: string | undefined;
+          await keepInto(folder, name, mediaType, from.data, {
+            source,
+            toast: notesToast,
+            ask: askClash,
+            fail: (why) => (failed = why),
+          });
+          return failed;
         },
+        rows: dropRows(app.project?.id ?? "", folder),
         discard: (k) => discardDraft(k),
         // Item 414: a zip is unpacked into <folder>/<its name>/ (492: the
         // folder he pointed at; files/ for the root).
@@ -469,7 +488,6 @@
         },
       });
     } finally {
-      keeping -= files.length;
       releaseKeptNotices();
     }
   }
@@ -582,6 +600,15 @@
   const projectRows = $derived(
     visibleRows(buildTree(shownProject, searching ? [] : app.noteFolders.project), openFolders.project, searching),
   );
+  /** Item 855: this project's pending rows, by where they show — under
+   *  their folder's row when it is in view, else (`""`) at the list's top. */
+  const pendingHere = $derived(pendingNotes.rows.filter((r) => r.project === (app.project?.id ?? "")));
+  const pendingAt = $derived(
+    placeRows(pendingHere, new Set(projectRows.filter((r) => r.kind === "folder").map((r) => r.path))),
+  );
+  const adding = $derived(pendingHere.filter((r) => r.phase === "adding").length);
+  // Item 868: an office file's row says "converting slides · 1:12", ticking.
+  tickWhile(() => adding > 0);
   const vaultRows = $derived(
     visibleRows(buildTree(shownVault, searching ? [] : app.noteFolders.knowledge), openFolders.knowledge, searching),
   );
@@ -786,6 +813,16 @@
     if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${bytes} B`;
   }
+  // Item 871: kept drafts whose note is gone (`recoveredDrafts.ts`).
+  const recovered = $derived(
+    recoveredDrafts(app.noteDrafts, {
+      projectId: app.project?.id ?? null,
+      notes: app.notes,
+      vault: app.vault,
+      listed: app.notesListed,
+      complete: app.notesComplete,
+    }),
+  );
 </script>
 
 {#snippet pinned(scope: "instructions" | "memory", label: string, hint: string)}
@@ -796,7 +833,10 @@
        editor in proposal mode, and nothing is applied until Load and Save. -->
   <div class="item pinned" class:active={isOpen(scope, AGENTS_MD)}>
     <button class="row" onclick={() => showNote(scope, AGENTS_MD)} use:tip={hint}>
-      <span class="name">{label}</span>
+      <span class="line">
+        <span class="name" class:cued={isUnsaved(app.noteDrafts, noteDraftKey(scope, AGENTS_MD))}>{label}</span>
+        {#if isUnsaved(app.noteDrafts, noteDraftKey(scope, AGENTS_MD))}{@render unsavedCue(UNSAVED_TIP)}{/if}
+      </span>
       <span class="summary">{hint}</span>
       <span class="meta">
         {AGENTS_MD} ·
@@ -817,6 +857,12 @@
       >
     {/if}
   </div>
+{/snippet}
+
+{#snippet unsavedCue(words: string)}
+  <!-- Item 867: edits not yet written to disk — the tab strip's hollow
+       draft ring (backlog 221), lit under Jarvis. -->
+  <span class="unsaved" role="img" aria-label={words} use:tip={words}></span>
 {/snippet}
 
 {#snippet fileGlyph(kind: ReturnType<typeof fileIcon>)}
@@ -879,6 +925,8 @@
         {#if editing && editing.scope === scope && editing.what === "rename" && editing.path === r.path}
           {@render nameBox(r.depth, "folder name", true)}
         {:else}
+          <!-- Item 867: a shut folder shows the cue for the note it hides. -->
+          {@const dirUnsaved = !r.open && folderUnsaved(app.noteDrafts, noteDraftKey(scope, `${r.path}/`))}
           <div
             class="item dir-row"
             class:drop-on={dropOn === `${scope}:${r.path}` || (held && scope === "project" && fileOn === r.path)}
@@ -903,7 +951,8 @@
               <span class="line">
                 <span class="caret" class:shut={!r.open}>▾</span>
                 {@render folderGlyph(r.open)}
-                <span class="name">{r.name}</span>
+                <span class="name" class:cued={dirUnsaved}>{r.name}</span>
+                {#if dirUnsaved}{@render unsavedCue(UNSAVED_IN_FOLDER_TIP)}{/if}
                 <span class="n">{r.count}</span>
               </span>
             </button>
@@ -921,10 +970,14 @@
         {#if editing && editing.scope === scope && editing.what !== "rename" && editing.path === r.path && r.open}
           {@render nameBox(r.depth + 1, editing.what === "folder" ? "folder name" : "note name", editing.what === "folder")}
         {/if}
+        {#if scope === "project"}
+          {#each pendingAt.get(r.path) ?? [] as p (p.id)}{@render pendingRow(p, r.depth + 1)}{/each}
+        {/if}
       {:else if editing && editing.scope === scope && editing.what === "rename" && editing.path === r.note.name}
         {@render nameBox(r.depth, "note name", false)}
       {:else}
         {@const n = r.note}
+        {@const unsaved = isUnsaved(app.noteDrafts, noteDraftKey(scope, n.name))}
         <div
           class="item"
           class:active={isOpen(scope, n.name)}
@@ -956,7 +1009,8 @@
           >
             <span class="line">
               {@render fileGlyph(fileIcon(n))}
-              <span class="name">{r.label}</span>
+              <span class="name" class:cued={unsaved}>{r.label}</span>
+              {#if unsaved}{@render unsavedCue(UNSAVED_TIP)}{/if}
             </span>
             {#if n.summary}<span class="summary">{n.summary}</span>{/if}
             <span class="meta">{size(n.bytes)} · {relativeTime(n.modified)}</span>
@@ -984,6 +1038,33 @@
       holds more than 20,000 files. Show the folder to see them all.
     </p>
   {/if}
+{/snippet}
+
+{#snippet pendingRow(p: PendingNote, depth: number)}
+  <!-- Item 855: a file on its way in — "adding…" until its note takes its
+       place, or why it could not be added, until he dismisses it. -->
+  <div
+    class="item pending"
+    class:failed={p.phase === "failed"}
+    style:--depth={depth}
+    data-pending={p.id}
+    aria-busy={p.phase === "adding"}
+  >
+    <span class="prow" use:tip={`${p.name} — ${rowWords(p, clock.now)}`}>
+      <span class="line">
+        {#if p.phase === "adding"}
+          <span class="spin" aria-hidden="true"></span>
+        {:else}
+          <span class="bang" aria-hidden="true">!</span>
+        {/if}
+        <span class="name">{p.name}</span>
+      </span>
+      <span class="pwords" role={p.phase === "failed" ? "alert" : "status"}>{rowWords(p, clock.now)}</span>
+    </span>
+    {#if p.phase === "failed"}
+      <button class="pdismiss" aria-label="Dismiss {p.name}" use:tip={"Dismiss"} onclick={() => dismissPending(p.id)}>×</button>
+    {/if}
+  </div>
 {/snippet}
 
 {#snippet newRow(scope: "project" | "knowledge")}
@@ -1072,7 +1153,13 @@
 {/snippet}
 
 <!-- Item 495: its scroll comes back with it, per project (tabPlace's store). -->
-<div class="panel" bind:this={panelEl} use:tabPlace={`notes-panel:${app.project?.id ?? "unfiled"}`}>
+<div class="panel" bind:this={panelEl} use:tabPlace={`notes-panel:${app.project?.id ?? "unfiled"}`} use:dragScroll>
+  {#if recovered.length > 0}
+    <!-- Item 871: kept drafts whose note is gone — a quiet way back to them. -->
+    <button class="recovered-row" onclick={() => (app.showRecoveredDrafts = true)}
+      >{recovered.length === 1 ? "1 recovered draft" : `${recovered.length} recovered drafts`}</button
+    >
+  {/if}
   <!-- Item 415: narrows both sections as he types; the pinned rows stay. -->
   <div class="find-bar">
     <input autocorrect="off" autocapitalize="off" spellcheck="false"
@@ -1093,7 +1180,7 @@
     aria-label="Project notes — drop files here to keep them in the project"
     data-drop-none
     data-notes-drop
-    aria-busy={keeping > 0}
+    aria-busy={adding > 0}
     ondragenter={onDragEnter}
     ondragover={onDragOver}
     ondragleave={onDragLeave}
@@ -1155,6 +1242,11 @@
           "Standing instructions for this project — read whole into every chat",
         )}
         {@render newRow("project")}
+        {#if (pendingAt.get("") ?? []).length > 0}
+          <div class="list pending-top">
+            {#each pendingAt.get("") ?? [] as p (p.id)}{@render pendingRow(p, 0)}{/each}
+          </div>
+        {/if}
         {#if app.notes.length === 0}
           {#if editing && editing.scope === "project" && editing.what !== "rename" && editing.path === ""}
             <div class="list">{@render nameBox(0, editing.what === "folder" ? "folder name" : "note name", editing.what === "folder")}</div>
@@ -1348,12 +1440,10 @@
     </div>
   {/if}
   <!-- Item 428: the drop's words, at the panel's foot while the list
-       scrolls; "Keeping…" moved here from the section's top. -->
-  {#if keeping > 0 || dropToasts.length > 0}
+       scrolls. Item 855: "Keeping N files…" is gone from here — each file
+       is a pending row in the list instead. -->
+  {#if dropToasts.length > 0}
     <div class="drop-toasts" aria-live="polite">
-      {#if keeping > 0}
-        <p class="keeping" role="status">Keeping {keeping} {keeping === 1 ? "file" : "files"}…</p>
-      {/if}
       {#each dropToasts as t (t.id)}
         <div class="drop-toast" role="status">
           <span class="drop-toast-text">{t.text}</span>
@@ -1366,6 +1456,29 @@
 <InboxSortSheet />
 
 <style>
+  /* Item 871: the way back to recovered drafts — one quiet line. */
+  .recovered-row {
+    display: block;
+    width: calc(100% - 1rem);
+    margin: 0.4rem 0.5rem 0;
+    padding: 0.3rem 0.5rem;
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    color: var(--dim);
+    font-family: inherit;
+    font-size: 0.76rem;
+    text-align: left;
+    cursor: pointer;
+  }
+  .recovered-row:hover {
+    color: var(--text);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .recovered-row {
+    border-color: var(--line2);
+    border-radius: var(--r1);
+    font-size: 12px;
+  }
   .panel {
     flex: 1;
     min-height: 0;
@@ -1458,11 +1571,81 @@
       opacity: 0;
     }
   }
-  .keeping {
-    margin: 0;
-    padding: 0.1rem 0.15rem;
-    font-size: 0.72rem;
+  /* Item 855: a file on its way in, as a row of the list. */
+  .item.pending {
+    cursor: default;
+  }
+  .prow {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 0.4rem 0.6rem;
     color: var(--dim);
+  }
+  .pwords {
+    padding-left: calc(14px + 0.4rem);
+    font-size: 0.68rem;
+    color: var(--dim);
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .item.pending.failed .prow,
+  .item.pending.failed .pwords,
+  .bang {
+    color: var(--error);
+  }
+  .item.pending.failed {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--error) 45%, transparent);
+  }
+  .spin,
+  .bang {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+  .spin {
+    box-sizing: border-box;
+    border: 1.5px solid color-mix(in srgb, var(--dim) 45%, transparent);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: pending-spin 0.8s linear infinite;
+  }
+  .bang {
+    font: 600 0.75rem/14px var(--mono);
+    text-align: center;
+  }
+  @keyframes pending-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spin {
+      animation: none;
+      border-color: var(--accent);
+      opacity: 0.6;
+    }
+  }
+  .pdismiss {
+    background: transparent;
+    border: none;
+    color: var(--dim);
+    font-size: 0.85rem;
+    padding: 0 0.5rem;
+    cursor: pointer;
+    border-radius: 8px;
+    flex-shrink: 0;
+  }
+  .pdismiss:hover {
+    color: var(--error);
+  }
+  .list.pending-top {
+    padding-bottom: 2px;
   }
   /* Item 428: held at the panel's foot, over the list as it scrolls. */
   .drop-toasts {
@@ -1791,6 +1974,21 @@
   .line .name {
     flex: 1;
     min-width: 0;
+  }
+  /* Item 867: the unsaved cue sits just after the name — the name gives up
+     its fill so the ring is beside it, and the ring takes the slack so a
+     folder's count stays at the right. */
+  .line .name.cued {
+    flex: 0 1 auto;
+  }
+  .unsaved {
+    box-sizing: border-box;
+    width: 6px;
+    height: 6px;
+    margin-right: auto;
+    border-radius: 50%;
+    border: 1.5px solid var(--accent);
+    flex-shrink: 0;
   }
   .row .summary,
   .row .meta {
@@ -2214,6 +2412,20 @@
   :global(:where(:root:not([data-layout="classic"]))) .list .row:not(.dir) .meta {
     display: none;
   }
+  /* Item 855: a pending row, in the Jarvis row's measure. */
+  :global(:where(:root:not([data-layout="classic"]))) .prow {
+    padding: 0.32rem 0.6rem;
+    border-radius: var(--r1);
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pwords {
+    font: 400 11px var(--mono);
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .item.pending.failed .prow,
+  :global(:where(:root:not([data-layout="classic"]))) .item.pending.failed .pwords {
+    color: var(--error);
+  }
   :global(:where(:root:not([data-layout="classic"]))) .row.dir {
     padding: 0.36rem 0.6rem 0.36rem 0.3rem;
     color: var(--ink);
@@ -2332,5 +2544,12 @@
   :global(:where(:root:not([data-layout="classic"]))) .drop-toast {
     background: var(--raised);
     border-radius: var(--r2);
+  }
+  /* Item 867: the unsaved ring is lit, in his amber (Jarvis's colour rule:
+     amber is his, blue is Claude working); Calm's --glow-accent is none. */
+  :global(:where(:root:not([data-layout="classic"]))) .unsaved {
+    width: 7px;
+    height: 7px;
+    box-shadow: var(--glow-accent, none);
   }
 </style>

@@ -48,3 +48,10 @@ describe("TabFreeze (item 603)", () => {
     expect(seen).toEqual([]);
   });
 });
+
+// Item 701: the still-pointer wait is 2 s (was 3 s).
+import { TAB_FREEZE_IDLE_MS as IDLE701 } from "./tabFreeze";
+import { test as test701, expect as expect701 } from "vitest";
+test701("the default wait after the last close is 2 s", () => {
+  expect701(IDLE701).toBe(2000);
+});

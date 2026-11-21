@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { followStep } from "./sendScroll";
-import transcriptSrc from "./Transcript.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
 
 // Nightshift backlog 347, his words: he sends, switches to another window
 // while the reply cooks, and comes back "scrolled to the very bottom". The

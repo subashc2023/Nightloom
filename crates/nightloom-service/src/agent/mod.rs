@@ -33,13 +33,16 @@ mod bash_tail;
 pub mod brief;
 pub mod budget;
 pub mod cli_session;
+pub mod connector_writes;
 pub mod connectors;
+pub mod flat;
 pub mod fork;
 pub mod inbox;
 pub mod nested;
 pub mod own_browser;
 mod protocol;
 mod record;
+pub mod stagger;
 pub mod steer;
 mod translate;
 pub mod warm;
@@ -84,6 +87,13 @@ const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 /// How often a running chat turn looks at its budget ledger for a wake
 /// (item 538): a file read under its lock, nothing when no wake waits.
 const BUDGET_TICK: Duration = Duration::from_secs(2);
+/// How often the read loop looks for spawns held by the stagger (item 761).
+const HELD_TICK: Duration = Duration::from_millis(400);
+/// How long after a spawn call it looks (review, 2026-11-19): the hook
+/// may first refresh `/usage` (~30 s at worst, measured in 761's run),
+/// then hold at most 10 s. Outside it, and with nothing shown, the read
+/// loop does not look at all — a turn with no spawn pays nothing.
+const HELD_WINDOW: Duration = Duration::from_secs(90);
 
 /// How long to keep reading after a kill (item 466, 2026-10-29): what the
 /// CLI wrote before it is already in the pipe; this is only the backstop
@@ -452,6 +462,13 @@ pub struct AgentSpec {
     /// (nightshift `143-report-2026-09-17.md`, steps 8–11). Set by
     /// [`apply_kind_policy`](Self::apply_kind_policy).
     pub chat_policy: bool,
+    /// A Chat by declaration and by kind (nightshift item 759): its
+    /// `--tools` list is the five readers, but MCP tools are not on that
+    /// list, so the connector writes, the browser and the preview are
+    /// refused by the same deny entries the Chat policy registers
+    /// ([`connector_writes`]). Set by
+    /// [`apply_kind_policy`](Self::apply_kind_policy).
+    pub born_chat: bool,
     /// Fork mode (nightshift backlog 104, pass 3, 2026-09-22; blocker 288,
     /// his answer: "per-chat switch, on"). **On by default.** On, the turn
     /// carries two things: `CLAUDE_CODE_FORK_SUBAGENT=1` — in the one
@@ -472,6 +489,18 @@ pub struct AgentSpec {
     /// in the environment and the CLI never loads them ([`connectors`] has
     /// the measurements). Only a chat's rail switch turns it on.
     pub claude_ai_connectors: bool,
+    /// Item 845 (846 §7 step 5): Home's read-only chat — its mail and
+    /// calendar writers ([`connector_writes::HOME_GATED_MATCHER`]) ask him
+    /// on a card, one call at a time, instead of being refused. Set only by
+    /// `home::reach::apply`; off everywhere else.
+    pub home_gated_writes: bool,
+    /// A chat of Home's project, in whatever position (item 872; set by
+    /// `home::reach::mark`). Home's own writer — its Reminders tool
+    /// ([`connector_writes::HOME_OWN_WRITER_MATCHER`]) — asks him only on
+    /// the read-only chat's card; were Home's chat ever not held
+    /// read-only, the tool is refused outright rather than run unasked or
+    /// offered a standing allow.
+    pub home_chat: bool,
     /// With [`Self::claude_ai_connectors`] on, the connectors he unticked,
     /// by the init event's server name (`claude.ai Google Drive`): each a
     /// server-level `--disallowedTools` rule. Ignored while off.
@@ -571,15 +600,47 @@ fn ask_matcher_under_chat_policy(matcher: &str, browser: bool) -> String {
         .filter(|alt| CHAT_POLICY_KEPT.iter().any(|kept| alt.starts_with(kept)))
         .map(|alt| {
             if alt != ask::MCP_ALTERNATIVE {
-                alt
-            } else if browser {
-                ASK_MCP_LESS_BROWSER
+                alt.to_string()
             } else {
-                ASK_MCP_LESS_PREVIEW
+                ask_mcp_less(browser)
             }
         })
         .collect::<Vec<_>>()
         .join("|")
+}
+
+/// The Ask hook's matcher in a born Chat (item 759): its `mcp__`
+/// alternative narrowed as under the policy — the deny entries refuse the
+/// connector writes, the browser and the preview there too, and a card
+/// for a refused call is backlog 147's bug. The rest is untouched: the
+/// tool list already holds only the readers.
+fn ask_matcher_in_born_chat(matcher: &str, browser: bool) -> String {
+    matcher
+        .split('|')
+        .map(|alt| {
+            if alt == ask::MCP_ALTERNATIVE {
+                ask_mcp_less(browser)
+            } else {
+                alt.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+/// [`ASK_MCP_LESS_BROWSER`] or [`ASK_MCP_LESS_PREVIEW`], with the connector
+/// writes ([`connector_writes::ASK_EXCLUSION`], item 759) left out too.
+fn ask_mcp_less(browser: bool) -> String {
+    let base = if browser {
+        ASK_MCP_LESS_BROWSER
+    } else {
+        ASK_MCP_LESS_PREVIEW
+    };
+    let head = base.strip_suffix(").*").expect("a lookahead and .*");
+    // With `remember` (item 783): this matcher is only ever the Ask hook's,
+    // and wherever that hook is registered the read-only chat's asking
+    // entry decides `remember` and the connector actions.
+    format!("{head}|{}).*", connector_writes::ASK_EXCLUSION_WITH_CARD)
 }
 
 /// The Ask hook's `mcp__` alternative under the Chat policy with the
@@ -588,13 +649,11 @@ fn ask_matcher_under_chat_policy(matcher: &str, browser: bool) -> String {
 /// Playwright's tools stay out too, as in [`ask::MATCHER`] (backlog 367).
 /// The preview's tool stays out too (item 430): the policy's own deny
 /// entry refuses it, and an Ask card for it would be backlog 147's bug.
-const ASK_MCP_LESS_BROWSER: &str =
-    "mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder).*";
+const ASK_MCP_LESS_BROWSER: &str = "mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|nightloom__ask_user_to_drive).*";
 
 /// The same without the Browser: every MCP tool but Playwright's and the
 /// preview's.
-const ASK_MCP_LESS_PREVIEW: &str =
-    "mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*";
+const ASK_MCP_LESS_PREVIEW: &str = "mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|nightloom__ask_user_to_drive).*";
 
 /// The deny hook's command line. Single-quoted for the POSIX shell the CLI
 /// runs hooks through on macOS and Linux. On Windows, `cmd.exe`'s `echo`
@@ -641,6 +700,15 @@ pub const CHAT_POLICY_REASON: &str = "This chat is a Chat now: the shell, the fi
 /// be asked for unseen (exit 2 blocks the call; the line goes to the model).
 pub const FOLDER_GATE_FAIL_CLOSED: &str =
     "|| { echo 'The folder was not added: its approval check could not run.' >&2; exit 2; }";
+
+/// What follows `request_secret`'s gate (item 766): fails closed, so a
+/// hook that could not run never lets the call through unasked.
+pub const SECRET_GATE_FAIL_CLOSED: &str =
+    "|| { echo 'Nothing was asked: the secret card could not be shown.' >&2; exit 2; }";
+
+/// What follows `ask_user_to_drive`'s gate (item 872): fails closed, so a
+/// hook that could not run never lets the call through unasked.
+pub const DRIVE_GATE_FAIL_CLOSED: &str = "|| { echo 'Nothing was asked: the card that hands you the page could not be shown.' >&2; exit 2; }";
 
 /// What the Ask position adds to the command line.
 ///
@@ -733,6 +801,13 @@ pub enum AskMode {
     /// hook — a question from a side process has no card waiting for it,
     /// so it falls to the prompt tool, which refuses in words.
     AutoFork,
+    /// An aside or keep-warm ping of a Plan chat (nightshift item 774,
+    /// blocker 2037, 2026-11-16): `plan` still, so it edits nothing, the
+    /// prompt tool named (the prefix), and no Ask hook, as [`Self::Aside`]
+    /// — a deferral would park it on a card nobody's turn waits for.
+    /// `plan` and not `dontAsk` because on Opus 5.5 (CLI 2.1.326) the two
+    /// send different Bash tool text ([`AgentSpec::side_permission_mode`]).
+    PlanAside,
 }
 
 impl AskMode {
@@ -740,7 +815,7 @@ impl AskMode {
     pub fn permission_mode(self) -> &'static str {
         match self {
             Self::Ask => "default",
-            Self::Plan => "plan",
+            Self::Plan | Self::PlanAside => "plan",
             Self::ExitingToAuto | Self::Auto | Self::AutoFork => "auto",
             Self::Aside => "dontAsk",
         }
@@ -759,7 +834,7 @@ impl AskMode {
             Self::ExitingToAuto => ask::EXIT_PLAN_MATCHER,
             Self::Auto => ask::AUTO_MATCHER,
             // Never registered; see the variants.
-            Self::Aside | Self::AutoFork => "",
+            Self::Aside | Self::AutoFork | Self::PlanAside => "",
         }
     }
 }
@@ -793,6 +868,27 @@ impl AgentSpec {
     /// [`crate::tools::add_folder::GATE_MATCHER`], failing closed. `None`
     /// before a turn has pointed the directory (no tool is served then).
     pub fn folder_gate_entry(&self) -> Option<serde_json::Value> {
+        self.own_gate_entry(
+            crate::tools::add_folder::GATE_MATCHER,
+            FOLDER_GATE_FAIL_CLOSED,
+        )
+    }
+
+    /// `request_secret`'s `PreToolUse` entry (item 766): the same hook on
+    /// the same directory as [`folder_gate_entry`](Self::folder_gate_entry),
+    /// on [`crate::secret::GATE_MATCHER`], failing closed.
+    pub fn secret_gate_entry(&self) -> Option<serde_json::Value> {
+        self.own_gate_entry(crate::secret::GATE_MATCHER, SECRET_GATE_FAIL_CLOSED)
+    }
+
+    /// `ask_user_to_drive`'s `PreToolUse` entry (item 872): the same hook
+    /// on the same directory, on [`crate::home::drive::GATE_MATCHER`],
+    /// failing closed.
+    pub fn drive_gate_entry(&self) -> Option<serde_json::Value> {
+        self.own_gate_entry(crate::home::drive::GATE_MATCHER, DRIVE_GATE_FAIL_CLOSED)
+    }
+
+    fn own_gate_entry(&self, matcher: &str, fail_closed: &str) -> Option<serde_json::Value> {
         let brief = self.brief.as_ref()?;
         let binary = brief.hook.first()?;
         if brief.dir.as_os_str().is_empty() {
@@ -806,9 +902,9 @@ impl AgentSpec {
         if self.folder_side {
             words.push(ask::shell_quote(own_browser::SIDE_ARG));
         }
-        words.push(FOLDER_GATE_FAIL_CLOSED.to_string());
+        words.push(fail_closed.to_string());
         Some(serde_json::json!({
-            "matcher": crate::tools::add_folder::GATE_MATCHER,
+            "matcher": matcher,
             "hooks": [{ "type": "command", "command": words.join(" ") }]
         }))
     }
@@ -842,8 +938,11 @@ impl AgentSpec {
             ask: None,
             brief: None,
             chat_policy: false,
+            born_chat: false,
             fork_mode: true,
             claude_ai_connectors: false,
+            home_gated_writes: false,
+            home_chat: false,
             claude_ai_blocked: Vec::new(),
             browser: false,
             playwright: None,
@@ -936,6 +1035,14 @@ impl AgentSpec {
     /// Claude Code chat has nothing withdrawn.
     pub fn apply_kind_policy(&mut self, kind: ChatKind, declared: ChatKind) {
         self.chat_policy = kind == ChatKind::Chat && declared == ChatKind::Build;
+        self.born_chat = kind == ChatKind::Chat && declared == ChatKind::Chat;
+    }
+
+    /// Whether this spec refuses the tools that act through MCP — the
+    /// connector writes, the browser, the preview (item 759): a Chat over
+    /// a Claude Code declaration, or a born Chat.
+    pub fn refuses_mcp_writers(&self) -> bool {
+        self.chat_policy || self.born_chat
     }
 
     /// What the approval switch means on a headless run: `auto` when it is
@@ -1029,9 +1136,47 @@ impl AgentSpec {
         let mut spec = self.clone();
         spec.fork_session = true;
         spec.no_session_persistence = true;
-        spec.permission_mode = Some("dontAsk".into());
-        if let Some(ask) = &mut spec.ask {
-            ask.mode = AskMode::Aside;
+        // An Auto chat's aside (and keep-warm ping) stays on `auto`, as its
+        // checkpoint fork does ([`AskMode::AutoFork`]): the permission mode
+        // is part of the cached prefix. Measured 2026-11-16 (CLI 2.1.326,
+        // Opus 5.5, requests captured against a closed local port, no
+        // model call): `auto`, `plan` and `bypassPermissions` send one Bash
+        // tool description, `default` and `dontAsk` another (two sentences
+        // more), so a `dontAsk` aside of an Auto chat read 0 of 53,579 and
+        // wrote it all (cache-miss.jsonl, 5:43 PM). On Fable 5.2 the two
+        // modes sent the same text. ~~An aside of an Auto chat is `dontAsk`
+        // (backlog 294)~~ — superseded by this measurement.
+        // The same measurement covers the other chats (item 774, blocker
+        // 2037, his yes 2026-11-16): a Plan chat's aside runs in `plan`
+        // ([`AskMode::PlanAside`]); a chat without the Ask hook keeps
+        // `dontAsk` when it runs in `default`/`dontAsk`, and takes `plan`
+        // when it runs in `auto` or `bypassPermissions` (approval off) —
+        // the read-only mode of the chat's class, which can do nothing the
+        // chat could not ([`Self::side_permission_mode`]).
+        match spec.ask.as_ref().map(|a| a.mode) {
+            Some(mode) => {
+                let side = match mode {
+                    // ExitingToAuto runs `auto` too (its one resume).
+                    AskMode::Auto | AskMode::AutoFork | AskMode::ExitingToAuto => AskMode::AutoFork,
+                    AskMode::Plan | AskMode::PlanAside => AskMode::PlanAside,
+                    AskMode::Ask | AskMode::Aside => AskMode::Aside,
+                };
+                if side == AskMode::Aside {
+                    spec.permission_mode = Some("dontAsk".into());
+                }
+                if let Some(ask) = &mut spec.ask {
+                    ask.mode = side;
+                }
+            }
+            None => {
+                spec.permission_mode = Some(
+                    Self::side_permission_mode(
+                        self.permission_mode.as_deref(),
+                        self.model.as_deref(),
+                    )
+                    .into(),
+                );
+            }
         }
         // No brief either: the aside is one question on the warm cache,
         // and its settings carry no hook (the test below pins that).
@@ -1058,6 +1203,18 @@ impl AgentSpec {
         if let Some(m) = model {
             let m = m.trim();
             spec.model = (!m.is_empty()).then(|| m.to_string());
+            // The mode follows the model he picked (item 802): Haiku under
+            // `plan` runs Sonnet, so a no-hook chat's Haiku aside keeps
+            // `dontAsk`.
+            if self.ask.is_none() {
+                spec.permission_mode = Some(
+                    Self::side_permission_mode(
+                        self.permission_mode.as_deref(),
+                        spec.model.as_deref(),
+                    )
+                    .into(),
+                );
+            }
         }
         if let Some(e) = effort {
             let e = e.trim();
@@ -1071,10 +1228,52 @@ impl AgentSpec {
     /// of its own, everything that shapes the cached prefix as the chat has
     /// it — held to one round, since it has nothing to answer. `None`
     /// without a session to fork.
+    ///
+    /// A chat without the Ask hook that runs in `auto` or
+    /// `bypassPermissions` (approval off) pings in its own mode, not the
+    /// aside's `plan` (item 774, blocker 2037): the same tool text, no
+    /// plan-mode reminder on the one-word prompt, and one round of a fixed
+    /// prompt can do nothing the chat could not.
     pub fn keep_warm_ping(&self) -> Option<AgentSpec> {
         let mut spec = self.aside()?;
         spec.max_turns = Some(1);
+        if self.ask.is_none()
+            && let Some(mode @ ("auto" | "bypassPermissions")) = self.permission_mode.as_deref()
+        {
+            spec.permission_mode = Some(mode.into());
+        }
         Some(spec)
+    }
+
+    /// The permission mode an aside of a chat without the Ask hook runs
+    /// in, given the chat's (item 774, blocker 2037). Measured 2026-11-16,
+    /// CLI 2.1.326, requests captured against a closed local port (no
+    /// model call; nightshift `2037-asidemodes-report-2026-11-16.md`): on
+    /// Opus 5.5 `default` and `dontAsk` send one tool text, `auto`, `plan`
+    /// and `bypassPermissions` another (the Bash description), the system
+    /// prompt the same in all five; on Fable 5.2 all five send the same.
+    /// So a chat in the second class gets `plan`, the class's mode that
+    /// edits nothing; every other chat — the CLI's default included, and
+    /// any mode not measured — keeps `dontAsk`, which refuses anything
+    /// that would prompt.
+    ///
+    /// **Haiku** (item 802, wave O's finding, 2026-11-17): `--model haiku`
+    /// runs `claude-haiku-5-5` under `default`, `dontAsk`, `auto` and
+    /// `bypassPermissions` — one tool text, one system prompt — but
+    /// **Sonnet 5.5 under `plan`** (the request's model, CLI 2.1.326,
+    /// measured). So a Haiku chat in `auto` or `bypassPermissions` keeps
+    /// its aside in `dontAsk`, which runs Haiku and reads the chat's
+    /// cache; `plan` would run another model and read none of it. A Haiku
+    /// chat that itself runs `plan` runs Sonnet already, so its aside
+    /// stays in `plan`. The model is matched by name (`haiku` in the alias
+    /// or the full id), since the swap is the CLI's per model family.
+    pub fn side_permission_mode(chat: Option<&str>, model: Option<&str>) -> &'static str {
+        let haiku = model.is_some_and(|m| m.to_ascii_lowercase().contains("haiku"));
+        match chat {
+            Some("plan") => "plan",
+            Some("auto" | "bypassPermissions") if !haiku => "plan",
+            _ => "dontAsk",
+        }
     }
 
     /// The spec for a **checkpoint fork** (nightshift backlog 104, pass 3;
@@ -1088,7 +1287,8 @@ impl AgentSpec {
     /// as for an aside: the fork exists to read the checkpoint's prefix
     /// from the cache, not to re-write it. What differs: the fork keeps no
     /// session file of its own (its report is the deliverable); under Ask
-    /// or Plan it runs as an aside does — `dontAsk`, no Ask hook — since a
+    /// ~~or Plan~~ it runs as an aside does — `dontAsk`, no Ask hook (under
+    /// Plan, `plan`, no Ask hook, since 2026-11-17: see the body) — since a
     /// deferral from a side process would park it on a card nobody's turn
     /// is waiting for; the brief hook stays, so its calls are judged by the
     /// message's budget and its own spawns by the caps; `--max-turns` is
@@ -1108,14 +1308,30 @@ impl AgentSpec {
         }
         spec.folder_side = true;
         spec.own_browser_for_side();
+        // The fork stays in the chat's tool-text class, as its aside does
+        // (item 774, blocker 2037; wave O, 2026-11-17). ~~Under Plan the
+        // fork ran `dontAsk`~~: `dontAsk` and `plan` send another Bash
+        // description on Opus 5.5, and `--model haiku` under `plan` runs
+        // Sonnet 5.5 where `dontAsk` runs Haiku (CLI 2.1.326, measured), so
+        // a Plan chat's fork missed the checkpoint's prefix. Now an Auto
+        // chat's fork — and that of the
+        // one resume of an approved plan going to Auto
+        // ([`AskMode::ExitingToAuto`], `auto` too, which also ran
+        // `dontAsk`) — is [`AskMode::AutoFork`]; a Plan chat's is
+        // [`AskMode::PlanAside`]: `plan`, so it still edits nothing, no
+        // Ask hook; an Ask chat's stays `dontAsk`, its `default`'s class.
         if let Some(ask) = &mut spec.ask {
-            if ask.mode.is_auto() {
+            match ask.mode {
                 // An Auto chat's fork stays on `auto`, as it ran before
                 // the position asked questions (backlog 294).
-                ask.mode = AskMode::AutoFork;
-            } else {
-                ask.mode = AskMode::Aside;
-                spec.permission_mode = Some("dontAsk".into());
+                AskMode::Auto | AskMode::AutoFork | AskMode::ExitingToAuto => {
+                    ask.mode = AskMode::AutoFork;
+                }
+                AskMode::Plan | AskMode::PlanAside => ask.mode = AskMode::PlanAside,
+                AskMode::Ask | AskMode::Aside => {
+                    ask.mode = AskMode::Aside;
+                    spec.permission_mode = Some("dontAsk".into());
+                }
             }
         }
         Some(spec)
@@ -1159,11 +1375,30 @@ impl AgentSpec {
         }
         // His claude.ai connectors (backlog 235): off unless the chat said on.
         env.extend(connectors::env(self.claude_ai_connectors));
+        // A new session's reminders in its first user message (item 758,
+        // [`flat`]): on only for a new session or one that began so.
+        if self.flat_reminders() {
+            env.push((
+                flat::CAPS_ENV,
+                flat::caps_value(std::env::var(flat::CAPS_ENV).ok().as_deref()),
+            ));
+        }
         // Nightloom's mark on its own `claude` processes (backlog 435): his
         // `~/.claude/hooks/notify.sh` exits quietly when it is set, since
         // Nightloom raises its own banner. Inherited by the CLI's hooks.
         env.push((NIGHTLOOM_MARKER_ENV, "1".into()));
         env
+    }
+
+    /// Whether this process sends the reminders inside the user's message
+    /// (item 758, [`flat`]): a process starting a session does, and one
+    /// resuming a session that started so; every older session keeps the
+    /// CLI's default shape, which switching would re-write in full.
+    pub fn flat_reminders(&self) -> bool {
+        match self.resume.as_deref() {
+            None => true,
+            Some(id) => flat::is_flat(id),
+        }
     }
 
     /// The variables kept out of a turn's process.
@@ -1290,16 +1525,32 @@ impl AgentSpec {
         // the last one given (measured 2026-09-16, `auto_memory`'s doc), so
         // the Ask hook and the memory switch share a JSON object.
         let mut settings = serde_json::Map::new();
+        // Claude Code's built-in chart plugin off, in every shape (nightshift
+        // items 697 + 698, measured on CLI 2.1.325): `cc-plugin-easel` adds
+        // "If a tool named mcp__easel__chart is available…" to the system
+        // prompt's environment section only when its hook module has loaded
+        // in time — a race, so the same chat's prompt differed between runs
+        // (1 of 7 replays of one chat's argv), and every flip rewrote the
+        // whole context past the tools (a turn, a keep-warm ping or an aside
+        // read 12,781 and wrote 270k). Nightloom draws no CLI charts, so
+        // nothing is lost. Both spellings: the plugin's own name and its
+        // short alias.
+        settings.insert(
+            "enabledPlugins".into(),
+            serde_json::json!({ "cc-plugin-easel@builtin": false, "easel@builtin": false }),
+        );
         if let Some(ask) = &self.ask {
             // Under the Chat policy the Ask hook pauses only what the
             // policy leaves (backlog 147): a call both hooks match would
             // show a prompt whose answer cannot matter.
             let matcher = if self.chat_policy {
                 ask_matcher_under_chat_policy(ask.mode.matcher(), self.browser)
+            } else if self.born_chat {
+                ask_matcher_in_born_chat(ask.mode.matcher(), self.browser)
             } else {
                 ask.mode.matcher().to_string()
             };
-            if ask.mode != AskMode::Aside
+            if !matches!(ask.mode, AskMode::Aside | AskMode::PlanAside)
                 && !matcher.is_empty()
                 && let Ok(serde_json::Value::Object(hook)) = serde_json::from_str::<serde_json::Value>(
                     &ask::settings_json_matching(&ask.hook, &ask.dir, &matcher),
@@ -1310,11 +1561,13 @@ impl AgentSpec {
             a.push("--permission-prompt-tool".into());
             a.push(ask::PROMPT_TOOL.into());
         }
-        if self.chat_policy {
+        if self.refuses_mcp_writers() {
             // A second `PreToolUse` entry beside the Ask hook's, in the same
             // array — the CLI runs every matching entry, and a deny from
             // any of them stands. The command is an `echo` of the reply,
             // so no program of Nightloom's has to be found for it to work.
+            // The policy's own entry is a Chat-over-Claude-Code's; a born
+            // Chat's tool list already holds only the readers (item 759).
             let reply = serde_json::json!({
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
@@ -1335,7 +1588,9 @@ impl AgentSpec {
                     .entry("PreToolUse")
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
                 if let serde_json::Value::Array(pre) = pre {
-                    pre.push(entry);
+                    if self.chat_policy {
+                        pre.push(entry);
+                    }
                     // The preview runs a command (item 430): it passes the
                     // policy's matcher as `mcp__` and is refused here, as
                     // the shell is.
@@ -1367,6 +1622,87 @@ impl AgentSpec {
                             "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
                         }));
                     }
+                    // The connector tools that write or send (item 759):
+                    // the policy's matcher lets every `mcp__` through.
+                    let reply = serde_json::json!({
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": connector_writes::REASON,
+                        }
+                    })
+                    .to_string();
+                    // Where a card can show (the Ask hook is there and this
+                    // is not an aside), a connector action that is not a
+                    // known read asks him instead, and so does `remember`
+                    // (item 783, blockers 2033 and 2032); Nightloom's own
+                    // note writes stay refused. Elsewhere the refusal
+                    // stands as it was.
+                    match &self.ask {
+                        Some(ask)
+                            if !matches!(ask.mode, AskMode::Aside | AskMode::PlanAside)
+                                && !ask.dir.as_os_str().is_empty() =>
+                        {
+                            // Home's mail and calendar writers (item 845,
+                            // 846 §7 step 5): out of the refusal, and asked
+                            // about on their own card, one call at a time.
+                            let known = if self.home_gated_writes {
+                                connector_writes::KNOWN_WRITES_MATCHER_HOME
+                            } else {
+                                connector_writes::KNOWN_WRITES_MATCHER
+                            };
+                            pre.push(serde_json::json!({
+                                "matcher": known,
+                                "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
+                            }));
+                            pre.push(ask::hook_entry(
+                                &ask.hook,
+                                &ask.dir,
+                                connector_writes::CARD_MATCHER,
+                                &[ask::READ_ONLY_ARG],
+                            ));
+                            if self.home_gated_writes {
+                                pre.push(ask::hook_entry(
+                                    &ask.hook,
+                                    &ask.dir,
+                                    connector_writes::HOME_GATED_MATCHER,
+                                    &[ask::READ_ONLY_ARG],
+                                ));
+                            }
+                        }
+                        _ => pre.push(serde_json::json!({
+                            "matcher": connector_writes::MATCHER,
+                            "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
+                        })),
+                    }
+                }
+            }
+        }
+        // Home's own writer outside the read-only hold (item 872): the
+        // read-only chat's entries above gate or refuse it; anywhere else
+        // in Home's project nothing would, so it is refused here — by
+        // `echo`, so no program has to be found for the refusal to work.
+        if self.home_chat && !self.refuses_mcp_writers() {
+            let reply = serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": connector_writes::HOME_OWN_WRITER_UNHELD,
+                }
+            })
+            .to_string();
+            let hooks = settings
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(hooks) = hooks {
+                let pre = hooks
+                    .entry("PreToolUse")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(pre) = pre {
+                    pre.push(serde_json::json!({
+                        "matcher": connector_writes::HOME_OWN_WRITER_MATCHER,
+                        "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
+                    }));
                 }
             }
         }
@@ -1454,7 +1790,16 @@ impl AgentSpec {
         // position, as Playwright's is, and last of the entries — wherever
         // the chat's directory is known (the tool is served there,
         // `--budget-dir`).
-        if let Some(entry) = self.folder_gate_entry() {
+        // `request_secret`'s gate (item 766) beside it, the same way.
+        // `ask_user_to_drive`'s (item 872) after them, the same way.
+        for entry in [
+            self.folder_gate_entry(),
+            self.secret_gate_entry(),
+            self.drive_gate_entry(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             let hooks = settings
                 .entry("hooks")
                 .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
@@ -1702,6 +2047,9 @@ pub struct ClaudeCodeAgent {
     warm: warm::WarmSlot,
     /// Messages he sends into the running turn (backlog 328, [`inbox`]).
     inbox: inbox::Inbox,
+    /// The secrets he typed on a card for this chat (item 766): every
+    /// line the CLI prints is scrubbed of them before anything reads it.
+    scrub: crate::secret::Scrub,
 }
 
 impl ClaudeCodeAgent {
@@ -1716,6 +2064,7 @@ impl ClaudeCodeAgent {
             limit_grace: LIMIT_GRACE,
             warm: warm::WarmSlot::default(),
             inbox: inbox::Inbox::default(),
+            scrub: crate::secret::Scrub::default(),
         }
     }
 
@@ -1767,6 +2116,30 @@ impl ClaudeCodeAgent {
 
     pub fn spec(&self) -> &AgentSpec {
         &self.spec
+    }
+
+    /// Hold this agent to the Chat policy when the chat's log says it is a
+    /// Chat over a Claude Code declaration (`kind` / `declared`, as
+    /// [`AgentSpec::apply_kind_policy`]) and the spec it was made from
+    /// does not (nightshift item 746's review): a spec built for another
+    /// chat, or before the log's kind changed, must never run a read-only
+    /// chat's turn with the writers. Only ever tightens; `true` when it
+    /// changed the spec. A process kept warm under the old spec is not
+    /// used — its command differs (the hook rides `--settings`).
+    pub fn hold_to_kind_policy(&mut self, kind: ChatKind, declared: ChatKind) -> bool {
+        let want = kind == ChatKind::Chat && declared == ChatKind::Build;
+        // A born Chat's MCP denies too (item 759), on the same terms.
+        let born = kind == ChatKind::Chat && declared == ChatKind::Chat;
+        let mut changed = false;
+        if want && !self.spec.chat_policy {
+            self.spec.chat_policy = true;
+            changed = true;
+        }
+        if born && !self.spec.born_chat {
+            self.spec.born_chat = true;
+            changed = true;
+        }
+        changed
     }
 
     /// Adopt the session the last turn opened, so the next one continues it.
@@ -1821,6 +2194,12 @@ impl ClaudeCodeAgent {
     /// sent twice. The shell rebuilds `add_dirs` from the project and the
     /// log at every connect, so this holds until then and the record
     /// takes over.
+    /// The list of secrets to scrub from this agent's lines (item 766): the
+    /// turn's own, shared with its recorder.
+    pub fn set_scrub(&mut self, scrub: crate::secret::Scrub) {
+        self.scrub = scrub;
+    }
+
     pub fn grant_dir(&mut self, dir: PathBuf) {
         // Never a folder an incognito chat may not read (backlog 405).
         if self.spec.denied_reads.iter().any(|d| dir.starts_with(d)) {
@@ -2091,18 +2470,54 @@ impl ClaudeCodeAgent {
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Option<Result<AgentOutcome, AgentError>> {
         let spec = self.spec.aside_with(model, effort)?;
-        Some(
-            self.drive_as(
+        // Item 766 (merge round T review, 2026-11-17): the aside's card is
+        // a live view like the window's — its deltas are held and scrubbed
+        // as the turn's are, and its final text too. Before, the caller
+        // joined the raw deltas into the answer it showed and kept.
+        let mut hold = crate::secret::DeltaHold::new(self.scrub.clone());
+        let mut held = |e: TurnEvent| {
+            for shown in hold.pass(&e) {
+                on_event(shown);
+            }
+        };
+        let out = self
+            .drive_as(
                 &spec,
                 Some(input),
                 Translator::new(),
                 false,
                 timing,
                 cancel,
-                on_event,
+                &mut held,
             )
-            .await,
-        )
+            .await;
+        for shown in hold.finish() {
+            on_event(shown);
+        }
+        Some(out.map(|o| self.scrubbed(o)))
+    }
+
+    /// An outcome with its final text scrubbed (item 766).
+    fn scrubbed(&self, mut outcome: AgentOutcome) -> AgentOutcome {
+        if !self.scrub.is_empty() {
+            outcome.text = self.scrub.text(&outcome.text);
+        }
+        outcome
+    }
+
+    /// Learn the secrets he typed on a card for `chat` (item 766), for a
+    /// run outside a turn — an aside asked before the chat's first turn
+    /// since launch, when no turn has loaded them yet. Values already
+    /// known are not added twice.
+    pub fn learn_secrets(&self, chat: &str) {
+        self.learn_secrets_from(&crate::secret::Store::default(), chat);
+    }
+
+    /// [`learn_secrets`](Self::learn_secrets) from a named store.
+    pub fn learn_secrets_from(&self, store: &crate::secret::Store, chat: &str) {
+        for s in store.all(chat) {
+            self.scrub.add(s);
+        }
     }
 
     /// One turn under a spec the caller shaped — a council seat
@@ -2118,14 +2533,27 @@ impl ClaudeCodeAgent {
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
-        self.drive(
-            spec,
-            Some(input.into()),
-            Translator::new(),
-            cancel,
-            on_event,
-        )
-        .await
+        // Item 766 (merge round T review): a seat's deltas are a live view
+        // too — held and scrubbed as the turn's and an aside's are.
+        let mut hold = crate::secret::DeltaHold::new(self.scrub.clone());
+        let mut held = |e: TurnEvent| {
+            for shown in hold.pass(&e) {
+                on_event(shown);
+            }
+        };
+        let out = self
+            .drive(
+                spec,
+                Some(input.into()),
+                Translator::new(),
+                cancel,
+                &mut held,
+            )
+            .await;
+        for shown in hold.finish() {
+            on_event(shown);
+        }
+        out.map(|o| self.scrubbed(o))
     }
 
     /// One CLI process, whichever shape: a prompt on argv, attachments on
@@ -2162,7 +2590,22 @@ impl ClaudeCodeAgent {
             .is_some_and(|i| !i.images.is_empty() || !i.documents.is_empty());
         // The chat's deferred resume (no input) goes on stdin too (374):
         // the stdin shape with nothing written resumes the deferred call.
-        let piped = attached || (chat && input.as_ref().is_none_or(|i| warm::suits_stdin(&i.text)));
+        //
+        // A side process that resumes the chat's session — a keep-warm
+        // ping, an aside, a council seat — takes the stdin shape as well
+        // (item 732): the CLI words its Bash tool differently for a prompt
+        // on argv (a 600000 ms background default against a turn's
+        // 1800000, measured in 725's capture), which breaks the cached
+        // prefix right after the system prompt, so every aside rebuilt the
+        // chat. It still takes its one message and the EOF at its `result`
+        // (`held_stdin` below), so it exits after one reply; a waiting
+        // process stays the chat's own (`taken`); a session-less one-shot
+        // keeps argv, as it shares no cache.
+        let piped = attached
+            || match &input {
+                Some(i) => (chat || spec.resume.is_some()) && warm::suits_stdin(&i.text),
+                None => chat,
+            };
         let (args, stdin) = match &input {
             _ if piped => (spec.stdin_args(), Stdio::piped()),
             // Null rather than inherited: with a terminal on the other end
@@ -2172,6 +2615,8 @@ impl ClaudeCodeAgent {
             None => (spec.resume_args(), Stdio::null()),
         };
         let key = warm::Key::of(spec, &args);
+        // Whether this process starts or continues a flat session (758).
+        let flat_run = spec.flat_reminders();
         // The running cost this process restores (item 675): a resumed or
         // forked process's `total_cost_usd` starts from its session's, and
         // the outcome carries only what this process added. Read before
@@ -2183,10 +2628,13 @@ impl ClaudeCodeAgent {
             .and_then(crate::session_figures::restored_cost);
         // Never for a deferred resume: a waiting process is one that has
         // not yet been given its message, which a resume has none of.
-        let taken = if chat && piped && input.is_some() {
-            self.warm.take(&key)
+        let (taken, warm_miss) = if chat && piped && input.is_some() {
+            match self.warm.take_or_why(&key) {
+                Ok(t) => (Some(t), None),
+                Err(why) => (None, Some(why.to_string())),
+            }
         } else {
-            None
+            (None, None)
         };
         let warm_start = taken.is_some();
         let warm_age = taken.as_ref().map(|(_, age)| *age);
@@ -2209,6 +2657,10 @@ impl ClaudeCodeAgent {
             t.set_warm(warm_start);
             if let Some(age) = warm_age {
                 t.set_warm_age(age);
+            }
+            // Item 722: a cold turn says why it found nothing to take.
+            if let Some(why) = warm_miss {
+                t.set_warm_miss(why);
             }
         }
         let mut init_seen = timing.is_none();
@@ -2282,6 +2734,9 @@ impl ClaudeCodeAgent {
         // Why the read loop ended early, when it did (backlog 332).
         let mut read_error: Option<String> = None;
         let mut any_line = false;
+        // Main-thread prose drawn this turn (item 723): a reply that ends
+        // with none, but a `result` text, draws that text at the end.
+        let mut main_text = false;
         // A deferred resume with nothing written (374): if it prints
         // nothing at all, the session held no deferred call — close the
         // feed so the CLI exits rather than waiting on stdin for ever.
@@ -2307,6 +2762,12 @@ impl ClaudeCodeAgent {
         let mut bash_tails = bash_tail::BashTails::new();
         let mut tail_tick = tokio::time::interval(bash_tail::TICK);
         tail_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Item 761: the spawns the Agent hook holds for a sibling's first
+        // reply, shown on their rows as passing text while they wait.
+        let mut held_tick = tokio::time::interval(HELD_TICK);
+        held_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut held_shown: std::collections::BTreeSet<String> = Default::default();
+        let mut spawn_seen: Option<tokio::time::Instant> = None;
 
         loop {
             // A subagent's end the main thread was not told of (406): the
@@ -2395,8 +2856,35 @@ impl ClaudeCodeAgent {
                     }
                     continue;
                 }
+                _ = held_tick.tick(), if budget_dir.is_some()
+                    && (!held_shown.is_empty()
+                        || spawn_seen.is_some_and(|t| t.elapsed() < HELD_WINDOW)) => {
+                    if let Some(dir) = &budget_dir {
+                        let held = stagger::read_held(dir);
+                        for (id, h) in &held {
+                            if held_shown.insert(id.clone()) {
+                                on_event(TurnEvent::ToolOutput {
+                                    tool_use_id: id.clone(),
+                                    lines: vec![h.text.clone()],
+                                });
+                            }
+                        }
+                        let gone: Vec<String> =
+                            held_shown.iter().filter(|id| !held.contains_key(*id)).cloned().collect();
+                        for id in gone {
+                            held_shown.remove(&id);
+                            on_event(TurnEvent::ToolOutput { tool_use_id: id, lines: Vec::new() });
+                        }
+                    }
+                    continue;
+                }
                 _ = tail_tick.tick(), if bash_tails.active() => {
                     for (tool_use_id, lines) in bash_tails.poll() {
+                        let lines = if self.scrub.is_empty() {
+                            lines
+                        } else {
+                            lines.iter().map(|l| self.scrub.text(l)).collect()
+                        };
                         on_event(TurnEvent::ToolOutput { tool_use_id, lines });
                     }
                     continue;
@@ -2421,6 +2909,12 @@ impl ClaudeCodeAgent {
             match next {
                 Ok(Some(line)) => {
                     any_line = true;
+                    // Item 766: no secret he typed reaches anything below.
+                    let line = if self.scrub.is_empty() {
+                        line
+                    } else {
+                        self.scrub.json_line(&line)
+                    };
                     // Item 658: by the `type` key, not the line's start.
                     let kind = protocol::line_type(&line);
                     if !init_seen && line.contains(r#""subtype":"init""#) {
@@ -2538,6 +3032,20 @@ impl ClaudeCodeAgent {
                             last_call = Some(name.clone());
                             stopped = None;
                         }
+                        // Item 761: a spawn's call (the main thread's or a
+                        // helper's) opens the held file's look; its
+                        // tool_use is on the stream before its hook runs.
+                        let spawn_call = match &event {
+                            TurnEvent::ToolCall { name, .. } => brief::is_spawn(name),
+                            TurnEvent::Subagent { event, .. } => matches!(
+                                &**event,
+                                TurnEvent::ToolCall { name, .. } if brief::is_spawn(name)
+                            ),
+                            _ => false,
+                        };
+                        if spawn_call {
+                            spawn_seen = Some(tokio::time::Instant::now());
+                        }
                         // Item 656: a foreground Bash call's spool is looked
                         // for from the call — its `task_started` comes ~3 s in.
                         if let TurnEvent::ToolCall { id, name, input } = &event
@@ -2560,6 +3068,9 @@ impl ClaudeCodeAgent {
                             && is_aborted(content, *is_error)
                         {
                             stopped = Some(name.clone());
+                        }
+                        if matches!(&event, TurnEvent::TextDelta { text } if !text.is_empty()) {
+                            main_text = true;
                         }
                         if !text_seen && matches!(event, TurnEvent::TextDelta { .. }) {
                             text_seen = true;
@@ -2680,6 +3191,9 @@ impl ClaudeCodeAgent {
             } else {
                 stop.into()
             });
+            if flat_run && !spec.no_session_persistence {
+                mark_flat(&outcome);
+            }
             return Ok(outcome);
         }
         let status = child.wait().await?;
@@ -2691,9 +3205,56 @@ impl ClaudeCodeAgent {
         // arrived is kept, and the reply says it was cut off and why,
         // rather than ending silently mid-word with no usage.
         if !outcome.result_seen && any_line {
-            let reason = cut_off_reason(read_error.as_deref(), &status.to_string());
+            let mut reason = cut_off_reason(read_error.as_deref(), &status.to_string());
+            // Item 896: the CLI's own last error line ("Connection error
+            // (… ENOTFOUND …)") is the only word on why; it rides along.
+            if let Some(why) = last_error_line(&stderr) {
+                reason.push_str(": ");
+                reason.push_str(&why);
+            }
             outcome.notices.push(format!("cut off — {reason}"));
             outcome.cut_off = Some(reason);
+        }
+        // Item 723: a reply that arrived whole — the CLI's streamed request
+        // failed and it retried without streaming — is drawn from its
+        // `assistant` line by the translator, and said once. The backstop:
+        // a turn that drew no prose but whose `result` names a reply draws
+        // that, so an "ok" turn never ends with nothing on screen.
+        let plain_end = outcome.result_seen
+            && !outcome.is_error
+            && outcome.api_error.is_none()
+            && outcome.limit.is_none()
+            && outcome.deferred.is_none();
+        if outcome.whole_rounds > 0 {
+            outcome.notices.push(WHOLE_REPLY_NOTICE.into());
+        }
+        if plain_end && !main_text && !outcome.text.trim().is_empty() {
+            on_event(TurnEvent::TextDelta {
+                text: outcome.text.clone(),
+            });
+            outcome.notices.push(RESULT_ONLY_NOTICE.into());
+        }
+        // The process line on the timing log (item 723): whether the
+        // `result` came, how many streamed events and the exit. Never
+        // stderr (blocker 2006): the timing log carries no paths; the
+        // turn's error message still shows it.
+        if let Some(t) = &timing {
+            t.set_process(process_note(
+                outcome.result_seen,
+                outcome.stream_events,
+                &status.to_string(),
+            ));
+        }
+        // A process that printed nothing at all for a message (item 723)
+        // is a failure whatever its exit: an "ok" with nothing drawn and
+        // nothing said is what he saw. A deferred resume printing nothing
+        // is the session holding no deferred call (374), and is not this.
+        if !any_line && input.is_some() {
+            return Err(AgentError::Failed {
+                binary: spec.binary.clone(),
+                status: format!("{status}, and printed nothing"),
+                stderr,
+            });
         }
         // An API error the CLI ended the turn with (backlog 202) is said
         // out loud; the stop reason in the log carries it too.
@@ -2707,6 +3268,11 @@ impl ClaudeCodeAgent {
         // and the stderr tail is the only thing that explains it. A run that
         // did stream is reported through the outcome instead, since the CLI
         // prints in-run failures as the result on stdout.
+        // The session this flat process saved — a new one, or a fork's new
+        // id — is resumed flat from now on (item 758, [`flat`]).
+        if flat_run && !spec.no_session_persistence {
+            mark_flat(&outcome);
+        }
         if !status.success() && outcome.text.is_empty() && outcome.session_id.is_none() {
             return Err(AgentError::Failed {
                 binary: spec.binary.clone(),
@@ -2715,6 +3281,14 @@ impl ClaudeCodeAgent {
             });
         }
         Ok(outcome)
+    }
+}
+
+/// The session a flat process saved — a new one, or a fork's new id — is
+/// resumed flat from now on (item 758, [`flat`]); a stopped turn too.
+fn mark_flat(outcome: &AgentOutcome) {
+    if let Some(id) = &outcome.session_id {
+        flat::mark(id);
     }
 }
 
@@ -2749,12 +3323,47 @@ fn is_aborted(content: &str, is_error: bool) -> bool {
     is_error && content.to_ascii_lowercase().contains("aborted")
 }
 
+/// The notice on a reply that arrived whole rather than streamed (item 723).
+pub const WHOLE_REPLY_NOTICE: &str = "reply arrived in one piece — Claude Code's streamed request failed and it retried without streaming";
+
+/// The notice on a reply drawn from the `result` line alone (item 723):
+/// nothing of it arrived as prose before the turn ended.
+pub const RESULT_ONLY_NOTICE: &str =
+    "reply drawn from Claude Code's final result — none of it arrived while it ran";
+
+/// The timing line's process part (item 723): `result seen` or `no
+/// result`, the streamed events and the exit. Stderr stays out (blocker
+/// 2006): it may hold a path, which the timing log promises never to carry.
+fn process_note(result_seen: bool, events: u32, status: &str) -> String {
+    let result = if result_seen {
+        "result seen"
+    } else {
+        "no result"
+    };
+    format!("{result}, {events} stream events, {status}")
+}
+
 /// Why a reply ended before its `result` line (backlog 332), in his words.
 fn cut_off_reason(read_error: Option<&str>, status: &str) -> String {
     match read_error {
         Some(e) => format!("reading Claude Code's output failed ({e})"),
         None => format!("Claude Code's output ended before the reply finished ({status})"),
     }
+}
+
+/// The last non-empty line of the CLI's stderr tail, cut to a sentence's
+/// length (item 896): what a run that died mid-stream said on its way out.
+fn last_error_line(stderr: &str) -> Option<String> {
+    let line = stderr
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())?;
+    let mut out: String = line.chars().take(200).collect();
+    if line.chars().count() > 200 {
+        out.push('…');
+    }
+    Some(out)
 }
 
 /// The CLI's stdout, line by line, never failing on a byte that is not
@@ -2895,6 +3504,64 @@ fn which_on_path(_name: &str) -> Option<PathBuf> {
     // Never reached: `candidate_dirs` is empty off Unix, so `resolve_binary`
     // returns the name unchanged whatever this says.
     None
+}
+
+/// Where a Mac keeps the tools a chat runs (item 897): the CLI's own
+/// installs, Homebrew (Apple silicon, then Intel), then the system's. The
+/// jobs runner's launchd PATH is this list joined (`jobs_runner.rs`).
+pub fn fallback_path_dirs(home: Option<&std::path::Path>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(h) = home {
+        dirs.push(h.join(".local/bin"));
+        dirs.push(h.join(".claude/local"));
+    }
+    for d in [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ] {
+        dirs.push(PathBuf::from(d));
+    }
+    dirs
+}
+
+/// `inherited` with every fallback dir that `exists` and is missing
+/// appended (item 897). An app opened from the Dock inherits launchd's
+/// `/usr/bin:/bin:/usr/sbin:/sbin`, so a chat's `pdftotext` (and the CLI's
+/// own `pdftoppm` for a PDF Read) was "not found" though Homebrew has it.
+/// Inherited entries keep their order and priority; nothing is repeated.
+pub fn widened_path(
+    inherited: Option<&std::ffi::OsStr>,
+    home: Option<&std::path::Path>,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(p) = inherited {
+        for d in std::env::split_paths(p) {
+            if !d.as_os_str().is_empty() && !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+    }
+    for d in fallback_path_dirs(home) {
+        if !dirs.contains(&d) && exists(&d) {
+            dirs.push(d);
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_else(|_| inherited.map(Into::into).unwrap_or_default())
+}
+
+/// The PATH every process Nightloom spawns for a chat gets: this process's
+/// own, widened ([`widened_path`]). The desktop app also sets it on itself
+/// at start, so children spawned anywhere else inherit it.
+pub fn child_path() -> std::ffi::OsString {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    widened_path(std::env::var_os("PATH").as_deref(), home.as_deref(), |d| {
+        d.is_dir()
+    })
 }
 
 /// Ask the CLI to stop the way Ctrl-C does, and say whether it was asked.
@@ -3161,6 +3828,49 @@ mod tests {
         AgentSpec::new("/work")
     }
 
+    /// Since items 697 + 698 every `--settings` carries the chart plugin's
+    /// off switch: "nothing else to set" is now a JSON with that key alone.
+    fn settings_hold_only_the_plugin_switch(a: &[String]) -> bool {
+        let Some(i) = a.iter().position(|x| x == "--settings") else {
+            return false;
+        };
+        let s: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        s.as_object()
+            .is_some_and(|o| o.len() == 1 && o.contains_key("enabledPlugins"))
+    }
+
+    /// Items 697 + 698: the CLI's chart plugin is off in every shape that
+    /// reads the chat's cache — the turn, the stdin turn, the aside, the
+    /// keep-warm ping, the checkpoint fork — so its racy prompt line can
+    /// never make one shape's prefix differ from another's.
+    #[test]
+    fn the_cli_chart_plugin_is_off_in_every_shape() {
+        let plugins_of = |a: &[String]| -> serde_json::Value {
+            let i = a
+                .iter()
+                .position(|x| x == "--settings")
+                .expect("--settings");
+            let s: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+            s["enabledPlugins"].clone()
+        };
+        let want = serde_json::json!({ "cc-plugin-easel@builtin": false, "easel@builtin": false });
+        let mut chat = spec();
+        chat.resume = Some("parent-1".into());
+        chat.fork_mode = true;
+        assert_eq!(plugins_of(&spec().args("hi")), want);
+        assert_eq!(plugins_of(&chat.args("hi")), want);
+        assert_eq!(plugins_of(&chat.stdin_args()), want);
+        assert_eq!(plugins_of(&chat.aside().unwrap().args("q")), want);
+        assert_eq!(plugins_of(&chat.keep_warm_ping().unwrap().args("q")), want);
+        assert_eq!(plugins_of(&chat.checkpoint_fork().unwrap().args("t")), want);
+        // The --settings the turn and its side shapes send differ only in
+        // what a side process must not run (hooks), never in this key.
+        assert_eq!(
+            plugins_of(&chat.args("hi")),
+            plugins_of(&chat.aside().unwrap().args("q"))
+        );
+    }
+
     /// Backlog 235: every spec starts with his claude.ai connectors off —
     /// the CLI's switch in the environment, on the turn and on the
     /// checkpoint fork alike, and no tool rule on argv. On drops the
@@ -3217,6 +3927,41 @@ mod tests {
                 .argv
                 .iter()
                 .any(|x| x == "mcp__claude_ai_Google_Drive")
+        );
+    }
+
+    /// Item 758: a new session's reminders go in its first user message —
+    /// the switch on a process that starts a session, its forks and its
+    /// warm process alike — and never on a session that began without it,
+    /// which switching would re-render and re-write in full.
+    #[test]
+    fn a_new_session_sends_its_reminders_in_the_user_message() {
+        let caps = |s: &AgentSpec| -> Option<String> {
+            s.env_set()
+                .into_iter()
+                .find(|(k, _)| *k == flat::CAPS_ENV)
+                .map(|(_, v)| v)
+        };
+        let fresh = spec();
+        assert!(fresh.flat_reminders());
+        assert!(caps(&fresh).unwrap().ends_with(flat::MID_CONV_OFF));
+        // The waiting process carries it, so the first turn can take it.
+        let key = warm::Key::of(&fresh, &fresh.stdin_args());
+        assert!(
+            key.differs_in(&warm::Key::of(&fresh, &fresh.stdin_args()))
+                .is_empty()
+        );
+        // A session this machine never marked (every chat before 758).
+        let mut old = spec();
+        old.resume = Some("never-marked-758".into());
+        assert!(!old.flat_reminders());
+        assert_eq!(caps(&old), None);
+        assert!(
+            !old.fork_spec()
+                .unwrap()
+                .env
+                .iter()
+                .any(|(k, _)| k == flat::CAPS_ENV)
         );
     }
 
@@ -3323,19 +4068,25 @@ mod tests {
                 *m != CHAT_POLICY_MATCHER
                     && *m != BROWSER_TOOLS_MATCHER
                     && *m != PREVIEW_TOOL_MATCHER
+                    && *m != connector_writes::MATCHER
+                    && *m != connector_writes::KNOWN_WRITES_MATCHER
+                    && *m != connector_writes::CARD_MATCHER
             })
             .collect();
         assert_eq!(
             asks,
-            [
-                "WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder).*"
-            ],
+            [format!(
+                "WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|nightloom__ask_user_to_drive|{}).*",
+                connector_writes::ASK_EXCLUSION_WITH_CARD
+            )],
             "{pre:?}"
         );
         // Item 430: the preview is the policy's to refuse, not the Ask
         // card's; the rest of Nightloom's server still asks.
         assert!(!regex_like_matches(asks[0], "mcp__nightloom__preview"));
-        assert!(regex_like_matches(asks[0], "mcp__nightloom__remember"));
+        // (Item 783: `remember` is the read-only entry's to ask about.)
+        assert!(asks[0].contains("nightloom__remember$"));
+        assert!(regex_like_matches(asks[0], "mcp__nightloom__send_file"));
         assert!(regex_like_matches(
             PREVIEW_TOOL_MATCHER,
             "mcp__nightloom__preview"
@@ -3345,7 +4096,10 @@ mod tests {
         assert!(
             pre.iter()
                 .any(|e| e["matcher"]
-                    == "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*"),
+                    == format!(
+                        "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|nightloom__ask_user_to_drive|{}).*",
+                        connector_writes::ASK_EXCLUSION_WITH_CARD
+                    )),
             "{pre:?}"
         );
     }
@@ -3807,7 +4561,9 @@ mod tests {
             ("--mcp-config", "{\"mcpServers\":{}}"),
             ("--append-system-prompt", "preamble"),
             ("--permission-prompt-tool", ask::PROMPT_TOOL),
-            ("--permission-mode", "dontAsk"),
+            // ~~`dontAsk`~~ — a Plan chat's aside stays in `plan` (item
+            // 774, blocker 2037, 2026-11-16): the chat's tool text on Opus.
+            ("--permission-mode", "plan"),
         ] {
             let i = a
                 .iter()
@@ -3973,10 +4729,12 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        // The policy's deny, and the preview's beside it (item 430).
-        assert_eq!(pre.len(), 2);
+        // The policy's deny, the preview's beside it (item 430), and the
+        // connector writes' (item 759).
+        assert_eq!(pre.len(), 3);
         assert_eq!(pre[0]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[1]["matcher"], PREVIEW_TOOL_MATCHER);
+        assert_eq!(pre[2]["matcher"], connector_writes::MATCHER);
         let command = pre[0]["hooks"][0]["command"].as_str().unwrap();
         assert!(command.starts_with("echo "), "{command}");
         let reply: serde_json::Value = serde_json::from_str(
@@ -4005,7 +4763,7 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 3, "{v}");
+        assert_eq!(pre.len(), 5, "{v}");
         // Narrowed beside the policy (backlog 147): see the next test.
         assert_eq!(
             pre[0]["matcher"],
@@ -4013,12 +4771,22 @@ mod tests {
         );
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
+        // Item 783: with the Ask hook there, Nightloom's own note writes
+        // stay refused and the connector actions (and `remember`) ask.
+        assert_eq!(pre[3]["matcher"], connector_writes::KNOWN_WRITES_MATCHER);
+        assert_eq!(pre[4]["matcher"], connector_writes::CARD_MATCHER);
+        assert!(
+            pre[4]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains(ask::READ_ONLY_ARG)
+        );
         assert_eq!(v["autoMemoryEnabled"], false);
 
-        // The other pairings: nothing to refuse.
+        // The other pairings: nothing to refuse. (A born Chat, Chat over
+        // Chat, refuses the MCP writers: its own test, item 759.)
         for (kind, declared) in [
             (ChatKind::Build, ChatKind::Build),
-            (ChatKind::Chat, ChatKind::Chat),
             (ChatKind::Build, ChatKind::Chat),
         ] {
             let mut s = spec();
@@ -4027,11 +4795,65 @@ mod tests {
             s.fork_mode = false;
             s.apply_kind_policy(kind, declared);
             assert!(!s.chat_policy, "{kind:?} over {declared:?}");
-            assert!(!s.args("hi").iter().any(|x| x == "--settings"));
+            assert!(settings_hold_only_the_plugin_switch(&s.args("hi")));
         }
         // The matcher itself is JavaScript's (a negative lookahead the
         // `regex` crate cannot compile); the CLI was measured reading it —
         // Bash refused, Read run, in one turn (the report's step 11).
+    }
+
+    /// Item 759: a born Chat (Chat over Chat) keeps its five readers and
+    /// gets the MCP denies — the preview's, the browser's when it is on,
+    /// and the connector writes' — but not the policy's own entry; its
+    /// Ask hook's `mcp__` alternative leaves out what they refuse, and
+    /// the rest of the Ask matcher is untouched.
+    #[test]
+    fn a_born_chat_refuses_the_mcp_writers_but_keeps_its_readers() {
+        let mut s = spec();
+        s.fork_mode = false;
+        s.apply_kind(ChatKind::Chat);
+        s.apply_kind_policy(ChatKind::Chat, ChatKind::Chat);
+        assert!(!s.chat_policy);
+        assert!(s.born_chat);
+        let pre_of = |s: &AgentSpec| -> Vec<serde_json::Value> {
+            let a = s.args("hi");
+            let i = a.iter().position(|x| x == "--settings").unwrap();
+            let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+            v["hooks"]["PreToolUse"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        };
+        let pre = pre_of(&s);
+        let m: Vec<&str> = pre.iter().filter_map(|e| e["matcher"].as_str()).collect();
+        assert_eq!(m, [PREVIEW_TOOL_MATCHER, connector_writes::MATCHER]);
+        s.browser = true;
+        let pre = pre_of(&s);
+        let m: Vec<&str> = pre.iter().filter_map(|e| e["matcher"].as_str()).collect();
+        assert_eq!(
+            m,
+            [
+                PREVIEW_TOOL_MATCHER,
+                BROWSER_TOOLS_MATCHER,
+                connector_writes::MATCHER
+            ]
+        );
+        s.ask = Some(AskSpec {
+            hook: vec!["/app/nightloom-desktop".into(), "--permission-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-1"),
+            mode: AskMode::Ask,
+            subagents_auto: true,
+        });
+        let pre = pre_of(&s);
+        let expected = ask::MATCHER.replace(ask::MCP_ALTERNATIVE, &ask_mcp_less(true));
+        assert_eq!(pre[0]["matcher"], expected);
+        assert!(expected.starts_with("Bash|Write|"));
+
+        // The turn-time hold tightens a spec made for another chat.
+        let mut agent = ClaudeCodeAgent::new(spec());
+        assert!(agent.hold_to_kind_policy(ChatKind::Chat, ChatKind::Chat));
+        assert!(agent.spec().born_chat && !agent.spec().chat_policy);
+        assert!(!agent.hold_to_kind_policy(ChatKind::Chat, ChatKind::Chat));
     }
 
     /// Under the Chat policy the Ask hook no longer names a withdrawn
@@ -4046,7 +4868,10 @@ mod tests {
         // The preview's tool is out too (item 430): the policy refuses it.
         assert_eq!(
             narrowed,
-            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*"
+            format!(
+                "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|nightloom__ask_user_to_drive|{}).*",
+                connector_writes::ASK_EXCLUSION_WITH_CARD
+            )
         );
         for withdrawn in [
             "Bash",
@@ -4076,22 +4901,45 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 3, "{v}");
-        assert_eq!(
-            pre[0]["matcher"],
-            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*"
-        );
+        assert_eq!(pre.len(), 5, "{v}");
+        assert_eq!(pre[0]["matcher"], narrowed);
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
+        // Item 783: the connector actions and `remember` ask.
+        assert_eq!(pre[3]["matcher"], connector_writes::KNOWN_WRITES_MATCHER);
+        assert_eq!(pre[4]["matcher"], connector_writes::CARD_MATCHER);
         // The one resume that leaves plan mode: only the deny is registered.
         s.ask.as_mut().unwrap().mode = AskMode::ExitingToAuto;
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 2, "{v}");
+        assert_eq!(pre.len(), 4, "{v}");
         assert_eq!(pre[0]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[1]["matcher"], PREVIEW_TOOL_MATCHER);
+        assert_eq!(pre[2]["matcher"], connector_writes::KNOWN_WRITES_MATCHER);
+        assert_eq!(pre[3]["matcher"], connector_writes::CARD_MATCHER);
+        // Item 845: Home's read-only chat — its mail and calendar writers
+        // leave the refusal for their own asking entry, last.
+        let mut h = s.clone();
+        h.home_gated_writes = true;
+        let a = h.args("hi");
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 5, "{v}");
+        assert_eq!(
+            pre[2]["matcher"],
+            connector_writes::KNOWN_WRITES_MATCHER_HOME
+        );
+        assert_eq!(pre[3]["matcher"], connector_writes::CARD_MATCHER);
+        assert_eq!(pre[4]["matcher"], connector_writes::HOME_GATED_MATCHER);
+        assert!(
+            pre[4]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains(ask::READ_ONLY_ARG)
+        );
         // Without the policy, the matcher is untouched.
         let mut plain = spec();
         plain.ask = s.ask.clone();
@@ -4299,7 +5147,7 @@ mod tests {
         // default and rides the same JSON, is off.
         let mut plain = spec();
         plain.fork_mode = false;
-        assert!(!plain.args("hi").iter().any(|x| x == "--settings"));
+        assert!(settings_hold_only_the_plugin_switch(&plain.args("hi")));
     }
 
     /// Backlog 435: every process Nightloom starts carries `NIGHTLOOM=1` —
@@ -4353,7 +5201,7 @@ mod tests {
         off.fork_mode = false;
         let a = off.args("hi");
         assert!(!a.iter().any(|x| x == "--agents"), "{a:?}");
-        assert!(!a.iter().any(|x| x == "--settings"), "{a:?}");
+        assert!(settings_hold_only_the_plugin_switch(&a), "{a:?}");
         assert!(
             !off.env_set()
                 .iter()
@@ -4507,12 +5355,25 @@ mod tests {
         );
         let a = agent.spec().args("hi");
         assert_eq!(brief_entries(&a), 1);
-        // Beside it only `add_folder`'s own gate (item 613): no Ask hook.
-        assert_eq!(entries(&a).len(), 2, "no Ask hook in Auto");
+        // Beside it only `add_folder`'s, `request_secret`'s and
+        // `ask_user_to_drive`'s own gates (items 613, 766, 872): no Ask hook.
+        assert_eq!(entries(&a).len(), 4, "no Ask hook in Auto");
         assert_eq!(
             entries(&a)[1]["matcher"],
             crate::tools::add_folder::GATE_MATCHER
         );
+        assert_eq!(entries(&a)[2]["matcher"], crate::secret::GATE_MATCHER);
+        assert_eq!(entries(&a)[3]["matcher"], crate::home::drive::GATE_MATCHER);
+        // The drive gate fails closed, on the same hook and directory.
+        let gate = entries(&a)[3]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            gate.starts_with(&format!("'hook' '--permission-hook' '{}'", dir.display())),
+            "{gate}"
+        );
+        assert!(gate.ends_with(DRIVE_GATE_FAIL_CLOSED), "{gate}");
         let cmd = entries(&a)[0]["hooks"][0]["command"].clone();
         assert_eq!(cmd, format!("'hook' '--subagent-hook' '{}'", dir.display()));
         // Nightshift 561: the same command on each user message, no matcher.
@@ -4529,10 +5390,12 @@ mod tests {
         agent.set_ask_dir(dir.clone());
         let a = agent.spec().args("hi");
         let e = entries(&a);
-        assert_eq!(e.len(), 3, "{e:?}");
+        assert_eq!(e.len(), 5, "{e:?}");
         assert_eq!(e[0]["matcher"], ask::MATCHER);
         assert_eq!(e[1]["matcher"], brief::BRIEF_MATCHER);
         assert_eq!(e[2]["matcher"], crate::tools::add_folder::GATE_MATCHER);
+        assert_eq!(e[3]["matcher"], crate::secret::GATE_MATCHER);
+        assert_eq!(e[4]["matcher"], crate::home::drive::GATE_MATCHER);
         // The aside of that chat carries no hook at all.
         let mut s = asking(AskMode::Ask);
         s.brief = Some(brief.clone());
@@ -4553,8 +5416,8 @@ mod tests {
         assert_eq!(brief_entries(&a), 1);
         assert_eq!(
             entries(&a).len(),
-            4,
-            "the policy's own entry, the preview's deny (item 430), the budget's and add_folder's gate (613)"
+            7,
+            "the policy's own entry, the preview's deny (item 430), the connector writes' (759), the budget's, add_folder's gate (613), request_secret's (766) and ask_user_to_drive's (872)"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4614,6 +5477,145 @@ mod tests {
     }
 
     /// The `PreToolUse` entries of a spec's one `--settings` JSON.
+    /// Item 872: Home's own Reminders writer is asked about only on the
+    /// read-only chat's card. A chat of Home's that is not held read-only
+    /// refuses it by its own entry, in every position; a held one adds
+    /// nothing (its read-only entries gate or refuse it); no other
+    /// project's chat changes at all.
+    #[test]
+    fn homes_reminders_writer_is_refused_where_homes_chat_is_not_held_read_only() {
+        let tool = "mcp__nightloom__update_reminders";
+        let own = |s: &AgentSpec| -> Vec<serde_json::Value> {
+            pre_entries(s)
+                .into_iter()
+                .filter(|e| e["matcher"] == connector_writes::HOME_OWN_WRITER_MATCHER)
+                .collect()
+        };
+        let mut bypass = spec();
+        bypass.permission_mode = Some("bypassPermissions".into());
+        for (name, mut s) in [
+            ("bypass", bypass),
+            ("auto", asking(AskMode::Auto)),
+            ("ask", asking(AskMode::Ask)),
+            ("plan", asking(AskMode::Plan)),
+        ] {
+            assert!(own(&s).is_empty(), "{name}: not Home's chat");
+            s.home_chat = true;
+            let entries = own(&s);
+            assert_eq!(entries.len(), 1, "{name}");
+            let command = entries[0]["hooks"][0]["command"].as_str().unwrap();
+            assert!(command.starts_with("echo "), "{name}: {command}");
+            assert!(
+                command.contains("\"permissionDecision\":\"deny\""),
+                "{name}"
+            );
+            assert_eq!(entries[0]["matcher"], format!("^{tool}$"), "{name}");
+        }
+        let reply = connector_writes::HOME_OWN_WRITER_UNHELD;
+        assert!(
+            !reply.contains(['&', '|', '<', '>', '^', '%', '\'']),
+            "{reply}"
+        );
+        // Held read-only: the hold's own entries decide it, and one of
+        // them names the tool — the asking entry with a card to show, the
+        // refusal without.
+        let mut held = asking(AskMode::Ask);
+        held.chat_policy = true;
+        held.home_chat = true;
+        held.home_gated_writes = true;
+        assert!(own(&held).is_empty());
+        let pre = pre_entries(&held);
+        assert!(
+            pre.iter()
+                .any(|e| e["matcher"] == connector_writes::HOME_GATED_MATCHER),
+            "{pre:?}"
+        );
+        let mut no_card = spec();
+        no_card.chat_policy = true;
+        no_card.home_chat = true;
+        no_card.home_gated_writes = true;
+        assert!(own(&no_card).is_empty());
+        let pre = pre_entries(&no_card);
+        assert!(
+            pre.iter()
+                .any(|e| e["matcher"] == connector_writes::MATCHER),
+            "{pre:?}"
+        );
+        assert!(
+            !pre.iter()
+                .any(|e| e["matcher"] == connector_writes::HOME_GATED_MATCHER),
+            "{pre:?}"
+        );
+    }
+
+    /// Item 872 step 5: `ask_user_to_drive` meets one decider — its own
+    /// gate — in every position, Home's held read-only chat included: the
+    /// Ask hook's `mcp__` alternative, the read-only chat's refusals and
+    /// its asking entries all leave it out. Every `PreToolUse` matcher on
+    /// the line is run through `node`, as the CLI runs them; the brief's
+    /// hook (every tool, the budget's) is the one other entry it meets.
+    #[test]
+    fn the_drive_ask_meets_only_its_own_gate_in_every_position() {
+        let tool = "mcp__nightloom__ask_user_to_drive";
+        let brief = BriefSpec {
+            hook: vec!["hook".into(), "--subagent-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-3"),
+            text: "x".into(),
+        };
+        let mut bypass = spec();
+        bypass.permission_mode = Some("bypassPermissions".into());
+        let mut chat = asking(AskMode::Ask);
+        chat.chat_policy = true;
+        let mut held = asking(AskMode::Ask);
+        held.chat_policy = true;
+        held.home_chat = true;
+        held.home_gated_writes = true;
+        let mut home_open = asking(AskMode::Ask);
+        home_open.home_chat = true;
+        for (name, mut s) in [
+            ("bypass", bypass),
+            ("auto", asking(AskMode::Auto)),
+            ("ask", asking(AskMode::Ask)),
+            ("plan", asking(AskMode::Plan)),
+            ("a read-only chat", chat),
+            ("Home's read-only chat", held),
+            ("a chat of Home's not held", home_open),
+            ("with Playwright", with_playwright(asking(AskMode::Ask))),
+        ] {
+            s.brief = Some(brief.clone());
+            let pre = pre_entries(&s);
+            let matchers: Vec<String> = pre
+                .iter()
+                .map(|e| e["matcher"].as_str().unwrap_or(".*").to_string())
+                .collect();
+            let script = format!(
+                "const m={m};console.log(JSON.stringify(m.map(x=>new RegExp('^(?:'+x+')$').test({t})||new RegExp(x).test({t}))));",
+                m = serde_json::to_string(&matchers).unwrap(),
+                t = serde_json::to_string(tool).unwrap(),
+            );
+            let out = match std::process::Command::new("node")
+                .arg("-e")
+                .arg(&script)
+                .output()
+            {
+                Ok(o) if o.status.success() => o,
+                Ok(o) => panic!("node failed: {}", String::from_utf8_lossy(&o.stderr)),
+                Err(e) => {
+                    eprintln!("SKIPPED: node not runnable here ({e})");
+                    return;
+                }
+            };
+            let hit: Vec<bool> = serde_json::from_slice(&out.stdout).unwrap();
+            let met: Vec<&str> = matchers
+                .iter()
+                .zip(hit)
+                .filter(|(m, hit)| *hit && m.as_str() != brief::BRIEF_MATCHER)
+                .map(|(m, _)| m.as_str())
+                .collect();
+            assert_eq!(met, [crate::home::drive::GATE_MATCHER], "{name}");
+        }
+    }
+
     fn pre_entries(s: &AgentSpec) -> Vec<serde_json::Value> {
         let a = s.args("hi");
         let Some(i) = a.iter().position(|x| x == "--settings") else {
@@ -4937,23 +5939,219 @@ mod tests {
         );
     }
 
-    /// An aside of an Auto chat (backlog 294): as an aside of an Ask chat —
-    /// `dontAsk`, no hook of any kind — with the prompt tool still named,
-    /// so the offered tools, and the cached prefix, are the chat's.
+    /// The CLI's tool text by permission mode (CLI 2.1.326, Opus 5.5,
+    /// measured 2026-11-16): two classes. A side process must stay in its
+    /// chat's class, or its first request reads none of the chat's cache.
+    fn tool_text_class(mode: &str) -> u8 {
+        match mode {
+            "default" | "dontAsk" => 1,
+            "auto" | "plan" | "bypassPermissions" => 2,
+            other => panic!("unmeasured mode {other}"),
+        }
+    }
+
+    /// An aside of an Auto chat (backlog 294; item 758's follow-up,
+    /// 2026-11-16): ~~`dontAsk`, no hook of any kind~~ — `auto`, as the
+    /// chat's checkpoint fork, since `dontAsk` sends other tool text and
+    /// the aside read none of the cache. Still no Ask hook (a question has
+    /// no card waiting), the prompt tool still named, the plan refusal
+    /// kept; the same for the keep-warm ping, which is an aside.
     #[test]
     fn an_aside_of_an_auto_chat_asks_nothing() {
         let mut s = asking(AskMode::Auto);
         s.resume = Some("sess-1".into());
-        let a = s.aside().unwrap().args("q");
-        assert_eq!(mode_of(&a), "dontAsk");
-        assert!(a.iter().any(|x| x == "--permission-prompt-tool"), "{a:?}");
-        assert!(pre_tool_use(&a).is_empty(), "{:?}", pre_tool_use(&a));
-        // And the Ask chat's aside is as it was.
+        let chat = s.args("turn");
+        for side in [s.aside().unwrap(), s.keep_warm_ping().unwrap()] {
+            assert_eq!(side.ask.as_ref().unwrap().mode, AskMode::AutoFork);
+            let a = side.args("q");
+            assert_eq!(mode_of(&a), "auto");
+            assert_eq!(
+                tool_text_class(&mode_of(&a)),
+                tool_text_class(&mode_of(&chat))
+            );
+            assert!(a.iter().any(|x| x == "--permission-prompt-tool"), "{a:?}");
+            let entries = pre_tool_use(&a);
+            assert!(
+                !entries.iter().any(|(_, c)| c.contains("--permission-hook")),
+                "{entries:?}"
+            );
+            assert!(entries.iter().any(|(m, _)| m == ask::PLAN_TOOLS_MATCHER));
+        }
+        // And the Ask chat's aside is as it was — in the chat's class.
         let mut s = asking(AskMode::Ask);
         s.resume = Some("sess-1".into());
         let a = s.aside().unwrap().args("q");
         assert_eq!(mode_of(&a), "dontAsk");
+        assert_eq!(
+            tool_text_class(&mode_of(&a)),
+            tool_text_class(&mode_of(&s.args("turn")))
+        );
         assert!(pre_tool_use(&a).is_empty());
+    }
+
+    /// The CLI's mode for a command line: its flag, or the CLI's own
+    /// default when none is sent.
+    fn mode_or_default(a: &[String]) -> String {
+        match a.iter().position(|x| x == "--permission-mode") {
+            Some(i) => a[i + 1].clone(),
+            None => "default".into(),
+        }
+    }
+
+    /// Every chat mode's aside and keep-warm ping sit in the chat's
+    /// measured tool-text class (item 774, blocker 2037, 2026-11-16), carry
+    /// no Ask hook, and can do nothing the chat could not: a Plan chat's in
+    /// `plan`; an approval-off chat's aside in `plan` and its ping in
+    /// `bypassPermissions`; an Ask chat's and a default one's in `dontAsk`.
+    #[test]
+    fn every_chat_modes_aside_and_ping_stay_in_the_chats_tool_class() {
+        // (chat, the aside's mode, the ping's mode)
+        let mut chats: Vec<(AgentSpec, &str, &str)> = Vec::new();
+        for (mode, side) in [
+            (AskMode::Ask, "dontAsk"),
+            (AskMode::Plan, "plan"),
+            (AskMode::Auto, "auto"),
+            (AskMode::ExitingToAuto, "auto"),
+        ] {
+            chats.push((asking(mode), side, side));
+        }
+        for (mode, aside, ping) in [
+            (None, "dontAsk", "dontAsk"),
+            (Some("default"), "dontAsk", "dontAsk"),
+            (Some("dontAsk"), "dontAsk", "dontAsk"),
+            (Some("auto"), "plan", "auto"),
+            (Some("bypassPermissions"), "plan", "bypassPermissions"),
+        ] {
+            let mut s = spec();
+            s.permission_mode = mode.map(Into::into);
+            chats.push((s, aside, ping));
+        }
+        for (mut s, aside_mode, ping_mode) in chats {
+            s.resume = Some("sess-1".into());
+            let chat = s.args("turn");
+            let class = tool_text_class(&mode_or_default(&chat));
+            let aside = s.aside().unwrap();
+            let ping = s.keep_warm_ping().unwrap();
+            for (side, want, what) in [(&aside, aside_mode, "aside"), (&ping, ping_mode, "ping")] {
+                let a = side.args("q");
+                assert_eq!(mode_of(&a), want, "{what} of {chat:?}");
+                assert_eq!(tool_text_class(&mode_of(&a)), class, "{what} of {chat:?}");
+                let entries = pre_tool_use(&a);
+                assert!(
+                    !entries.iter().any(|(_, c)| c.contains("--permission-hook")),
+                    "{what}: {entries:?}"
+                );
+                // The prompt tool is named exactly when the chat names it.
+                assert_eq!(
+                    a.iter().any(|x| x == "--permission-prompt-tool"),
+                    s.ask.is_some(),
+                    "{what}: {a:?}"
+                );
+            }
+            assert_eq!(ping.max_turns, Some(1));
+            assert_eq!(aside.max_turns, s.max_turns);
+        }
+        // A Plan chat's side process is the PlanAside position, not Plan:
+        // nothing to approve, so `planning()` is off on it.
+        let mut s = asking(AskMode::Plan);
+        s.resume = Some("sess-1".into());
+        let side = s.aside().unwrap();
+        assert_eq!(side.ask.as_ref().unwrap().mode, AskMode::PlanAside);
+        assert!(!ClaudeCodeAgent::new(side).planning());
+    }
+
+    /// The model the CLI runs for `--model <m>` in a mode (CLI 2.1.326,
+    /// measured 2026-11-17, wave O): Haiku runs as Sonnet 5.5 under `plan`
+    /// and as itself in every other mode.
+    fn runs_as(model: Option<&str>, mode: &str) -> String {
+        match model {
+            Some(m) if m.to_ascii_lowercase().contains("haiku") && mode == "plan" => {
+                "sonnet".into()
+            }
+            Some(m) => m.into(),
+            None => "default".into(),
+        }
+    }
+
+    /// A Haiku chat's aside runs the chat's model (item 802): `--model
+    /// haiku` under `plan` runs Sonnet 5.5, so an approval-off or no-hook
+    /// Auto Haiku chat's aside keeps `dontAsk` (Haiku) rather than taking
+    /// `plan` (Sonnet, none of the chat's cache); a Haiku chat that runs
+    /// `plan` itself keeps a `plan` aside. Other models are unchanged.
+    #[test]
+    fn a_haiku_chats_aside_runs_haiku() {
+        for model in ["haiku", "claude-haiku-5-5", "Haiku"] {
+            for (mode, want) in [
+                (None, "dontAsk"),
+                (Some("default"), "dontAsk"),
+                (Some("dontAsk"), "dontAsk"),
+                (Some("auto"), "dontAsk"),
+                (Some("bypassPermissions"), "dontAsk"),
+                (Some("plan"), "plan"),
+            ] {
+                let mut s = spec();
+                s.model = Some(model.into());
+                s.permission_mode = mode.map(Into::into);
+                s.resume = Some("sess-1".into());
+                let chat = s.args("turn");
+                let a = s.aside().unwrap().args("q");
+                assert_eq!(mode_of(&a), want, "{model} {mode:?}");
+                assert_eq!(
+                    runs_as(Some(model), &mode_of(&a)),
+                    runs_as(Some(model), &mode_or_default(&chat)),
+                    "{model} {mode:?}"
+                );
+            }
+            // Ask-hook chats: each side process runs the chat's model.
+            for mode in [
+                AskMode::Ask,
+                AskMode::Plan,
+                AskMode::Auto,
+                AskMode::ExitingToAuto,
+            ] {
+                let mut s = asking(mode);
+                s.model = Some(model.into());
+                s.resume = Some("sess-1".into());
+                let chat = s.args("turn");
+                let a = s.aside().unwrap().args("q");
+                assert_eq!(
+                    runs_as(Some(model), &mode_of(&a)),
+                    runs_as(Some(model), &mode_or_default(&chat)),
+                    "{model} {mode:?}"
+                );
+            }
+        }
+        // An aside he points at Haiku from an approval-off Opus chat runs
+        // Haiku too, and one pointed at Opus from a Haiku chat takes `plan`.
+        let mut s = spec();
+        s.model = Some("opus".into());
+        s.permission_mode = Some("bypassPermissions".into());
+        s.resume = Some("sess-1".into());
+        assert_eq!(
+            mode_of(&s.aside_with(Some("haiku"), None).unwrap().args("q")),
+            "dontAsk"
+        );
+        assert_eq!(
+            mode_of(&s.aside_with(None, None).unwrap().args("q")),
+            "plan"
+        );
+        s.model = Some("haiku".into());
+        assert_eq!(
+            mode_of(&s.aside_with(Some("opus"), None).unwrap().args("q")),
+            "plan"
+        );
+        // Not Haiku: as 2037 set it.
+        for model in [None, Some("opus"), Some("claude-fable-5-2")] {
+            assert_eq!(AgentSpec::side_permission_mode(Some("auto"), model), "plan");
+            assert_eq!(
+                AgentSpec::side_permission_mode(Some("bypassPermissions"), model),
+                "plan"
+            );
+            assert_eq!(
+                AgentSpec::side_permission_mode(Some("default"), model),
+                "dontAsk"
+            );
+        }
     }
 
     /// A checkpoint fork of an Auto chat stays on `auto` (as before 294),
@@ -4976,6 +6174,91 @@ mod tests {
         assert!(entries.iter().any(|(m, _)| m == ask::PLAN_TOOLS_MATCHER));
     }
 
+    /// Wave O (2026-11-17; 2037's left-out): a checkpoint fork, of every
+    /// chat mode, sends the chat's own request flags — the permission mode
+    /// in the chat's tool-text class and nothing else changed but the
+    /// settings JSON (hooks, not the request) and the fork's own flags.
+    /// ~~A Plan chat's and an approved plan's (ExitingToAuto) forks ran
+    /// `dontAsk`~~, which on Opus 5.5 sends other Bash text, and on a
+    /// Haiku chat runs Haiku where `plan` runs Sonnet, so the fork missed.
+    #[test]
+    fn every_chat_modes_checkpoint_fork_sends_the_chats_request_flags() {
+        // Everything but the prompt, the settings JSON and the fork's flags.
+        fn request_flags(a: &[String]) -> Vec<String> {
+            let mut out = Vec::new();
+            let mut it = a.iter();
+            while let Some(x) = it.next() {
+                match x.as_str() {
+                    "-p" | "--settings" => {
+                        it.next();
+                    }
+                    "--fork-session" | "--no-session-persistence" => {}
+                    "--permission-mode" => {
+                        it.next();
+                    }
+                    _ => out.push(x.clone()),
+                }
+            }
+            out
+        }
+        let mut chats: Vec<(AgentSpec, &str)> = Vec::new();
+        for (mode, fork) in [
+            (AskMode::Ask, "dontAsk"),
+            (AskMode::Plan, "plan"),
+            (AskMode::Auto, "auto"),
+            (AskMode::ExitingToAuto, "auto"),
+        ] {
+            chats.push((asking(mode), fork));
+        }
+        // No Ask hook: the fork keeps the chat's mode, as before.
+        for mode in [
+            None,
+            Some("default"),
+            Some("dontAsk"),
+            Some("auto"),
+            Some("bypassPermissions"),
+        ] {
+            let mut s = spec();
+            s.permission_mode = mode.map(Into::into);
+            chats.push((s, mode.unwrap_or("")));
+        }
+        for (mut s, want) in chats {
+            s.resume = Some("sess-1".into());
+            s.brief = Some(BriefSpec {
+                hook: vec!["hook".into()],
+                dir: PathBuf::from("/chat"),
+                text: "brief".into(),
+            });
+            let chat = s.args("turn");
+            let f = s.checkpoint_fork().unwrap();
+            let a = f.args("");
+            assert_eq!(
+                mode_or_default(&a),
+                if want.is_empty() { "default" } else { want },
+                "{chat:?}"
+            );
+            assert_eq!(
+                tool_text_class(&mode_or_default(&a)),
+                tool_text_class(&mode_or_default(&chat)),
+                "{chat:?}"
+            );
+            assert_eq!(request_flags(&a), request_flags(&chat), "{chat:?}");
+            assert!(f.brief.is_some(), "the budget hook rides in the fork");
+            // No Ask hook: nothing points at the chat's card directory.
+            let entries = pre_tool_use(&a);
+            assert!(
+                !entries.iter().any(|(_, c)| c.contains("/logs/ask/chat-3")),
+                "{entries:?}"
+            );
+        }
+        // A Plan chat's fork has nothing to approve: `planning()` is off.
+        let mut s = asking(AskMode::Plan);
+        s.resume = Some("sess-1".into());
+        let f = s.checkpoint_fork().unwrap();
+        assert_eq!(f.ask.as_ref().unwrap().mode, AskMode::PlanAside);
+        assert!(!ClaudeCodeAgent::new(f).planning());
+    }
+
     /// Beside the Chat policy (backlog 147's narrowing), the Auto position
     /// registers no Ask entry — the policy refuses the question, as it
     /// does under Ask (blocker 1032) — and no second plan refusal.
@@ -4984,8 +6267,13 @@ mod tests {
         let mut s = asking(AskMode::Auto);
         s.apply_kind_policy(ChatKind::Chat, ChatKind::Build);
         let entries = pre_tool_use(&s.args("hi"));
+        // (Item 783: the one hook entry there is the read-only chat's own,
+        // on the connector actions and `remember` — never the question.)
         assert!(
-            !entries.iter().any(|(_, c)| c.contains("--permission-hook")),
+            entries
+                .iter()
+                .filter(|(_, c)| c.contains("--permission-hook"))
+                .all(|(m, c)| m == connector_writes::CARD_MATCHER && c.contains(ask::READ_ONLY_ARG)),
             "{entries:?}"
         );
         assert!(!entries.iter().any(|(m, _)| m == ask::PLAN_TOOLS_MATCHER));
@@ -5066,6 +6354,168 @@ cat >/dev/null
             "{args:?}"
         );
         assert!(!inbox.is_open(), "closed at the result");
+    }
+
+    /// Item 732's stand-in: records its argv and the one stdin line (empty
+    /// when stdin is null), prints an init and a result, then reads stdin
+    /// to its EOF — so a process whose stdin is never closed hangs, and the
+    /// caller's timeout says so. Returns `(argv, stdin line)`.
+    #[cfg(unix)]
+    async fn shape_of_732<F, Fut>(resume: Option<&str>, run: F) -> (Vec<String>, String)
+    where
+        F: FnOnce(AgentSpec) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let dir = std::env::temp_dir().join(format!("nightloom-732-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (argv, stdin) = (dir.join("argv"), dir.join("stdin"));
+        let body = format!(
+            r##"printf '%s\n' "$@" > '{argv}'
+line=''
+read -r line
+printf '%s' "$line" > '{stdin}'
+printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"dontAsk","session_id":"s-732"}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"s-732","stop_reason":"end_turn","usage":{{"input_tokens":1,"output_tokens":1}}}}'
+cat >/dev/null
+exit 0
+"##,
+            argv = argv.display(),
+            stdin = stdin.display()
+        );
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, &body);
+        s.resume = resume.map(str::to_string);
+        tokio::time::timeout(std::time::Duration::from_secs(10), run(s))
+            .await
+            .expect("the process ended after its one reply");
+        let args = std::fs::read_to_string(&argv).unwrap();
+        let line = std::fs::read_to_string(&stdin).unwrap_or_default();
+        (args.lines().map(str::to_string).collect(), line)
+    }
+
+    #[cfg(unix)]
+    fn on_stdin_732(args: &[String], line: &str, text: &str) {
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--input-format" && w[1] == "stream-json"),
+            "{args:?}"
+        );
+        assert!(!args.iter().any(|a| a == text), "prompt on argv: {args:?}");
+        assert!(line.contains("\"type\":\"user\""), "{line}");
+        assert!(line.contains(&text[..20.min(text.len())]), "{line}");
+    }
+
+    /// Item 732: an aside on a chat with a session sends its question on
+    /// stdin, as the chat's turn does (725's capture: the argv shape words
+    /// the Bash tool differently and misses the chat's cache), and still
+    /// ends after its one reply.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_aside_sends_its_question_on_stdin_like_a_turn() {
+        let text = "what did we decide about the bar";
+        let (args, line) = shape_of_732(Some("s-732"), |s| async move {
+            let agent = ClaudeCodeAgent::new(s);
+            let cancel = CancellationToken::new();
+            let out = agent
+                .ask_aside(text.into(), None, None, None, &cancel, &mut |_| {})
+                .await
+                .expect("a session to ask beside")
+                .unwrap();
+            assert!(out.result_seen);
+        })
+        .await;
+        on_stdin_732(&args, &line, text);
+        assert!(args.iter().any(|a| a == "--fork-session"), "{args:?}");
+    }
+
+    /// Item 732: a keep-warm ping goes on stdin too, held to one round.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_keep_warm_ping_sends_its_prompt_on_stdin_like_a_turn() {
+        let (args, line) = shape_of_732(Some("s-732"), |s| async move {
+            let cancel = CancellationToken::new();
+            let out = crate::keep_warm::ping(&s, &cancel).await.unwrap();
+            assert!(out.error.is_none(), "{:?}", out.error);
+        })
+        .await;
+        on_stdin_732(&args, &line, crate::keep_warm::PING_PROMPT);
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--max-turns" && w[1] == "1"),
+            "{args:?}"
+        );
+    }
+
+    /// Item 732: a council seat forked from the chat's session goes on
+    /// stdin too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_forked_council_seat_sends_its_prompt_on_stdin_like_a_turn() {
+        let text = "seat prompt: weigh the two designs";
+        let (args, line) = shape_of_732(Some("s-732"), |s| async move {
+            let seat = crate::council::seat_spec(&s, &crate::council::Seat::subscription("opus"));
+            let agent = ClaudeCodeAgent::new(s);
+            let cancel = CancellationToken::new();
+            let out = agent
+                .run_with(&seat, text, &cancel, &mut |_| {})
+                .await
+                .unwrap();
+            assert!(out.result_seen);
+        })
+        .await;
+        on_stdin_732(&args, &line, text);
+        assert!(args.iter().any(|a| a == "--fork-session"), "{args:?}");
+    }
+
+    /// Item 732: the chat's own turn keeps the stdin shape it had.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_chat_turn_still_sends_its_text_on_stdin() {
+        let text = "the chat's own turn text";
+        let (args, line) = shape_of_732(Some("s-732"), |s| async move {
+            let agent = ClaudeCodeAgent::new(s);
+            let cancel = CancellationToken::new();
+            agent.run_turn(text, &cancel, &mut |_| {}).await.unwrap();
+        })
+        .await;
+        on_stdin_732(&args, &line, text);
+        assert!(!args.iter().any(|a| a == "--fork-session"), "{args:?}");
+    }
+
+    /// Item 732: a one-shot with no session to share a cache with keeps the
+    /// prompt on argv and a null stdin, and a slash command on a side
+    /// process stays on argv (`warm::suits_stdin`), as before.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_session_less_one_shot_and_a_slash_command_keep_argv() {
+        let text = "one-shot with no session";
+        let (args, line) = shape_of_732(None, |s| async move {
+            let agent = ClaudeCodeAgent::new(s.clone());
+            let cancel = CancellationToken::new();
+            agent
+                .run_with(&s, text, &cancel, &mut |_| {})
+                .await
+                .unwrap();
+        })
+        .await;
+        assert_eq!(args.get(1).map(String::as_str), Some(text), "{args:?}");
+        assert!(!args.iter().any(|a| a == "--input-format"), "{args:?}");
+        assert!(line.is_empty(), "{line}");
+
+        let slash = "/context";
+        let (args, line) = shape_of_732(Some("s-732"), |s| async move {
+            let agent = ClaudeCodeAgent::new(s);
+            let cancel = CancellationToken::new();
+            agent
+                .ask_aside(slash.into(), None, None, None, &cancel, &mut |_| {})
+                .await
+                .unwrap()
+                .unwrap();
+        })
+        .await;
+        assert_eq!(args.get(1).map(String::as_str), Some(slash), "{args:?}");
+        assert!(!args.iter().any(|a| a == "--input-format"), "{args:?}");
+        assert!(line.is_empty(), "{line}");
     }
 
     /// 374 review: a deferred resume of a session that holds no deferred
@@ -5463,6 +6913,103 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
         assert_eq!(outcome.usage.output_tokens, 4);
     }
 
+    /// Item 723 with a stand-in for the CLI's non-streaming fallback (his
+    /// chat 8e2f20a1): `init`, a retry, the reply as one whole `assistant`
+    /// line with no `stream_event`, the `result`. The reply is drawn, once,
+    /// and the turn says it came in one piece; the timing line names the
+    /// result, the zero events and the exit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_reply_that_came_whole_is_drawn_and_said() {
+        use crate::turn_timing::{self, TurnTiming};
+        let dir = std::env::temp_dir().join(format!("nightloom-723a-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(
+            &dir,
+            r##"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"w-1"}'
+printf '%s\n' '{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":500,"error_status":529,"error":"overloaded"}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_w","model":"m","role":"assistant","content":[{"type":"text","text":"ok"}]},"parent_tool_use_id":null,"session_id":"w-1"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"w-1","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":4}}'
+"##,
+        );
+        let mut agent = ClaudeCodeAgent::new(s);
+        let timing = TurnTiming::begin(turn_timing::SERVE, None, None);
+        agent.set_timing(Some(timing.clone()));
+        let cancel = CancellationToken::new();
+        let mut text = String::new();
+        let outcome = agent
+            .run_turn("go", &cancel, &mut |e| {
+                if let TurnEvent::TextDelta { text: t } = e {
+                    text.push_str(&t);
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(text, "ok");
+        assert!(outcome.result_seen);
+        assert_eq!(outcome.stream_events, 0);
+        assert!(
+            outcome.notices.iter().any(|n| n == WHOLE_REPLY_NOTICE),
+            "{:?}",
+            outcome.notices
+        );
+        assert!(!outcome.notices.iter().any(|n| n == RESULT_ONLY_NOTICE));
+        let note = timing.stages().process.expect("the process part");
+        assert!(
+            note.starts_with("result seen, 0 stream events, exit"),
+            "{note}"
+        );
+    }
+
+    /// Item 723's backstop: a turn that drew no prose at all but whose
+    /// `result` names a reply draws the `result` text, and says so.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_reply_only_in_the_result_is_drawn() {
+        let dir = std::env::temp_dir().join(format!("nightloom-723b-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(
+            &dir,
+            r##"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"w-2"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"only here","session_id":"w-2","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":4}}'
+"##,
+        );
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let mut text = String::new();
+        let outcome = agent
+            .run_turn("go", &cancel, &mut |e| {
+                if let TurnEvent::TextDelta { text: t } = e {
+                    text.push_str(&t);
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(text, "only here");
+        assert!(outcome.notices.iter().any(|n| n == RESULT_ONLY_NOTICE));
+    }
+
+    /// Item 723: a process that prints nothing for a message and exits 0
+    /// is a failure with its stderr, never a silent "ok".
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_process_that_prints_nothing_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("nightloom-723c-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, "read -r line\necho 'went quiet' >&2\nexit 0\n");
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let err = agent
+            .run_turn("go", &cancel, &mut |_| {})
+            .await
+            .expect_err("printed nothing");
+        let msg = err.to_string();
+        assert!(msg.contains("printed nothing"), "{msg}");
+    }
+
     /// A turn the API's content filter stopped (backlog 202; the synthetic
     /// line's fields as `ece63fa7….jsonl` l.48 recorded them, trimmed) ends
     /// with the CLI's sentence as a notice, once, and as the outcome's
@@ -5548,6 +7095,47 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":
         // A cut that lands on a boundary keeps exactly the tail.
         let exact = "y".repeat(STDERR_TAIL + 10);
         assert_eq!(stderr_tail(&exact).len(), STDERR_TAIL);
+    }
+
+    /// Item 897: a Dock-launched app's PATH gains Homebrew; the inherited
+    /// order is kept and nothing is repeated.
+    #[test]
+    fn a_launchd_path_is_widened_with_homebrew_in_order_without_duplicates() {
+        let home = std::path::Path::new("/Users/someone");
+        let got = widened_path(
+            Some(std::ffi::OsStr::new("/usr/bin:/bin")),
+            Some(home),
+            |_| true,
+        );
+        let dirs: Vec<PathBuf> = std::env::split_paths(&got).collect();
+        assert_eq!(dirs[0], PathBuf::from("/usr/bin"));
+        assert_eq!(dirs[1], PathBuf::from("/bin"));
+        assert!(dirs.contains(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(dirs.contains(&home.join(".local/bin")));
+        let mut seen = dirs.clone();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), dirs.len(), "no duplicates: {dirs:?}");
+        // Inherited entries keep priority over a fallback dir they name.
+        let got = widened_path(
+            Some(std::ffi::OsStr::new("/x:/opt/homebrew/bin:/x")),
+            None,
+            |_| true,
+        );
+        let dirs: Vec<PathBuf> = std::env::split_paths(&got).collect();
+        assert_eq!(dirs[0], PathBuf::from("/x"));
+        assert_eq!(dirs[1], PathBuf::from("/opt/homebrew/bin"));
+        assert_eq!(
+            dirs.iter()
+                .filter(|d| d.as_path() == std::path::Path::new("/x"))
+                .count(),
+            1
+        );
+        // A dir that does not exist is not added; no PATH at all still works.
+        let got = widened_path(None, None, |d| {
+            d == std::path::Path::new("/opt/homebrew/bin")
+        });
+        assert_eq!(got, std::ffi::OsString::from("/opt/homebrew/bin"));
     }
 
     #[test]

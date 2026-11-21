@@ -200,6 +200,8 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("search_chats", Effect::ReadOnly),
     ("read_chat", Effect::ReadOnly),
     ("remember", Effect::Session),
+    // Feedback to the agent (item 805): one new item in his backlog.
+    (crate::feedback::TOOL_NAME, Effect::Session),
     ("fetch_page", Effect::Mutating),
     ("context_status", Effect::ReadOnly),
     ("memory_where", Effect::ReadOnly),
@@ -212,8 +214,29 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("notion_list_children", Effect::ReadOnly),
     ("send_file", Effect::Session),
     ("mark_file", Effect::Session),
+    // An evidence table (item 798): its own new files in the notes folder.
+    (crate::evidence::TOOL_NAME, Effect::Session),
     // The message's usage cap (item 538): written to the chat's own ledger.
     (crate::agent::budget::TOOL_NAME, Effect::Session),
+    // A hand-off chain's run log and state file (items 789, 791): this
+    // chat's own two files.
+    (crate::chain::LOG_TOOL, Effect::Session),
+    (crate::chain::STATE_TOOL, Effect::Session),
+    // Home's routing (item 763 H5): one line in Home's own ledger; the
+    // app starts nothing that may write without his tap.
+    (crate::home::route::START_TOOL, Effect::Session),
+    (crate::home::route::SEND_TOOL, Effect::Session),
+    (crate::home::route::STATUS_TOOL, Effect::ReadOnly),
+    // Home's stage (item 845): its own task files, and the mark on the
+    // list of his clicks.
+    (crate::home::tasks::TOOL, Effect::Session),
+    (crate::home::tasks::EVENTS_TOOL, Effect::Session),
+    // Home's Reminders writer (item 872): changes his Reminders — on his
+    // tap, by the `home_write` card.
+    (crate::home::reminders::TOOL, Effect::Mutating),
+    // Home asks him to take the page in Claude's browser (item 872 step
+    // 5): its own card asks first, every time.
+    (crate::home::drive::TOOL, Effect::Mutating),
     // Runs a command of the model's (nightshift item 430): what Bash is.
     ("preview", Effect::Mutating),
     // The note organisers (item 472), served with `--notes`.
@@ -222,6 +245,11 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     (crate::tools::notes::MOVE_NAME, Effect::Mutating),
     // Widens what the chat may read (item 613): the card asks first.
     (crate::tools::add_folder::NAME, Effect::Mutating),
+    // Brings a secret he types into the chat (item 766): the card asks first.
+    (crate::secret::TOOL_NAME, Effect::Mutating),
+    // The image tool that is not built yet (item 823): it writes one line
+    // to Nightloom's own log and fails, so no card asks.
+    (crate::image_tool::TOOL_NAME, Effect::Session),
 ];
 
 /// The effect of a call by the name the CLI reports it under: this
@@ -254,6 +282,12 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
     if remembers {
         out.push_str(REMEMBER_INSTRUCTION);
     }
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::feedback::TOOL_NAME)
+    {
+        out.push_str(crate::feedback::INSTRUCTION);
+    }
     if sends {
         out.push_str(SEND_FILE_INSTRUCTION);
     }
@@ -274,6 +308,48 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
         .any(|t| t.def().name == crate::tools::add_folder::NAME)
     {
         out.push_str(ADD_FOLDER_INSTRUCTION);
+    }
+    // Item 798: present only when the evidence table is served.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::evidence::TOOL_NAME)
+    {
+        out.push_str(crate::evidence::INSTRUCTION);
+    }
+    // Item 766: present only when the tool is served.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::secret::TOOL_NAME)
+    {
+        out.push_str(crate::secret::INSTRUCTION);
+    }
+    // Item 763 H5: Home's chats only.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::home::route::START_TOOL)
+    {
+        out.push_str(crate::home::route::INSTRUCTION);
+    }
+    // Item 845: the stage's tools, Home's chats only.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::home::tasks::TOOL)
+    {
+        out.push_str(crate::home::tasks::INSTRUCTION);
+    }
+    // Item 872: Home's Reminders writer, where it is served.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::home::reminders::TOOL)
+    {
+        out.push_str(crate::home::reminders::INSTRUCTION);
+    }
+    // Item 872 step 5: `ask_user_to_drive`, where it is served.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::home::drive::TOOL)
+    {
+        out.push_str(crate::home::drive::INSTRUCTION);
     }
     // Item 472: present only when the organisers are served.
     if tools
@@ -312,6 +388,17 @@ pub fn tools_in(
     project_id: Option<&str>,
     remember: bool,
 ) -> Result<Vec<Box<dyn Tool>>, String> {
+    tools_in_chat(config, project_id, remember, None)
+}
+
+/// [`tools_in`] for a named chat (item 737): `current` is the chat asking,
+/// where `search_chats`' `scope: chain` starts when the model names none.
+pub fn tools_in_chat(
+    config: &Path,
+    project_id: Option<&str>,
+    remember: bool,
+    current: Option<&str>,
+) -> Result<Vec<Box<dyn Tool>>, String> {
     let all: Vec<ChatDir> = capture::session_dirs(config)
         .into_iter()
         .map(|d| ChatDir {
@@ -319,12 +406,14 @@ pub fn tools_in(
             dir: d.dir,
         })
         .collect();
+    let mut is_home = false;
     let (active, source, workspace) = match project_id {
         Some(id) => {
             let registry = Registry::load_in(config);
             let project = registry
                 .find(id)
                 .ok_or_else(|| format!("no project with id {id:?} in {}", config.display()))?;
+            is_home = project.source.as_deref() == Some(crate::home::SOURCE);
             (
                 config
                     .join(PROJECTS_DIR)
@@ -345,11 +434,14 @@ pub fn tools_in(
     };
     let chats = ChatDirs { active, all };
     let mut tools: Vec<Box<dyn Tool>> = vec![
-        Box::new(SearchChats::new(chats.clone())),
+        Box::new(SearchChats::new(chats.clone()).in_chat(current.map(str::to_string))),
         Box::new(ReadChat::new(chats)),
     ];
     if remember {
-        tools.push(Box::new(Remember::new(config.to_path_buf(), source)));
+        tools.push(Box::new(Remember::new(
+            config.to_path_buf(),
+            source.clone(),
+        )));
     }
     // A chat that writes nothing keeps its pages out of the config dir
     // (nightshift backlog 186): a scratch folder removed when this server
@@ -372,6 +464,37 @@ pub fn tools_in(
     // read only when a call needs one — a server that read the keychain at
     // start would do it on every turn. Nothing here can write to Notion.
     tools.extend(crate::notion::tools(crate::notion::Notion::from_store()));
+    // Feedback to the agent (item 805): a chat that writes, only — it
+    // files into his backlog, which an incognito or ephemeral chat
+    // promised not to touch. Last, so the tools above keep their places.
+    let image_project = source.clone();
+    if remember {
+        tools.push(Box::new(crate::feedback::SendFeedbackTool::new(
+            config.to_path_buf(),
+            project_id.map(str::to_string),
+            source,
+            current.map(str::to_string),
+        )));
+    }
+    // Home's routing (item 763 H5): the three chat tools, for a chat of
+    // Home's project that writes — never another project's chat, so no
+    // chat but Home can start chats. (An incognito server drops them.)
+    if is_home && remember {
+        tools.extend(crate::home::route::tools(config, current));
+        // Item 845: the stage — what Home is doing, and what he did on it.
+        tools.extend(crate::home::tasks::tools(config));
+    }
+    // The image tool that is not built yet (item 823, stage 1): every
+    // chat, incognito too — it only counts the call, and a chat that
+    // writes nothing leaves no words in the count. Last, so the tools
+    // above keep their places.
+    tools.push(Box::new(crate::image_tool::GenerateImage::new(
+        config.to_path_buf(),
+        "claude-code",
+        current.map(str::to_string),
+        image_project,
+        !remember,
+    )));
     Ok(tools)
 }
 
@@ -1055,7 +1178,24 @@ pub async fn serve(
     }
     let mut tools = match &args.dream {
         Some(dream) => dream_tools(dream),
-        None => tools_in(&config, args.project.as_deref(), args.remember)?,
+        None => tools_in_chat(
+            &config,
+            args.project.as_deref(),
+            args.remember,
+            args.current_chat().as_deref(),
+        )?,
+    };
+    // A chat that continues another after a hand-off is told where the
+    // rest of its conversation is (item 749), beside the tools' own words.
+    let note = match (&args.dream, args.current_chat()) {
+        (None, Some(chat)) if !args.incognito => {
+            let dir = match args.project.as_deref() {
+                Some(id) => config.join(PROJECTS_DIR).join(id).join(SESSIONS_DIR),
+                None => config.join(capture::UNFILED).join(SESSIONS_DIR),
+            };
+            crate::tools::handoff_note(&dir, &chat)
+        }
+        _ => None,
     };
     // An incognito chat's server (backlog 405): nothing that reads his
     // chats, his memory or his Notion.
@@ -1086,6 +1226,13 @@ pub async fn serve(
                 mark_file::manifest_in(&config),
                 args.project.clone(),
             )));
+            // `evidence_table` (item 798): its note and CSV go in the
+            // chat's notes folder, and a page is checked against the copy
+            // `fetch_page` kept under the config dir — so a chat that
+            // writes, only.
+            tools.push(Box::new(crate::evidence::EvidenceTable::new(
+                crate::evidence::Places::in_root(root.clone(), Some(config.join(FETCHED_DIR))),
+            )));
         }
     }
     // The note organisers (item 472): over the vault the desktop granted
@@ -1097,6 +1244,12 @@ pub async fn serve(
     // `set_budget` (item 538): served when the desktop named the chat's
     // directory, where the turn's budget ledger is — never to a dream.
     if let (Some(dir), None) = (&args.budget_dir, &args.dream) {
+        // `log_run` and `write_state` (items 789, 791): for a chat that
+        // hands off in place and so has a chain beside its log
+        // (`<logs>/ask/<chat>` is the budget dir), and writes.
+        if let (Some(logs), true) = (dir.parent().and_then(Path::parent), args.remember) {
+            tools.extend(crate::chain::tools(logs, args.current_chat().as_deref()));
+        }
         tools.push(Box::new(crate::agent::budget::SetBudget::new(dir.clone())));
         // `add_folder` (nightshift item 613): beside it, for a chat that
         // writes — the grant is kept on the chat's log or the project's
@@ -1108,6 +1261,37 @@ pub async fn serve(
                 args.root.clone(),
             )));
         }
+        // `request_secret` (item 766): wherever the chat's directory is
+        // named, incognito included — the value never reaches any record,
+        // so a chat that writes nothing loses nothing by having it.
+        tools.push(Box::new(crate::secret::RequestSecret::new(dir.clone())));
+    }
+    // Home's Reminders writer (item 872): where Home's stage is served (a
+    // chat of Home's that writes), with the app's socket when it named
+    // one — the app makes the change, since Reminders is allowed to it.
+    // Last of Home's, so the tools above keep their places.
+    if args.dream.is_none()
+        && tools
+            .iter()
+            .any(|t| t.def().name == crate::home::tasks::TOOL)
+    {
+        tools.push(Box::new(crate::home::reminders::UpdateReminders::new(
+            config.clone(),
+            args.preview.clone(),
+        )));
+    }
+    // `ask_user_to_drive` (item 872 step 5): where Home's stage is served
+    // and the chat's directory is named — its gate's hook and the turn's
+    // hand-back note both live there. After the Reminders writer, so the
+    // tools above keep their places.
+    if let (Some(dir), None) = (&args.budget_dir, &args.dream)
+        && tools
+            .iter()
+            .any(|t| t.def().name == crate::home::tasks::TOOL)
+    {
+        tools.push(Box::new(crate::home::drive::AskUserToDrive::new(
+            dir.clone(),
+        )));
     }
     // `preview` (nightshift item 430): the desktop's socket, the chat and
     // its folder all named — never for a dream.
@@ -1120,8 +1304,26 @@ pub async fn serve(
             root.clone(),
         )));
     }
-    serve_tools(tools, reader, writer).await;
+    serve_tools_noted(tools, note, reader, writer).await;
     Ok(())
+}
+
+impl ServeArgs {
+    /// The chat this server is for, when the desktop said (item 737): the
+    /// `--preview-chat` it names before every turn, else the last part of
+    /// the `--budget-dir` (`<logs>/ask/<chat id>`). `None` from a server
+    /// run by hand, or for a dream.
+    pub fn current_chat(&self) -> Option<String> {
+        self.preview_chat
+            .clone()
+            .or_else(|| {
+                self.budget_dir
+                    .as_ref()
+                    .and_then(|d| d.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+            })
+            .filter(|c| crate::store::is_log_id(c))
+    }
 }
 
 /// What a server is started with, from either binary's argument parsing.
@@ -1256,6 +1458,18 @@ pub async fn serve_tools(
     reader: impl AsyncRead + Send + Unpin + 'static,
     writer: impl AsyncWrite + Send + Unpin + 'static,
 ) {
+    serve_tools_noted(tools, None, reader, writer).await;
+}
+
+/// [`serve_tools`] with a sentence for this chat added to `initialize`'s
+/// instructions (item 749: the hand-off note).
+pub async fn serve_tools_noted(
+    tools: Vec<Box<dyn Tool>>,
+    note: Option<String>,
+    reader: impl AsyncRead + Send + Unpin + 'static,
+    writer: impl AsyncWrite + Send + Unpin + 'static,
+) {
+    let note: Arc<str> = note.unwrap_or_default().into();
     let tools: Arc<Vec<Box<dyn Tool>>> = Arc::new(tools);
     let writer: SharedWriter = Arc::new(tokio::sync::Mutex::new(Box::new(writer)));
     // One token for the life of the server, never cancelled: the CLI ends a
@@ -1294,10 +1508,11 @@ pub async fn serve_tools(
         };
         let method = method.to_string();
         let tools = Arc::clone(&tools);
+        let note = Arc::clone(&note);
         let writer = Arc::clone(&writer);
         let cancel = cancel.clone();
         in_flight.spawn(async move {
-            let reply = match handle(&tools, &method, params, &cancel).await {
+            let reply = match handle(&tools, &note, &method, params, &cancel).await {
                 Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                 Err((code, message)) => json!({
                     "jsonrpc": "2.0",
@@ -1321,6 +1536,7 @@ pub async fn serve_tools(
 /// could not serve at all, as distinct from a tool that ran and failed.
 async fn handle(
     tools: &[Box<dyn Tool>],
+    note: &str,
     method: &str,
     params: Value,
     cancel: &CancellationToken,
@@ -1340,7 +1556,7 @@ async fn handle(
                 "protocolVersion": version,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": instructions_for(tools),
+                "instructions": format!("{}{note}", instructions_for(tools)),
             }))
         }
         // Answerable by every peer regardless of capabilities, and a host
@@ -1946,7 +2162,9 @@ mod tests {
                 "memory_where",
                 "notion_search",
                 "notion_read_page",
-                "notion_list_children"
+                "notion_list_children",
+                "send_feedback",
+                "generate_image"
             ]
         );
         // The MCP spelling, not the trait's: a host reads `inputSchema`.
@@ -2277,6 +2495,28 @@ mod tests {
         assert!(!vault.join("alice.md").exists());
     }
 
+    /// Item 737: the chat a server is for, from what the desktop already
+    /// passes — the preview's chat, else the ask directory's name.
+    #[test]
+    fn the_current_chat_comes_from_the_preview_chat_or_the_budget_dir() {
+        let args = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let of = |a: &[&str]| parse_args(&args(a)).unwrap().current_chat();
+        assert_eq!(of(&[]), None);
+        assert_eq!(
+            of(&["--preview", "/s.sock", "--preview-chat", "c-1"]).as_deref(),
+            Some("c-1")
+        );
+        assert_eq!(
+            of(&["--budget-dir", "/logs/ask/c-2"]).as_deref(),
+            Some("c-2")
+        );
+        assert_eq!(
+            of(&["--budget-dir", "/logs/ask/c-2", "--preview-chat", "c-1"]).as_deref(),
+            Some("c-1")
+        );
+        assert_eq!(of(&["--budget-dir", "/logs/ask/.."]), None);
+    }
+
     #[test]
     fn the_flag_parses_both_spellings_and_nothing_else() {
         let args = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
@@ -2342,7 +2582,9 @@ mod tests {
                 "memory_where",
                 "notion_search",
                 "notion_read_page",
-                "notion_list_children"
+                "notion_list_children",
+                "send_feedback",
+                "generate_image"
             ]
         );
         assert_eq!(
@@ -2355,7 +2597,8 @@ mod tests {
                 "memory_where",
                 "notion_search",
                 "notion_read_page",
-                "notion_list_children"
+                "notion_list_children",
+                "generate_image"
             ]
         );
         let with = instructions_for(&tools_in(&config, Some(&id), true).unwrap());
@@ -2683,6 +2926,21 @@ mod tests {
             config.clone(),
         )));
         served.push(Box::new(crate::tools::AddFolder::new(config.clone(), None)));
+        served.push(Box::new(crate::secret::RequestSecret::new(config.clone())));
+        served.push(Box::new(crate::evidence::EvidenceTable::new(
+            crate::evidence::Places::in_root(config.clone(), None),
+        )));
+        crate::chain::ensure(&config, "c").unwrap();
+        served.extend(crate::chain::tools(&config, Some("c")));
+        served.extend(crate::home::route::tools(&config, None));
+        served.extend(crate::home::tasks::tools(&config));
+        served.push(Box::new(crate::home::reminders::UpdateReminders::new(
+            config.clone(),
+            None,
+        )));
+        served.push(Box::new(crate::home::drive::AskUserToDrive::new(
+            config.clone(),
+        )));
         for tool in &served {
             let name = tool.def().name;
             assert_eq!(

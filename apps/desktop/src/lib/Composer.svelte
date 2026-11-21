@@ -43,13 +43,21 @@
     restoreEngine,
     cacheLoss,
     cacheLossLine,
-    cacheLossTitle,
     cacheState,
     nextTickMs,
     remainingText,
     restoreCacheSettings,
+    asideSinceCold,
+    chipFace,
+    ownModelCache,
+    stoppedUnsure,
   } from "./cache";
-  import { holdPress, isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
+  import { asideFigures } from "./asideFigures";
+  import { cacheEstimate, lastReply, ratesFromPrice } from "./cacheCost";
+  import { lossTipText } from "./shortTip";
+  import { cacheRatesOf, loadCacheRates } from "./cacheRates.svelte";
+  import { layerChangeSinceCache, modelIdFor, nextSendModel, pendingChangeCost, switchDetail } from "./changeCost";
+  import { handedOffOff, holdPress, isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
   import { holdKeepWarm, keepWarm, loadKeepWarm, setKeepWarm } from "./keepWarm.svelte";
   import KeepWarmHold from "./KeepWarmHold.svelte";
   import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
@@ -59,9 +67,16 @@
   import { LiveBoxHandle, boxElement, type ComposerBox } from "./composerEditor";
   import { applyToField, codeBlockEdit, type BlockEdit } from "./codeBlockKeys";
   import LiveBox from "./LiveBox.svelte";
+  // Item 800: saved message prompts with blanks, offered after a `/`.
+  import { insertAt, matching, nextBlank, slashToken, type MessagePrompt } from "./savedPrompts";
+  import { insertEdit, insertLabel, insertMatches, insertToken, type BoxInsert } from "./boxInserts";
+  import { filledBody, loadSaved, saved } from "./savedPromptsStore.svelte";
+  import { watchSelection } from "./selectionMemory";
   import { isMac } from "./platform";
-  import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
+  import { boxHistoryFor, editKind, historyInput, historyKey } from "./boxHistory";
   import TypedMathBar from "./TypedMathBar.svelte";
+  import MathText from "./MathText.svelte";
+  import { renderReply } from "./markdown";
   import { applyTypedMath, findTypedMath, rebaseTypedMath, wrapTypedMath, type TypedMathSpan } from "./typedMath";
   import { clearDenied, deniedFor, denyTypedMath, typedMathPrefs } from "./typedMathPrefs.svelte";
   import {
@@ -74,6 +89,7 @@
     hasOwnMessage,
     hasOwnThreshold,
     message,
+    wrapUpToSend,
     noteActivity,
     noteFill,
     queueHold,
@@ -90,14 +106,22 @@
     codeProbePaths,
     codeProjectFor,
     noteCodeProject,
+    neverHandsOff,
   } from "./handoff.svelte";
-  import { fold, isFolded, noteStay, unfold } from "./handoffFold.svelte";
+  import { cardSize, dragCard, fold, noteStay, setCardSize, steppedMark, typedMark, unfold, type CardSize } from "./handoffFold.svelte";
+  // Item 705 (option A, Console): the themed selects, and the next chat's model.
+  import HudSelect from "./HudSelect.svelte";
+  import { nextModelLabel, nextModelMenu, nextModelRows, setNextModel } from "./nextChatModel.svelte";
+  // Item 768: wrap up while warm; one chip on return to a cold big chat.
+  import { chipCosts, coldButtons, coldChipShows, coldTip, coldTitle, contextOf, sentToast, warmDetail, warmTitle, warmWrapAct } from "./warmWrap";
+  import { actedOn, keepCold, keptCold, markActed, warmWrap } from "./warmWrap.svelte";
   // Item 618b: the row's look (Settings → Appearance → Composer row), stamped on the root; rules in src/composerRow.css.
   import { composerRow } from "./composerRow.svelte";
   // Item 644: the box takes the chat's model family (Opus Copper, Fable Lilac glass, others today's).
   import { composerModelId, modelFamily } from "./modelFamily";
   import { cacheFrame, cacheLook } from "./cacheLook.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
+  import HandoffGoal from "./HandoffGoal.svelte";
   import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued, takeStopSend, frontQueued, stopSendFor } from "./state.svelte";
   import { injectChip, queueHeadLabel } from "./midTurn";
   import { rowsOf } from "./subagentRows";
@@ -109,6 +133,8 @@
   import { keepStateOf, revealKept } from "./keep.svelte";
   import { menuInterceptors, asideReads } from "./state.svelte";
   import { declaredKind, useEngine } from "./state.svelte";
+  import { openSession } from "./state.svelte";
+  import { handoffChildren } from "./chatList";
   import { bubbledRows, registerSendHeld } from "./pendingBubble.svelte";
   import WaitAct from "./WaitAct.svelte";
   import {
@@ -122,19 +148,21 @@
     type Converted,
     type LongPaste,
   } from "./pasteAttach";
-  import { badgeOf, extOf, routeLabel, type Engine } from "./attachKinds";
+  import { badgeOf, convertingWords, extOf, routeLabel, type Engine } from "./attachKinds";
   import PdfRouteSwitch from "./PdfRouteSwitch.svelte";
   import { draftImageContent, openAttachment } from "./attachments.svelte";
   import { sendTip, tip } from "./tip";
   import { armStop, stopChordLabel, stopChordTarget } from "./stopButton";
   import { stopPref } from "./stopShape.svelte";
   import { releaseStop, slowDueIn, slowStopLine, stopPhase } from "./stopState";
-  import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, settleRestored, splitChips, trackPending } from "./attachFiles.svelte";
+  import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, stepChips, trackPending } from "./attachFiles.svelte";
+  import { clock, tickWhile } from "./convertClock.svelte";
   import { floatMenu } from "./floatMenu";
   import { ghostFor } from "./suggestions.svelte";
   import { queuedElsewhereToast } from "./browse";
   import {
     addAttachment,
+    bumpDraft,
     clearDraft,
     draftKey,
     draftSelection,
@@ -149,6 +177,7 @@
     requeueFront,
     restoreDraft,
     setDraftAttachments,
+    restoreComments,
     setDraftSelection,
     setDraftScroll,
     draftScroll,
@@ -158,9 +187,15 @@
     ranKey,
     takeBackQueued,
     updateAttachment,
+    removeComment,
+    setCommentNote,
   } from "./drafts.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
+  import { chipLabel, shownQuote, commentLabel, commentWhere, type PassageComment } from "./passageComments";
+  import { sendWithComments, sentComments } from "./sentComments";
+  import { commentRequest, takeCommentFocus } from "./commentRequest.svelte";
   import type { Attachment } from "./types";
-  import { chipStep, isChipTag } from "./chipSteps";
+  import { isChipTag } from "./chipSteps";
   // Scheduled send (backlog 224): the ▾ beside Send and the chip above.
   import ScheduleMenu from "./ScheduleMenu.svelte";
   import FilamentMark from "./FilamentMark.svelte";
@@ -200,11 +235,14 @@
   import { launch } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { insertQuote, replyRequest, takeReply } from "./replyQuote.svelte";
-  import { composerFocus } from "./rewindDraft.svelte";
+  // Item 694: the passage highlighted before he came to the box.
+  import { boxAsideArgs, dropHeld, dropHeldOnPaste, heldChip, heldFor, heldLabel } from "./heldPassage.svelte";
+  import { quoteLabel } from "./asideQuote";
+  import { composerFocus, dismissRewoundOffer, rewoundOffer, takeOffered } from "./rewindDraft.svelte";
   import { CaretKeeper, clampSel, mayAutoFocus } from "./composerCaret";
   import { ScrollHold } from "./boxPlace";
   import { FocusThroughLock, boxLocked } from "./boxLock";
-  import { chatBoxCount, chatBoxMounted, composerSummon } from "./composerSummon.svelte";
+  import { boxMounted, chatBoxMounted, composerSummon, isSummonTarget } from "./composerSummon.svelte";
   import { registerPasteHandler, type PasteRequest } from "./pasteToCompose";
   import { requestWrapUp } from "./wrapAsides.svelte";
   // Backlog 283: the same composer in an aside.
@@ -219,6 +257,7 @@
   } from "./state.svelte";
   import { asideDraftKey } from "./asides";
   import { composerShows } from "./asideControls";
+  import { pickText } from "./pick";
   import { scheduleAsideSave } from "./asides.svelte";
   import {
     prewarmAfterTurn,
@@ -281,8 +320,69 @@
    * `send`). Sending clears the entry, and nothing else does.
    */
   const key = $derived(aside ? asideDraftKey(aside) : draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread));
+  /** The pick chip whose contents are open under the strip (item 797). */
+  let pickShown = $state<number | null>(null);
+  /*
+   * Item 694: the passage he highlighted before clicking into the box (the
+   * transcript holds it as the selection gives way to the box,
+   * `heldPassage.svelte.ts`). Shown as a chip and taken by Ask aside only
+   * while the box's Ask aside is offered: the chat's box, the Claude Code
+   * engine, a chat with a turn in it.
+   */
+  // The line under the box when there is no connection (items 230, 873): the failure only; "connecting…" is the top bar's.
+  const connectHint = $derived(app.connection ? null : composerConnectHint({ connected: false, connecting: app.connecting, launchConnectSettled: launchState.connectSettled }));
+  const held = $derived(!aside && app.connection?.engine === "claude-code" && app.events.length > 0 ? heldFor(key) : null);
+  // Never carried to another chat: switching chat (or the box going) drops it.
+  $effect(() => {
+    if (aside) return;
+    const k = key;
+    return () => dropHeld(k);
+  });
+  // The chat's turn starting drops it: the turn did not take it.
+  $effect(() => {
+    if (aside || !app.busy) return;
+    untrack(() => dropHeld(key));
+  });
   const draft = $derived(readDraft(key));
   const text = $derived(draft.text);
+  // Item 814: the chip only once he has written here, and a paste drops the passage (`onpaste`).
+  const heldShown = $derived(heldChip(held, text));
+  /*
+   * Item 754: comments on passages — chips over the chat's box, each a
+   * passage he highlighted and his words about it (`passageComments.ts`).
+   * Part of the draft, so they outlive a switch, a reload and a quit;
+   * Send (and Queue, and the council) sends them with the box's text as
+   * one message. The aside's box has none.
+   */
+  const comments = $derived<PassageComment[]>(aside ? [] : (draft.comments ?? []));
+  /** Nothing to send: no words, no chip, no comment. */
+  const boxEmpty = $derived(!text.trim() && draft.attachments.length === 0 && comments.length === 0);
+  /** The chip whose comment line is open (view state). */
+  let openComment = $state<number | null>(null);
+  const openC = $derived(comments.find((c) => c.id === openComment) ?? null);
+  let commentTa = $state<HTMLTextAreaElement | null>(null);
+  const DROP_DIALOG = { title: "Discard this comment?" } as const;
+  /** The chip × asked about; its confirm is showing while set. */
+  let dropAsk = $state<PassageComment | null>(null);
+  $effect(() => {
+    void commentRequest.id;
+    if (aside) return;
+    const id = untrack(() => takeCommentFocus(key));
+    if (!id) return;
+    openComment = id;
+    void tick().then(() => commentTa?.focus());
+  });
+  function closeComment(): void {
+    openComment = null;
+    ta?.focus();
+  }
+  function confirmDropComment(): void {
+    const c = dropAsk;
+    dropAsk = null;
+    if (!c) return;
+    if (openComment === c.id) openComment = null;
+    removeComment(key, c.id);
+  }
 
   /*
    * The aside's composer (backlog 283). Its words were the thread's
@@ -412,6 +512,8 @@
     return { ...estimate, title: draftEstimateTitle(estimate.tokens, why) };
   });
   const attachments = $derived(draft.attachments);
+  // Item 868: "converting slides · 1:12" ticks while a chip converts.
+  tickWhile(() => attachments.some((a) => a.pending && !!a.converting));
   /**
    * Messages held while a turn runs (nightshift backlog 089, 2026-09-16).
    * ↵ during a turn queues instead of doing nothing; the tray above the box
@@ -514,7 +616,12 @@
   // project finds it) rather than following the draft to the chat its
   // first message creates: the move lives in `state.svelte.ts`.
   $effect(() => {
-    floorPx = loadHeight(key);
+    const k = key;
+    floorPx = loadHeight(k);
+    // Item 849: leaving the chat (a switch, a hand-off, the box closing)
+    // ends the drag's hold, as a send does — back, the empty box is one
+    // line, and typing still grows it up to the dragged height.
+    return () => sentSinceDrag.left(k);
   });
 
   /**
@@ -616,12 +723,33 @@
   function handleDown(e: PointerEvent) {
     if (!ta) return;
     dragging = true;
+    // Item 705 (option A, Console): with the hand-off card up, the one grip
+    // sizes the card first — down to compact, then to its one line — and the
+    // box only with what is left of the drag; up grows the card back first.
+    const chat = app.activeSessionId;
+    const start: CardSize | null = handoffCardUp ? cardSize(chat, "due") : null;
+    const startH = ta.offsetHeight;
+    let boxMoved = start === null;
     // The pointer half is `boxGrow.ts`'s since backlog 226 (the aside
     // boxes drag with it too); the handle is on the top edge.
-    dragHeight(e, ta.offsetHeight, "top", setHeight, () => {
-      dragging = false;
-      persistHeight();
-    });
+    dragHeight(
+      e,
+      startH,
+      "top",
+      (h) => {
+        if (start === null) return setHeight(h);
+        const r = dragCard(start, startH - h);
+        if (r.size !== cardSize(chat, "due")) setCardSize(chat, "due", r.size);
+        if (r.rest !== 0 || boxMoved) {
+          boxMoved = true;
+          setHeight(startH - r.rest);
+        }
+      },
+      () => {
+        dragging = false;
+        if (boxMoved) persistHeight();
+      },
+    );
   }
 
   function handleReset() {
@@ -679,11 +807,16 @@
     // sizing to its text.
     const min = floating ? 0 : Math.min(max, sentSinceDrag.floor(key, floorPx) ?? 0);
     ta.style.maxHeight = max + "px";
+    // Item 827: the formatted box's scroller measured with no bar (`settleScroller`).
+    const scroller = ta instanceof LiveBoxHandle ? ta.scroller : null;
+    const scrolled = scroller?.scrollTop ?? 0;
+    if (scroller) scroller.style.overflowY = "hidden";
     // Item 469: the measure holds the composer's height (`measureHeld`),
     // so a key typed in a full box no longer scrolls the chat up.
     measureHeld(ta, root, (need) => growHeight(need, min, max) + "px");
     // Backlog 360: a pixel of rounding is not overflow (as the aside boxes).
     ta.style.overflowY = overflows(ta.scrollHeight, ta.clientHeight) ? "auto" : "hidden";
+    settleScroller(scroller, scrolled);
     // Backlog 355: a switched-to draft's place, once its height is right.
     putScrollBack();
     // Item 469: a caret at the very end of a full box is at its foot. WebKit
@@ -698,11 +831,41 @@
       ta.scrollTop = ta.scrollHeight;
   }
 
+  /*
+   * Item 827 (his bug): the formatted box scrolls inside CodeMirror's
+   * scroller, which backlog 360's rule in `autogrow` never reached. The
+   * scroller kept `overflow-y: auto`, so at his 99% zoom a box sized to its
+   * text (heights in whole pixels, its lines in fractions) overflowed by
+   * under a pixel and showed the 10px bar; the text rewrapped round the bar,
+   * a word at the edge dropped to a line scrolled out of view with the
+   * caret, and the next measure took the bar away again — every few keys.
+   * `autogrow` measures the scroller with no bar; here it gets one only for
+   * a real overflow, and its place in the text is kept across the measure.
+   */
+  function settleScroller(scroller: HTMLElement | null, scrolled: number): void {
+    if (!scroller) return;
+    scroller.style.overflowY = overflows(scroller.scrollHeight, scroller.clientHeight) ? "auto" : "hidden";
+    if (scroller.scrollTop !== scrolled) scroller.scrollTop = scrolled;
+  }
+
   // A resized window moves the 40% line.
   $effect(() => {
     const onresize = () => autogrow();
     window.addEventListener("resize", onresize);
-    return () => window.removeEventListener("resize", onresize);
+    // Item 849: and the window coming back to the front re-measures — a
+    // hand-off made while he was away ran with the window behind others,
+    // where WebKit holds animation frames, so the box is measured afresh
+    // when he can see it rather than left at whatever it last read.
+    const onback = () => {
+      if (document.visibilityState === "visible") requestAnimationFrame(autogrow);
+    };
+    window.addEventListener("focus", onback);
+    document.addEventListener("visibilitychange", onback);
+    return () => {
+      window.removeEventListener("resize", onresize);
+      window.removeEventListener("focus", onback);
+      document.removeEventListener("visibilitychange", onback);
+    };
   });
 
   // A switched-to draft is a different height; the box is measured once
@@ -731,21 +894,116 @@
   });
   let slashDismissed = $state(false);
   let slashIndex = $state(0);
-  const slashOpen = $derived(
-    slashNames.length > 0 && /^\/[A-Za-z0-9_-]*$/.test(text) && !slashDismissed,
-  );
+  /*
+   * Item 800: saved message prompts join the list — on either engine and
+   * before the first turn, since they are only text — wherever a `/word`
+   * ends the box (its start, a line's start, or after a space), and come
+   * first. Picking one puts its body in place of the `/word`, with
+   * {clipboard}, {date} and {selection} filled and the first blank left
+   * selected; Tab then steps through the blanks (⇧Tab back).
+   */
+  void loadSaved();
+  watchSelection();
+  const savedToken = $derived(saved.list.length ? slashToken(text, text.length) : null);
+  const savedMatches = $derived(savedToken ? matching(saved.list, savedToken.query) : []);
+  const wholeSlash = $derived(slashNames.length > 0 && /^\/[A-Za-z0-9_-]*$/.test(text));
+  /*
+   * Item 890 (his "like a /table or something"): the box's own inserts —
+   * /table, /math, /code, /quote, /list, /numbered (`boxInserts.ts`) — in
+   * the same list, on either engine, wherever a `/word` ends at the caret
+   * (the box's start, a line's start, or after a space; never inside
+   * `and/or` or a path). After the saved prompts, before the CLI's names;
+   * a name both have shows both rows, each saying what it is.
+   */
+  /** null: not read yet (the end of the box); -1: a selection, no token. */
+  let caretAt = $state<number | null>(null);
+  const insTok = $derived(caretAt === -1 ? null : insertToken(text, caretAt === null || caretAt > text.length ? text.length : caretAt));
+  /** Esc on a token keeps the list closed for that token (its start, and the text before it). */
+  let insDismissed = $state<string | null>(null);
+  const insSig = $derived(insTok ? `${insTok.start}:${text.slice(0, insTok.start)}` : null);
+  $effect(() => {
+    if (insSig === null && insDismissed !== null) untrack(() => (insDismissed = null));
+  });
+  const insMatches = $derived(insSig !== null && insSig === insDismissed ? [] : insertMatches(insTok));
+  const slashOpen = $derived((wholeSlash || savedMatches.length > 0 || insMatches.length > 0) && !slashDismissed);
   const slashMatches = $derived.by(() => {
     if (!slashOpen) return [];
+    const none = { prompt: null as MessagePrompt | null, insert: null as BoxInsert | null };
+    const mine = savedMatches.map((p) => ({ name: p.name, kind: "saved prompt", ...none, prompt: p as MessagePrompt | null }));
+    const ours = insMatches.map((i) => ({ name: i.name, kind: insertLabel(i, insTok), ...none, insert: i as BoxInsert | null }));
+    if (!wholeSlash) return [...mine, ...ours];
     const q = text.slice(1).toLowerCase();
-    return slashNames.filter((s) => s.name.toLowerCase().startsWith(q)).slice(0, 12);
+    const taken = new Set(mine.map((m) => m.name.toLowerCase()));
+    const theirs = slashNames
+      .filter((s) => s.name.toLowerCase().startsWith(q) && !taken.has(s.name.toLowerCase()))
+      .map((s) => ({ ...s, ...none }));
+    return [...mine, ...ours, ...theirs].slice(0, 12);
   });
+  /** Put an insert in place of its token, one undo step; a table goes in
+   *  through the grid editor (the box a table is drawn in), its first cell
+   *  focused, so ⌘Z takes the whole table back out. */
+  async function pickInsert(ins: BoxInsert): Promise<void> {
+    const tok = insTok;
+    if (!tok || !ta) return;
+    const ed = insertEdit(text, tok, ins);
+    slashDismissed = true;
+    if (ed.tableAt !== undefined && !(ta instanceof LiveBoxHandle)) {
+      formatCaret = tok.end;
+      gridKey = key;
+      await tick();
+    }
+    if (ta instanceof LiveBoxHandle) {
+      ta.insertBlock(ed);
+      autogrow();
+      return;
+    }
+    ta.focus();
+    applyBoxEdit(ed);
+  }
+  const savedShown = $derived(slashMatches.some((m) => m.prompt));
+  const insertShown = $derived(slashMatches.some((m) => m.insert));
+  /** A saved prompt went in and its blanks are Tab's until the box empties. */
+  let blanksLive = $state(false);
+  $effect(() => {
+    if (!text) blanksLive = false;
+  });
+  /** Select `[start, end]` in whichever box is showing. */
+  function selectIn(start: number, end: number): void {
+    if (!ta) return;
+    ta.focus();
+    ta.selectionStart = start;
+    ta.selectionEnd = end;
+  }
+  async function pickSaved(p: MessagePrompt): Promise<void> {
+    const token = savedToken;
+    if (!token) return;
+    const before = text;
+    const body = await filledBody(p);
+    // He typed on while the clipboard was read: the token moved; leave it.
+    if (text !== before) return;
+    const put = insertAt(text, token, body);
+    setDraftText(key, put.text);
+    slashDismissed = true;
+    blanksLive = nextBlank(put.text, 0, 0) !== null;
+    await tick();
+    selectIn(put.select.start, put.select.end);
+    autogrow();
+  }
   $effect(() => {
     // A fresh box (no leading slash) re-arms the picker; typing resets the row.
     void text;
     if (!/^\//.test(text)) slashDismissed = false;
     slashIndex = 0;
   });
-  function pickSlash(name: string): void {
+  function pickSlash(name: string, prompt: MessagePrompt | null = null, insert: BoxInsert | null = null): void {
+    if (insert) {
+      void pickInsert(insert);
+      return;
+    }
+    if (prompt) {
+      void pickSaved(prompt);
+      return;
+    }
     setDraftText(key, `/${name} `);
     slashDismissed = true;
     ta?.focus();
@@ -763,6 +1021,11 @@
    * the chat the state is about, and only on the Claude Code engine, which
    * is the one that fills.
    */
+  // Item 702 (his ask, 2026-11-15): a chat already handed off says so here,
+  // on its own page, instead of a red "past hand-off" on its sidebar row.
+  const handedNext = $derived(
+    !aside && app.activeSessionId ? handoffChildren(app.sessions ?? []).get(app.activeSessionId) ?? null : null,
+  );
   const handoffHere = $derived(
     composerShows("handoff", !!aside) &&
       app.connection?.engine === "claude-code" &&
@@ -839,6 +1102,14 @@
   /** The read order this chat's continuation opens with (backlog 193). */
   /** The wrap-up Nightloom queued while he was away is still in the queue. */
   const wrapUpQueued = $derived(handoff.queuedId !== 0 && queue.some((q) => q.id === handoff.queuedId));
+  // Item 705 (option A, Console): the notice is up, and at which of its three sizes.
+  const handoffCardUp = $derived(!handedNext && handoffHere && handoff.stage === "due" && !busy);
+  const handoffSize = $derived(cardSize(app.activeSessionId, "due"));
+  const nextLabel = $derived(nextModelLabel(app.activeSessionId));
+  /** The − / + of the mark's stepper: by 5, to the nearest 5. */
+  function stepMark(dir: 1 | -1): void {
+    setChatThreshold(String(steppedMark(handoffThresholdPct, dir)));
+  }
 
   /** **Wrap up now**: the message as it stands, as a turn of its own. */
   async function sendWrapUpNow(): Promise<void> {
@@ -847,7 +1118,8 @@
     const chat = app.activeSessionId;
     // Item 285: with open asides, their picker first; each ticked aside's
     // summary rides in (log.md for a bound chat, the message otherwise).
-    const text = wrapUpText;
+    // ~~`wrapUpText`~~ — item 747: with the fixed sections and his goal, as the notice shows.
+    const text = wrapUpToSend(chat, wrapUpText);
     await requestWrapUp(chat, async (extra) => {
       if (app.busy || !app.connection || app.activeSessionId !== chat) {
         addToast("The wrap-up did not go — the chat was busy or no longer open; press Wrap up now again");
@@ -860,10 +1132,19 @@
 
   /** The per-chat mark on the notice: raising it above the fill puts the notice away. */
   function setChatThreshold(v: string): void {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return;
-    setThreshold(app.activeSessionId, Math.min(100, Math.max(1, Math.round(n))) / 100);
+    // Item 705 review: an emptied box is no number (`Number("")` is 0, which
+    // set the mark to 1%); it changes nothing.
+    const pct = typedMark(v);
+    if (pct === null) return;
+    setThreshold(app.activeSessionId, pct / 100);
     reconsider(app.activeSessionId);
+  }
+  /** Item 705 review: the typed mark, then the box shows the mark as kept —
+   *  a value clamped (150 → 100), rounded or refused (empty) would otherwise
+   *  stay typed in the box while the mark is something else. */
+  function typeMark(input: HTMLInputElement): void {
+    setChatThreshold(input.value);
+    input.value = String(handoffThresholdPct);
   }
 
   /*
@@ -1102,6 +1383,8 @@
   let pointerDown = false;
   function recordCaret(): void {
     keeper.record(key, ta, text);
+    // Item 890: the caret the slash inserts' token ends at (none for a selection).
+    caretAt = ta && ta.selectionStart === ta.selectionEnd ? ta.selectionEnd : -1;
   }
   /*
    * Backlog 355: a draft taller than its box keeps its scroll place. The
@@ -1163,15 +1446,19 @@
       });
     });
   });
-  // ⌘L (backlog 290): the chat's box — or an aside tab's, when no chat
-  // box is drawn; never a floating aside card's.
-  $effect(() => (aside ? undefined : untrack(() => chatBoxMounted())));
+  // ⌘L (backlog 290): ~~the chat's box — or an aside tab's, when no chat
+  // box is drawn; never a floating aside card's~~ — item 853: the box
+  // meant, as typing picks it (`composerTarget`): a card he is in or last
+  // pressed on, else the focused pane's box (an aside tab's in front), else
+  // the chat's. Every box mounted keeps the window's type-to-focus, Enter
+  // and ⌘V listeners on, an aside's too.
+  $effect(() => untrack(() => (aside ? boxMounted() : chatBoxMounted())));
   let summonSeen = untrack(() => composerSummon.seq);
   $effect(() => {
     const seq = composerSummon.seq;
     if (seq === summonSeen) return;
     summonSeen = seq;
-    if (aside && (!wantsFocus || untrack(() => chatBoxCount()) > 0)) return;
+    if (!untrack(() => isSummonTarget(root))) return;
     untrack(() => {
       if (!ta) return;
       const box = boxElement(ta);
@@ -1227,9 +1514,10 @@
    * `onpaste` during its dispatch; plain text, which `onpaste` leaves to the
    * browser, goes in at the caret as one paste.
    */
+  // Item 853: every box, an aside's too — `pasteToCompose.ts` asks the one meant.
   $effect(() => {
     const el = root;
-    if (aside || !el) return;
+    if (!el) return;
     return registerPasteHandler(el, pasteFromOutside);
   });
   function pasteFromOutside(req: PasteRequest): void {
@@ -1415,16 +1703,30 @@
         slashIndex = (slashIndex - 1 + slashMatches.length) % slashMatches.length;
         return;
       }
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+      // Item 890: never while an input method is composing (its Enter is the IME's).
+      const imeKey = composing || e.isComposing || e.keyCode === 229;
+      if (!imeKey && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
         e.preventDefault();
-        pickSlash(slashMatches[slashIndex].name);
+        pickSlash(slashMatches[slashIndex].name, slashMatches[slashIndex].prompt, slashMatches[slashIndex].insert);
         return;
       }
-      if (e.key === "Escape") {
+      if (!imeKey && e.key === "Escape") {
         e.preventDefault();
         slashDismissed = true;
+        insDismissed = insSig;
         return;
       }
+    }
+    // Item 800: a saved prompt's blanks — Tab selects the next, ⇧Tab the
+    // one before; with none left Tab is the box's own again.
+    if (blanksLive && e.key === "Tab" && !e.metaKey && !e.ctrlKey && !e.altKey && ta) {
+      const b = nextBlank(ta.value, ta.selectionStart, ta.selectionEnd, e.shiftKey);
+      if (b) {
+        e.preventDefault();
+        selectIn(b.start, b.end);
+        return;
+      }
+      blanksLive = false;
     }
     // Item 318: Esc while the long-paste offer is up dismisses it; the
     // paste stays in the box as text.
@@ -1433,6 +1735,20 @@
       e.preventDefault();
       e.stopPropagation();
       dismissOffer();
+      return;
+    }
+    // Item 694: Esc in an empty box drops the held passage; the aside
+    // chord (⌘⇧A, the pill's) asks about it from the box.
+    if (held && e.key === "Escape" && !text && !composing && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      e.stopPropagation();
+      dropHeld(key);
+      return;
+    }
+    if (held && (isMac ? e.metaKey : e.ctrlKey) && e.shiftKey && !e.altKey && e.code === "KeyA") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (text.trim() || attachments.length > 0) void submitAside();
       return;
     }
     if (e.key === "Enter" && !e.shiftKey) {
@@ -1494,6 +1810,8 @@
   }
 
   function onpaste(e: ClipboardEvent) {
+    // Item 814: a paste never brings the passage chip with it.
+    if (held) dropHeldOnPaste(key);
     const pastedText = e.clipboardData?.getData("text/plain") ?? "";
     const files = Array.from(e.clipboardData?.files ?? []);
     // Item 348: math copied from a web page (KaTeX, MathJax) comes as its
@@ -1703,7 +2021,11 @@
    * is seen here and recorded as a step of its own, or starts a fresh
    * history for a new chat or after a send.
    */
-  const hist = new BoxHistory(untrack(() => text));
+  // Item 886: the history is the draft's (`boxHistoryFor`), so it outlives a
+  // tab switch (this box unmounts) and a chat switch (its key changes) —
+  // the chat's box and an aside's alike. ~~`new BoxHistory(text)` per box,
+  // `hist.reset(t)` on a new key~~.
+  let hist = boxHistoryFor(untrack(() => key), untrack(() => text));
   let histKey = untrack(() => key);
   $effect(() => {
     const k = key;
@@ -1711,7 +2033,7 @@
     untrack(() => {
       if (k !== histKey) {
         histKey = k;
-        hist.reset(t);
+        hist = boxHistoryFor(k, t);
         composing = false;
       } else if (t !== hist.current.text) {
         if (t === "") hist.reset("");
@@ -1789,16 +2111,10 @@
     }
     // Item 458: an attach or a remove, undone or redone.
     if (isChipTag(s.tag)) {
-      // Leaves at once, as a chip's × takes it: no fade to wait out.
-      const stepped = chipStep(s.tag, dir, $state.snapshot(attachments) as Attachment[]).chips;
-      // A conversion that ended while the chip was out lands on it now (review fix).
-      setDraftAttachments(
-        key,
-        stepped.flatMap((c) => {
-          const back = settleRestored(c);
-          return back ? [back] : [];
-        }),
-      );
+      // Leaves at once, as a chip's × takes it: no fade to wait out. A
+      // conversion that ended while the chip was out lands on it now
+      // (review fix); a split deck's parts move with part 1 (item 868).
+      setDraftAttachments(key, stepChips(s.tag, dir, $state.snapshot(attachments) as Attachment[]));
     }
     setDraftText(key, s.text);
     void tick().then(() => {
@@ -1980,7 +2296,10 @@
     if (!thread) return;
     const take = (id: string): boolean => {
       if (id !== "stop_turn") return false;
-      const asideFocused = !!root && root.contains(document.activeElement);
+      // Item 853: ~~only with its box focused~~ — also when this box is the
+      // one meant (an aside tab in front, a card he last pressed on), as
+      // the chat's ⌘. stops its turn from anywhere in the chat.
+      const asideFocused = !!root && (root.contains(document.activeElement) || isSummonTarget(root));
       if (!asideFocused) return false;
       if (stopChordTarget({ asideFocused, asideBusy, turnBusy: app.busy }) === "aside") stopAside(thread);
       return true;
@@ -2087,8 +2406,11 @@
       }
       const back = ranKey(from);
       if (!readDraft(back).text) {
-        setDraftText(back, typed);
+        // Item 892: words sent with comments come back as his text and the chips.
+        const sc = sentComments(typed);
+        setDraftText(back, sc ? sc.typed : typed);
         setDraftAttachments(back, chips.concat(readDraft(back).attachments));
+        if (sc) restoreComments(back, sc.comments);
       } else if (typed || chips.length > 0) {
         // The box holds new words: the failed message goes back to the
         // head of the queue rather than nowhere (backlog 158).
@@ -2238,11 +2560,12 @@
    *  where the turn is; the message goes here when it ends. */
   async function enqueue(): Promise<void> {
     const t = text.trim();
-    if (!t && attachments.length === 0) return;
+    if (!t && attachments.length === 0 && comments.length === 0) return;
     // A held message carries finished chips only (item 277).
     if (!(await conversionsDone(key))) return;
-    const held = enqueueMessage(key, readDraft(key).text, readDraft(key).attachments.slice());
-    clearDraft(key);
+    // Item 754: the comments go with it, as one message.
+    const held = enqueueMessage(key, sendWithComments(readDraft(key).comments, readDraft(key).text), readDraft(key).attachments.slice());
+    clearDraft(key, true);
     if (aside) {
       afterSend(key);
       return;
@@ -2303,11 +2626,17 @@
     if (!(await conversionsDone(sendKey))) return;
     if (sendKey !== key || app.busy) return;
     const chips = attachments.map((c) => $state.snapshot(c) as Attachment);
+    // Item 694: about the passage the box holds, anchored to it, as the
+    // pill's Ask aside would ask; none held, about nothing, as before.
+    // Merge round U review (item 814): only a passage whose chip shows — an aside sent with files
+    // alone from a box he has not written in was about a passage he could not see; it is dropped.
+    const { quote, anchor } = heldShown ? boxAsideArgs(sendKey) : { quote: null, anchor: null };
+    if (held && !heldShown) dropHeld(sendKey);
     // The words fly from the box into the aside's card (backlog 194).
     launch("aside", boxElement(ta));
     clearDraft(key);
     afterSend(key);
-    await askAside(t, null, null, { attachments: chips });
+    await askAside(t, quote, null, { attachments: chips, anchor });
   }
 
   /*
@@ -2380,7 +2709,7 @@
    *  { text, keys }; adding a string to it showed "[object Object]" (his
    *  report, 2026-11-11). */
   function withEstimate(t: { text: string; keys?: string }): { text: string; keys?: string } {
-    return shown && Number(rowFold) >= 2 ? { ...t, text: `${t.text} · ${shown.long}` } : t;
+    return shown && Number(rowFold) >= 5 ? { ...t, text: `${t.text} · ${shown.long}` } : t;
   }
   async function submit() {
     if (aside) return asideSubmit();
@@ -2393,8 +2722,10 @@
   }
   async function submitNow() {
     const t = text.trim();
-    const empty = !t && attachments.length === 0;
+    const empty = !t && attachments.length === 0 && comments.length === 0;
     if (empty || !app.connection) return;
+    // Item 694: a plain turn does not take the held passage; Send drops it.
+    dropHeld(key);
     // A send is presence, for the hand-off's away rule.
     noteActivity();
     // What he sent — or queued behind the running turn — is in the ⌘⇧V
@@ -2418,11 +2749,12 @@
     if (sendKey !== key || sendKey !== liveKey() || !app.connection || app.busy) return;
     if (filesBlocked(attachments)) return;
     const pending = attachments.slice();
-    const typed = text;
+    // Item 754: each comment's passage quoted with his words, then the box's.
+    const typed = sendWithComments(comments, text);
     // Where the words were, for the send motion (backlog 194): measured
     // before the box clears.
     launch("chat", boxElement(ta));
-    clearDraft(key);
+    clearDraft(key, true);
     afterSend(key);
     await dispatch(typed, pending);
   }
@@ -2440,17 +2772,17 @@
   async function submitCouncil(prefs: CouncilPrefs) {
     councilOpen = false;
     const t = text.trim();
-    if ((!t && attachments.length === 0) || !app.connection || app.busy || sendHeld()) return;
+    if ((!t && attachments.length === 0 && comments.length === 0) || !app.connection || app.busy || sendHeld()) return;
     const sendKey = key;
     if (!(await conversionsDone(sendKey))) return;
     if (sendKey !== key || sendKey !== liveKey() || !app.connection || app.busy) return;
     if (filesBlocked(attachments)) return;
     noteActivity();
     const pending = attachments.slice();
-    const typed = text;
+    const typed = sendWithComments(comments, text);
     recordText("sent", typed);
     launch("chat", boxElement(ta));
-    clearDraft(key);
+    clearDraft(key, true);
     afterSend(key);
     await dispatch(typed, pending, false, prefs);
   }
@@ -2604,6 +2936,21 @@
     const current = a === cur ? " · current" : "";
     return { detail: `${v.detail}${current}`, title: `${v.title}${newest}` };
   }
+  /** Item 777: a row's price for switching to it while the cache is warm —
+   *  the menu says it before he picks (`switchDetail`); "" on the cache's
+   *  own model, a cold cache or no reply. */
+  function switchPrice(pick: string): string {
+    if (!onClaudeCode || !cache?.warm) return "";
+    const id = modelIdFor(pick, modelSeen.byAlias);
+    if (id) void loadCacheRates(id);
+    return switchDetail(lastReply(app.events)?.usage ?? null, lastModel, id, cacheRatesOf(id), true);
+  }
+  /** The price ahead of a row's detail (`· claude-opus-5-5 · …`). */
+  const withPrice = (price: string, detail: string): string => {
+    if (!price) return detail;
+    const rest = detail.replace(/^·\s*/, "").trim();
+    return rest ? `· ${price} · ${rest}` : `· ${price}`;
+  };
   const modelRows = $derived.by((): MenuRow[] => {
     const rows: MenuRow[] = [];
     if (agentMode) {
@@ -2611,7 +2958,7 @@
       // ~~"whatever the CLI defaults to" / "current · the CLI resolves it"~~
       // — item 511: the model each resolved to on this CLI, or not yet.
       const dv = aliasRow("", cur);
-      rows.push({ id: "default", label: "default", detail: dv.detail, title: dv.title, on: cur === "", run: () => void switchModel("") });
+      rows.push({ id: "default", label: "default", detail: withPrice(switchPrice(""), dv.detail), title: dv.title, on: cur === "", run: () => void switchModel("") });
       // ~~One row per alias (`fable · Fable 5.1`), then each family's newest
       // by full id unless an alias already shows it (511)~~ — item 518: one
       // row per family, `Fable 5.2`, picking the full id, the alias noted
@@ -2621,7 +2968,7 @@
       for (const f of full) {
         const sep = f.kind === "newest" && firstNewest;
         if (f.kind === "newest") firstNewest = false;
-        rows.push({ id: f.key, label: f.label, detail: f.detail, title: f.title, cap: f.capAlias ? agentKey(f.capAlias) : null, on: f.on, sep, run: () => void switchModel(f.pick) });
+        rows.push({ id: f.key, label: f.label, detail: withPrice(switchPrice(f.pick), f.detail), title: f.title, cap: f.capAlias ? agentKey(f.capAlias) : null, on: f.on, sep, run: () => void switchModel(f.pick) });
       }
       // A full id typed into the rail's field: named here, changed there.
       // ~~`!AGENT_PILLS.includes(cur)`~~ — and no newest row names it (511);
@@ -2678,6 +3025,19 @@
   // `chat's · claude-opus-5-5`~~ — the model's name, `Opus 5.5`, as the
   // chat's own button reads (`modelChipLabel`); an alias stays as it is.
   const chatModelName = $derived(app.draft.agentModel.trim() ? displayName(app.draft.agentModel) : "default");
+  // Item 705: the *Next chat* pick's rows, one per family as the model menu
+  // draws them; the main box is their one writer, the reply's card reads them.
+  $effect(() => {
+    if (aside || !agentMode) return;
+    const fams = familyRows(AGENT_PILLS, newestIds, modelSeen.byAlias, cliNow, "").map((f) => ({
+      key: f.key,
+      pick: f.pick,
+      label: f.label,
+      detail: f.detail.replace(/ · current.*$/, "").replace(/^·\s*/, ""),
+    }));
+    nextModelMenu.chatName = chatModelName;
+    nextModelMenu.families = fams;
+  });
   const chatEffortName = $derived(app.draft.agentEffort || `default · ${effortDefaultText}`);
   const asideModelLabel = $derived(aside?.model ? displayName(aside.model) : `chat's · ${chatModelName}`);
   // Item 644: the family of the model this box sends to, live with the pickers (the chip's choice).
@@ -2695,8 +3055,18 @@
   const asideEffortLabel = $derived(
     aside && aside.effort != null ? aside.effort || "default" : `chat's · ${chatEffortName}`,
   );
+  // Item 833 (his shots, 2026-11-17: both pickers read "chat's …" in a
+  // narrow aside card): the pickers' compact form, the value alone —
+  // `Opus 5.5`, `medium` — drawn from fold level 4 instead of cutting the
+  // long label at 72 / 48 px. The long label leads each tooltip.
+  const asideModelShort = $derived(aside?.model ? displayName(aside.model) : chatModelName);
+  const asideEffortShort = $derived(
+    aside && aside.effort != null
+      ? aside.effort || "default"
+      : app.draft.agentEffort || (effortDefaultText === "?" ? "default" : effortDefaultText),
+  );
   const asideModelTitle = $derived(
-    `This aside's model — the chat's (${chatModelName}) unless picked here. Another model cannot read the chat's prompt cache, so its first answer reads the whole context fresh.`,
+    `This aside's model: ${asideModelLabel} — the chat's (${chatModelName}) unless picked here. Another model cannot read the chat's prompt cache, so its first answer reads the whole context fresh.`,
   );
   function pickAside(field: "model" | "effort", v: string | null): void {
     const a = aside;
@@ -2790,6 +3160,59 @@
       },
     })),
   );
+  /**
+   * Item 724: the rewound message, offered alone just above the drafts
+   * button when a rewind found his draft in the box — the drafts list's
+   * own look, with one row. A click swaps it in (his text to the drafts);
+   * a click anywhere else, or another menu, closes it; the drafts button
+   * still lists it with the rest.
+   */
+  const offerRows = $derived.by((): MenuRow[] =>
+    rewoundOffer.key === key && rewoundOffer.text
+      ? [
+          {
+            id: `rewound:${rewoundOffer.seq}`,
+            label: firstLine(rewoundOffer.text) || "(no first line)",
+            detail: `rewound · ${rewoundOffer.text.length.toLocaleString()} chars`,
+            title: "Put the rewound message in the box — what you typed goes to drafts",
+            run: takeRewound,
+          },
+        ]
+      : [],
+  );
+  function takeRewound(): void {
+    const t = rewoundOffer.text;
+    dismissRewoundOffer(key);
+    const swap = takeOffered(readDraft(key).text, t);
+    if (swap.toDrafts) bumpDraft(key, swap.toDrafts);
+    setDraftText(key, swap.box);
+    void tick().then(() => {
+      if (!ta) return;
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = ta.value.length;
+      autogrow();
+    });
+  }
+  // A new offer for this box opens it, without taking the focus from the
+  // box he is typing in. Only an offer made while mounted.
+  let offerSeen = untrack(() => rewoundOffer.seq);
+  $effect(() => {
+    const seq = rewoundOffer.seq;
+    if (seq === offerSeen) return;
+    offerSeen = seq;
+    if (rewoundOffer.key !== key) return;
+    void tick().then(() => {
+      if (rewoundOffer.key === key && historyBtn) menu = "rewound";
+    });
+  });
+  // The popover gone any way (a click elsewhere, another menu, a chat
+  // switch): the offer goes with it — the message stays in the drafts.
+  let offerShown = false;
+  $effect(() => {
+    const on = menu === "rewound";
+    if (offerShown && !on) untrack(() => dismissRewoundOffer());
+    offerShown = on;
+  });
   function whenLabel(at: string): string {
     const t = Date.parse(at);
     if (Number.isNaN(t)) return "earlier";
@@ -2818,6 +3241,8 @@
   // its icon; 4 the pickers' values at 72 px; 5 at 48 px; 6 the floor —
   // pickers on row one at the left, the actions on row two at the right,
   // both rows the same height.
+  // 2026-11-19 (his "why does it not say how many tokens are in my msg anymore"): the token
+  // estimate now folds last before the floor (level 5); Attach/Ask aside/Council shrink at 2.
   const ROW_FOLD_MAX = 6;
   let rowEl = $state<HTMLElement | null>(null);
   let rowFold = $state("0");
@@ -2841,6 +3266,9 @@
       modelLabel,
       effortLabel,
       thinkingLabel,
+      // Item 833: an aside's pickers read these.
+      asideModelLabel,
+      asideEffortLabel,
       agentMode,
       history.length,
       app.busy,
@@ -2854,7 +3282,7 @@
     refoldRow();
   });
 
-  let menu = $state<"model" | "effort" | "history" | null>(null);
+  let menu = $state<"model" | "effort" | "history" | "rewound" | null>(null);
   let menuEl = $state<HTMLElement | null>(null);
   let modelBtn = $state<HTMLElement | null>(null);
   let effortBtn = $state<HTMLElement | null>(null);
@@ -2870,10 +3298,12 @@
           : effortRows
         : menu === "history"
           ? historyRows
-          : [],
+          : menu === "rewound"
+            ? offerRows
+            : [],
   );
   function menuButton(): HTMLElement | null {
-    return menu === "model" ? modelBtn : menu === "effort" ? effortBtn : menu === "history" ? historyBtn : null;
+    return menu === "model" ? modelBtn : menu === "effort" ? effortBtn : menu === "history" || menu === "rewound" ? historyBtn : null;
   }
   function openMenu(which: "model" | "effort" | "history") {
     menu = menu === which ? null : which;
@@ -2984,7 +3414,10 @@
    * extends. A ping's read restarts the cache's hour, so the timer counts
    * from the later of the reply and the last ping.
    */
-  const kwChat = $derived(floating ? null : app.activeSessionId);
+  // Item 786: an aside's box keeps its chat's cache — the same switch and
+  // chip, read off the chat it forks — while that chat is the open one
+  // (an aside of another chat cannot send, and its log is not loaded).
+  const kwChat = $derived(floating ? null : aside ? (asideOpen ? asideOwner : null) : app.activeSessionId);
   const kw = $derived(kwChat ? (keepWarm.byChat[kwChat] ?? null) : null);
   $effect(() => {
     if (kwChat) void loadKeepWarm(kwChat);
@@ -3003,9 +3436,100 @@
     const refused = await holdKeepWarm(kwChat, hours);
     if (refused) addToast(`Keep warm: ${refused}`);
   }
-  const cache = $derived(floating ? null : cacheState(app.events, now, touchedUntil(kw), asideReads(kwChat)));
+  /** Item 786: an aside on another model than the chat's reads none of the
+   *  chat's cache; its own answers write and read that model's. */
+  const asideOwnModel = $derived(!!aside?.model && displayName(aside.model) !== chatModelName);
+  const cache = $derived(
+    floating || (aside && !kwChat)
+      ? null
+      : aside && asideOwnModel
+        ? ownModelCache(aside.turns, now)
+        : cacheState(app.events, now, touchedUntil(kw), asideReads(kwChat)),
+  );
+  /** Item 786: the chat's own turn stopped before its reply was logged —
+   *  a cold reading is unknown until the next send. */
+  const cacheUnsure = $derived(!aside && !!cache && !cache.warm && stoppedUnsure(app.events, app.busy));
+  const face = $derived(chipFace(cache, cacheUnsure));
+  /** Item 786: the share an aside's newest answer read, for its chip. */
+  const asideHit = $derived(aside ? asideFigures(aside, now).cacheHit : null);
+  /**
+   * Item 699: what the next send costs at API prices — the history read
+   * back while warm, all of it written once cold — at the newest reply's
+   * model's rates (Claude Code: `usage-rates.json` or the ping fit; the
+   * API engine: the connection's price). Null with no rates: no figure.
+   */
+  const lastModel = $derived(floating || !cache ? null : (lastReply(app.events)?.model ?? null));
+  const onClaudeCode = $derived(app.connection?.engine === "claude-code");
+  $effect(() => {
+    if (lastModel && onClaudeCode) void loadCacheRates(lastModel);
+  });
+  // Item 777: at the rates of the model the next send goes to (`targetRates`,
+  // below) — a cold chip with a model switch pending prices the new model,
+  // and says the change itself costs nothing extra.
+  const nextEst = $derived.by(() => {
+    if (!cache) return null;
+    const est = cacheEstimate(app.events, targetRates, cache.warm);
+    if (!est || cache.warm || !coldPending) return est;
+    return { ...est, line: `${est.line}, the change costs no extra` };
+  });
   /** Item 596: the same state drawn on the box's frame (`cacheLook.css`). */
   const frame = $derived(cacheFrame(cache));
+  /*
+   * Item 768: the chat's own composer only (not an aside's, not the new-chat
+   * page's), on the engine whose hand-off this is. The figures are the
+   * cache chip's rates (item 699) on the newest reply's usage.
+   */
+  const wwChat = $derived(!aside && !floating && onClaudeCode ? app.activeSessionId : null);
+  const wwUsage = $derived(wwChat ? (lastReply(app.events)?.usage ?? null) : null);
+  const wwContext = $derived(contextOf(wwUsage));
+  const wwCosts = $derived(wwUsage ? chipCosts(wwUsage, cacheRatesOf(lastModel)) : null);
+  const wwHandingOff = $derived(!!handedNext || (handoffHere && (handoff.stage === "wrapping" || handoff.stage === "wrapped")));
+  const wwBusy = $derived(busy || queue.length > 0);
+  /** The warm moment: `offer`, `do` or null; `now` ticks each minute while warm. */
+  const warmAct = $derived(
+    wwChat && cache && !actedOn(wwChat, cache.warmUntil)
+      ? warmWrapAct({
+          mode: warmWrap.mode,
+          minTokens: warmWrap.minTokens,
+          context: wwContext,
+          warmUntil: cache.warmUntil,
+          now,
+          keeping: isKeeping(kw, now),
+          busy: wwBusy,
+          // Past the mark the hand-off notice is up and carries Wrap up now itself.
+          handingOff: wwHandingOff || (handoffHere && handoff.stage === "due"),
+          // A "never" mark or a *Stay here* in this chat: offered, never sent.
+          never: neverHandsOff(wwChat) || (handoffHere && handoff.dismissedAt > 0),
+          away: untrack(() => awayNow(true, now)),
+        })
+      : null,
+  );
+  /** Sent at most once per cache end: the mark is set before the send. */
+  $effect(() => {
+    if (warmAct !== "do" || !wwChat || !cache) return;
+    const [chat, until] = [wwChat, cache.warmUntil];
+    untrack(() => {
+      markActed(chat, until);
+      // Under the mark the stage stays idle; the reply's next-chat card
+      // (item 506) reads the reply, not the stage, so the way on is the same.
+      addToast(sentToast(wwCosts));
+      void sendWrapUpNow();
+    });
+  });
+  const coldChip = $derived(
+    !!wwChat &&
+      !!cache &&
+      coldChipShows({
+        minTokens: warmWrap.minTokens,
+        context: wwContext,
+        warm: cache.warm,
+        busy: wwBusy,
+        handingOff: wwHandingOff,
+        noticeUp: handoffHere && handoff.stage === "due",
+        kept: keptCold(wwChat, cache.warmUntil),
+      }),
+  );
+  const coldWords = $derived(coldButtons(wwCosts));
   $effect(() => {
     if (floating) return;
     const warmUntil = cacheState(app.events, Date.now(), touchedUntil(kw), asideReads(kwChat))?.warmUntil ?? null;
@@ -3032,7 +3556,9 @@
    * them back; offered only while the cache is warm, since a cold cache
    * has nothing left to lose.
    */
-  const cacheBuilt = $derived(floating ? null : cacheBuiltWith(app.events));
+  // Item 786: an aside's box warns of none: the rail's pending settings are
+  // the chat's next turn's, not the aside's (its model shows on its chip).
+  const cacheBuilt = $derived(floating || aside ? null : cacheBuiltWith(app.events));
   // Item 601: and what the next turn carries beside the draft — the
   // chat's declared kind then and now, and the API engine's resolved model.
   const cacheChanges = $derived(
@@ -3044,6 +3570,67 @@
         })
       : [],
   );
+  /*
+   * Item 777: what the pending change costs on the next send, with it
+   * against without it (`changePrice`). The model it goes to: on Claude
+   * Code a draft model other than the cache's, by its own rates (an alias
+   * by what it last resolved to; unknown → tokens, no figure); on the API
+   * engine the connection, which already carries the picked model's price.
+   * A prompt-layer change logged since the cache's reply (notes, practices,
+   * memory, a layer's own text) is priced from the system block on.
+   */
+  const targetModel = $derived(cache ? nextSendModel(app.events, aside?.model || app.draft.agentModel, modelSeen.byAlias) : null);
+  $effect(() => {
+    if (targetModel && onClaudeCode) void loadCacheRates(targetModel);
+  });
+  const targetRates = $derived(onClaudeCode ? cacheRatesOf(targetModel) : ratesFromPrice(app.connection?.price));
+  const layerChange = $derived(cacheBuilt ? layerChangeSinceCache(app.events) : null);
+  /** A change pending on a cold cache: costs nothing extra (the chip says so). */
+  const coldPending = $derived(
+    !!cacheBuilt &&
+      !!cache &&
+      !cache.warm &&
+      (!!layerChange ||
+        cacheLoss(cacheBuilt.key, app.draft, {
+          kind: declaredKind(app.events),
+          builtKind: kindAtCache(app.events),
+          apiModel: app.connection && app.connection.engine !== "claude-code" ? app.connection.model : undefined,
+        }).length > 0),
+  );
+  // One rule with the rail's *Next send* row (`pendingChangeCost`).
+  const changeCost = $derived(
+    cache?.warm
+      ? pendingChangeCost({
+          events: app.events,
+          draft: app.draft,
+          connection: app.connection,
+          seen: modelSeen.byAlias,
+          warm: true,
+          rates: (m) => {
+            if (m && onClaudeCode) void loadCacheRates(m);
+            return cacheRatesOf(m);
+          },
+        })
+      : null,
+  );
+  /** The bar's words: the draft changes, then a logged layer change. */
+  const lossWords = $derived([...cacheChanges.map((c) => c.text), ...(layerChange ? [layerChange.text] : [])]);
+  /** The bar's tooltip, two short lines (776's rule) with 777's with-change
+   *  price: `<changes> changed · next ≈ $X (vs $Y warm)` / the click clause. */
+  const lossTip = $derived.by(() => {
+    if (!cache || !cacheBuilt) return "";
+    // Post-install 16c8e01: the price first, then what the click actually
+    // does (shortTip.ts `lossClick`): a layer change is the Context page's,
+    // so with one pending the click never promises to undo it. The bar's
+    // face names the change and the chip the time left.
+    return lossTipText({
+      changes: cacheChanges,
+      layer: !!layerChange,
+      cachedTokens: cacheBuilt.cachedTokens,
+      priceLine: changeCost?.line ?? null,
+      resendUsd: nextEst?.cold ?? null,
+    });
+  });
   function restoreCache() {
     if (!cacheBuilt || cacheChanges.length === 0 || !canRestore(cacheChanges)) return;
     const engine = restoreEngine(cacheBuilt.key, cacheChanges);
@@ -3053,22 +3640,26 @@
     if (engine === "claude-code" || engine === "provider") void useEngine(engine);
     else void applyDraft();
   }
-  const cacheShareTitle = "Share of the last request's prompt served from cache.";
+  /**
+   * The chip's tooltip, at most two short lines, numbers first (item 776,
+   * his "dude this is the biggest yapfest ever i thought we talked about
+   * this wtf"): `95% from cache · warm for 31 min more`, then the estimate's
+   * line. ~~What the share means, the 1-hour rule, the subscription "free"
+   * caveat~~ (cut 2026-11-16).
+   */
   const cacheTitle = $derived.by(() => {
-    if (!cache) return "";
-    const engine = app.connection?.engine === "claude-code" ? "claude-code" : "api";
-    if (!cache.warm) {
-      return "The last turn's prompt cache has expired, so the next turn re-reads the whole history either way and editing it now costs nothing extra.";
-    }
-    // Item 677: an aside's read restarted the clock; say so, and how much of the history it read.
-    const from =
-      cache.asideShare != null
-        ? `counted from the aside asked at ${new Date(cache.sentAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}, which read ${Math.round(cache.asideShare * 100)}% of the history from it and so refreshed that much`
-        : "counted from when its request was sent";
-    const what = `Time left on the last turn's prompt cache (${cache.ttl}), ${from}: until it expires an edit to the history re-writes the cache, and after it the next turn pays for the whole history whether or not you edited it.`;
-    return engine === "claude-code"
-      ? `${what} On this engine you are on the subscription, so "free" means an edit costs no more usage than an unedited turn would — whether cache reads are discounted against the plan's limit is not documented.`
-      : what;
+    const hit = aside ? asideHit : cached;
+    const share = hit != null ? `${Math.round(hit * 100)}% from cache` : null;
+    if (!cache) return `${share ?? "Cache"} · no timer: this chat's last turn predates cache timing`;
+    // Item 786: what a stop or an aside left, in the chip's two lines.
+    if (face === "unknown") return `Unknown until the next send (a stopped turn)\n${nextEst?.title ?? "Cold, the next send writes it again"}`;
+    if (!cache.warm && aside && asideOwnModel) return `Own model · no cache from the chat\n${nextEst?.title ?? "The next answer writes it"}`;
+    if (!cache.warm && !aside && asideSinceCold(cache, asideReads(kwChat))) return `Cold · an aside since warmed only its own copy\n${nextEst?.title ?? "The next send writes it again"}`;
+    if (!cache.warm) return nextEst?.title ?? "Cache cold · the next send writes it again";
+    const left = remainingText(cache.remainingMs);
+    const refreshed = !aside && cache.asideShare != null ? " (an aside refreshed it)" : "";
+    const first = share ? `${share} · warm for ${left} more${refreshed}` : `Cache warm for ${left} more${refreshed}`;
+    return nextEst ? `${first}\n${nextEst.title}` : first;
   });
 </script>
 
@@ -3079,6 +3670,7 @@
   class:aside={aside !== null}
   class:compact
   class:dropping={dragDepth > 0}
+  class:hc-grip={handoffCardUp}
   data-drop-box={aside ? "aside" : "main"}
   data-drop-for={aside ? key : undefined}
   data-composer-row={composerRow.value}
@@ -3096,7 +3688,9 @@
       {dragging}
       label="Composer height"
       value={floorPx ?? undefined}
-      hint={floorPx === null && capPx === null
+      hint={handoffCardUp
+        ? "Drag down to shrink the hand-off card (compact, then one line), then the box · up to grow them · double-click resets the box"
+        : floorPx === null && capPx === null
         ? "Drag to resize · double-click to reset (⌥⌘↑ / ⌥⌘↓ by a line)"
         : `Drag to resize · double-click to reset — ${floorPx === null ? "automatic" : `${floorPx}px`} for this chat${capPx === null ? "" : `, grows to ${capPx}px`}`}
       ondown={handleDown}
@@ -3128,10 +3722,10 @@
         {#if classic()}
         <div class="queue-row" role="listitem" data-queue-id={q.id}>
           <span class="queue-n mono">{i + 1}</span>
-          <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
+          <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}<MathText text={firstLine(q.text) || "(no text)"} />{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
           {#if q.inject}{@const chip = injectChip(q.inject)}<span class="ns-chip mono" data-inject={chip.state} use:tip={chip.tip}>{chip.label}</span>{/if}
           {#if q.inject && q.inject.after === undefined && !q.inject.now}
-            <button class="ns-btn ghost small" data-send-now use:tip={"Stop the step Claude is in (a long command, say) and give it this message at once — as Claude Code's own send now does. The turn goes on."} onclick={() => void sendNowRow(key, q.id)}>send now</button>
+            <button class="ns-btn ghost small" data-send-now use:tip={"Interrupt and send: stop what Claude is doing (a long answer, a long command) and give it this message at once — as Claude Code's own send now does. The reply so far stays and the turn goes on. Left alone, the message slips in at Claude's next gap."} onclick={() => void sendNowRow(key, q.id)}>interrupt and send</button>
           {/if}
           {#if q.inject?.after === undefined}
             <button class="ns-btn ghost small" use:tip={"Back into the message box"} onclick={() => void takeBack(q.id)}>take back</button>
@@ -3147,7 +3741,7 @@
             <span class="queue-n mono">{i + 1}</span>
             <span class="queue-text" data-find-text={q.text}
               >{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span>
-              {/if}{#if rowOpen[q.id]}<span class="queue-whole">{q.text}</span>{:else}{firstLine(q.text) || "(no text)"}{/if}{#if q.attachments.length > 0}
+              {/if}{#if rowOpen[q.id]}<span class="queue-whole"><MathText text={q.text} /></span>{:else}<MathText text={firstLine(q.text) || "(no text)"} />{/if}{#if q.attachments.length > 0}
                 <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span
             >
             {#if long}
@@ -3158,7 +3752,7 @@
             {#if q.inject}{@const chip = injectChip(q.inject)}<span class="ns-chip mono" data-inject={chip.state} use:tip={chip.tip}>{chip.label}</span>{/if}
             <span class="queue-acts">
               {#if q.inject && q.inject.after === undefined && !q.inject.now}
-                <WaitAct icon="send" accent label="Send now" hint="stop the step Claude is in (a long command, say) and give it this message at once — as Claude Code's own send now does; the turn goes on" data-send-now="" onclick={() => void sendNowRow(key, q.id)} />
+                <WaitAct icon="stop" label="Interrupt and send" hint="stop what Claude is doing (a long answer, a long command) and give it this message at once — as Claude Code's own send now does; the reply so far stays and the turn goes on. Left alone, the message slips in at Claude's next gap" data-send-now="" onclick={() => void sendNowRow(key, q.id)} />
               {/if}
               {#if q.inject?.after === undefined}
                 <WaitAct icon="pencil" label="Take back" hint="back into the message box" onclick={() => void takeBack(q.id)} />
@@ -3184,9 +3778,15 @@
                    sent one does (UserBubble's), zooming from here. -->
               <button
                 class="image-open"
-                use:tip={"Open in front"}
-                aria-label="open {a.name}"
+                class:picked={!!a.pick}
+                use:tip={a.pick ? `${a.label ?? "picked element"} — click to see what it holds` : "Open in front"}
+                aria-label={a.pick ? `show picked element ${a.name}` : `open ${a.name}`}
+                aria-expanded={a.pick ? pickShown === a.id : undefined}
                 onclick={(e) => {
+                  if (a.pick) {
+                    pickShown = pickShown === a.id ? null : a.id;
+                    return;
+                  }
                   const el = e.currentTarget.querySelector("img");
                   openAttachment(
                     draftImageContent(key, a.id, a.name),
@@ -3196,6 +3796,7 @@
                 }}
               >
                 <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
+                {#if a.pick}<span class="pick-mark mono" aria-hidden="true">PICK</span>{/if}
               </button>
             {:else}
               {@const kept = keepStateOf(keepKey(a.name, a.data)).phase === "kept"}
@@ -3225,7 +3826,8 @@
                 <span class="file-name">{a.name}</span>
                 <!-- Item 491: a long PDF's route stands in for the label
                      (its pages are in both; the label stays in the tip). -->
-                {#if a.label && !routeLabel(a, chipEngine)}<span class="file-label">{a.label}</span>{/if}
+                {#if a.pending && a.converting}<span class="file-label">{convertingWords(a.name, a.converting.to, clock.now - a.converting.since)}</span>
+                {:else if a.label && !routeLabel(a, chipEngine)}<span class="file-label">{a.label}</span>{/if}
                 <PdfRouteSwitch chip={a} draftKey={key} engine={chipEngine} />
               </span>
             {/if}
@@ -3249,6 +3851,30 @@
         </div>
       {/each}
     </div>
+    <!-- Item 797: a pick chip opened — the crop and every word the model
+         is sent about it. -->
+    {@const shown = attachments.find((x) => x.id === pickShown && x.pick)}
+    {#if shown?.pick}
+      <div class="pick-detail" role="region" aria-label="picked element">
+        {#if shown.kind === "image"}
+          <button
+            class="image-open"
+            use:tip={"Open in front"}
+            aria-label="open {shown.name}"
+            onclick={(e) => {
+              const el = e.currentTarget.querySelector("img");
+              openAttachment(
+                draftImageContent(key, shown.id, shown.name),
+                e.currentTarget.getBoundingClientRect(),
+                el && el.naturalWidth > 0 ? { width: el.naturalWidth, height: el.naturalHeight } : null,
+              );
+            }}><img class="pick-crop" src={`data:${shown.media_type};base64,${shown.data}`} alt={shown.name} /></button
+          >
+        {/if}
+        <pre class="pick-words mono">{pickText(shown.pick, null)}</pre>
+        <button class="lost-paste-x" aria-label="close" use:tip={"Close"} onclick={() => (pickShown = null)}>×</button>
+      </div>
+    {/if}
   {/if}
   {#if lostPaste && lostPaste.key === key}
     <div class="lost-paste" role="status">
@@ -3256,75 +3882,148 @@
       <button type="button" class="lost-paste-x" aria-label="Close this note" onclick={() => (lostPaste = null)}>×</button>
     </div>
   {/if}
-  {#if handoffHere && handoff.stage === "due" && isFolded(app.activeSessionId, "due")}
-    <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
+  <!-- Item 702: the notice waits for the turn to be idle, never mid-turn or mid-send. -->
+  {#if warmAct === "offer" && cache}
+    <!-- Item 768: the cache is about to lapse on a big idle chat; the wrap-up is cheapest now. -->
+    <div class="handoff handoff-min warm-wrap" role="status" aria-label="Wrap up while the cache is warm">
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
-      <strong class="handoff-min-title">Context {handoffPct}% — past this chat's {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} hand-off mark</strong>
-      <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+      <strong class="handoff-min-title">{warmTitle(cache.remainingMs, wwContext)}</strong>
+      <span class="mono handoff-fill" use:tip={coldTip(wwCosts, cacheRatesOf(lastModel))}>{warmDetail(wwCosts)}</span>
       <span class="spacer"></span>
-      {#if !wrapUpQueued}<button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>{/if}
-      <button class="ns-btn ghost small" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>Expand</button>
+      <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up now, while the cache is warm"} onclick={() => { markActed(wwChat, cache?.warmUntil ?? null); void sendWrapUpNow(); }}>Wrap up now</button>
+      <button class="ns-btn ghost small" use:tip={"Not this hour; the cold chip offers it again"} onclick={() => markActed(wwChat, cache?.warmUntil ?? null)}>Not now</button>
     </div>
-  {:else if handoffHere && handoff.stage === "due"}
+  {:else if coldChip && cache}
+    <!-- Item 768: back on a cold big chat — one chip, both prices, before he types. Never compacts. -->
+    <div class="handoff handoff-min cold-return" role="status" aria-label="Cache cold — hand off or keep">
+      <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
+      <strong class="handoff-min-title" use:tip={coldTip(wwCosts, cacheRatesOf(lastModel))}>{coldTitle(wwContext)}</strong>
+      <span class="spacer"></span>
+      <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up; the next chat starts small"} onclick={() => void sendWrapUpNow()}>{coldWords.handoff}</button>
+      <button class="ns-btn ghost small" use:tip={"Go on here; hidden until the next reply"} onclick={() => keepCold(wwChat, cache?.warmUntil ?? null)}>{coldWords.keep}</button>
+    </div>
+  {/if}
+  {#if handedNext}
+    <div class="handoff handoff-min" role="status" aria-label="This chat was handed off">
+      <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
+      <strong class="handoff-min-title">Handed off — this chat continues in “{handedNext.title ?? handedNext.first_user ?? "the next chat"}”</strong>
+      <span class="spacer"></span>
+      <button class="ns-btn accent small" onclick={() => void openSession(handedNext.id)}>Open it</button>
+    </div>
+  {/if}
+  {#if handoffCardUp && handoffSize === "mini"}
+    <!-- Item 702 (his ask, 2026-11-15): a click anywhere on the bar expands it, not just Expand; its buttons keep their own clicks.
+         Item 705 (option A, Console): the one line — kicker, title, the fill gauge, Wrap up now, ▴. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+    <div class="handoff handoff-min handoff-min-open hc hc-mini" role="status" aria-label="Hand-off notice, minimized — click to expand" onclick={(e) => { if (!(e.target as HTMLElement).closest("button")) unfold(app.activeSessionId); }}>
+      <span class="hc-kicker">Hand-off</span>
+      <strong class="handoff-min-title hc-title">Context {handoffPct}%, past the {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} mark</strong>
+      <span class="hc-gauge hc-gauge-mini" aria-hidden="true"><i style:width={`${Math.min(100, handoffPct)}%`}></i><b style:left={`${Math.min(100, handoffThresholdPct)}%`}></b></span>
+      <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)}</span>
+      <span class="spacer"></span>
+      {#if !wrapUpQueued}<button class="ns-btn accent small hc-go" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>{/if}
+      <button class="hc-ico" aria-label="Expand" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>▴</button>
+    </div>
+  {:else if handoffCardUp}
     <!-- The notice (backlog 086 pass 2, blocker 120): the board's hand-off
          card — accent rule, a heading with the fill, one line of what
          happens, the two things he can change for this chat, the actions.
-         Nothing goes by itself while it is on screen. -->
-    <div class="handoff" role="status" aria-label="Hand-off notice">
-      <div class="handoff-head">
-        <strong>Context {handoffPct}% — past this chat's {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} hand-off mark</strong>
-        <span class="spacer"></span>
-        <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+         Nothing goes by itself while it is on screen.
+         Item 705 (option A, Console — his pick, blocker 2167): a kicker and
+         title over a fill gauge, every control on one row (thread, the mark's
+         stepper, the next chat's model), the message, the goal, the buttons.
+         Compact (the grip dragged down once) hides the explanation and the
+         goal and folds the message to two lines; nothing is dropped. -->
+    {@const full = handoffSize === "full"}
+    <div class="handoff hc" class:hc-compact={!full} role="status" aria-label="Hand-off notice">
+      <div class="hc-head">
+        <span class="hc-kicker">Hand-off</span>
+        <strong class="hc-title">Context {handoffPct}%, past this chat's {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} mark</strong>
+        <span class="hc-x">
+          {#if !full}<button class="hc-ico" aria-label="Show the whole card" use:tip={"The whole card: the explanation, the goal, the full message"} onclick={() => setCardSize(app.activeSessionId, "due", "full")}>▾</button>{/if}
+          <button class="hc-ico" aria-label="Minimize" use:tip={"Fold this card to one line above the box (or drag the grip down)"} onclick={() => fold(app.activeSessionId, "due")}>–</button>
+        </span>
       </div>
-      <p class="handoff-d">
-        {#if wrapUpQueued}
-          The wrap-up below is in the queue — put there while you were away — and goes when this turn ends;
-          its × takes it back.
-        {:else}
-          <strong>Wrap up now</strong> sends the message below as a turn of its own: the model finishes what is
-          half-done, {#if threadAndHandoff}updates the thread's files, adds a section to <code>HANDOFF.md</code>, commits{:else if threadHandoff}updates the thread's files{:else}writes <code>HANDOFF.md</code>, commits{/if}, and
-          ends with a start prompt for the new chat. Or raise this chat's mark and keep going. Nothing is sent by
-          itself while this notice is open.
+      <div class="hc-body">
+        {#if full}
+          <div class="hc-meter">
+            <span class="hc-gauge" aria-hidden="true"><i style:width={`${Math.min(100, handoffPct)}%`}></i><b style:left={`${Math.min(100, handoffThresholdPct)}%`}></b></span>
+            <span class="mono handoff-fill hc-gnum"><em>{fmtTokens(handoff.used)}</em> of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+          </div>
+          <p class="handoff-d">
+            {#if wrapUpQueued}
+              The wrap-up below is in the queue — put there while you were away — and goes when this turn ends;
+              its × takes it back.
+            {:else}
+              <strong>Wrap up now</strong> sends the message below as its own turn. The model finishes what is
+              half-done, {#if threadAndHandoff}updates the thread's files and <code>HANDOFF.md</code>, commits{:else if threadHandoff}updates the thread's files{:else}writes <code>HANDOFF.md</code>, commits{/if}, and
+              ends with the next chat's prompt. Or raise this chat's mark and keep going. Nothing is sent while this is open.
+            {/if}
+          </p>
         {/if}
-      </p>
-      <ThreadPicker />
-      <label class="handoff-row">
-        <span>Hand off this chat at</span>
-        <input
-          type="number"
-          min="1"
-          max="100"
-          step="1"
-          value={handoffThresholdPct}
-          aria-label="This chat's hand-off threshold, percent of the context window"
-          onchange={(e) => setChatThreshold((e.currentTarget as HTMLInputElement).value)}
-        />
-        <span>% of the window{hasOwnThreshold(app.activeSessionId) ? ` (the default is ${handoffDefaultRule})` : ` (the default: ${handoffDefaultRule})`}</span>
-      </label>
-      <textarea
-        class="handoff-msg"
-        rows="5"
-        autocorrect="off"
-        autocapitalize="off"
-        spellcheck="false"
-        aria-label="The wrap-up message for this chat"
-        use:tip={"What Wrap up now sends. Edits are kept for this chat only; the default is in Settings → Subscription."}
-        value={wrapUpText}
-        oninput={(e) => {
-          noteActivity();
-          setMessage(app.activeSessionId, (e.currentTarget as HTMLTextAreaElement).value);
-        }}
-      ></textarea>
-      <div class="handoff-acts">
-        {#if !wrapUpQueued}
-          <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>
-        {/if}
-        <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId); stayHere(); }}>Stay here</button>
-        <button class="ns-btn ghost small" use:tip={"Fold this card to one line above the box"} onclick={() => fold(app.activeSessionId, "due")}>Minimize</button>
-        {#if hasOwnMessage(app.activeSessionId)}
-          <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearMessage(app.activeSessionId)}>Reset the message</button>
-        {/if}
-        <span class="handoff-keys mono">stay past {reAskPct}% and the wrap-up is asked again</span>
+        <div class="hc-fields">
+          <ThreadPicker menu />
+          {#if full}<span class="hc-sep" aria-hidden="true"></span><span class="hc-lbl">Hand off at</span>{/if}
+          <span class="hc-step" role="group" aria-label="This chat's hand-off mark" use:tip={`% of the window${hasOwnThreshold(app.activeSessionId) ? ` (the default is ${handoffDefaultRule})` : ` (the default: ${handoffDefaultRule})`}`}>
+            <button type="button" aria-label="Lower the mark by 5%" onclick={() => stepMark(-1)}>−</button>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              step="1"
+              value={handoffThresholdPct}
+              aria-label="This chat's hand-off threshold, percent of the context window"
+              onchange={(e) => typeMark(e.currentTarget as HTMLInputElement)}
+            /><small aria-hidden="true">%</small>
+            <button type="button" aria-label="Raise the mark by 5%" onclick={() => stepMark(1)}>+</button>
+          </span>
+          {#if full}<span class="hc-sep" aria-hidden="true"></span>{/if}
+          {#if agentMode}
+            <HudSelect
+              kicker={full ? "Next chat" : "Next"}
+              value={nextLabel.name}
+              note={full && nextLabel.isDefault ? "this chat's" : ""}
+              head="The next chat's model"
+              label="The model the next chat starts on"
+              hint={"The model the next chat opens on — this chat's unless picked here; the next-chat card shows the same pick"}
+              rows={nextModelRows(app.activeSessionId)}
+              onpick={(id) => setNextModel(app.activeSessionId, id)}
+            />
+          {/if}
+          {#if !full}
+            <span class="hc-fill-row">
+              <span class="hc-gauge hc-gauge-row" aria-hidden="true"><i style:width={`${Math.min(100, handoffPct)}%`}></i><b style:left={`${Math.min(100, handoffThresholdPct)}%`}></b></span>
+              <span class="mono handoff-fill hc-gnum"><em>{fmtTokens(handoff.used)}</em> / {fmtTokens(handoff.limit)}</span>
+            </span>
+          {/if}
+        </div>
+        <textarea
+          class="handoff-msg"
+          class:hc-clip={!full}
+          rows={full ? 4 : 2}
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          aria-label="The wrap-up message for this chat"
+          use:tip={"What Wrap up now sends. Edits are kept for this chat only; the default is in Settings → Subscription."}
+          value={wrapUpText}
+          oninput={(e) => {
+            noteActivity();
+            setMessage(app.activeSessionId, (e.currentTarget as HTMLTextAreaElement).value);
+          }}
+        ></textarea>
+        <!-- Item 747: the goal for the next chat, and what Nightloom adds under the message. -->
+        {#if full}<HandoffGoal chat={app.activeSessionId} />{/if}
+        <div class="handoff-acts">
+          {#if !wrapUpQueued}
+            <button class="ns-btn accent hc-go" class:small={!full} disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>
+          {/if}
+          <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId); stayHere(); }}>Stay here</button>
+          {#if hasOwnMessage(app.activeSessionId)}
+            <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearMessage(app.activeSessionId)}>Reset the message</button>
+          {/if}
+          <span class="handoff-keys mono">{full ? `stay past ${reAskPct}% and it asks again` : "click the text to edit it"}</span>
+        </div>
       </div>
     </div>
   {:else if handoffHere && handoff.stage === "wrapping"}
@@ -3348,11 +4047,11 @@
     <ClipPanel entries={clips.ring} index={clipIndex} onpick={pickClip} />
   {/if}
   {#if slashOpen}
-    <div class="slash hud-m" role="listbox" aria-label="Skills and slash commands" in:hudIn|global out:hudOut|global>
+    <div class="slash hud-m" role="listbox" aria-label={savedShown ? "Saved prompts, inserts, skills and slash commands" : insertShown ? "Inserts, skills and slash commands" : "Skills and slash commands"} in:hudIn|global out:hudOut|global>
       {#if slashMatches.length === 0}
         <div class="slash-row dim">No skill or command starts with “{text.slice(1)}” — ↵ sends the text as typed</div>
       {:else}
-        {#each slashMatches as m, i (m.name)}
+        {#each slashMatches as m, i (m.kind + "\u0000" + m.name)}
           <button
             type="button"
             role="option"
@@ -3360,18 +4059,129 @@
             class:on={i === slashIndex}
             aria-selected={i === slashIndex}
             onmousedown={(e) => e.preventDefault()}
-            onclick={() => pickSlash(m.name)}
+            onclick={() => pickSlash(m.name, m.prompt, m.insert)}
           >
             <span class="mono">/{m.name}</span>
             <span class="dim">{m.kind}</span>
           </button>
         {/each}
-        <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close · the CLI runs a skill named in the message</div>
+        {#if savedShown}
+          <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close · a saved prompt's blanks: Tab to the next</div>
+        {:else if insertShown && !wholeSlash}
+          <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close, the text stays as typed</div>
+        {:else}
+          <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close · the CLI runs a skill named in the message</div>
+        {/if}
       {/if}
     </div>
   {/if}
   {#if mathShown}
     <TypedMathBar spans={mathSpans} onaccept={acceptMath} ondeny={denyMath} />
+  {/if}
+  {#if comments.length > 0}
+    <!-- Item 754: his comments on passages; each chip opens its comment
+         line, × asks first, Send sends them all with the box's words. -->
+    <div class="comments-wrap" class:plain={classic()} data-passage-comments>
+      <div class="comment-chips">
+        <span class="comment-k">{comments.length === 1 ? "1 comment" : `${comments.length} comments`}</span>
+        <!-- Item 881: the chips wrap in a column of their own, so a second row lines up under the first chip, not under the label. -->
+        <span class="comment-list">
+        {#each comments as c (c.id)}
+          <span class="comment-chip" class:open={openComment === c.id} data-comment={c.id}>
+            <button
+              type="button"
+              class="comment-open"
+              aria-expanded={openComment === c.id}
+              use:tip={`A comment on a passage from ${commentWhere(c)} — click to ${openComment === c.id ? "close" : "write or change"} it. Send sends every comment with what is in the box, as one message.`}
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => {
+                if (openComment === c.id) closeComment();
+                else {
+                  openComment = c.id;
+                  void tick().then(() => commentTa?.focus());
+                }
+              }}
+            >
+              {#if !classic()}<Icon name="pencil" size={11} />{/if}
+              <!-- Item 880: the passage's maths typeset (a diff stays as written). -->
+              <span class="comment-q chip-math">“{#if c.source === "diff"}{chipLabel(c)}{:else}<MathText text={chipLabel(c, undefined, { math: true })} />{/if}”</span>
+              {#if c.note.trim()}<span class="comment-n">{commentLabel(c.note, 28)}</span>{/if}
+            </button>
+            <button
+              type="button"
+              class="held-x"
+              aria-label="Discard this comment"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => (dropAsk = c)}><Icon name="x" size={11} /></button
+            >
+          </span>
+        {/each}
+        </span>
+      </div>
+      {#if openC}
+        {@const oc = openC}
+        <div class="comment-edit">
+          <!-- Item 880: the passage as the reply drew it (its maths typeset); a diff as its lines. -->
+          {#if oc.source === "diff"}
+            <div class="comment-quote" use:tip={`From ${commentWhere(oc)}`}>{shownQuote(oc)}</div>
+          {:else}
+            <div class="comment-quote rendered markdown" use:tip={`From ${commentWhere(oc)}`}>{@html renderReply(oc.quote)}</div>
+          {/if}
+          <textarea
+            bind:this={commentTa}
+            class="comment-ta"
+            rows="2"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="Your comment on this passage — ↵ done, ⇧↵ new line"
+            value={oc.note}
+            oninput={(e) => setCommentNote(key, oc.id, e.currentTarget.value)}
+            onkeydown={(e) => {
+              if ((e.key === "Enter" && !e.shiftKey && !e.isComposing) || e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                closeComment();
+              }
+            }}
+          ></textarea>
+        </div>
+      {/if}
+    </div>
+  {/if}
+  {#if dropAsk}
+    <!-- The dialog's own title prop, spread (tip.test bars title= here). -->
+    <ConfirmDialog
+      {...DROP_DIALOG}
+      lead="The passage and what you wrote about it leave the box. Your other comments and the box's words stay."
+      facts={[
+        ["passage", `“${chipLabel(dropAsk, 60)}”`],
+        ["comment", dropAsk.note.trim() ? commentLabel(dropAsk.note, 60) : "(none written)"],
+      ]}
+      confirmLabel="Discard"
+      onconfirm={confirmDropComment}
+      onclose={() => (dropAsk = null)}
+    />
+  {/if}
+  {#if heldShown}
+    <!-- Item 694: the passage his Ask aside is about; × drops it. -->
+    <div class="held-wrap" class:plain={classic()} data-held-passage>
+      <span
+        class="held-chip"
+        use:tip={`Ask aside asks about this passage from ${quoteLabel(heldShown.quote, "card")}, as the selection's Ask aside does. Send does not take it; × or Esc in an empty box drops it.`}
+      >
+        {#if !classic()}<FilamentMark kind="aside" />{/if}
+        <span class="held-k">About:</span>
+        <span class="held-q chip-math">“<MathText text={heldLabel(heldShown.quote, undefined, { math: true })} />”</span>
+        <button
+          type="button"
+          class="held-x"
+          aria-label="Do not ask about this passage"
+          onmousedown={(e) => e.preventDefault()}
+          onclick={() => dropHeld(key)}><Icon name="x" size={11} /></button
+        >
+      </span>
+    </div>
   {/if}
   <div class="card" data-cache={frame?.cache} data-cache-look={frame ? cacheLook.value : undefined} data-cache-losing={frame && cacheBuilt && cacheChanges.length > 0 ? "" : undefined} style={frame?.style}>
     <!-- No autocorrect, capitalisation or spell-marking on a message to a
@@ -3518,7 +4328,12 @@
           onclick={() => openMenu("model")}
         >
           <span class="pick-dot" class:unknown={!app.connection}></span>
-          <span class="pick-name">{aside ? asideModelLabel : modelLabel}</span>
+          {#if aside}
+            <!-- Item 833: the long label, else (fold 4 on) the value alone. -->
+            <span class="pick-name has-short"><span class="pick-long">{asideModelLabel}</span><span class="pick-short">{asideModelShort}</span></span>
+          {:else}
+            <span class="pick-name">{modelLabel}</span>
+          {/if}
           <span class="pick-chev" aria-hidden="true"><Icon name="chev" size={11} /></span>
         </button>
         {#if menu === "model"}
@@ -3534,14 +4349,18 @@
           aria-haspopup="menu"
           aria-expanded={menu === "effort"}
           use:tip={aside
-            ? "This aside's effort (--effort) — the chat's unless picked here; kept on this aside"
+            ? `This aside's effort (--effort): ${asideEffortLabel} — the chat's unless picked here; kept on this aside`
             : agentMode
               ? "Effort (--effort) — how hard the model thinks per turn; default sends no flag and leaves it to the model. Kept on this chat."
               : `Thinking — ${thinkingSup.note}`}
           onclick={() => openMenu("effort")}
         >
           <span class="pick-k">{agentMode ? "effort" : "thinking"}</span>
-          <span class="pick-name">{aside ? asideEffortLabel : agentMode ? effortLabel : thinkingLabel}</span>
+          {#if aside}
+            <span class="pick-name has-short"><span class="pick-long">{asideEffortLabel}</span><span class="pick-short">{asideEffortShort}</span></span>
+          {:else}
+            <span class="pick-name">{agentMode ? effortLabel : thinkingLabel}</span>
+          {/if}
           <span class="pick-chev" aria-hidden="true"><Icon name="chev" size={11} /></span>
         </button>
         {#if menu === "effort"}
@@ -3568,6 +4387,9 @@
           </button>
           {#if menu === "history"}
             {@render pickMenu("Earlier drafts", "newest first · a click puts one back in the box")}
+          {:else if menu === "rewound" && offerRows.length > 0}
+            <!-- Item 724: the rewound message alone, the drafts list's look. -->
+            {@render pickMenu("Rewound message", "a click swaps it into the box")}
           {/if}
         </span>
       {/if}
@@ -3596,7 +4418,7 @@
           class="ns-btn ghost small act"
           use:tip={aside ? "Hold this message; it goes when this answer ends" : "Hold this message; it goes when the turn ends"}
           onclick={enqueue}
-          disabled={!text.trim() && attachments.length === 0}>Queue</button
+          disabled={boxEmpty}>Queue</button
         >
         <!-- Item 411: its shape is his pick in Settings → Appearance (square
              unless he picks another); `wide` is item 398's, below.
@@ -3622,7 +4444,7 @@
           class="ns-btn accent send act fil-btn fil-send"
           use:tip={asideSendTip}
           onclick={() => void submit()}
-          disabled={!app.connection || asideBlock !== null || (!text.trim() && attachments.length === 0)}
+          disabled={!app.connection || asideBlock !== null || boxEmpty}
         >
           <span class="fil-scan" aria-hidden="true"></span><FilamentMark kind="send" />Send
         </button>
@@ -3637,7 +4459,7 @@
           <button
             class="ns-btn ghost small act fil-btn fil-ghost"
             use:tip={"Ask this of the chat without adding it to the chat: answered from what is already in context, no changes, recorded nowhere (Claude Code's /btw)"}
-            disabled={!text.trim() && attachments.length === 0}
+            disabled={boxEmpty}
             onclick={() => void submitAside()}
           >
             <FilamentMark kind="aside" /><span class="fold-word">Ask aside</span><span class="short-word">Aside</span>
@@ -3663,7 +4485,7 @@
             {#if councilOpen}
               <CouncilPopover
                 anchor={councilBtn}
-                disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
+                disabled={!app.connection || sendHeld() || boxEmpty}
                 onsend={(p) => void submitCouncil(p)}
                 onclose={() => {
                   councilOpen = false;
@@ -3678,10 +4500,10 @@
         <span class="send-split act">
           <button
             class="ns-btn accent send act fil-btn fil-send"
-            use:tip={withEstimate(sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld()))}
+            use:tip={withEstimate(sendTip(!!app.connection, boxEmpty, sendHeld()))}
             onclick={() => void submit()}
             class:sending
-            disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
+            disabled={!app.connection || sendHeld() || boxEmpty}
           >
             <span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span><FilamentMark kind="send" />Send
           </button><ScheduleMenu {key} {text} {attachments} blocked={scheduleBlocked} onscheduled={scheduled} />
@@ -3720,6 +4542,58 @@
         <span class="bottom-mark" aria-hidden="true">⚒</span>tools
       </button>
   {/snippet}
+  <!-- Item 786 (his "we have none of the cash information on this"): the
+       keep-warm switch and the cache chip, one snippet drawn in the chat's
+       row and an aside's — an aside reads the chat's cache (item 732), so
+       its box shows the same chip, timed by the same reads. -->
+  {#snippet cacheChips()}
+    <!-- Item 728: a chat whose hand-off switched it off says so, cache or not. -->
+    {#if kwChat && !(aside && asideOwnModel) && ((isOn(kw) && kw?.chosen !== false) || cache?.ttl === "1h" || handedOffOff(kw))}
+      <button
+        class="ns-chip bottom-toggle keep-warm"
+        class:on={isOn(kw)}
+        class:keeping={isKeeping(kw, now)}
+        aria-pressed={isOn(kw)}
+        aria-haspopup="menu"
+        bind:this={kwButton}
+        use:tip={switchTitle(kw, now, cache?.warm ? nextEst?.cold : null)}
+        use:holdPress={() => (kwHoldOpen = true)}
+        onclick={() => void flipKeepWarm(isOn(kw) ? "off" : "on")}
+      >
+        <span class="bottom-mark" aria-hidden="true">♨</span>{switchLabel(kw, now)}{#if kw?.hold_hours}<span class="keep-warm-hold">· {kw.hold_hours} h</span>{/if}
+      </button>
+      {#if kwHoldOpen && kwButton}<KeepWarmHold anchor={kwButton} status={kw} onpick={(h) => void holdFor(h)} onclose={() => (kwHoldOpen = false)} />{/if}
+    {/if}
+    {#if cache && cacheBuilt && cache.warm && (cacheChanges.length > 0 || layerChange)}
+      <!-- Backlog 408: a pending change would lose the warm cache; the
+           click puts every changed setting back. Item 777: priced, with
+           it against without it; a logged layer change is named too (the
+           Context page puts it back, not this click). -->
+      <button
+        class="ns-chip mono bottom-cache losing"
+        use:tip={lossTip}
+        onclick={restoreCache}
+      >
+        <span class="losing-what">{cacheChanges.length > 0 && !layerChange ? cacheLossLine(cacheChanges) : `cache will be lost · ${lossWords.join(", ")}`}</span>{#if changeCost}{@const vs = changeCost.line.indexOf(" (vs")}<span class="bottom-cache-next"><span class="next-sep">&nbsp;·&nbsp;</span>{vs < 0 ? changeCost.line : changeCost.line.slice(0, vs)}{#if vs >= 0}<span class="cost-vs">{changeCost.line.slice(vs)}</span>{/if}</span>{/if}{#if canRestore(cacheChanges)}<span class="bottom-cache-when restore-part">&nbsp;· <span class="restore-word">restore</span></span>{/if}
+      </button>
+    {:else if (aside ? asideHit : cached) != null || cache}
+      <div
+        class="ns-chip mono bottom-cache"
+        class:cold={cache ? !cache.warm : false}
+        class:unknown={face === "unknown"}
+        use:tip={cacheTitle}
+      >
+        <!-- Item 776: cold reads `cache cold · next ≈ $1.65`; warm puts both prices on the face. -->
+        <!-- Item 786: `unknown` after a stop that logged no reply; an aside on its own model says so. -->
+        <!-- Item 833 (merge round W): every part carries its separator in front (`.cache-sep`); a wrapped line's "·" is clipped (CSS below). -->
+        <span class="cache-flow"><span class="cache-lines"
+            >{#if face === "unknown"}<span class="cache-part"><span class="cache-sep" aria-hidden="true"></span>cache <span class="bottom-cache-when" aria-label="cache unknown until the next send">unknown</span></span>{:else if cache && !cache.warm}<span class="cache-part"><span class="cache-sep" aria-hidden="true"></span>{#if aside && asideOwnModel}own model{:else}cache{/if} <span class="bottom-cache-when" aria-label={cacheLine(cache)}>cold</span></span>{:else}{@const hit = aside ? asideHit : cached}<span class="cache-part"><span class="cache-sep" aria-hidden="true"></span>{#if hit != null}{Math.round(hit * 100)}%<span class="bottom-cache-word">{" cached"}</span>{:else}cache{/if}</span>{#if cache}<span class="cache-part bottom-cache-when" aria-label={cacheLine(cache)}><span class="cache-sep">·</span>{remainingText(cache.remainingMs)}</span>{/if}{/if}{#if cache && nextEst}<span class="bottom-cache-next"
+                >{#each nextEst.line.split(" · ") as part}<span class="cache-part next-part"><span class="cache-sep">·</span>{part}</span>{/each}</span
+              >{/if}</span
+          ></span>
+      </div>
+    {/if}
+  {/snippet}
   {#if aside}
     <!-- The aside's bottom row (backlog 283): its line — where it answers
          from, or why Send waits — and the format toggle, the one bottom
@@ -3752,6 +4626,7 @@
       >
         <span class="bottom-mark" aria-hidden="true">∑</span>format
       </button>
+      {@render cacheChips()}
     </div>
   {:else if !floating}
     <!-- The bottom row (backlog 112, board 10's C): the two transcript
@@ -3789,57 +4664,14 @@
            (blocker 1844): with the default on, the switch covers it. A chat
            already in that mode reads "On until your next message" and ends
            at his send as before. -->
-      {#if kwChat && ((isOn(kw) && kw?.chosen !== false) || cache?.ttl === "1h")}
-        <button
-          class="ns-chip bottom-toggle keep-warm"
-          class:on={isOn(kw)}
-          class:keeping={isKeeping(kw, now)}
-          aria-pressed={isOn(kw)}
-          aria-haspopup="menu"
-          bind:this={kwButton}
-          use:tip={switchTitle(kw, now)}
-          use:holdPress={() => (kwHoldOpen = true)}
-          onclick={() => void flipKeepWarm(isOn(kw) ? "off" : "on")}
-        >
-          <span class="bottom-mark" aria-hidden="true">♨</span>{switchLabel(kw, now)}{#if kw?.hold_hours}<span class="keep-warm-hold">· {kw.hold_hours} h</span>{/if}
-        </button>
-        {#if kwHoldOpen && kwButton}<KeepWarmHold anchor={kwButton} status={kw} onpick={(h) => void holdFor(h)} onclose={() => (kwHoldOpen = false)} />{/if}
-      {/if}
-      {#if cache && cacheBuilt && cacheChanges.length > 0}
-        <!-- Backlog 408: a pending change would lose the warm cache; the
-             click puts every changed setting back. -->
-        <button
-          class="ns-chip mono bottom-cache losing"
-          use:tip={cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs)}
-          onclick={restoreCache}
-        >
-          <span class="losing-what">{cacheLossLine(cacheChanges)}</span>{#if canRestore(cacheChanges)}<span class="bottom-cache-when">&nbsp;· <span class="restore-word">restore</span></span>{/if}
-        </button>
-      {:else if cached != null || cache}
-        <div
-          class="ns-chip mono bottom-cache"
-          class:cold={cache ? !cache.warm : false}
-          use:tip={cache
-            ? `${cacheShareTitle} ${cacheTitle}`
-            : `${cacheShareTitle} No timer for this chat: its last turn was made before the cache lifetime was recorded (2026-09-15); the next turn will show one.`}
-        >
-          {#if cached != null}{Math.round(cached * 100)}% cached{:else}cache{/if}{#if cache}
-            <span class="bottom-cache-when" aria-label={cacheLine(cache)}>· {remainingText(cache.remainingMs) ?? "cold"}</span>
-          {/if}
-        </div>
-      {/if}
+      {@render cacheChips()}
     </div>
   {/if}
-  {#if !app.connection}
-    <!-- "connecting…" while the launch connect runs, as the top bar says;
-         the failure wording only once it is true (item 230). -->
-    <div class="hint">
-      {composerConnectHint({
-        connected: false,
-        connecting: app.connecting,
-        launchConnectSettled: launchState.connectSettled,
-      })}
-    </div>
+  {#if connectHint}
+    <!-- ~~"connecting…" while the launch connect runs, as the top bar says~~
+         — item 873: the top bar says it alone; the failure wording only once
+         it is true (item 230). -->
+    <div class="hint">{connectHint}</div>
   {:else if dragDepth > 0}
     <div class="hint">drop images or PDFs to attach</div>
   {:else if !aside && handoff.noStartPromptChat !== null && handoff.noStartPromptChat === app.activeSessionId && !text}
@@ -3893,15 +4725,7 @@
      verbatim, behind `:global(:where([data-layout="classic"]))`. `:where()`
      weighs nothing, so neither changes the other's cascade (app.css has the
      same gate). */
-  /* The council button's frame (backlog 149): the popover hangs off it. */
-  .council-wrap {
-    position: relative;
-    display: inline-flex;
-    flex: none;
-  }
-  .council-wrap .ns-btn.on {
-    color: var(--accent-ink);
-  }
+  /* Item 716: the council button's frame — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   /* The in-box pickers (backlog 112, board 10's A): small text buttons
      beside Attach, a menu above each. `.pick-wrap` is the menu's frame. */
   .pick-wrap {
@@ -3913,102 +4737,7 @@
        instead, below. */
     flex: none;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    /* A drop-down is a button with a small arrow (Filament IV, item 525):
-       the control fill and edge, 28px, as `.ns-btn` in app.css. */
-    min-height: 28px;
-    padding: 0 10px;
-    border-radius: var(--r1);
-    border: 1px solid var(--line2);
-    background: var(--well);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-    font-family: var(--sans);
-    font-size: 12.5px;
-    font-weight: 500;
-    color: var(--ink);
-    white-space: nowrap;
-    cursor: pointer;
-    max-width: 240px;
-    min-width: 0;
-    transition:
-      background-color 120ms,
-      border-color 120ms;
-  }
-  :global(:where([data-layout="classic"])) .pick-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 3px 8px;
-    border-radius: 6px;
-    border: 1px solid transparent;
-    background: transparent;
-    font-family: var(--sans);
-    font-size: 12px;
-    color: var(--ink2);
-    white-space: nowrap;
-    cursor: pointer;
-    max-width: 240px;
-    min-width: 0;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-btn:hover:not(:disabled),
-:global(:where(:root:not([data-layout="classic"]))) .pick-btn.open {
-    background: var(--well2);
-    color: var(--ink);
-    border-color: var(--dim);
-  }
-  :global(:where([data-layout="classic"])) .pick-btn:hover:not(:disabled),
-:global(:where([data-layout="classic"])) .pick-btn.open {
-    background: var(--well);
-    color: var(--ink);
-    border-color: var(--line2);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-btn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-  .pick-btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .pick-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--done);
-    flex: none;
-  }
-  .pick-dot.unknown {
-    background: var(--dim);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-k {
-    color: var(--dim);
-    font-weight: 400;
-  }
-  :global(:where([data-layout="classic"])) .pick-k {
-    color: var(--dim);
-  }
-  .pick-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-chev {
-    display: inline-flex;
-    color: var(--ink2);
-    flex: none;
-  }
-  :global(:where([data-layout="classic"])) .pick-chev {
-    display: inline-flex;
-    color: var(--dim);
-    flex: none;
-  }
-  .pick-chev :global(svg) {
-    width: 11px;
-    height: 11px;
-  }
+  /* Item 716: the model / effort / drafts pickers — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   /* Placed by `use:floatMenu` (backlog 210): portalled to `body` and fixed
      by the button's rectangle, so the Welcome page's scrolling column can
      no longer cut it off; its top, left and max-height are set inline. */
@@ -4261,103 +4990,17 @@
     flex-wrap: wrap;
     gap: 6px;
   }
-  /* A switch (Filament IV, item 525; `.ns-switch` in app.css): a pill with
-     a sliding dot, accent when on. The mark's glyph is the track: its
-     letter is hidden and the dot is drawn on it. */
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle {
-    cursor: pointer;
-    font: 500 11.5px var(--sans);
-    color: var(--ink2);
-    gap: 7px;
-    min-height: 24px;
-    padding: 0 9px 0 8px;
-    border-radius: 12px;
-    background: var(--raised);
-    text-transform: capitalize;
-  }
-  :global(:where([data-layout="classic"])) .bottom-toggle {
-    cursor: pointer;
-    font-family: var(--sans);
-    color: var(--dim);
-    gap: 5px;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-mark {
-    position: relative;
-    flex: none;
-    width: 20px;
-    height: 12px;
-    border-radius: 6px;
-    background: var(--well2);
-    font-size: 0;
-    color: transparent;
-    overflow: hidden;
-    transition: background-color 120ms;
-  }
-  :global(:where([data-layout="classic"])) .bottom-mark {
-    font-size: 11px;
-    opacity: 0.55;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-mark::after {
-    content: "";
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--dim);
-    transition:
-      left 120ms,
-      background-color 120ms;
-  }
-  .bottom-toggle.on {
-    color: var(--ink);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle.on .bottom-mark {
-    background: var(--accent);
-  }
-  :global(:where([data-layout="classic"])) .bottom-toggle.on .bottom-mark {
-    color: var(--accent);
-    opacity: 1;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle.on .bottom-mark::after {
-    left: 10px;
-    background: var(--on-accent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:hover {
-    border-color: var(--dim);
-    color: var(--ink);
-  }
-  :global(:where([data-layout="classic"])) .bottom-toggle:hover {
-    border-color: var(--accent);
-    color: var(--ink);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    :global(:where(:root:not([data-layout="classic"]))) .bottom-mark,
-:global(:where(:root:not([data-layout="classic"]))) .bottom-mark::after,
-:global(:where(:root:not([data-layout="classic"]))) .pick-btn {
-      transition: none;
-    }
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:disabled,
-:global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:disabled:hover {
-    cursor: default;
-    opacity: 0.5;
-    border-color: var(--line2);
-    color: var(--dim);
-  }
-  :global(:where([data-layout="classic"])) .bottom-toggle:disabled,
-:global(:where([data-layout="classic"])) .bottom-toggle:disabled:hover {
-    cursor: default;
-    opacity: 0.5;
-    border-color: transparent;
-    color: var(--dim);
-  }
+  /* Item 716: the bottom row's switches — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   /* Keep-warm (582): the label is a clock time or a reason, never
      capitalised like the one-word toggles. */
   .bottom-toggle.keep-warm {
     text-transform: none;
     font-variant-numeric: tabular-nums;
+    /* Item 728: a reason longer than a narrow row ("off — chat handed
+       off" at 390 wide) wraps inside the chip, never runs off its left. */
+    max-width: 100%;
+    white-space: normal;
+    text-align: left;
   }
   /* Item 643: a held chat says so on the switch ("· 24 h"). */
   .keep-warm-hold {
@@ -4367,16 +5010,64 @@
   .bottom-cache {
     font-variant-numeric: tabular-nums;
     color: var(--ink2);
+    /* Item 833 (his shots: "100% cached · 55 min · next ≈ $0.05 · cold ≈
+       $1.78" ran past an aside card's right edge): never wider than its
+       row; past that it wraps, only at a " · " — the share, the timer and
+       each price stay whole. */
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+  .next-part {
+    white-space: nowrap;
+  }
+  /* Item 833, merge round W (his call: a wrapped line must not start with
+     "·"). Each part brings its separator in front at one fixed width — the
+     first part a blank one — and the lines are shifted left by that width
+     inside a clip, so every line's first separator falls outside it. The
+     separator keeps its width wherever it is, so the clip never changes
+     where the lines break (hiding it by script would: the part would then
+     fit back on the line above). */
+  .bottom-cache {
+    --cache-sep: calc(6px + 2ch);
+  }
+  .cache-flow {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+  }
+  .cache-lines {
+    display: flex;
+    flex-wrap: wrap;
+    margin-left: calc(-1 * var(--cache-sep));
+  }
+  .cache-part {
+    white-space: nowrap;
+  }
+  .cache-sep {
+    display: inline-block;
+    box-sizing: border-box;
+    width: var(--cache-sep);
+    padding-left: 6px;
+  }
+  /* The prices are parts of the same lines (the losing bar's own
+     `.bottom-cache-next` is not inside `.cache-lines`). */
+  .cache-lines > .bottom-cache-next {
+    display: contents;
   }
   /* Backlog 408: the warning reads in the accent, and is a button. */
   .bottom-cache.losing {
     display: inline-flex;
+    /* Post-install 16c8e01: each part brings its own "&nbsp;· "; the chip's
+       6 px flex gap doubled the space before every "·" (measured in WebKit). */
+    gap: 0;
     min-width: 0;
     max-width: 100%;
     color: var(--accent);
     border-color: var(--accent);
     cursor: pointer;
     white-space: nowrap;
+    flex-wrap: nowrap;
   }
   .losing-what {
     min-width: 0;
@@ -4394,6 +5085,43 @@
   /* Only the timer half dims when cold; the share is still a fact. */
   .bottom-cache.cold .bottom-cache-when {
     color: var(--dim);
+  }
+  /* Item 699: the next send's price, quieter than the timer; dropped on a
+     phone-width window, where the row has no room (the tooltip keeps it). */
+  .bottom-cache-next {
+    margin-left: 4px;
+    color: var(--dim);
+    /* ~~nowrap~~ (item 833): its parts are nowrap (`.next-part`), so it wraps
+       between "next ≈ …" and "cold ≈ …" when the chip has to. */
+    white-space: normal;
+  }
+  /* Item 777: on the "cache will be lost" bar the price is the point — it
+     never shrinks, and the words ahead of it give way first, phone width too. */
+  .bottom-cache.losing .bottom-cache-next {
+    flex: none;
+    color: inherit;
+    /* Item 833: the plain chip's wrap is not this bar's — it cuts its words. */
+    white-space: nowrap;
+    /* Post-install 16c8e01: the separator span carries its own spaces
+       (a trailing plain space was dropped, so the face read "off  ·next"). */
+    margin-left: 0;
+  }
+  @media (max-width: 560px) {
+    .bottom-cache-next,
+    .cache-lines > .bottom-cache-next {
+      display: none;
+    }
+    .bottom-cache.losing .bottom-cache-next {
+      display: inline;
+    }
+    /* Phone width: the price alone (the click still restores; the tooltip
+       has the rest). */
+    .bottom-cache.losing .cost-vs,
+    .bottom-cache.losing .next-sep,
+    .bottom-cache.losing .restore-part,
+    .bottom-cache.losing .losing-what {
+      display: none;
+    }
   }
 
   :global(:where(:root:not([data-layout="classic"]))) .composer {
@@ -4449,16 +5177,39 @@
     --q-ground: var(--aside-well, var(--sheet));
     border-style: dashed;
     background: var(--aside-well, var(--sheet));
+  }
+  /* ~~Every aside's card 8 px × 10 px, gap 6, its row 5 px under it~~ —
+     item 886 (his "the main chat text box seems to sit slightly higher than
+     the aside textbox … the spacing is like slightly different"): an aside
+     tab's and the side panel's box take the chat's padding, gap and row
+     gap; only a floating card in the chat (`compact`) keeps the tight ones. */
+  .composer.aside.compact .card {
     padding: 8px 10px;
     gap: 6px;
+  }
+  .composer.aside.compact .bottom-row {
+    margin-top: 5px;
+  }
+  /* Item 886: the chat's row is taller than an aside's — its Send carries
+     the ▾ (Send later), which an aside has not — so the aside's text sat
+     lower by the difference (5.8 px Jarvis, 3.9 px Classic, measured at
+     1440×900 in the 886 harness). The row keeps the chat's height. */
+  :global(:where(:root:not([data-layout="classic"]))) .composer.aside:not(.compact) .row {
+    min-height: 33.8px;
+  }
+  :global(:where([data-layout="classic"])) .composer.aside:not(.compact) .row {
+    min-height: 36.8px;
   }
   .composer.aside .card:focus-within {
     border-style: solid;
   }
   .composer.aside .bottom-row {
-    margin-top: 5px;
-    justify-content: space-between;
-    flex-wrap: nowrap;
+    /* ~~space-between~~ (item 833): wrapped, it spread the chips of each
+       later line apart (Format alone at the left in his shots); the line
+       grows and the spacer pushes, so flex-end reads as the chat's row. */
+    justify-content: flex-end;
+    /* Item 786: the cache chips joined the row; it wraps, never clips. */
+    flex-wrap: wrap;
   }
   .aside-line {
     min-width: 0;
@@ -4615,6 +5366,54 @@
     cursor: zoom-in;
     display: block;
     border-radius: 8px;
+  }
+  /* Item 797: a pick chip's mark, and its opened contents. */
+  .image-open.picked {
+    position: relative;
+    cursor: pointer;
+  }
+  .pick-mark {
+    position: absolute;
+    left: 3px;
+    bottom: 3px;
+    font-size: 8.5px;
+    line-height: 12px;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: var(--accent);
+    color: var(--on-accent, #000);
+    letter-spacing: 0.04em;
+  }
+  .pick-detail {
+    max-width: 760px;
+    margin: 0 auto 0.5rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--well, transparent);
+  }
+
+  .pick-crop {
+    width: auto;
+    height: auto;
+    max-width: 220px;
+    max-height: 140px;
+    object-fit: contain;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: block;
+  }
+  .pick-words {
+    flex: 1;
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
   }
   .image-open:focus-visible {
     outline: 2px solid var(--accent);
@@ -4773,22 +5572,7 @@
       linear-gradient(var(--tk), var(--tk)) 100% 100% / 12px 1.5px no-repeat,
       linear-gradient(var(--tk), var(--tk)) 100% 100% / 1.5px 12px no-repeat;
   }
-  /* The row's buttons are real buttons (Attach, Ask aside, Council, Queue):
-     the markup's `ghost` is the quiet button of other screens; here each has
-     the control fill and edge, 28px tall. */
-  :global(:where(:root:not([data-layout="classic"]))) .row .ns-btn.ghost {
-    min-height: 28px;
-    padding: 0 11px;
-    font-size: 12.5px;
-    background: var(--well);
-    border-color: var(--line2);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-    color: var(--ink);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .row .ns-btn.ghost:hover:not(:disabled) {
-    background: var(--well2);
-    border-color: var(--dim);
-  }
+  /* Item 716: the row's ghost buttons — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   .row {
     display: flex;
     align-items: center;
@@ -4808,31 +5592,18 @@
   .row:not([data-fold="0"]) .pick-k {
     display: none;
   }
-  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .draft-tokens {
+  .row:is([data-fold="5"], [data-fold="6"]) .draft-tokens {
     display: none;
   }
-  .council-ico {
+  /* Item 716: Council's icon and the Attach square — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
+  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .fold-word,
+  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-word {
     display: none;
   }
-  /* Item 607: the attach button is the plus alone under Filament — a
-     28-px square, the row's button height, the icon centred. */
-  :global(:where(:root:not([data-layout="classic"]))) .attach .fold-word {
-    display: none;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .attach {
-    justify-content: center;
-    width: 28px;
-    min-height: 28px;
-    padding: 0;
-  }
-  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .fold-word,
-  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-word {
-    display: none;
-  }
-  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .short-word {
+  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .short-word {
     display: inline;
   }
-  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-ico {
+  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-ico {
     display: inline-flex;
   }
   .row:is([data-fold="4"]) .pick-name {
@@ -4840,6 +5611,21 @@
   }
   .row:is([data-fold="5"], [data-fold="6"]) .pick-name {
     max-width: 48px;
+  }
+  /* Item 833: an aside's pickers have a compact form — the value alone
+     ("Opus 5.5", not "chat's · Opus 5.5") — so from level 4 they swap to
+     it whole rather than cut "chat's · …" to "chat's …". */
+  .pick-short {
+    display: none;
+  }
+  .row:is([data-fold="4"], [data-fold="5"], [data-fold="6"]) .pick-name.has-short {
+    max-width: none;
+  }
+  .row:is([data-fold="4"], [data-fold="5"], [data-fold="6"]) .has-short .pick-long {
+    display: none;
+  }
+  .row:is([data-fold="4"], [data-fold="5"], [data-fold="6"]) .has-short .pick-short {
+    display: inline;
   }
   /* The floor: the pickers keep row one at the left; a zero-height break
      (the row's ::after, a full-width flex item) sends the actions to row
@@ -4939,111 +5725,8 @@
   textarea:disabled {
     opacity: 0.5;
   }
-  /* The main action: the one solid accent block in view, 32px tall. */
-  :global(:where(:root:not([data-layout="classic"]))) .send {
-    min-height: 32px;
-    padding: 0 16px;
-    font-size: 13px;
-  }
-  :global(:where([data-layout="classic"])) .send {
-    padding: 6px 16px;
-  }
-  /* Item 398: the Stop in Send's place. "Send" in Send's weight, hidden,
-     gives it Send's width and height; the square sits centred over it. */
-  /* Filament IV's Stop: a button with a brighter edge and a red square. */
-  :global(:where(:root:not([data-layout="classic"]))) .stop {
-    position: relative;
-    font-weight: 600;
-    border-color: var(--ink2);
-  }
-  :global(:where([data-layout="classic"])) .stop {
-    position: relative;
-    font-weight: 500;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .stop:hover:not(:disabled) {
-    border-color: var(--ink);
-  }
-  .stop .stop-size {
-    visibility: hidden;
-  }
-  .stop .stop-ico {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  /* Item 411 (blocker 1524): the compact shapes keep the hidden "Send" for
-     Send's height only, at no width; the button is as wide as it is high. */
-  .stop:not(.shape-wide) {
-    padding-left: 0;
-    padding-right: 0;
-    justify-content: center;
-  }
-  .stop:not(.shape-wide) .stop-size {
-    display: inline-block;
-    width: 0;
-    overflow: hidden;
-  }
-  /* ~~31 px~~ 32 px: Send's height since item 525 (the main action's). */
-  :global(:where(:root:not([data-layout="classic"]))) .stop.shape-square,
-:global(:where(:root:not([data-layout="classic"]))) .stop.shape-round {
-    width: 32px;
-    background: color-mix(in srgb, var(--failed) 16%, var(--well));
-  }
-  :global(:where([data-layout="classic"])) .stop.shape-square,
-:global(:where([data-layout="classic"])) .stop.shape-round {
-    width: 31px;
-    background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
-  }
-  .stop.shape-round {
-    border-radius: 50%;
-  }
-  .stop.shape-labelled {
-    padding-left: 12px;
-    padding-right: 12px;
-  }
-  .stop.shape-labelled .stop-ico {
-    position: static;
-    gap: 6px;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .stop-word {
-    font-size: 13px;
-    color: var(--ink);
-  }
-  :global(:where([data-layout="classic"])) .stop-word {
-    font-size: 12.5px;
-  }
-  /* Item 466: the Stop pressed — sunk, dimmed, its square a spinner — held
-     until the turn has ended. */
-  .stop.stopping {
-    transform: scale(0.92);
-    opacity: 0.6;
-    box-shadow: inset 0 1px 3px color-mix(in srgb, #000 35%, transparent);
-    cursor: progress;
-  }
-  .stop.shape-labelled.stopping .stop-ico {
-    gap: 6px;
-  }
-  .stop-spin {
-    width: 11px;
-    height: 11px;
-    border-radius: 50%;
-    border: 1.6px solid currentColor;
-    border-right-color: transparent;
-    animation: stop-spin 0.8s linear infinite;
-    flex: none;
-  }
-  @keyframes stop-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .stop-spin {
-      animation-duration: 2.4s;
-    }
-  }
+  /* Item 716: Send's size — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
+  /* Item 716 part 4: the Stop in Send's place (its shapes, its pressed state, the spinner) — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   .stop-why {
     font-size: 11.5px;
     color: var(--dim);
@@ -5056,213 +5739,7 @@
     flex: 1 1 0;
     text-align: right;
   }
-  /* Send's split (backlog 224): the ▾ carries the right-hand corners. */
-  .send-split {
-    display: inline-flex;
-    align-items: stretch;
-  }
-  .send-split .send {
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
-  }
-  /* Item 606 (his pick, blocker 1827): Filament — Send a dark bulb with an
-     amber edge and a lit coil (FilamentMark), the ▾ its matching half; Ask
-     aside and Council carry the coil family. Filament IV only; Classic has
-     none of it (the spans below are `display: none` there). Idle: a steady
-     glow and nothing moves. Hover: brighter, wider glow and a scan line
-     crosses the bulb once. Press: a charge-and-release ring. Sending: the
-     coil's pulse loops and a bright point traces the edge. */
-  .fil-scan,
-  .fil-edge {
-    display: none;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send {
-    position: relative;
-    overflow: hidden;
-    gap: 6px;
-    padding: 0 14px 0 12px;
-    background: var(--term);
-    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
-    color: var(--accent-ink);
-    box-shadow:
-      inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
-      var(--glow-main);
-    transition:
-      background 140ms ease,
-      border-color 140ms ease,
-      box-shadow 180ms ease;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret) {
-    background: var(--term);
-    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
-    border-left-color: color-mix(in srgb, var(--accent) 35%, var(--line2));
-    color: var(--accent-ink);
-    box-shadow:
-      inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
-      var(--glow-main);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret:hover:not(:disabled)) {
-    background: color-mix(in srgb, var(--accent) 12%, var(--term));
-    border-color: var(--accent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret:disabled) {
-    box-shadow: none;
-    border-color: var(--line2);
-    color: var(--dim);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--accent) 12%, var(--term));
-    border-color: var(--accent);
-    color: #fff4dc;
-    box-shadow:
-      inset 0 0 12px color-mix(in srgb, var(--accent) 26%, transparent),
-      0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:active:not(:disabled) {
-    background: color-mix(in srgb, var(--accent) 22%, var(--term));
-    border-color: var(--accent-ink);
-    transform: translateY(1px);
-    box-shadow:
-      inset 0 0 14px color-mix(in srgb, var(--accent) 40%, transparent),
-      0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending {
-    border-color: var(--accent);
-    box-shadow:
-      inset 0 0 12px color-mix(in srgb, var(--accent) 30%, transparent),
-      0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:disabled {
-    background: var(--term);
-    box-shadow: none;
-    border-color: color-mix(in srgb, var(--accent) 30%, var(--line2));
-    color: color-mix(in srgb, var(--accent-ink) 55%, var(--dim));
-    opacity: 1; /* app.css's 0.5 made the unlit bulb unreadable (2026-11-11) */
-  }
-  /* Calm (IV): no light — the bulb keeps its edge, without the halo. */
-  :global(:where([data-light="calm"])) .ns-btn.fil-send,
-  :global(:where([data-light="calm"])) .send-split :global(.sched-caret) {
-    box-shadow: none !important;
-  }
-  /* The scan line: a thin bright bar, parked off the left edge. */
-  :global(:where(:root:not([data-layout="classic"]))) .fil-scan {
-    display: block;
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    width: 10px;
-    pointer-events: none;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in srgb, var(--accent-ink) 55%, transparent) 45%,
-      #fffaf0 50%,
-      color-mix(in srgb, var(--accent-ink) 55%, transparent) 55%,
-      transparent
-    );
-    opacity: 0;
-    transform: translateX(-12px);
-  }
-  /* The edge trace: a ring the shape of the button's edge, lit by a
-     turning conic light (a bright point with an amber tail). */
-  :global(:where(:root:not([data-layout="classic"]))) .fil-edge {
-    display: block;
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    padding: 1.5px;
-    pointer-events: none;
-    background: conic-gradient(
-      from var(--fil-a, 0deg),
-      transparent 0deg 230deg,
-      color-mix(in srgb, var(--accent) 80%, transparent) 320deg,
-      #fffaf0 352deg,
-      transparent 360deg
-    );
-    -webkit-mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    mask-composite: exclude;
-    opacity: 0;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
-    opacity: 1;
-  }
-  @media (prefers-reduced-motion: no-preference) {
-    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:hover:not(:disabled) .fil-scan {
-      animation: fil-scan 0.6s ease-out 1 both;
-    }
-    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:active:not(:disabled) {
-      animation: fil-charge 0.32s ease-out 1;
-    }
-    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
-      animation: fil-edge 1s linear infinite;
-    }
-  }
-  /* Reduce motion: static glows only — sending is a full lit edge. */
-  @media (prefers-reduced-motion: reduce) {
-    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
-      background: color-mix(in srgb, var(--accent) 80%, transparent);
-    }
-  }
-  @keyframes fil-scan {
-    0% {
-      opacity: 0;
-      transform: translateX(-12px);
-    }
-    15% {
-      opacity: 0.9;
-    }
-    85% {
-      opacity: 0.9;
-    }
-    100% {
-      opacity: 0;
-      transform: translateX(var(--fil-scan-to, 120px));
-    }
-  }
-  @keyframes fil-charge {
-    0% {
-      box-shadow:
-        inset 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent),
-        0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
-    }
-    45% {
-      box-shadow:
-        inset 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent),
-        0 0 4px color-mix(in srgb, var(--accent) 40%, transparent);
-    }
-    100% {
-      box-shadow:
-        inset 0 0 14px color-mix(in srgb, var(--accent) 40%, transparent),
-        0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
-    }
-  }
-  /* The edge light's angle, registered so it turns smoothly (WebKit
-     16.4+); unregistered it would jump, which still reads as a trace. */
-  @property --fil-a {
-    syntax: "<angle>";
-    inherits: false;
-    initial-value: 0deg;
-  }
-  @keyframes fil-edge {
-    to {
-      --fil-a: 360deg;
-    }
-  }
-  /* Ask aside and Council: the coil before the word; Council's coil
-     replaces the agent icon (also its icon-only mark at fold 3+). */
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-ghost {
-    gap: 6px;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-ghost .council-ico {
-    display: none !important;
-  }
+  /* Item 716: Send's split and the Jarvis Send / Ask aside / Council — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   .hint {
     max-width: 760px;
     margin: 0.4rem auto 0;
@@ -5273,6 +5750,220 @@
      over its first line; the card is the positioning frame. */
   .card {
     position: relative;
+  }
+  /* Item 754: comments on passages — a row of chips over the box (the
+     held chip's pill), and the open one's comment line under them. */
+  .comments-wrap {
+    max-width: 760px;
+    margin: 0 auto 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .comment-chips {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+  /* Item 881: the chips' own wrapping column beside the label. */
+  .comment-list {
+    flex: 1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .comment-k {
+    font: 10.5px var(--mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--dim);
+    flex: none;
+  }
+  .comment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    max-width: 100%;
+    padding: 2px 4px 2px 9px;
+    background: var(--raised);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line2));
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--ink2);
+    white-space: nowrap;
+  }
+  .comment-chip.open {
+    border-color: var(--accent);
+  }
+  .comment-open {
+    all: unset;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    cursor: pointer;
+  }
+  .comment-open:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-offset: 1px;
+    border-radius: 999px;
+  }
+  .comment-open :global(.ns-ico) {
+    color: var(--accent);
+    flex: none;
+  }
+  .comment-q {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--ink);
+  }
+  .comment-n {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--dim);
+  }
+  .comment-n::before {
+    content: "— ";
+  }
+  .comment-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    background: var(--raised);
+    border: 1px solid var(--line2);
+    border-left: 2px solid var(--accent);
+    border-radius: var(--r1, 6px);
+  }
+  .comment-quote {
+    font-size: 12px;
+    color: var(--ink2);
+    white-space: pre-wrap;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+  }
+  /* Item 880: the passage rendered as the reply drew it — its maths
+     typeset — in the quote's small size, about three lines tall. */
+  .comment-quote.rendered {
+    display: block;
+    white-space: normal;
+    max-height: 6.2em;
+    line-height: 1.45;
+  }
+  .comment-quote.rendered :global(p) {
+    margin: 0.25em 0;
+  }
+  .comment-quote.rendered :global(.katex-display) {
+    margin: 0.2em 0;
+    padding: 0.1em 0;
+    text-align: left;
+  }
+  .comment-quote.rendered :global(.katex-display > .katex) {
+    text-align: left;
+  }
+  /* Item 880: a chip's formula at the chip's own size, on its one line. */
+  .chip-math :global(.user-math .katex) {
+    font-size: 1em;
+  }
+  .comment-ta {
+    all: unset;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 2.6em;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--ink);
+    white-space: pre-wrap;
+    field-sizing: content;
+    max-height: 9em;
+    overflow-y: auto;
+  }
+  .comment-ta::placeholder {
+    color: var(--dim);
+  }
+  .plain .comment-chip {
+    border-color: var(--line2);
+    border-radius: var(--r1, 4px);
+    background: transparent;
+  }
+  .plain .comment-chip.open {
+    border-color: var(--ink2);
+  }
+  .plain .comment-edit {
+    border-left-color: var(--line2);
+    background: transparent;
+  }
+  /* Item 694: the held passage's chip, above the box — the cap chip's
+     pill (TurnCapChip), the passage in the accent's tint under Jarvis;
+     Classic's flat chip. */
+  .held-wrap {
+    max-width: 760px;
+    margin: 0 auto 8px;
+    display: flex;
+  }
+  .held-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    max-width: 100%;
+    padding: 3px 4px 3px 9px;
+    background: var(--raised);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line2));
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--ink2);
+    white-space: nowrap;
+  }
+  .held-chip :global(.fil-svg) {
+    color: var(--accent);
+  }
+  .held-k {
+    font: 10.5px var(--mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--dim);
+    flex: none;
+  }
+  .held-q {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--ink);
+  }
+  .held-x {
+    all: unset;
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .held-x:hover {
+    color: var(--ink);
+    background: var(--well);
+  }
+  .held-x:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-offset: 1px;
+  }
+  .plain .held-chip {
+    border-color: var(--line2);
+    border-radius: var(--r1, 4px);
+    background: transparent;
   }
   .ghost-line {
     position: absolute;
@@ -5406,37 +6097,7 @@
     font-family: var(--mono);
     font-size: 12px;
   }
-  .handoff-row {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    flex-wrap: wrap;
-    font-size: 12.5px;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .handoff-row input {
-    width: 4rem;
-    font-family: var(--mono);
-    font-size: 12px;
-    background: var(--term);
-    color: var(--ink);
-    border: 1px solid var(--line2);
-    border-radius: var(--r1);
-    padding: 3px 6px;
-  }
-  :global(:where([data-layout="classic"])) .handoff-row input {
-    width: 4rem;
-    font-family: var(--mono);
-    font-size: 12px;
-    background: var(--paper);
-    color: var(--ink);
-    border: 1px solid var(--line2);
-    border-radius: 6px;
-    padding: 3px 6px;
-  }
-  .handoff-row input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
+  /* ~~`.handoff-row` and its number box~~ — item 705: the mark is the card's stepper (`.hc-step`). */
   /* The message: the composer's own field face, so it reads as the one
      thing here that is typed into. */
   :global(:where(:root:not([data-layout="classic"]))) .handoff-msg {
@@ -5477,6 +6138,286 @@
     margin-left: auto;
     font-size: 11px;
     color: var(--dim);
+  }
+
+  /* Item 705 (option A, Console — his pick, blocker 2167; the mockup is
+     nightshift-code notes/runner-design/705-options-2026-11-18/): a kicker
+     and title, a fill gauge with the mark as a tick, one row of controls,
+     the message, the buttons. Layout here for both layouts; the look in
+     Jarvis is the glass in the hand-off's amber, in Classic the sheet as
+     before (Classic is a backup). */
+  .handoff.hc {
+    position: relative;
+    padding: 0;
+    gap: 0;
+    box-sizing: border-box;
+  }
+  .hc-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px 0;
+    min-width: 0;
+  }
+  .hc-kicker {
+    flex: none;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent-ink, var(--accent));
+  }
+  .hc-title {
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 500;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .hc-x {
+    margin-left: auto;
+    display: flex;
+    gap: 4px;
+    flex: none;
+  }
+  .hc-ico {
+    width: 24px;
+    height: 24px;
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--r1, 6px);
+    background: none;
+    color: var(--dim);
+    font: 13px var(--mono);
+    cursor: pointer;
+  }
+  .hc-ico:hover,
+  .hc-ico:focus-visible {
+    background: var(--well, var(--paper));
+    color: var(--ink);
+    outline: none;
+  }
+  .hc-body {
+    padding: 10px 14px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .hc-compact .hc-body {
+    gap: 8px;
+  }
+  .hc-meter {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .hc-gauge {
+    position: relative;
+    display: block;
+    height: 4px;
+    flex: 1;
+    min-width: 40px;
+    border-radius: 3px;
+    background: var(--well, var(--line));
+  }
+  .hc-gauge > i {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    border-radius: 3px;
+    background: var(--accent);
+  }
+  .hc-gauge > b {
+    position: absolute;
+    top: -3px;
+    width: 2px;
+    height: 10px;
+    margin-left: -1px;
+    border-radius: 1px;
+    background: var(--ink);
+  }
+  /* Compact: the gauge and its number go together at the row's right, and wrap as one. */
+  .hc-fill-row {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    white-space: nowrap;
+  }
+  /* A width, not only a basis: an empty span's basis does not count in the
+     group's own width (WebKit measured the group 101 px for 171 px of parts). */
+  .hc-gauge-row {
+    flex: none;
+    width: 110px;
+  }
+  .hc-gauge-mini {
+    flex: none;
+    width: 90px;
+  }
+  .hc-gnum {
+    white-space: nowrap;
+  }
+  .hc-gnum em {
+    font-style: normal;
+    color: var(--accent-ink, var(--accent));
+  }
+  .hc-fields {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .hc-sep {
+    width: 1px;
+    height: 18px;
+    margin: 0 2px;
+    background: var(--line2);
+  }
+  .hc-lbl {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  /* The mark's stepper: − value% +, mono; the value is typed in too. */
+  .hc-step {
+    display: inline-flex;
+    align-items: stretch;
+    height: 28px;
+    box-sizing: border-box;
+    border: 1px solid var(--line2);
+    overflow: hidden;
+  }
+  .hc-step > button {
+    width: 26px;
+    padding: 0;
+    border: none;
+    color: var(--ink2);
+    font: 14px var(--mono);
+    cursor: pointer;
+  }
+  .hc-step > button:first-child {
+    border-right: 1px solid var(--line2);
+  }
+  .hc-step > button:last-child {
+    border-left: 1px solid var(--line2);
+  }
+  .hc-step > button:hover {
+    color: var(--ink);
+  }
+  .hc-step > input {
+    width: 2.6em;
+    padding: 0 0 0 6px;
+    border: none;
+    background: none;
+    color: var(--ink);
+    font: 500 12.5px var(--mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+  .hc-step > input::-webkit-inner-spin-button,
+  .hc-step > input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .hc-step > input:focus {
+    outline: none;
+  }
+  .hc-step > small {
+    display: flex;
+    align-items: center;
+    padding: 0 6px 0 1px;
+    color: var(--dim);
+    font: 12px var(--mono);
+  }
+  .hc-step:focus-within {
+    border-color: var(--accent);
+  }
+  .hc .handoff-msg {
+    box-sizing: border-box;
+    padding: 8px 10px;
+    line-height: 1.5;
+  }
+  /* Compact: the message folds to two lines and fades; a click edits it in full. */
+  .hc .handoff-msg.hc-clip {
+    resize: none;
+    -webkit-mask-image: linear-gradient(180deg, #000 55%, transparent);
+    mask-image: linear-gradient(180deg, #000 55%, transparent);
+  }
+  .hc .handoff-msg.hc-clip:focus {
+    -webkit-mask-image: none;
+    mask-image: none;
+    min-height: 7.5em;
+  }
+  /* The one line. */
+  .handoff.hc.hc-mini {
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px 6px 12px;
+  }
+  .hc-mini .hc-title {
+    font-size: 13px;
+  }
+  @container (max-width: 560px) {
+    .hc-mini .hc-gauge-mini {
+      display: none;
+    }
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .handoff.hc {
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line2));
+    background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, var(--raised)), var(--raised) 60%);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--accent) 30%, transparent),
+      0 10px 30px rgba(0, 0, 0, 0.35);
+    margin-bottom: 8px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .hc-gauge > i {
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, transparent), var(--accent));
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .hc-step {
+    border-radius: var(--r1);
+    background: var(--term);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .hc-step > button {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .hc .ns-btn.accent.hc-go {
+    background: var(--term);
+    border: 1px solid color-mix(in srgb, var(--accent) 70%, var(--line2));
+    color: var(--accent-ink);
+    box-shadow: inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent), var(--glow-main);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .handoff-msg:focus,
+  :global(:where(:root:not([data-layout="classic"]))) .hc .handoff-msg:focus {
+    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
+  }
+  /* The grip, lit while the card is up: it sizes the card first. */
+  :global(:where(:root:not([data-layout="classic"]))) .composer.hc-grip > :global(.handle)::after {
+    width: 46px;
+    background: color-mix(in srgb, var(--accent) 50%, var(--line2));
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  :global(:where([data-layout="classic"])) .hc-step {
+    border-radius: 6px;
+    background: var(--paper);
+  }
+  :global(:where([data-layout="classic"])) .hc-step > button {
+    background: var(--sheet);
+  }
+  :global(:where([data-layout="classic"])) .composer.hc-grip > :global(.handle)::after {
+    background: var(--accent);
   }
 
   /* The `/` picker (backlog 077): a plain list joined to the card's top. */
@@ -5553,4 +6494,7 @@
     font-family: var(--mono);
     font-size: 10.5px;
   }
+
+  /* Item 702: the whole folded bar expands on click (both layouts). */
+  .handoff-min-open { cursor: pointer; }
 </style>

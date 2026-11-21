@@ -316,42 +316,60 @@ pub(crate) async fn connect_agent_body(
     } else {
         false
     };
-    let prompt = nightloom_service::agent_prompt_with(
-        &PromptConfig {
-            identity: false,
-            environment: false,
-            project_instructions: preamble,
-            user_memory: preamble,
-            // By the alias the rail sent (`opus`, `sonnet`), not the dated id
-            // the CLI resolves it to: that arrives with the first turn, after
-            // this prompt is built once for the session. So on this engine
-            // the file is named after the alias, and a chat on the CLI's
-            // default model (no alias) reads none.
-            model: preamble.then(|| spec.model.clone()).flatten(),
-            // The Chat instructions ride the preamble switch like the
-            // model's file (nightshift backlog 102); appended after the
-            // CLI's own prompt, which stays underneath a Chat. By the
-            // declaration (backlog 144): the layer is in the prompt, and
-            // a switch must not rewrite the prompt.
-            chat_instructions: preamble && declared == ChatKind::Chat,
-            project: preamble
-                .then(|| {
-                    seen.map(|p| ProjectContext {
-                        name: p.name.clone(),
-                        notes_dir: p.notes_dir(),
-                    })
+    let config = PromptConfig {
+        identity: false,
+        environment: false,
+        project_instructions: preamble,
+        user_memory: preamble,
+        // By the alias the rail sent (`opus`, `sonnet`), not the dated id
+        // the CLI resolves it to: that arrives with the first turn, after
+        // this prompt is built once for the session. So on this engine
+        // the file is named after the alias, and a chat on the CLI's
+        // default model (no alias) reads none.
+        model: preamble.then(|| spec.model.clone()).flatten(),
+        // The Chat instructions ride the preamble switch like the
+        // model's file (nightshift backlog 102); appended after the
+        // CLI's own prompt, which stays underneath a Chat. By the
+        // declaration (backlog 144): the layer is in the prompt, and
+        // a switch must not rewrite the prompt.
+        chat_instructions: preamble && declared == ChatKind::Chat,
+        // How he works, for every chat (nightshift item 738): on the
+        // preamble and his Settings switch — and not where the CLI already
+        // reads the full practices file through the folder's CLAUDE.md
+        // (safe mode reads no CLAUDE.md, so there it is always sent).
+        practices: preamble
+            && nightloom_service::prompt::practices_layer_on()
+            && (spec.safe_mode || !nightloom_service::prompt::practices_imported(&workspace)),
+        project: preamble
+            .then(|| {
+                seen.map(|p| ProjectContext {
+                    name: p.name.clone(),
+                    notes_dir: p.notes_dir(),
                 })
-                .flatten(),
-            knowledge: knowledge.map(|dir| KnowledgeContext { dir }),
-            // The thread layer (backlog 271), on the preamble switch.
-            thread: preamble
-                .then(|| thread_context(seen, open.thread.as_deref()))
-                .flatten(),
-            cwd: workspace.clone(),
-            custom: None,
-            edits: edits.clone(),
-        }
-        .without(&off),
+            })
+            .flatten(),
+        knowledge: knowledge.map(|dir| KnowledgeContext { dir }),
+        // The thread layer (backlog 271), on the preamble switch.
+        thread: preamble
+            .then(|| thread_context(seen, open.thread.as_deref()))
+            .flatten(),
+        cwd: workspace.clone(),
+        custom: None,
+        edits: edits.clone(),
+    }
+    .without(&off);
+    // Where the volatile layers are read from for each message's note
+    // (item 725): a layer with the chat's own text does not follow its file.
+    let sources = nightloom_service::layer_note::LayerSources {
+        project: config.project.clone(),
+        thread: config
+            .thread
+            .clone()
+            .filter(|_| !edits.contains_key(&SegmentKind::Thread)),
+        knowledge: config.knowledge.clone(),
+    };
+    let prompt = nightloom_service::agent_prompt_with(
+        &config,
         system.as_deref(),
         nightloom_service::EngineLayers {
             engine_note: !off.contains(&SegmentKind::EngineNote),
@@ -397,7 +415,11 @@ pub(crate) async fn connect_agent_body(
             held.as_ref(),
             has_cli,
             &prompt_hold::Ask {
-                cold: cold.unwrap_or(true),
+                // The window's timer reads the events it has, which during a
+                // switch may not be this chat's (item 725: a 13-minute-old
+                // 1-hour cache taken as cold); the chat's own log wins
+                // when it says warm.
+                cold: cold.unwrap_or(true) && !open.log_warm,
                 auto: auto_layers.unwrap_or(true),
                 // A layer he switched off or gave its own text is his
                 // click already: taken now, like *Update now*.
@@ -434,6 +456,7 @@ pub(crate) async fn connect_agent_body(
             rules_note: r.rules_note,
         };
         *holds.file.lock().await = file;
+        *holds.sources.lock().await = sources;
         r.prompt
     };
     spec.append_system_prompt = prompt.render_flat();
@@ -671,6 +694,20 @@ pub(crate) async fn connect_agent_body(
     // the cached prefix across the switch.
     spec.apply_kind(declared);
     spec.apply_kind_policy(kind, declared);
+    // Item 804: a read-only chat of Home's gets his connectors whatever
+    // the rail's switch says, less the ones he turned off for Home — only
+    // a chat that refuses the connectors' writers, so nothing can be sent
+    // or changed through them.
+    // Item 872: Home's chats are marked, held or not — its own Reminders
+    // writer is refused wherever no card gates it.
+    nightloom_service::home::reach::mark(seen.map(|p| p.source.as_deref()), &mut spec);
+    if spec.refuses_mcp_writers() {
+        nightloom_service::home::reach::apply(
+            seen.map(|p| p.source.as_deref()),
+            nightloom_service::project::config_dir().as_deref(),
+            &mut spec,
+        );
+    }
 
     // Probed rather than assumed. A missing or unrunnable binary is the
     // overwhelmingly likely first failure on this engine, and finding out at
@@ -819,6 +856,15 @@ pub(crate) struct OpenChat {
     pub(crate) hold_id: Option<String>,
     /// Whether the chat has a Claude Code session already.
     pub(crate) has_cli: bool,
+    /// The chat's own log says its cache is warm now (item 725,
+    /// `prompt_hold::log_warm`): a connect does not take a changed layer
+    /// then, whatever the window's timer read.
+    pub(crate) log_warm: bool,
+    /// The chat's newest reply that went to the cache and its keep-warm
+    /// folder (item 893): when the log alone reads cold, [`open_chat`]
+    /// asks the folder whether a ping or an aside kept it warm since.
+    warm_reply: Option<crate::prompt_hold::CachedReply>,
+    ask_dir: Option<PathBuf>,
     /// The Claude Code session to `--resume`.
     pub(crate) resume: Option<String>,
 }
@@ -857,6 +903,15 @@ pub(crate) fn open_chat_of(
         chat,
         hold_id,
         has_cli,
+        log_warm: session.is_some_and(|s| {
+            crate::prompt_hold::log_warm(s, chrono::Utc::now().timestamp_millis())
+        }),
+        warm_reply: session.and_then(crate::prompt_hold::cached_reply),
+        ask_dir: session.and_then(|s| {
+            s.log_path()
+                .and_then(|p| p.parent())
+                .map(|d| d.join("ask").join(&s.id))
+        }),
         resume: session.and_then(resume_of),
     }
 }
@@ -880,16 +935,27 @@ pub(crate) async fn open_chat(
     stage.set("the chat's folders on disk (a stat of each; a slow disk)");
     let candidates = std::mem::take(&mut open.candidates);
     let kind_workspace = open.kind_workspace.take();
+    // Item 893: a cache the log reads as cold may have been held warm by
+    // the chat's keep-warm pings or an aside — two small files, read here
+    // with the stats rather than in the pure `open_chat_of`.
+    let touched = (!open.log_warm)
+        .then(|| open.warm_reply.zip(open.ask_dir.clone()))
+        .flatten();
     let checked = blocking(move || -> Result<_, String> {
+        let warm = touched.is_some_and(|(reply, dir)| {
+            crate::prompt_hold::touched_warm(&reply, &dir, chrono::Utc::now().timestamp_millis())
+        });
         Ok((
             existing_folders(candidates),
             kind_workspace.filter(|p| p.is_dir()),
+            warm,
         ))
     })
     .await;
-    if let Ok((granted, kind_workspace)) = checked {
+    if let Ok((granted, kind_workspace, warm)) = checked {
         open.granted = granted;
         open.kind_workspace = kind_workspace;
+        open.log_warm |= warm;
     }
     open
 }

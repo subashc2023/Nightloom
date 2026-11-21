@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import transcriptSrc from "./Transcript.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
 import navigatorSrc from "./Navigator.svelte?raw";
 import {
   FULL_WEIGHT_CHARS,
@@ -36,6 +36,9 @@ import {
 } from "./navigator";
 import { liveFlags } from "./state.svelte";
 import type { SessionEvent } from "./types";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
 
 // The navigator's model (nightshift backlog 065): one tick per live
 // message, width from length on a log scale, the first line for the

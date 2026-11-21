@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import composerSrc from "./Composer.svelte?raw";
-import transcriptSrc from "./Transcript.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
 import welcomeSrc from "./Welcome.svelte?raw";
 import editAttachSrc from "./EditAttachments.svelte?raw";
 import asideCardSrc from "./AsideCard.svelte?raw";
@@ -17,6 +17,9 @@ import {
   zoneRect,
   zoneTitle,
 } from "./dropLook";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
 
 /** A stand-in for an element: its attributes and its ancestors'. */
 class El {

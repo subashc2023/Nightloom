@@ -18,6 +18,8 @@ import { Annotation, EditorSelection, EditorState, Prec, StateEffect, StateField
 import { Decoration, EditorView, WidgetType, keymap } from "@codemirror/view";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { redo as cmRedo, undo as cmUndo, isolateHistory } from "@codemirror/commands";
+import { findMath, renderMath } from "./math";
+import { fitToText } from "./boxGrow";
 import { addRowChange, cellChange, narrowChange, columnPx, gridCols, gridValues, parseTable, type MdTable } from "./mdTable";
 
 /** A table's lines in the box: `[from, to)` from its first line's start to its last line's end. */
@@ -138,10 +140,58 @@ export function focusCell(wrap: HTMLElement, r: number, c: number, caret: number
   return true;
 }
 
+/** Item 890: focus cell `(r, c)` of the grid over the table whose first line
+ *  starts at `from` (a `/table` just inserted); false when it is not drawn. */
+export function focusGridAt(view: EditorView, from: number, r = 0, c = 0): boolean {
+  const t = tableBlocks(view.state).find((b) => b.from === from);
+  const el = t ? gridEl(view, t) : null;
+  return el ? focusCell(el, r, c) : false;
+}
+
 /** A cell's height to its wrapped text (long cells wrap, never scroll). */
+/**
+ * Item 814 (his second paste, 2026-11-17: the grid's header showed raw `$z$`): a cell's maths drawn
+ * as the box draws maths — the cell's text as HTML with each formula rendered (KaTeX), or null
+ * when it holds none. Shown over the cell's textarea while he is not in it; in it, the source.
+ */
+export function cellMathHtml(v: string): string | null {
+  const spans = findMath(v);
+  if (spans.length === 0) return null;
+  const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  let out = "";
+  let at = 0;
+  for (const m of spans) {
+    out += esc(v.slice(at, m.from)) + renderMath(m.tex, false);
+    at = m.to;
+  }
+  return out + esc(v.slice(at));
+}
+
+/** Item 814: the cell's rendered maths layer brought in line with its text (drawn again only when
+ *  the text changed); a cell with no maths has none. */
+function syncMath(ta: HTMLTextAreaElement): void {
+  const cell = ta.parentElement;
+  if (!cell || cell.dataset.mathSrc === ta.value) return;
+  cell.dataset.mathSrc = ta.value;
+  const html = cellMathHtml(ta.value);
+  let layer = cell.querySelector<HTMLElement>(".cm-cgrid-math");
+  cell.classList.toggle("cm-cgrid-hasmath", html !== null);
+  if (html === null) {
+    layer?.remove();
+    return;
+  }
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.className = "cm-cgrid-math";
+    layer.setAttribute("aria-hidden", "true");
+    if (ta.style.textAlign) layer.style.textAlign = ta.style.textAlign;
+    cell.appendChild(layer);
+  }
+  layer.innerHTML = html;
+}
+
 function fit(ta: HTMLTextAreaElement): void {
-  ta.style.height = "0px";
-  ta.style.height = `${ta.scrollHeight}px`;
+  fitToText(ta, Infinity, "0px");
 }
 
 /**
@@ -204,11 +254,17 @@ export class TableGridWidget extends WidgetType {
       const v = values[Number(ta.dataset.r)][Number(ta.dataset.c)];
       if (ta.value === v) continue;
       const focused = document.activeElement === ta;
+      // 891 (his "why can't you put spaces inside the table"): the table's text drops a cell's
+      // edge spaces (they read as padding), so "hi " came back "hi" and the space he just typed
+      // vanished. The cell he is typing in keeps its own edge spaces; only a real change refills it.
+      if (focused && ta.value.trim() === v.trim()) continue;
       const caret = ta.selectionStart;
       ta.value = v;
       if (focused) ta.setSelectionRange(Math.min(caret, v.length), Math.min(caret, v.length));
       fit(ta);
     }
+    // Item 814: a cell's rendered maths follows its text (typed in, or an undo).
+    cells.forEach(syncMath);
     setWidths(dom, values);
     view.requestMeasure();
     return true;
@@ -253,6 +309,7 @@ export class TableGridWidget extends WidgetType {
         const a = t.align[c];
         if (a) ta.style.textAlign = a;
         cell.appendChild(ta);
+        syncMath(ta);
         tr.appendChild(cell);
       });
       (r === 0 ? head : body).appendChild(tr);

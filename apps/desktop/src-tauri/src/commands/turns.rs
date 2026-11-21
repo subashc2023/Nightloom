@@ -119,6 +119,11 @@ pub(crate) struct AgentTurn {
     context_limit: Option<u64>,
     /// The CLI's own client-side estimate, and **not** a bill.
     cost_usd: Option<f64>,
+    /// `cost_usd`'s share of the plan at the fitted rates (item 699): the
+    /// cache-miss toast says it at the turn's end, before the turn's
+    /// `turn-usage.jsonl` line (written at the next reading) exists.
+    /// `None` before the fit has enough replies, or with no cost.
+    plan_est: Option<nightloom_service::turn_usage::Estimate>,
     /// Assistant turns the CLI took internally, tool rounds included.
     rounds: Option<u32>,
     /// The plan window. Present only on an OAuth run, which makes it the one
@@ -266,6 +271,12 @@ pub(crate) async fn send_agent(
     {
         return Err("the chat named is not the chat locked — nothing was sent".to_string());
     }
+    // The log is the truth of what the chat may do (item 746's review):
+    // an agent made from a spec built before its kind changed, or for the
+    // chat on screen (a read-only job's chat made from the newest
+    // connection's spec by a prewarm or an open), is held to the Chat
+    // policy here, at the one place every turn passes.
+    agent.hold_to_kind_policy(session.kind(), session.declared_kind());
     // A background send's log folder is its chat's, not the open project's (1467).
     let log_dir = match (&chat, session.log_path().and_then(|p| p.parent())) {
         (Some(_), Some(dir)) => dir.to_path_buf(),
@@ -381,9 +392,32 @@ pub(crate) async fn send_agent(
     // Subagent rules changed while the cache is warm (nightshift backlog
     // 293): the new rules ride after this message, on the wire only.
     let wire_note = holds.take_rules_note(&chat_id).await;
+    // The notes index, Start here or vault index moved since the chat's
+    // held text (item 725): what moved rides after the message too.
+    let wire_note = match (wire_note, holds.take_layer_note(&chat_id).await) {
+        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
+        (a, b) => a.or(b),
+    };
     // The chat's preview ended since the model last heard (item 445): it
     // is told now, on the wire, rather than by failing tool calls.
     let wire_note = preview::with_ended_note(&app, ask_dir.as_deref(), wire_note);
+    // Item 845 (846 §2, §7 steps 2–3): a message to Home carries the view
+    // he typed from and what he did on the stage since Home last looked,
+    // on the wire only (the transcript shows his words as he typed them).
+    // The clicks it took come back (item 872) if the message never reaches
+    // the model (below).
+    let (wire_note, home_taken) = home_wire_note(&state, turn_project.as_deref(), wire_note).await;
+    // The cache-miss check (item 727): this request's prefix print, and
+    // how many replies the log held before it, for the check at its end.
+    let miss_before = nightloom_service::cache_miss::assistant_count(session);
+    if let Some(dir) = &ask_dir {
+        nightloom_service::cache_miss::record_print_quiet(
+            dir,
+            nightloom_service::cache_miss::Kind::Turn,
+            keep_warm::now(),
+            agent.spec(),
+        );
+    }
     let env = DesktopTurnEnv {
         app: &app,
         state: &state,
@@ -405,13 +439,33 @@ pub(crate) async fn send_agent(
         },
         &env,
     )
-    .await?;
+    .await;
+    // Item 872 (845 review finding 11): his stage clicks this message
+    // carried are given back for Home's next look when the model never
+    // read it — the turn failed outright, stopped in the council (no chair
+    // ran), or the CLI ended before it named a session (a Stop or a
+    // failure at its start). Once the CLI named a session the message is
+    // in Home's own history, which its next turn resumes: an error, the
+    // plan's limit or his Stop after that point leaves it there, and
+    // giving the clicks back would show them twice (872 review).
+    if let Some((config, rows)) = &home_taken {
+        let unread = match &end {
+            Err(_) => true,
+            Ok(AgentTurnEnd::Done { outcome, .. }) => outcome.session_id.is_none(),
+            Ok(AgentTurnEnd::StoppedInCouncil) => true,
+        };
+        if unread && let Err(e) = nightloom_service::home::tasks::requeue(config, rows) {
+            eprintln!("home: clicks not given back after a failed send: {e}");
+        }
+    }
+    let end = end?;
     let (outcome, granted_any, context_limit) = match end {
         AgentTurnEnd::StoppedInCouncil => {
             return Ok(AgentTurn {
                 model: None,
                 context_limit: None,
                 cost_usd: None,
+                plan_est: None,
                 rounds: None,
                 plan: None,
                 limit: None,
@@ -450,6 +504,22 @@ pub(crate) async fn send_agent(
     if outcome.deferred.is_none() && outcome.limit.is_none() {
         keep_warm::replied(&app, session, agent.spec(), ask_dir.as_deref());
     }
+    // Item 727: a first round that read under 80% of the context it
+    // resumed, neither expired nor chosen, is logged to cache-miss.jsonl —
+    // off the turn's path (it reads the CLI's session file).
+    if !outcome.is_error
+        && !cancel.is_cancelled()
+        && let Some(req) = nightloom_service::cache_miss::turn_request(
+            session,
+            miss_before,
+            ask_dir.as_deref(),
+            &agent.spec().workspace,
+            crate::resume_of(session).as_deref(),
+            outcome.cost_usd,
+        )
+    {
+        crate::commands::cli::check_request(&app, req);
+    }
     // The reads the CLI refused outside the trees (backlog 143, pass 2):
     // each folder once, for the rail to offer the grant after the fact.
     let trees = agent_trees(agent);
@@ -483,6 +553,7 @@ pub(crate) async fn send_agent(
         model: outcome.model,
         context_limit,
         cost_usd: outcome.cost_usd,
+        plan_est: nightloom_service::turn_usage::estimate_cost(outcome.cost_usd),
         rounds: outcome.rounds,
         plan: outcome.rate_limit,
         limit: outcome.limit,
@@ -569,6 +640,10 @@ pub(crate) async fn prewarm_agent(
         // the same command the turn would spawn.
         claude_browser::point(Some(&*browsers), &mut agent, &dir);
     }
+    // Item 722: and a fresh usage reading, off to the side, so his
+    // message's own hook shows one without running `/usage` in front of
+    // the model's first request.
+    nightloom_service::plan_usage::refresh_soon();
     agent.prewarm().map_err(|e| e.to_string())
 }
 
@@ -598,8 +673,29 @@ impl TurnEnv for DesktopTurnEnv<'_> {
         let _ = self.app.emit("tool-approval", prompt);
     }
 
+    fn nudge(&self, nudge: &nightloom_service::agent_turn::ApprovalNudge<'_>) {
+        // 783: the window pushes the phone (it knows the chat's name) and,
+        // on a set-aside, takes the card down; the phone's stream carries
+        // the same event.
+        let _ = self.app.emit("approval-nudge", nudge);
+    }
+
+    /// Item 783's finish: nobody at the Mac and no phone connected.
+    fn unattended(&self) -> bool {
+        crate::remote::nobody_here(self.app)
+    }
+
     fn timing(&self) -> Option<Arc<nightloom_service::turn_timing::TurnTiming>> {
         Some(self.timing.clone())
+    }
+
+    /// Item 784: he has left the Mac.
+    fn unwatched(&self, _chat: &str) -> bool {
+        crate::remote::away_from_mac()
+    }
+
+    fn job_of(&self, chat: &str) -> Option<nightloom_service::runaway::JobUsual> {
+        crate::remote::job_usual(self.app, chat)
     }
 
     async fn grant_to_project(&self, dir: &Path) -> ProjectGrant {
@@ -716,6 +812,209 @@ pub(crate) fn cancel(state: State<'_, AppState>, chat: Option<String>) {
     state.ask.abandon_all();
 }
 
+/// Keep a secret he typed on a `request_secret` card (nightshift item
+/// 766), before the card's Allow: the value goes to its one private file
+/// and nowhere else — this command logs nothing and its error names
+/// nothing of the value. The turn reads it back when the Allow arrives.
+#[tauri::command]
+pub(crate) fn store_secret(chat: String, name: String, value: String) -> Result<(), String> {
+    nightloom_service::secret::Store::default()
+        .put(&chat, &name, &value)
+        .map(|_| ())
+}
+
+/// Item 766 part 2: whether the card can read from Bitwarden —
+/// `missing`, `unauthenticated`, `locked` or `unlocked`. Runs `bw status`
+/// only (never unlock, never login), when a card asks; nothing at launch.
+#[tauri::command]
+pub(crate) async fn bitwarden_ready() -> nightloom_service::bitwarden::Ready {
+    let vault = nightloom_service::bitwarden::Vault::global();
+    tauri::async_runtime::spawn_blocking(move || vault.ready())
+        .await
+        .unwrap_or(nightloom_service::bitwarden::Ready::Missing)
+}
+
+/// The key he pasted from `bw unlock --raw`: held in memory only, never
+/// logged; the state it leaves.
+#[tauri::command]
+pub(crate) async fn bitwarden_use_session(
+    key: String,
+) -> Result<nightloom_service::bitwarden::Ready, String> {
+    let vault = nightloom_service::bitwarden::Vault::global();
+    tauri::async_runtime::spawn_blocking(move || vault.use_session(&key))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Forget the held Bitwarden session now (Settings).
+#[tauri::command]
+pub(crate) fn bitwarden_forget_session() {
+    nightloom_service::bitwarden::Vault::global().forget_session();
+}
+
+/// Vault items matching `query`: names, a host and field names — never a
+/// value.
+#[tauri::command]
+pub(crate) async fn bitwarden_search(
+    query: String,
+) -> Result<Vec<nightloom_service::bitwarden::ItemView>, String> {
+    let vault = nightloom_service::bitwarden::Vault::global();
+    tauri::async_runtime::spawn_blocking(move || vault.search(&query))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The card's *Use once* / *Always for this command*: Nightloom reads the
+/// one value through `bw` and writes it to the same 0600 file a typed
+/// value goes to; `always_for` (the command the model named) also keeps
+/// the rule. The value never comes back to the window.
+#[tauri::command]
+pub(crate) async fn bitwarden_store(
+    chat: String,
+    name: String,
+    item_id: String,
+    field: String,
+    always_for: Option<String>,
+) -> Result<(), String> {
+    let vault = nightloom_service::bitwarden::Vault::global();
+    tauri::async_runtime::spawn_blocking(move || {
+        nightloom_service::bitwarden::store_from_item(
+            &vault,
+            &nightloom_service::secret::Store::default(),
+            nightloom_service::project::config_dir().as_deref(),
+            &chat,
+            &name,
+            &item_id,
+            &field,
+            always_for.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The "always" rules, for Settings, with whether a session is held.
+#[tauri::command]
+pub(crate) fn bitwarden_rules() -> serde_json::Value {
+    let rules = nightloom_service::project::config_dir()
+        .map(|h| nightloom_service::bitwarden::rules(&h))
+        .unwrap_or_default();
+    // Item 825: rules dropped on load (a wrapper prefix), until he presses OK.
+    let dropped = nightloom_service::project::config_dir()
+        .map(|h| nightloom_service::bitwarden::dropped(&h))
+        .unwrap_or_default();
+    serde_json::json!({
+        "rules": rules,
+        "dropped": dropped,
+        "session": nightloom_service::bitwarden::Vault::global().holds_session(),
+    })
+}
+
+/// Item 826: Touch ID unlock set up or not, the session, the pre-arm.
+#[tauri::command]
+pub(crate) fn bitwarden_touch_status() -> nightloom_service::bitwarden_unlock::TouchStatus {
+    let home = nightloom_service::project::config_dir();
+    nightloom_service::bitwarden_unlock::status(
+        &nightloom_service::bitwarden::Vault::global(),
+        home.as_deref(),
+    )
+}
+
+/// Item 826, set up once: `bw unlock` with the password he typed; kept in
+/// the Keychain only if `bw` accepts it. The password is never logged.
+#[tauri::command]
+pub(crate) async fn bitwarden_touch_setup(
+    password: String,
+) -> Result<nightloom_service::bitwarden::Ready, String> {
+    let home =
+        nightloom_service::project::config_dir().ok_or_else(|| "no settings folder".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        nightloom_service::bitwarden_unlock::set_up(
+            &nightloom_service::bitwarden::Vault::global(),
+            &nightloom_service::bitwarden_unlock::KeychainMaster,
+            &home,
+            &password,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Item 826: *Unlock with Touch ID*.
+#[tauri::command]
+pub(crate) async fn bitwarden_touch_unlock() -> Result<nightloom_service::bitwarden::Ready, String>
+{
+    tokio::task::spawn_blocking(|| {
+        nightloom_service::bitwarden_unlock::unlock(
+            &nightloom_service::bitwarden::Vault::global(),
+            &crate::bitwarden_touch::TouchId,
+            &nightloom_service::bitwarden_unlock::KeychainMaster,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Item 826: forget the stored master password (Settings).
+#[tauri::command]
+pub(crate) fn bitwarden_touch_forget() -> Result<(), String> {
+    let home =
+        nightloom_service::project::config_dir().ok_or_else(|| "no settings folder".to_string())?;
+    nightloom_service::bitwarden_unlock::forget(
+        &nightloom_service::bitwarden_unlock::KeychainMaster,
+        &home,
+    )
+}
+
+/// Item 826, the pre-arm: the Always rules picked, until `until` (RFC 3339).
+#[tauri::command]
+pub(crate) async fn bitwarden_arm(
+    rule_ids: Vec<String>,
+    until: String,
+) -> Result<nightloom_service::bitwarden::ArmView, String> {
+    let home =
+        nightloom_service::project::config_dir().ok_or_else(|| "no settings folder".to_string())?;
+    let until = chrono::DateTime::parse_from_rfc3339(&until)
+        .map_err(|_| "That end time could not be read.".to_string())?;
+    let until: std::time::SystemTime = until.with_timezone(&chrono::Utc).into();
+    tokio::task::spawn_blocking(move || {
+        nightloom_service::bitwarden_unlock::arm(
+            &nightloom_service::bitwarden::Vault::global(),
+            &crate::bitwarden_touch::TouchId,
+            &nightloom_service::bitwarden_unlock::KeychainMaster,
+            &home,
+            &rule_ids,
+            until,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Item 826: *End now* on a pre-arm.
+#[tauri::command]
+pub(crate) fn bitwarden_disarm() {
+    nightloom_service::bitwarden::Vault::global().disarm();
+}
+
+/// He pressed OK on the dropped-rule notes (item 825).
+#[tauri::command]
+pub(crate) fn bitwarden_clear_dropped() -> Result<(), String> {
+    let home =
+        nightloom_service::project::config_dir().ok_or_else(|| "no settings folder".to_string())?;
+    nightloom_service::bitwarden::clear_dropped(&home)
+}
+
+/// Remove one "always" rule (Settings).
+#[tauri::command]
+pub(crate) fn bitwarden_remove_rule(
+    id: String,
+) -> Result<Vec<nightloom_service::bitwarden::Rule>, String> {
+    let home =
+        nightloom_service::project::config_dir().ok_or_else(|| "no settings folder".to_string())?;
+    nightloom_service::bitwarden::remove_rule(&home, &id)
+}
+
 /// Answer one `tool-approval` prompt.
 ///
 /// `decision` is "allow", "always" or "deny"; a `reason` on a denial is
@@ -777,6 +1076,9 @@ pub(crate) fn approve_call(
                     .filter(|r| !r.trim().is_empty())
                     .unwrap_or_else(|| "the user declined this call".into()),
             },
+            // "Not now — carry on" (item 743): set aside, asked again at
+            // the end of the reply.
+            "later" => Answer::Later,
             other => return Err(format!("unknown decision: {other}")),
         };
         // Nothing took it (item 522): the turn let go of the call between
@@ -805,8 +1107,49 @@ pub(crate) fn approve_call(
                 .filter(|r| !r.trim().is_empty())
                 .unwrap_or_else(|| "the user declined this call".into()),
         ),
+        // "Not now — carry on" (item 743) on the built-in engine: a refusal
+        // is a tool result and the turn goes on, so the same words do the
+        // same job — the model does the rest and calls again, and that call
+        // asks again.
+        "later" => Decision::Deny(nightloom_service::agent::ask::LATER_REASON.to_string()),
         other => return Err(format!("unknown decision: {other}")),
     };
     state.gate.resolve(&id, decision);
     Ok(())
+}
+
+/// [`nightloom_service::home::tasks::wire_note`] after `note`, for a turn
+/// in Home's project; `note` unchanged for any other.
+#[allow(clippy::type_complexity)]
+async fn home_wire_note(
+    state: &State<'_, AppState>,
+    turn_project: Option<&str>,
+    note: Option<String>,
+) -> (
+    Option<String>,
+    Option<(
+        std::path::PathBuf,
+        Vec<nightloom_service::home::tasks::Event>,
+    )>,
+) {
+    let Some(project) = turn_project else {
+        return (note, None);
+    };
+    let is_home = state
+        .workspaces
+        .lock()
+        .await
+        .registry
+        .find_by_source(nightloom_service::home::SOURCE)
+        .is_some_and(|p| p.id == project);
+    let Some(config) = nightloom_service::project::config_dir().filter(|_| is_home) else {
+        return (note, None);
+    };
+    let (home, taken) = nightloom_service::home::tasks::wire_note_kept(&config, chrono::Utc::now());
+    let note = match (note, home) {
+        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
+        (a, b) => a.or(b),
+    };
+    let taken = (!taken.is_empty()).then_some((config, taken));
+    (note, taken)
 }

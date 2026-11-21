@@ -21,6 +21,30 @@ import { toolInputSummary } from "./transcriptPrefs.svelte";
 import { fmtTokens } from "./tokens";
 import * as api from "./api";
 import { nameLine } from "./chatLabel";
+import { extractAsk } from "./askTag";
+import { isStuck } from "./stuck";
+
+/** A chat's turn ended (item 753): what the Needs-you view keeps of it. */
+export interface TurnEnded {
+  chat: string | null;
+  name: string;
+  project: string | null;
+  /** The turn's words, for the question it may have ended on. */
+  text: string;
+  failed: boolean;
+  stopped: boolean;
+}
+/** Who hears of a turn's end (the Needs-you store registers itself; a set,
+ *  so this file needs nothing of the app's state). */
+export const turnEndListeners = new Set<(e: TurnEnded) => void>();
+
+/** The words of a turn's segments, in order. */
+export function turnText(segs: Segment[]): string {
+  return segs
+    .map((s) => (s.kind === "text" ? s.text : ""))
+    .filter(Boolean)
+    .join("\n\n");
+}
 
 export interface NotifyPrefs {
   /** A turn finished while the window was in the background. */
@@ -140,10 +164,38 @@ export function turnEndBody(
   return parts.length > 0 ? parts.join(" · ") : "done";
 }
 
+/** What the phone's push says of a turn's end (item 739): paused by the
+ *  plan's limit before failed, failed before finished. */
+export function pushWhatForEnd(t: { error: string | null; cliError?: boolean; limit?: boolean; ask?: boolean }): api.PushWhat {
+  // Item 753: a turn that ended on a question for him is a question, not a finish.
+  return t.limit ? "limit" : t.error || t.cliError ? "failed" : t.ask ? "question" : "done";
+}
+
+/** What it says of a waiting call: a question form and a plan are answers
+ *  he writes; the rest an Allow or a Deny. */
+export function pushWhatForCall(req: Pick<ApprovalRequest, "name">): api.PushWhat {
+  // Item 784: the runaway guard paused a run.
+  if (isStuck(req.name)) return "stuck";
+  return req.name === "AskUserQuestion" || req.name === "ExitPlanMode" ? "question" : "approval";
+}
+
+/** Hand the phone's push to the backend (item 739). Apart from the banner's
+ *  two rules — the window's focus and the Settings switches are about the
+ *  Mac's own banner; whether he is at the Mac is the backend's to judge. */
+function pushToPhone(what: api.PushWhat, chat: string | null, label: string, project: string | null, detail: string | null = null): void {
+  try {
+    void api.pushNote(what, chat, label, project, detail).catch(() => {});
+  } catch {
+    // Outside the app (a test, a harness): nothing to tell.
+  }
+}
+
 /** `<chat> — Run Bash?`; a question and a plan by what they are. */
 export function needsYouTitle(chat: string, req: Pick<ApprovalRequest, "name">): string {
   const what =
-    req.name === "AskUserQuestion"
+    isStuck(req.name)
+      ? "Looks stuck — Continue or Stop?"
+      : req.name === "AskUserQuestion"
       ? "Claude asks a question"
       : req.name === "ExitPlanMode"
         ? "Approve the plan?"
@@ -153,6 +205,11 @@ export function needsYouTitle(chat: string, req: Pick<ApprovalRequest, "name">):
 
 /** `<the argument> · waits until you answer`. */
 export function needsYouBody(req: Pick<ApprovalRequest, "name" | "input">): string {
+  // Item 784: what it ran, and that it waits.
+  if (isStuck(req.name)) {
+    const r = (req as Pick<ApprovalRequest, "reason">).reason;
+    return r ? `${r} · waits for Continue or Stop` : "waits for Continue or Stop";
+  }
   const arg = req.name === "AskUserQuestion" || req.name === "ExitPlanMode" ? "" : toolInputSummary(req.input);
   return arg ? `${arg.slice(0, 100)} · waits until you answer` : "waits until you answer";
 }
@@ -206,7 +263,25 @@ export async function notifyTurnEnd(args: {
   error: string | null;
   handoffFill?: number | null;
   prefs?: NotifyPrefs;
+  /** Item 739: the chat the turn ran in, for the phone's push; absent
+   *  (a caller that is not a chat's turn) and no push is sent. */
+  phone?: { chat: string | null; project: string | null; limit: boolean; cliError: boolean; stopped?: boolean };
 }): Promise<void> {
+  // 739 review L5: a turn he stopped himself is not news to him (the away
+  // server skips a cancelled turn the same way).
+  const text = args.phone ? turnText(args.segs) : "";
+  const failed = !!args.error || !!args.phone?.cliError;
+  if (args.phone) {
+    const ended: TurnEnded = { chat: args.phone.chat, name: args.chat, project: args.phone.project, text, failed, stopped: !!args.phone.stopped };
+    for (const hear of turnEndListeners) {
+      try {
+        hear(ended);
+      } catch {
+        // A listener's trouble is not the turn's.
+      }
+    }
+  }
+  if (args.phone && !args.phone.stopped) pushToPhone(pushWhatForEnd({ error: args.error, cliError: args.phone.cliError, limit: args.phone.limit, ask: !failed && extractAsk(text) !== null }), args.phone.chat, args.chat, args.phone.project);
   const prefs = args.prefs ?? loadNotifyPrefs();
   if (!prefs.turnEnd || windowFocused()) return;
   try {
@@ -229,6 +304,8 @@ const HELD_MAX = 32;
 /** Post the needs-you banner, on the same terms — except that a call the
  *  focused window received is held for `postHeldNeedsYou`. */
 export async function notifyNeedsYou(chat: string, req: ApprovalRequest, prefs?: NotifyPrefs): Promise<void> {
+  // Item 739: the phone hears of every waiting call (unless he is at the Mac).
+  pushToPhone(pushWhatForCall(req), req.chat ?? null, chat, null, isStuck(req.name) ? (req.reason ?? null) : null);
   const p = prefs ?? loadNotifyPrefs();
   if (!p.needsYou) return;
   if (windowFocused()) {
@@ -242,6 +319,12 @@ export async function notifyNeedsYou(chat: string, req: ApprovalRequest, prefs?:
   } catch {
     // See above.
   }
+}
+
+/** Item 783: an unanswered card's second push (2:30) and its set-aside
+ *  (3:30), to the phone — whether he is at the Mac is the backend's to judge. */
+export function notifyNudge(chat: string, n: { chat?: string; stage: "remind" | "set_aside" | "unattended" }): void {
+  pushToPhone(n.stage === "remind" ? "reminder" : n.stage, n.chat ?? null, chat, null);
 }
 
 /**

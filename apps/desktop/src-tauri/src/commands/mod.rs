@@ -16,6 +16,8 @@ pub(crate) mod menu;
 pub(crate) mod notes;
 pub(crate) mod projects;
 pub(crate) mod providers;
+pub(crate) mod retro;
+pub(crate) mod saved_prompts;
 pub(crate) mod sessions;
 pub(crate) mod steer;
 pub(crate) mod system;

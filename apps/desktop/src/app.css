@@ -535,6 +535,77 @@ button {
   overflow-wrap: anywhere;
 }
 
+/* Item 756: the card minimizes to one line (handoffButton.ts `syncMinimize`):
+   a – button at the head's right, and, minimized, the line alone — a
+   "Hand-off" tag, the goal, an *open* cue. The card's parts are hidden, not
+   removed, so the goal and ticks are there when it opens. */
+.markdown .handoff-card {
+  position: relative;
+}
+.markdown .handoff-card > .handoff-min {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  min-width: 22px;
+  padding: 0 6px;
+  line-height: 20px;
+}
+.markdown .handoff-card.handoff-minimized {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.markdown .handoff-card.handoff-minimized > :not(.handoff-mini) {
+  display: none;
+}
+.markdown .handoff-card > .handoff-mini[hidden],
+.markdown .handoff-card > .handoff-min[hidden] {
+  display: none;
+}
+.markdown .handoff-mini {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0.35em 0.3em;
+  font-size: 0.8rem;
+  line-height: 20px;
+  cursor: pointer;
+  user-select: none;
+}
+.markdown .handoff-mini:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.markdown .handoff-mini-tag {
+  flex: none;
+  font-weight: 600;
+  color: var(--accent-ink);
+}
+.markdown .handoff-mini-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.markdown .handoff-mini-open {
+  flex: none;
+  color: var(--dim);
+}
+.markdown .handoff-mini:hover .handoff-mini-open {
+  color: var(--accent-ink);
+}
+/* Jarvis: the tag in small mono capitals, as an aside's minimized line has it. */
+:where(:root:not([data-layout="classic"])) .markdown .handoff-mini-tag {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
 /* Item 506: under the prompt, the folded read order and the button that
    sends both (handoffButton.ts). A legacy `start-prompt` block, with no card,
    has the same row after it. */
@@ -567,6 +638,262 @@ button {
 .markdown .handoff-go .handoff-continue {
   margin-left: auto;
   flex: none;
+}
+/* Item 796: "Review this chat" beside Continue (handoffButton.ts
+   `syncReview`), and its line — where the review stands — under both. */
+.markdown .handoff-go .handoff-review {
+  margin-left: auto;
+  flex: none;
+}
+.markdown .handoff-go .handoff-review + .handoff-continue {
+  margin-left: 0;
+}
+/* Item 857: Cancel beside a running review, first of the three; `.ns-btn`'s
+   display would otherwise beat `hidden`. */
+.markdown .handoff-go .handoff-review-cancel {
+  margin-left: auto;
+  flex: none;
+}
+.markdown .handoff-go .handoff-review-cancel[hidden] {
+  display: none;
+}
+.markdown .handoff-go .handoff-review-cancel:not([hidden]) + .handoff-review {
+  margin-left: 0;
+}
+.markdown .handoff-go .handoff-review-line {
+  flex: 1 1 100%;
+  min-width: 0;
+  text-align: right;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+.markdown .handoff-go .handoff-review-line.handoff-warn {
+  color: var(--warn, var(--accent-ink));
+}
+
+/* Item 705 (option A, Console): the *Next chat* pick on the next-chat card,
+   before Review and Continue (handoffButton.ts `syncModel`), and its menu on
+   the shared HUD glass. */
+.markdown .handoff-go .handoff-model {
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.markdown .handoff-go .handoff-model ~ .handoff-review,
+.markdown .handoff-go .handoff-model ~ .handoff-review-cancel,
+.markdown .handoff-go .handoff-model ~ .handoff-continue {
+  margin-left: 0;
+}
+.markdown .handoff-go .handoff-model-k {
+  font: 500 10px var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.markdown .handoff-go .handoff-model-note {
+  font: 11px var(--mono);
+  color: var(--dim);
+}
+.markdown .handoff-go .handoff-model-note[hidden] {
+  display: none;
+}
+.markdown .handoff-go .handoff-model-chev {
+  color: var(--dim);
+  font-size: 10px;
+}
+.handoff-model-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 260px;
+  max-width: 380px;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--line2);
+  font-family: var(--sans);
+}
+.handoff-model-menu .hud-head {
+  padding: 4px 6px 6px;
+}
+.handoff-model-menu .handoff-model-row {
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  gap: 2px 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.handoff-model-menu .handoff-model-mark {
+  color: var(--accent-ink, var(--accent));
+  font-size: 11px;
+}
+.handoff-model-menu .handoff-model-detail {
+  grid-column: 2;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+:where(:root:not([data-layout="classic"])) .handoff-model-menu {
+  border-radius: var(--r2);
+  background: color-mix(in srgb, var(--raised) 97%, var(--term));
+}
+:where(:root:not([data-layout="classic"])) .markdown .handoff-go .handoff-model {
+  background: var(--well);
+  border: 1px solid var(--line2);
+  color: var(--ink);
+}
+:where([data-layout="classic"]) .handoff-model-menu {
+  border-radius: 8px;
+  background: var(--sheet);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+:where([data-layout="classic"]) .handoff-model-menu .handoff-model-row:hover,
+:where([data-layout="classic"]) .handoff-model-menu .handoff-model-row:focus-visible {
+  background: var(--paper);
+  outline: none;
+}
+
+/* Item 747: above the button, what the hand-off carries besides the prompt
+   (handoffButton.ts `carryBlock`): the goal field, his messages the hand-off
+   does not quote (tickable), the list built from the tool calls, the section
+   check, the cost. One column, the card's own text size. */
+.markdown .handoff-go .handoff-carry {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line2);
+  color: var(--dim);
+}
+.markdown .handoff-carry .handoff-goal {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.markdown .handoff-carry .handoff-goal-label {
+  flex: none;
+  font-weight: 600;
+  color: var(--accent-ink);
+}
+.markdown .handoff-carry .handoff-goal-input {
+  flex: 1 1 0;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+  border: 1px solid var(--line2);
+  padding: 4px 8px;
+}
+:where(:root:not([data-layout="classic"])) .markdown .handoff-carry .handoff-goal-input {
+  background: var(--term);
+  border-radius: var(--r1);
+}
+:where([data-layout="classic"]) .markdown .handoff-carry .handoff-goal-input {
+  background: var(--paper);
+  border-radius: 6px;
+}
+.markdown .handoff-carry .handoff-goal-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.markdown .handoff-carry .handoff-goal-input:disabled {
+  opacity: 0.6;
+}
+.markdown .handoff-carry details > summary {
+  cursor: pointer;
+  line-height: 1.5;
+  user-select: none;
+}
+.markdown .handoff-carry .handoff-his-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.markdown .handoff-carry .handoff-his-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.markdown .handoff-carry .handoff-his-row:hover {
+  background: var(--accent-soft);
+}
+.markdown .handoff-carry .handoff-his-row input {
+  flex: none;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+.markdown .handoff-carry .handoff-his-body {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.markdown .handoff-carry .handoff-his-when {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--dim);
+}
+.markdown .handoff-carry .handoff-his-text {
+  color: var(--ink);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.markdown .handoff-carry .handoff-his-text.clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.markdown .handoff-carry .handoff-his-more {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.72rem;
+  color: var(--accent-ink);
+  cursor: pointer;
+}
+.markdown .handoff-carry .handoff-made-text {
+  margin-top: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  line-height: 1.5;
+}
+.markdown .handoff-carry .handoff-line {
+  line-height: 1.5;
+}
+.markdown .handoff-carry .handoff-warn {
+  color: var(--warn, var(--accent-ink));
+}
+.markdown .handoff-carry .handoff-cost {
+  font-family: var(--mono);
+  font-size: 0.72rem;
 }
 
 .markdown blockquote {
@@ -1471,6 +1798,233 @@ mark.find-hit {
   --motion-ink-hi: var(--signal-ink, var(--signal));
 }
 
+/* ---- ask lock-on (items 713 + 753, wave K; his pick, blocker 2031) ----------
+
+   "I like lock-on, but I like the answer animation (in the left screens) from
+   the option B". The "Claude asks you" card — the mid-turn question card and
+   the turn-end card — and the Needs-you view carry `lk-shell` and draw
+   AskLock.svelte inside: four corner brackets (`--bracket`: transparent under
+   calm and Classic), a scanline, and a veil in the shell's own colour that
+   lifts behind it. Only Jarvis with motion allowed animates; Classic gets a
+   calm 200 ms rise; reduce motion gets nothing. The answer's thread and
+   receipt are askMotion.ts (`flyAnswer`), styled at the end of this block. */
+.lk-shell {
+  position: relative;
+}
+.lk {
+  position: absolute;
+  pointer-events: none;
+}
+.lk-veil,
+.lk-scan {
+  display: none;
+}
+.lk-br {
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border: 2px solid var(--bracket, transparent);
+  z-index: 5;
+}
+[data-layout="classic"] .lk-br {
+  display: none;
+}
+.lk-br.tl {
+  left: 0;
+  top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-top-left-radius: 7px;
+}
+.lk-br.tr {
+  right: 0;
+  top: 0;
+  border-left: 0;
+  border-bottom: 0;
+  border-top-right-radius: 7px;
+}
+.lk-br.bl {
+  left: 0;
+  bottom: 0;
+  border-right: 0;
+  border-top: 0;
+  border-bottom-left-radius: 7px;
+}
+.lk-br.br {
+  right: 0;
+  bottom: 0;
+  border-left: 0;
+  border-top: 0;
+  border-bottom-right-radius: 7px;
+}
+:root:not([data-layout="classic"]) .lk-br {
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--bracket, transparent) 60%, transparent));
+}
+/* The header's decode: an overlay holding the scrambled words, over the
+   header's own (untouched) text, while `data-decode` is set. */
+[data-decode] {
+  position: relative;
+}
+[data-decode]::after {
+  content: attr(data-decode);
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--dec-x, 0px);
+  right: 0;
+  display: flex;
+  align-items: center;
+  white-space: pre;
+  background: var(--aq-bg, var(--sheet));
+}
+.aq-one[data-decode] {
+  --dec-x: 26px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-layout="classic"]) .lk-veil {
+    display: block;
+    inset: 0;
+    z-index: 4;
+    background: inherit;
+    border-radius: inherit;
+    animation: lk-veil 720ms 180ms cubic-bezier(0.3, 0.6, 0.3, 1) both;
+  }
+  :root:not([data-layout="classic"]) .lk-scan {
+    display: block;
+    left: 0;
+    right: 0;
+    height: 2px;
+    z-index: 6;
+    background: linear-gradient(90deg, transparent, var(--accent-ink, var(--accent)) 20%, var(--accent-ink, var(--accent)) 80%, transparent);
+    box-shadow: var(--glow-accent, none);
+    animation: lk-scan 720ms 180ms cubic-bezier(0.3, 0.6, 0.3, 1) both;
+  }
+  :root:not([data-layout="classic"]) .lk-br.tl {
+    animation:
+      lk-tl 450ms cubic-bezier(0.2, 0.9, 0.25, 1.25) both,
+      lk-breathe 2.4s ease-in-out 900ms infinite;
+  }
+  :root:not([data-layout="classic"]) .lk-br.tr {
+    animation:
+      lk-tr 450ms cubic-bezier(0.2, 0.9, 0.25, 1.25) both,
+      lk-breathe 2.4s ease-in-out 900ms infinite;
+  }
+  :root:not([data-layout="classic"]) .lk-br.bl {
+    animation:
+      lk-bl 450ms cubic-bezier(0.2, 0.9, 0.25, 1.25) both,
+      lk-breathe 2.4s ease-in-out 900ms infinite;
+  }
+  :root:not([data-layout="classic"]) .lk-br.br {
+    animation:
+      lk-br 450ms cubic-bezier(0.2, 0.9, 0.25, 1.25) both,
+      lk-breathe 2.4s ease-in-out 900ms infinite;
+  }
+  [data-layout="classic"] .lk-shell {
+    animation: lk-calm 200ms ease-out both;
+  }
+}
+@keyframes lk-veil {
+  from {
+    clip-path: inset(0 0 0 0);
+  }
+  to {
+    clip-path: inset(100% 0 0 0);
+  }
+}
+@keyframes lk-scan {
+  0% {
+    top: 0;
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    top: 100%;
+    opacity: 0;
+  }
+}
+@keyframes lk-tl {
+  from {
+    transform: translate(-18px, -18px);
+    opacity: 0;
+  }
+}
+@keyframes lk-tr {
+  from {
+    transform: translate(18px, -18px);
+    opacity: 0;
+  }
+}
+@keyframes lk-bl {
+  from {
+    transform: translate(-18px, 18px);
+    opacity: 0;
+  }
+}
+@keyframes lk-br {
+  from {
+    transform: translate(18px, 18px);
+    opacity: 0;
+  }
+}
+@keyframes lk-breathe {
+  50% {
+    opacity: 0.45;
+  }
+}
+@keyframes lk-calm {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+/* The answer's copy (askMotion.ts `flyAnswer`): fixed over the page; its
+   own CSS motion off (it would replay the arrival), the receipt on top. */
+.ask-ghost,
+.ask-ghost * {
+  animation: none !important;
+  transition: none !important;
+}
+.ask-ghost .lk-veil,
+.ask-ghost .lk-scan {
+  display: none !important;
+}
+.ask-receipt {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink2);
+  white-space: nowrap;
+  overflow: hidden;
+  z-index: 6;
+}
+.ask-stamp {
+  flex: none;
+  color: var(--done);
+  border: 1px solid color-mix(in srgb, var(--done) 50%, transparent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+.ask-rt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--accent-ink, var(--ink));
+}
+
+
 /* ---- what can be selected (item 646) ----------------------------------------
 
    His words: "i dont like that u can like highlight in this way" — a drag
@@ -1533,3 +2087,186 @@ button,
   -webkit-user-select: none;
   user-select: none;
 }
+
+/* Item 753: a reply's `<ask>` block (askTag.ts) — the turn's question, as a
+   quiet box; the card that answers it is drawn under the transcript while
+   it waits (TurnAsk.svelte). */
+.nl-ask {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line2);
+  border-left: 3px solid var(--accent-ink);
+  border-radius: 8px;
+}
+.nl-ask-h {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.nl-ask .nl-ask-q {
+  margin: 4px 0 0;
+}
+.nl-ask .nl-ask-o {
+  margin: 6px 0 0;
+  padding-left: 1.2em;
+  color: var(--ink2);
+}
+/* Item 851 (his words: "some sort of like colour behind it … clearly a
+   different section, even though it's answered"): once he has answered
+   (askSettled.ts), the box settles into a filled card — the raised surface
+   over the dot ground, a soft shadow, an "Answered" mark in its head, and
+   the answer he picked marked (a check, the done ink, a tinted row); the
+   others step back. His typed answer, when it is none of the options, is a
+   line under them. The answer animation (askMotion.ts) is untouched. */
+.nl-ask[data-answered] {
+  background: var(--raised);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.16),
+    0 8px 22px -12px rgba(0, 0, 0, 0.45);
+  padding: 12px 16px;
+}
+.nl-ask[data-answered] .nl-ask-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.nl-ask[data-answered] .nl-ask-h::after {
+  content: "✓ Answered";
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  border-radius: 999px;
+  padding: 1px 8px;
+  background: var(--done-soft);
+  color: var(--done);
+}
+.nl-ask[data-answered] .nl-ask-o {
+  list-style: none;
+  padding-left: 0;
+}
+.nl-ask[data-answered] .nl-ask-o > li {
+  position: relative;
+  padding: 3px 10px 3px 26px;
+  margin: 2px 0;
+  border-radius: 6px;
+  color: var(--dim);
+}
+.nl-ask[data-answered] .nl-ask-o > li::before {
+  content: "";
+  position: absolute;
+  left: 11px;
+  top: 0.75em;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+}
+.nl-ask[data-answered] .nl-ask-o > li[data-picked] {
+  color: var(--ink);
+  background: var(--done-soft);
+}
+.nl-ask[data-answered] .nl-ask-o > li[data-picked]::before {
+  content: "✓";
+  left: 8px;
+  top: 3px;
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: none;
+  color: var(--done);
+  opacity: 1;
+  font-size: 12px;
+  font-weight: 700;
+}
+.nl-ask[data-said]::after {
+  content: "You answered: " attr(data-said);
+  display: block;
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--done-soft);
+  color: var(--ink);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+/* Item 859 (his words: "there's no way to answer anything", and of the box
+   above the live card, "what was the point of this shit appearing twice"):
+   the box is never a dead end (askSettled.ts). While the question card is
+   drawn for it (`live`), the box is hidden — the question shows once, as the
+   card. Unanswered with no card (`open`: an aside; `closed`: the chat went
+   on past it) it is 851's filled card, its options buttons that send the
+   pick as his next message, and a line under them that says which. */
+.nl-ask[data-state="live"] {
+  display: none;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) {
+  background: var(--raised);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.16),
+    0 8px 22px -12px rgba(0, 0, 0, 0.45);
+  padding: 12px 16px;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-h::after {
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.nl-ask[data-state="open"] .nl-ask-h::after {
+  content: "Waiting on you";
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.nl-ask[data-state="closed"] .nl-ask-h::after {
+  content: "Closed — not answered";
+  background: var(--well);
+  color: var(--dim);
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o {
+  list-style: none;
+  padding-left: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li {
+  margin: 0;
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-ink);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-size: 0.95em;
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:hover {
+  filter: brightness(1.15);
+}
+.nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+.nl-ask[data-sending] .nl-ask-o > li {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.nl-ask[data-note]::after {
+  content: attr(data-note);
+  display: block;
+  margin-top: 8px;
+  font-size: 0.88em;
+  color: var(--dim);
+}
+

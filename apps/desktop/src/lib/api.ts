@@ -1,6 +1,8 @@
+import type { HomeRoute, RoutePick, RoutesReply } from "./homeRoutes";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AsideResult,
+  FlatAlarm,
   EditedAttachments,
   AsideSendOptions,
   ClaudeAuthStatus,
@@ -44,6 +46,7 @@ import type {
   NewProjectPath,
   UsageSummary,
   PlanUsage,
+  PlanPace,
   TurnBudget,
   CapMode,
   Checkpoint,
@@ -59,6 +62,8 @@ import type {
   ProposalScope,
   ProviderInfo,
   DreamCommit,
+  MemoryCommit,
+  OutsideSync,
   AppliedNotice,
   BuildStamp,
   TidyOutcome,
@@ -84,6 +89,8 @@ import type { ForYouRow } from "./forYou";
 import type { PriorExchange } from "./noteEdit";
 import type { TurnUsageLine } from "./replyUsage";
 import { cleanPassage, shownText } from "./keep";
+import type { HomeFeed, HomeInfo, HomeReach } from "./home";
+import type { HomeSource, SourceId } from "./homeSources";
 
 // All backend errors reject with a plain string.
 
@@ -242,12 +249,33 @@ export interface PreparedOffice {
   /** SHA-256 (hex) of the office file itself (item 428): Keep finds the
    *  same file kept before by this, its PDF differing on every run. */
   source_sha256?: string;
+  /** Parts 2..n when the PDF was split to fit its limits (item 868); this
+   *  one is part 1. Absent otherwise. */
+  more?: PreparedOffice[];
+}
+
+/** What one PDF must fit (item 868): the engine's base64 cap, the API's
+ *  pages. Over it, the backend shrinks pictures and then splits a deck. */
+export interface PdfLimits {
+  maxBase64?: number;
+  maxPages?: number;
 }
 
 /** An office file as a PDF (LibreOffice) or its text; `textOnly` skips the
  *  converter — for a PDF that came out over the engine's cap. */
-export function prepareOfficeAttachment(name: string, data: string, textOnly = false): Promise<PreparedOffice> {
-  return invoke("prepare_office_attachment", { name, data, textOnly });
+export function prepareOfficeAttachment(
+  name: string,
+  data: string,
+  textOnly = false,
+  limits: PdfLimits = {},
+): Promise<PreparedOffice> {
+  return invoke("prepare_office_attachment", {
+    name,
+    data,
+    textOnly,
+    maxBase64: limits.maxBase64 ?? null,
+    maxPages: limits.maxPages ?? null,
+  });
 }
 
 /** Whether LibreOffice is installed: an office file becomes a PDF. */
@@ -465,6 +493,120 @@ export function setSearchKey(backend: string, key: string): Promise<null> {
 }
 
 /**
+ * Keep a secret he typed on a `request_secret` card (nightshift item 766),
+ * before the card's Allow. The value goes to the host's private store only.
+ */
+export function storeSecret(chat: string, name: string, value: string): Promise<null> {
+  return invoke("store_secret", { chat, name, value });
+}
+
+/** Item 766 part 2: whether the Mac can read from Bitwarden (`bw status`). */
+export function bitwardenReady(): Promise<import("./secret").BwReady> {
+  return invoke("bitwarden_ready");
+}
+
+/** The key he pasted from `bw unlock --raw`; held in memory by the app. */
+export function bitwardenUseSession(key: string): Promise<import("./secret").BwReady> {
+  return invoke("bitwarden_use_session", { key });
+}
+
+/** Forget the held Bitwarden session now. */
+export function bitwardenForgetSession(): Promise<null> {
+  return invoke("bitwarden_forget_session");
+}
+
+/** Vault items matching `query`: names and field names, never a value. */
+export function bitwardenSearch(query: string): Promise<import("./secret").BwItem[]> {
+  return invoke("bitwarden_search", { query });
+}
+
+/** Read one item's field into the chat's private file; `alwaysFor` keeps the rule. */
+export function bitwardenStore(
+  chat: string,
+  name: string,
+  itemId: string,
+  field: string,
+  alwaysFor: string | null,
+): Promise<null> {
+  return invoke("bitwarden_store", { chat, name, itemId, field, alwaysFor });
+}
+
+/** Item 826: Touch ID unlock set up or not, the session, the pre-arm (`bitwarden_unlock::TouchStatus`). */
+export interface BitwardenTouchStatus {
+  stored: boolean;
+  session: boolean;
+  armed: { names: string[]; until: string } | null;
+}
+
+export function bitwardenTouchStatus(): Promise<BitwardenTouchStatus> {
+  return invoke("bitwarden_touch_status");
+}
+
+/** Set up once: the master password he typed goes to `bw unlock` (its env), and to the Keychain only if bw accepts it. */
+export function bitwardenTouchSetup(password: string): Promise<import("./secret").BwReady> {
+  return invoke("bitwarden_touch_setup", { password });
+}
+
+/** Unlock with Touch ID (fallback: the login password). */
+export function bitwardenTouchUnlock(): Promise<import("./secret").BwReady> {
+  return invoke("bitwarden_touch_unlock");
+}
+
+/** Forget the stored master password. */
+export function bitwardenTouchForget(): Promise<void> {
+  return invoke("bitwarden_touch_forget");
+}
+
+/** Pre-arm: one Touch ID fetches these Always rules' values until `until` (RFC 3339); the vault locks at once. */
+export function bitwardenArm(ruleIds: string[], until: string): Promise<{ names: string[]; until: string }> {
+  return invoke("bitwarden_arm", { ruleIds, until });
+}
+
+/** End a pre-arm now. */
+export function bitwardenDisarm(): Promise<void> {
+  return invoke("bitwarden_disarm");
+}
+
+/** One "always" rule (`bitwarden::Rule`). */
+export interface BitwardenRule {
+  id: string;
+  name: string;
+  item_id: string;
+  item_name: string;
+  field: string;
+  prefix: string;
+  added: string;
+}
+
+/** A rule dropped on load because its prefix is a wrapper (item 825). */
+export interface BitwardenDropped {
+  name: string;
+  item_name: string;
+  prefix: string;
+  why: string;
+  when: string;
+}
+
+/** The "always" rules, the ones dropped on load, and whether a session is held. */
+export function bitwardenRules(): Promise<{
+  rules: BitwardenRule[];
+  dropped?: BitwardenDropped[];
+  session: boolean;
+}> {
+  return invoke("bitwarden_rules");
+}
+
+/** He pressed OK on the dropped-rule notes (item 825). */
+export function bitwardenClearDropped(): Promise<void> {
+  return invoke("bitwarden_clear_dropped");
+}
+
+/** Remove one "always" rule. */
+export function bitwardenRemoveRule(id: string): Promise<BitwardenRule[]> {
+  return invoke("bitwarden_remove_rule", { id });
+}
+
+/**
  * Answer one `tool-approval` prompt. `reason` is handed to the model
  * verbatim on a denial, which is what lets it try something else instead of
  * repeating the call; it is ignored for the other decisions. `answer` is the
@@ -537,6 +679,13 @@ export function searchEverywhere(
  *  instead of waiting the turn out. */
 export function renameSession(id: string, title: string, active: string | null = null): Promise<void> {
   return invoke("rename_session", { id, title, active });
+}
+
+/** Item 842: his edit of one chapter (item 799) into the chat's log — the
+ *  whole edit, `title` null for the code's name. Refused while a turn holds
+ *  the chat; `chapterEdits` sends it again after. */
+export function setChapterEdit(id: string, key: string, title: string | null, removed: boolean): Promise<void> {
+  return invoke("set_chapter_edit", { id, key, title, removed });
 }
 
 /**
@@ -1174,6 +1323,11 @@ export function planUsage(): Promise<PlanUsage> {
 /** The figure refreshed through the CLI's print-mode `/usage` when the
  *  files are over a minute old (backlog 166, blocker 264): exact, zero
  *  tokens, ~12 s on the backend. */
+/** The plan's pace (item 769): forecast from his reading history. */
+export function planPace(): Promise<PlanPace> {
+  return invoke("plan_pace");
+}
+
 export function planUsageRefresh(afterMs?: number): Promise<PlanUsage> {
   // `afterMs` (item 323 review): a reading for a reply's end — a sample
   // from before that moment is not fresh, so `/usage` runs.
@@ -1194,11 +1348,39 @@ export function sessionFigures(agentSession: string, earlier: string[] = []): Pr
   return invoke("session_figures", { agentSession, earlier });
 }
 
+/** Item 796: the no-model digest of a chat's Claude Code transcript, and
+ *  the review pass's question built on it. Reads only. */
+export interface RetroDigest {
+  markdown: string;
+  prompt: string;
+  issues: number;
+  corrections: number;
+  misses: number;
+  miss_cost_usd: number;
+}
+
+export function retroDigest(agentSession: string): Promise<RetroDigest> {
+  return invoke("retro_digest", { agentSession });
+}
+
+/** Item 796: keep a review page under the chat's thread (or the project's
+ *  `retrospectives/`), a new file each time; resolves to its path. */
+export function retroSave(chat: string, title: string, thread: string | null, review: string, reviewCost: number | null, digest: string): Promise<string> {
+  return invoke("retro_save", { chat, title, thread, review, reviewCost, digest });
+}
+
 /** Claude Code's version against the release feed, with the models the
  *  newer release adds (nightshift backlog 182). Zero tokens. `binary` is
  *  the connected chat's resolved CLI, or null for `claude` resolved. */
 export function cliVersionCheck(binary: string | null): Promise<CliStatus> {
   return invoke("cli_version_check", { binary });
+}
+
+/** Item 758's canary: the installed CLI still holds the cache switch's
+ *  strings (read once per install), and the second-request notices logged
+ *  since. Zero tokens. */
+export function flatCanary(binary: string | null): Promise<FlatAlarm[]> {
+  return invoke("flat_canary", { binary });
 }
 
 /** Whether Claude Code is signed in (backlog 409), by `claude auth status`.
@@ -1224,6 +1406,13 @@ export function turnBudget(session: string): Promise<TurnBudget | null> {
  *  message. Returns the ledger as it now stands. */
 export function setTurnCap(session: string, capPercent: number | null, mode: CapMode | null): Promise<TurnBudget> {
   return invoke("set_turn_cap", { session, capPercent, mode });
+}
+
+/** The read and write rates the composer's `next ≈ $…` estimate prices
+ *  the chat's context at (item 699); null when neither `usage-rates.json`
+ *  nor the project's keep-warm pings can say. */
+export function cacheRates(model: string): Promise<import("./cacheCost").CacheRatesWire | null> {
+  return invoke("cache_rates", { model });
 }
 
 /** Each reply's share of the plan's windows (item 323): the chat's
@@ -1532,7 +1721,8 @@ export function dragSentFile(path: string): Promise<null> {
  *  outside `chat`'s folders unless its own tools wrote it. */
 export interface FileTabData {
   path: string;
-  kind: "text" | "markdown" | "image" | "pdf" | "other";
+  /** `html` (item 819): text, drawn as a sandboxed page with a Source switch. */
+  kind: "text" | "markdown" | "html" | "image" | "pdf" | "other";
   media_type: string;
   size: number;
   text: string | null;
@@ -1543,6 +1733,21 @@ export interface FileTabData {
 }
 export function readFileTab(path: string, chat: string | null): Promise<FileTabData> {
   return invoke("read_file_tab", { path, chat });
+}
+
+/** A picture or a video a reply names, for the strip under it (item 820):
+ *  base64 bytes, or none past the reply's size limit (16 MB a picture,
+ *  32 MB a video). Refused like `readFileTab`, except that a picture or a
+ *  video under a temp folder (where a script's plot is saved) is read. */
+export interface ReplyMediaData {
+  path: string;
+  kind: "image" | "video";
+  media_type: string;
+  size: number;
+  data: string | null;
+}
+export function readReplyMedia(path: string, chat: string | null): Promise<ReplyMediaData> {
+  return invoke("read_reply_media", { path, chat });
 }
 
 /** A `.tex` tab's rendered side (nightshift backlog 381): the PDF (base64)
@@ -1681,6 +1886,15 @@ export function notify(title: string, body: string): Promise<null> {
   return invoke("notify", { title, body });
 }
 
+/** Tell the subscribed phones what happened in a chat (item 739): the
+ *  backend sends nothing while he is at the Mac, and nothing of the reply
+ *  is passed — the chat's name and the state are all a push says. */
+export type PushWhat = "done" | "failed" | "limit" | "approval" | "question" | "reminder" | "set_aside" | "unattended" | "stuck";
+/** `detail`: a stuck run's line (item 784), the one push that says what ran. */
+export function pushNote(what: PushWhat, chat: string | null, label: string | null, project: string | null, detail: string | null = null): Promise<null> {
+  return invoke("push_note", { what, chat, label, project, detail });
+}
+
 /** The Refresh-now banner (backlog 116): its click comes back as the
  *  `usage-banner-clicked` event. */
 export function notifyUsageRefreshed(title: string, body: string): Promise<null> {
@@ -1748,6 +1962,20 @@ export function chatInstructionsPath(): Promise<string | null> {
   return invoke("chat_instructions_path");
 }
 
+/** The practices layer (nightshift item 738): his switch for every chat,
+ *  and the file's path and size (`bytes` null when there is no file). */
+export interface PracticesLayer {
+  on: boolean;
+  path: string | null;
+  bytes: number | null;
+}
+export function practicesLayer(): Promise<PracticesLayer> {
+  return invoke("practices_layer");
+}
+export function setPracticesLayer(on: boolean): Promise<PracticesLayer> {
+  return invoke("set_practices_layer", { on });
+}
+
 // ---- the knowledge base ----
 
 /** Where the vault is; null on a machine with no user config directory. */
@@ -1758,6 +1986,12 @@ export function knowledgeInfo(): Promise<KnowledgeInfo | null> {
 /** The window's timing of a launch step, for `<config>/logs/startup.log` (item 220). */
 export function startupMark(step: string, ms: number, detail?: string): Promise<null> {
   return invoke("startup_mark", { step, ms, detail });
+}
+
+/** One line of `<config>/logs/handoffs.jsonl` (item 757): a hand-off, or one
+ *  of its next chat's first turns (`handoffLog.ts` builds it). */
+export function logHandoff(record: Record<string, unknown>): Promise<null> {
+  return invoke("handoff_log", { record });
 }
 
 /**
@@ -1861,6 +2095,23 @@ export function centreProposals(): Promise<ProposalNotice[]> {
 /** The newest dream commits per folder, with the files each touched. */
 export function centreDreamCommits(limit?: number): Promise<DreamCommit[]> {
   return invoke("centre_dream_commits", { limit });
+}
+
+/** Version Claude Code's memory folders and list the newest changes
+ *  (item 751): his files are read, never written. */
+export function centreClaudeMemory(limit?: number): Promise<MemoryCommit[]> {
+  return invoke("centre_claude_memory", { limit });
+}
+
+/** One Claude Code memory change's patch, whole or for one file. */
+export function centreClaudeMemoryDiff(hash: string, file?: string): Promise<string> {
+  return invoke("centre_claude_memory_diff", { hash, file });
+}
+
+/** Mirror Claude Code sessions Nightloom did not start, said-only, so
+ *  search_chats and capture read them (item 751). */
+export function outsideSync(): Promise<OutsideSync> {
+  return invoke("outside_sync");
 }
 
 /** One dream commit's patch, whole or for one file. */
@@ -1972,6 +2223,23 @@ export function nightshiftWriteItem(projectId: string, id: string, text: string)
 
 export function nightshiftBlockers(projectId: string): Promise<BlockerList> {
   return invoke("nightshift_blockers", { projectId });
+}
+
+/** A question a chat's turn ended on, and his answer to it (item 753). */
+export interface AnsweredAsk {
+  question: string;
+  answer: string;
+  options: string[];
+  chat: string;
+  /** "2026-11-16 9:05 AM". */
+  when: string;
+}
+
+/** File it as an answered blocker in his words, in the project's Nightshift
+ *  root or its `blockers/` folder; null (nothing written) for a project
+ *  with neither. */
+export function askFileAnswer(projectId: string, ask: AnsweredAsk): Promise<{ id: string; file: string } | null> {
+  return invoke("ask_file_answer", { projectId, ask });
 }
 
 /**
@@ -2161,6 +2429,16 @@ export function nightshiftWatch(projectId: string): Promise<null> {
   return invoke("nightshift_watch", { projectId });
 }
 
+/**
+ * Item 869: watch this window's project notes and the knowledge base; an
+ * outside add, remove or rename emits `notes-changed` (`NotesChanged` in
+ * notesFollow.ts: the scope and the batch's paths). Kept
+ * when the folders are unchanged; refused while one does not exist yet.
+ */
+export function watchNotes(): Promise<null> {
+  return invoke("watch_notes");
+}
+
 export function nightshiftUnwatch(projectId: string): Promise<null> {
   return invoke("nightshift_unwatch", { projectId });
 }
@@ -2198,4 +2476,180 @@ export function remoteToken(regenerate: boolean): Promise<RemoteStatus> {
  *  the chat's turn, or not taken and why. */
 export function remoteSent(id: number, queued: boolean, error: string | null): Promise<null> {
   return invoke("remote_sent", { id, queued, error });
+}
+
+// ---- Home (nightshift item 763) ----
+
+/** Home's project, today's chat, its folder, brief and scan time. */
+/** Item 763 H6: Home's unattended spend today (percent of the week), its daily cap, and why its runs are paused. */
+export interface HomeToday {
+  points: number;
+  cap: number;
+  week: number | null;
+  five_hour: number | null;
+  stop: string | null;
+}
+export function homeToday(): Promise<HomeToday> {
+  return invoke("home_today");
+}
+
+export function homeInfo(): Promise<HomeInfo> {
+  return invoke("home_info");
+}
+/** Home's feed, newest first, and when he last marked it seen. */
+export function homeFeed(limit?: number): Promise<HomeFeed> {
+  return invoke("home_feed", limit === undefined ? {} : { limit });
+}
+/** Mark the feed seen now; the new seen time. */
+export function homeMarkSeen(): Promise<string> {
+  return invoke("home_mark_seen");
+}
+/** Item 763 H5: Home's Start cards and the chats it started (the read is also a look of the routes' clock). */
+export function homeRoutes(): Promise<RoutesReply> {
+  return invoke("home_routes");
+}
+/** His tap on a Start card: the prompt as he left it; his pick on a cold card. */
+export function homeRouteStart(id: string, prompt: string | null, pick: RoutePick | null): Promise<HomeRoute> {
+  return invoke("home_route_start", { id, prompt, pick });
+}
+/** His Dismiss on a Start card. */
+export function homeRouteDismiss(id: string): Promise<HomeRoute> {
+  return invoke("home_route_dismiss", { id });
+}
+/** Save his standing brief for Home. */
+export function homeSaveBrief(text: string): Promise<null> {
+  return invoke("home_save_brief", { text });
+}
+
+/** Item 804: what Home can reach, from the last check (nothing is run). */
+export function homeReach(): Promise<HomeReach> {
+  return invoke("home_reach");
+}
+
+/** Item 804: ask Claude Code what it reaches now (no model request). */
+export function homeReachCheck(binary?: string): Promise<HomeReach> {
+  return invoke("home_reach_check", binary ? { binary } : {});
+}
+/** Item 845: one connector checked on its own (Watch's per-source Check now). */
+export function homeReachCheckOne(connector: string, binary?: string): Promise<HomeReach> {
+  return invoke("home_reach_check_one", binary ? { connector, binary } : { connector });
+}
+
+/** Item 804: turn one connector on or off for Home. */
+export function homeReachSet(connector: string, on: boolean): Promise<HomeReach> {
+  return invoke("home_reach_set", { connector, on });
+}
+
+/** Item 845: one task on Home's stage, as Home's `update_task` wrote it (`data` is the view's own payload). */
+export interface HomeTask {
+  id: string;
+  view: string;
+  name: string;
+  doing: string;
+  step: number;
+  of: number;
+  state: "live" | "done" | string;
+  needs: number;
+  why: string;
+  data: unknown;
+  started_at: string;
+  updated_at: string;
+}
+/** Item 845: the tasks on Home's stage, oldest first (a file read; no model). */
+export function homeTasks(): Promise<HomeTask[]> {
+  return invoke("home_tasks");
+}
+/** Item 845: one click of his that Home reads at its next look (a "kind B" control), in plain words. */
+export function homeTaskEvent(task: string, view: string, line: string): Promise<null> {
+  return invoke("home_task_event", { task, view, line });
+}
+/** Item 845 (846 §7 step 3): the view in focus on the stage, for the header on his next message to Home. */
+export function homeStageFocus(view: string, task: string): Promise<null> {
+  return invoke("home_stage_focus", { view, task });
+}
+/** Item 845: his × on a task's tab — the tab goes; the work is not stopped. */
+export function homeTaskClose(id: string): Promise<null> {
+  return invoke("home_task_close", { id });
+}
+
+/** Item 808: Messages, Contacts, Reminders and the Calendar app — status read now, no dialog. */
+export function homeSources(): Promise<HomeSource[]> {
+  return invoke("home_sources");
+}
+
+/** Item 808: his Allow on a row (the one place macOS may show its dialog). */
+export function homeSourceAllow(id: SourceId): Promise<HomeSource[]> {
+  return invoke("home_source_allow", { id });
+}
+
+/** Item 808: his On/Off switch on an allowed row. */
+export function homeSourceSet(id: SourceId, on: boolean): Promise<HomeSource[]> {
+  return invoke("home_source_set", { id, on });
+}
+
+// ---- feedback to the agent (nightshift item 805) ----------------------------
+
+/** What the feedback box sends: his words and what it attaches. */
+export interface FeedbackNote {
+  text: string;
+  surface: string;
+  chat?: string | null;
+  chat_title?: string | null;
+  project?: string | null;
+  /** Item 815: the images he attached, base64; the service saves them
+   *  beside the item under `backlog/shots/`. */
+  attach?: { data: string; kind: "paste" | "page" }[];
+}
+export interface FeedbackFiled {
+  project: string;
+  item: string;
+  file: string;
+}
+export interface FeedbackSent {
+  filed: FeedbackFiled | null;
+  pending_why: string | null;
+  saved: string | null;
+  also_filed: FeedbackFiled[];
+}
+/** File his feedback as a backlog item (saved first, so nothing is lost). */
+export function feedbackSend(note: FeedbackNote): Promise<FeedbackSent> {
+  return invoke("feedback_send", { note });
+}
+/** File what was saved but not filed (a shift was live); at launch. */
+export function feedbackFlush(): Promise<FeedbackFiled[]> {
+  return invoke("feedback_flush");
+}
+/** Item 815: a PNG (base64) of the page as WebKit renders it — no screen
+ *  capture, so no permission dialog. */
+export function feedbackPageShot(): Promise<string> {
+  return invoke("feedback_page_shot");
+}
+
+// ---- the image tool that is not built yet (nightshift item 823) -------------
+
+/** One `generate_image` call, as its log line has it. */
+export interface ImageCall {
+  at: string;
+  engine: string;
+  chat?: string | null;
+  project?: string | null;
+  /** Absent for a chat that writes nothing (`private`). */
+  prompt?: string | null;
+  size?: string | null;
+  style?: string | null;
+  edit?: string | null;
+  private?: boolean;
+}
+export interface ImageCallSummary {
+  total: number;
+  /** Calls in the last `recent_days` days. */
+  recent: number;
+  recent_days: number;
+  /** Newest first, at most 200. */
+  calls: ImageCall[];
+  path: string;
+}
+/** The image tool's count and its calls, from `~/.nightloom/logs/image-tool-calls.jsonl`. */
+export function imageToolCalls(): Promise<ImageCallSummary> {
+  return invoke("image_tool_calls");
 }

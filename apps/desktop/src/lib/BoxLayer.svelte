@@ -1,9 +1,11 @@
 <script module lang="ts">
   import { findFences } from "./codeDetect";
   import { hasQuoteLine } from "./replyQuote.svelte";
-  /** Whether a box with `text` draws the layer: a quote line or a fence in it. */
+  import { findBoxLinks } from "./boxLinks";
+  /** Whether a box with `text` draws the layer: a quote line, a fence or
+   *  (item 696) a link in it. */
   export function layerShown(text: string): boolean {
-    return hasQuoteLine(text) || findFences(text).length > 0;
+    return hasQuoteLine(text) || findFences(text).length > 0 || findBoxLinks(text).length > 0;
   }
 </script>
 
@@ -30,6 +32,9 @@
   import { mirrorLines, quoteNeedsRender, quoteRuns } from "./replyQuote.svelte";
   import { renderReply } from "./markdown";
   import { tip } from "./tip";
+  import { lineLinkSegs, openHint } from "./boxLinks";
+  import { isMac } from "./platform";
+  import { routeLink } from "./webtabs.svelte";
 
   let {
     text,
@@ -44,6 +49,40 @@
   } = $props();
 
   const fences = $derived(findFences(text));
+  /*
+   * Item 696: links drawn in the link colour, each line's pieces placed at
+   * its offset in the text. The textarea on top takes every click, so a
+   * link is found under the pointer by its drawn rectangles here; ⌘-click
+   * (Ctrl elsewhere) opens it by the app's route, a plain click still
+   * places the caret (blocker 1994).
+   */
+  const links = $derived(findBoxLinks(text));
+  const lineStarts = $derived.by(() => {
+    const out: number[] = [];
+    let off = 0;
+    for (const l of text.split("\n")) {
+      out.push(off);
+      off += l.length + 1;
+    }
+    return out;
+  });
+  /** The drawn link piece under the pointer, with ⌘ held or not. */
+  let hot = $state<{ href: string; mod: boolean } | null>(null);
+  let pointer: { x: number; y: number } | null = null;
+  function linkUnder(x: number, y: number): string | null {
+    if (!mirror) return null;
+    for (const el of mirror.querySelectorAll<HTMLElement>("[data-href]")) {
+      for (const r of el.getClientRects()) {
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return el.dataset.href ?? null;
+      }
+    }
+    return null;
+  }
+  function setHot(mod: boolean): void {
+    const href = pointer ? linkUnder(pointer.x, pointer.y) : null;
+    const next = href ? { href, mod } : null;
+    if (next?.href !== hot?.href || next?.mod !== hot?.mod) hot = next;
+  }
   const codeLayer = $derived(fences.length > 0 ? layerLines(text) : []);
   let mirror = $state<HTMLDivElement | null>(null);
   let fenceTops = $state<(number | null)[]>([]);
@@ -120,6 +159,22 @@
     });
   }
 
+  // Item 696: over a link the box says how to open it, and with ⌘ held
+  // shows the pointer — set on the textarea, which is what he points at.
+  $effect(() => {
+    const b = box;
+    if (!b) return;
+    const title = b.getAttribute("title");
+    b.style.cursor = hot?.mod ? "pointer" : "";
+    if (hot) b.setAttribute("title", openHint(isMac));
+    else b.removeAttribute("title");
+    return () => {
+      b.style.cursor = "";
+      if (title === null) b.removeAttribute("title");
+      else b.setAttribute("title", title);
+    };
+  });
+
   // The layer follows the box: its size (a drag, the 40% line, a resized
   // window, his growing text), its scroll, and its text.
   $effect(() => {
@@ -135,7 +190,39 @@
     for (const ev of caretEvents) b.addEventListener(ev, readCaret);
     document.addEventListener("selectionchange", readCaret);
     readCaret();
+    // Item 696: the pointer over a drawn link, ⌘ held or not, and ⌘-click.
+    const modOf = (e: MouseEvent | KeyboardEvent) => (isMac ? e.metaKey : e.ctrlKey);
+    const onMove = (e: MouseEvent) => {
+      pointer = { x: e.clientX, y: e.clientY };
+      setHot(modOf(e));
+    };
+    const onLeave = () => {
+      pointer = null;
+      setHot(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (pointer && (e.key === "Meta" || e.key === "Control")) setHot(modOf(e));
+    };
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 0 || !modOf(e)) return;
+      const href = linkUnder(e.clientX, e.clientY);
+      if (!href) return;
+      // The click opens the link and leaves the caret where it was.
+      e.preventDefault();
+      e.stopPropagation();
+      routeLink(href, false);
+    };
+    b.addEventListener("mousemove", onMove, { passive: true });
+    b.addEventListener("mouseleave", onLeave);
+    b.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKey);
     return () => {
+      b.removeEventListener("mousemove", onMove);
+      b.removeEventListener("mouseleave", onLeave);
+      b.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKey);
       ro.disconnect();
       b.removeEventListener("scroll", sync);
       for (const ev of caretEvents) b.removeEventListener(ev, readCaret);
@@ -144,7 +231,7 @@
   });
 </script>
 
-<div class="ta-mirror" aria-hidden="true" bind:this={mirror} style:top="{inset.top}px" style:left="{inset.left}px">{#each mirrorLines(text) as l, i (i)}{@const c = codeLayer[i]}{#if c && c.kind === "body"}<div class="ml code">{#each c.segs as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}{#if c.segs.length === 0}{"​"}{/if}</div>{:else if c}<div class="ml code fence" data-fence={c.kind === "open" ? c.fence : undefined}>{l.marker}{l.rest || "​"}</div>{:else}<div class="ml" class:q={l.quote} data-line={i}>{#if l.quote}<span class="qm">{l.marker}</span>{l.rest}{:else}{l.rest || "​"}{/if}</div>{/if}{/each}{#each runs as r, k (r.start)}{@const at = runBoxes[k]}{#if at && !tooTall[fitKey(r.src, at.height)] && !(caret && caret.end >= r.start && caret.start <= r.end)}<div class="q-render markdown" data-quote-render data-fit={fitKey(r.src, at.height)} style:top="{at.top}px" style:left="{at.left}px" style:width="{at.width}px" style:height="{at.height}px">{@html renderReply(r.src)}</div>{/if}{/each}</div>
+<div class="ta-mirror" aria-hidden="true" bind:this={mirror} style:top="{inset.top}px" style:left="{inset.left}px">{#each mirrorLines(text) as l, i (i)}{@const c = codeLayer[i]}{#if c && c.kind === "body"}<div class="ml code">{#each c.segs as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}{#if c.segs.length === 0}{"​"}{/if}</div>{:else if c}<div class="ml code fence" data-fence={c.kind === "open" ? c.fence : undefined}>{l.marker}{l.rest || "​"}</div>{:else}<div class="ml" class:q={l.quote} data-line={i}>{#if l.quote}<span class="qm">{l.marker}</span>{/if}{#if links.length > 0 && l.rest}{#each lineLinkSegs(l.rest, (lineStarts[i] ?? 0) + l.marker.length, links) as sg, j (j)}{#if sg.href}<span class="lk" class:hot={hot?.mod && hot.href === sg.href} data-href={sg.href}>{sg.text}</span>{:else}{sg.text}{/if}{/each}{:else if l.quote}{l.rest}{:else}{l.rest || "​"}{/if}</div>{/if}{/each}{#each runs as r, k (r.start)}{@const at = runBoxes[k]}{#if at && !tooTall[fitKey(r.src, at.height)] && !(caret && caret.end >= r.start && caret.start <= r.end)}<div class="q-render markdown" data-quote-render data-fit={fitKey(r.src, at.height)} style:top="{at.top}px" style:left="{at.left}px" style:width="{at.width}px" style:height="{at.height}px">{@html renderReply(r.src)}</div>{/if}{/each}</div>
 {#each fences as f, k (k)}
   {#if fenceTops[k] != null}
     <!-- Item 315: the block's language; a pick rewrites only the
@@ -187,6 +274,19 @@
   }
   .qm {
     opacity: 0.45;
+  }
+  /* Item 696: a link in the box, in the theme's link colour (a reply's
+     `.markdown a` / `.ns-prose a`), a faint underline so it reads as a link
+     and not as code colouring; full under the pointer with ⌘ held. Colour
+     and line only: the glyphs must stay where the textarea has them. */
+  .lk {
+    color: var(--accent);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
+    text-underline-offset: 2px;
+  }
+  .lk.hot {
+    text-decoration-color: var(--accent);
   }
   /* Item 470: a quote drawn rendered over its source lines — the quote's
      bar and muted ink, the transcript's typesetting, the box's ground so

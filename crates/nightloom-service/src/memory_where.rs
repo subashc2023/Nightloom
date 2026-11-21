@@ -1139,10 +1139,12 @@ mod tests {
                 .any(|h| h.path.to_string_lossy().contains("archive"))
         );
         // Bound thread: Start here loaded, Queue on demand; the other thread on demand.
+        // Compared as `/`-joined: on Windows the hits' paths use `\` (item 864).
+        let slashed = |h: &Hit| h.path.to_string_lossy().replace('\\', "/");
         let ace: Vec<&Hit> = found
             .hits
             .iter()
-            .filter(|h| h.path.to_string_lossy().contains("threads/ace"))
+            .filter(|h| slashed(h).contains("threads/ace"))
             .collect();
         assert_eq!(ace.len(), 2);
         assert_eq!(ace[0].loading, Loading::EveryChat);
@@ -1150,7 +1152,7 @@ mod tests {
         let other = found
             .hits
             .iter()
-            .find(|h| h.path.to_string_lossy().contains("threads/other"))
+            .find(|h| slashed(h).contains("threads/other"))
             .unwrap();
         assert_eq!(other.loading, Loading::OnDemand);
         // Claude Code: MEMORY.md loaded, the detail file on demand.

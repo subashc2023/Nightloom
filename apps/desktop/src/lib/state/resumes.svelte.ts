@@ -1,5 +1,6 @@
 // Moved out of state.svelte.ts by item 641 (pure move; state.svelte.ts re-exports every name it exported).
 import { takeThreadHandoff } from "../threadHandoff.svelte";
+import { noteHandoffOpened } from "../handoffLog";
 import { hasHiddenChars } from "../shellRun";
 import * as api from "../api";
 import { carryReadOrder, firstMessage, awayNow, extractStartPrompt, handoff, markUnattended, neverHandsOff, noteChatProject, noteSystemIdle, noteThread, leaveHandoff, threadFor } from "../handoff.svelte";
@@ -10,7 +11,8 @@ import { askedResume, dueResumes, extractContinue, limitResumeTime, nextResumeAt
 import { liveHost } from "../browse";
 import type { AgentTurnResult, SessionEvent, Usage } from "../types";
 import { chatHome } from "./asides.svelte";
-import { type Segment, app, sendUntyped, refreshSessions, continueWithPrompt, backgroundName, chatRuns, sendInChat, addToast } from "../state.svelte";
+import { chatHomeOf } from "../chatHomeOf";
+import { type Segment, app, sendUntyped, refreshSessions, continueWithPrompt, backgroundName, chatRuns, sendInChat, addToast, turnWasStopped } from "../state.svelte";
 
 /**
  * Resume a turn the usage limit paused (nightshift backlog 164): sends the
@@ -111,10 +113,13 @@ export function liveText(segs: readonly Segment[]): string {
 
 /** Where chat `id` lives, as far as this launch knows. */
 export function homeFor(id: string | null): { id: string | null; name: string | null } {
-  const known = id ? chatHome.get(id) : undefined;
-  return id === app.activeSessionId || !known
-    ? { id: app.project?.id ?? null, name: app.project?.name ?? null }
-    : { id: known.project, name: known.name };
+  // Item 874: an off-screen turn's record names its project first.
+  return chatHomeOf(id, {
+    active: app.activeSessionId,
+    open: { id: app.project?.id ?? null, name: app.project?.name ?? null },
+    record: id ? app.background[id] : null,
+    known: id ? chatHome.get(id) : null,
+  });
 }
 
 /**
@@ -213,7 +218,7 @@ async function handOffUnattended(chat: string, prompt: string, home: { id: strin
     }
     let index = app.events.length - 1;
     while (index > 0 && app.events[index].event !== "assistant_message") index--;
-    await continueWithPrompt(chat, index, prompt);
+    await continueWithPrompt(chat, index, prompt, { route: "unattended" });
     if (app.activeSessionId !== chat) markUnattended(app.activeSessionId);
     return;
   }
@@ -225,6 +230,8 @@ async function handOffUnattended(chat: string, prompt: string, home: { id: strin
     resumeLog(`handoff ${chat.slice(0, 8)} not continued: ${String(e)}`);
     return;
   }
+  // Item 757: logged for scoring.
+  noteHandoffOpened({ route: "unattended", from: chat, index: null, to: next, sent: text });
   const thread = threadFor(chat);
   leaveHandoff(chat);
   carryReadOrder(chat, next);
@@ -402,6 +409,8 @@ export function notifyTurnEnded(error: string | null): void {
     ranIn,
     error,
     cliError: app.agentTurn?.is_error === true,
+    limit: !!app.agentTurn?.limit,
+    stopped: turnWasStopped(),
   });
 }
 
@@ -415,6 +424,13 @@ export function notifyEnd(t: {
   ranIn: string | null;
   error: string | null;
   cliError: boolean;
+  /** The plan's limit paused the turn (item 739: the phone's push says so). */
+  limit?: boolean;
+  /** He stopped the turn (739 review L5): no push to the phone. */
+  stopped?: boolean;
+  /** Where the chat lives when the caller knows (874: an off-screen turn's
+   *  record, gone before this runs); else `homeFor`. */
+  home?: { id: string | null; name: string | null };
 }): void {
   const sent = [...t.events].reverse().find((e) => e.event === "user_message");
   const since = sent?.event === "user_message" ? Date.parse(sent.at) : NaN;
@@ -430,5 +446,6 @@ export function notifyEnd(t: {
     elapsedMs: Number.isNaN(since) ? null : Date.now() - since,
     error: t.error,
     handoffFill: wrapUp ? handoff.fill : null,
+    phone: { chat: t.ranIn, project: (t.home ?? homeFor(t.ranIn)).id, limit: t.limit === true, cliError: t.cliError, stopped: t.stopped === true },
   });
 }

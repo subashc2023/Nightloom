@@ -37,7 +37,10 @@ import {
   updateAttachment,
 } from "./drafts.svelte";
 import type { Attachment } from "./types";
+import { chipStep, type ChipTag } from "./chipSteps";
 import { scheduledFileIds } from "./scheduled.svelte";
+import { FEEDBACK_DRAFT_KEY, feedbackFileIdsIn } from "./feedbackText";
+import { pickDocuments } from "./pick";
 
 // Anthropic rejects a base64 image over ~10 MB and a PDF over ~32 MB, and
 // nothing checks either before the wire, so the refusal has to happen here.
@@ -53,6 +56,11 @@ export const MAX_DOCUMENT_BASE64 = 32 * 1024 * 1024;
 // failure can be made loud. Images near their own cap went through.
 export const MAX_AGENT_DOCUMENT_BASE64 = 20 * 1024 * 1024;
 export const encodedLimit = (n: number) => Math.floor((n / 4) * 3);
+// No page limit is passed for a deck (868 review): the API's PDF pages are
+// counted per request (600 on the 1M-context models, 100 on 200k ones),
+// so parts sent in one message carry the same pages as the whole and
+// splitting by pages only cost a conversion per part; and the Claude Code
+// engine reads a long PDF by path (item 491). Only the size cap splits.
 
 /** Exported for a dropped zip (item 414). */
 export function readBase64(file: File): Promise<string> {
@@ -146,6 +154,12 @@ export async function pruneDraftCopies(): Promise<void> {
   if (keep === null) return;
   // A scheduled message's files live in the same folder (backlog 531).
   keep.push(...scheduledFileIds());
+  // And the feedback box's images (item 815), kept the same way.
+  try {
+    keep.push(...feedbackFileIdsIn(localStorage.getItem(FEEDBACK_DRAFT_KEY)));
+  } catch {
+    // no localStorage: no feedback draft
+  }
   await pruneDraftFiles(keep).catch(() => {});
 }
 
@@ -195,6 +209,60 @@ export function conversionJobs(key: string): Promise<void>[] {
     .filter((j): j is Promise<void> => !!j);
 }
 
+/** Item 868: a split deck's parts 2..n, by its first chip's id; and each
+ *  part as it last left a box, to put back when part 1 comes back. */
+const partsOf = new Map<number, number[]>();
+const partStore = new Map<number, Attachment>();
+/** Parts that left a box with part 1 (or settled while it was out): only
+ *  these come back with it — one he removed by its own × stays out. */
+const followedOut = new Set<number>();
+
+/**
+ * Item 868: a split deck's parts move with part 1. After a chip step on
+ * `firstId` (an undo or redo of its attach or its removal): part 1 out →
+ * its parts out too, remembered as they were; part 1 in → its parts back
+ * right after it. One ⌘Z takes the whole deck, one ⌘⇧Z brings it back.
+ * A part he removed by its own × is his own step, not touched here.
+ */
+export function followParts(firstId: number, chips: readonly Attachment[]): Attachment[] {
+  const ids = partsOf.get(firstId);
+  if (!ids) return [...chips];
+  const at = chips.findIndex((c) => c.id === firstId);
+  if (at < 0) {
+    for (const c of chips)
+      if (ids.includes(c.id)) {
+        partStore.set(c.id, c);
+        followedOut.add(c.id);
+      }
+    return chips.filter((c) => !ids.includes(c.id));
+  }
+  const back = ids
+    .filter((id) => followedOut.has(id) && !chips.some((c) => c.id === id))
+    .map((id) => partStore.get(id))
+    .filter((c): c is Attachment => !!c);
+  for (const id of ids) followedOut.delete(id);
+  return [...chips.slice(0, at + 1), ...back, ...chips.slice(at + 1)];
+}
+
+/** One undo/redo of a chip step on the box's chips (item 458), with what
+ *  ended while a chip was out landing on it (`settleRestored`) and a split
+ *  deck's parts moving with part 1 (`followParts`, item 868). */
+export function stepChips(tag: ChipTag, dir: "undo" | "redo", chips: readonly Attachment[]): Attachment[] {
+  const stepped = chipStep(tag, dir, [...chips]).chips.flatMap((c) => {
+    const back = settleRestored(c);
+    return back ? [back] : [];
+  });
+  return followParts(tag.chip.id, stepped);
+}
+
+/** The chips of a split deck's parts 2..n in `key`'s box — what Keep keeps
+ *  beside part 1 (item 868). Empty for a file that was not split. */
+export function partChips(key: string, id: number): Attachment[] {
+  const ids = partsOf.get(id);
+  if (!ids) return [];
+  return readDraft(key).attachments.filter((a) => ids.includes(a.id) && !a.pending && !!a.data);
+}
+
 /**
  * An office file: a chip at once, saying what is happening, and the
  * conversion behind it. A PDF over the engine's cap goes again as its
@@ -220,14 +288,17 @@ async function attachOffice(chatKey: string, file: File, addToast: (text: string
     data: "",
     label: convertingLabel(file.name, canPdf),
     pending: true,
+    converting: { since: Date.now(), to: canPdf ? "pdf" : "text" },
   };
   addAttachment(chatKey, chip);
   const job = (async () => {
     try {
       const data = await readBase64(file);
-      let out = await prepareOfficeAttachment(chip.name, data);
-      if (out.note) addToast(`${chip.name}: ${out.note} — sending its text instead`);
       const cap = capFor("document");
+      // Item 868: over the cap, the backend shrinks the pictures, then
+      // splits a deck into parts; text is its last resort.
+      let out = await prepareOfficeAttachment(chip.name, data, false, { maxBase64: cap });
+      if (out.note) addToast(`${chip.name}: ${out.note}${out.via === "text" ? " — sending its text instead (no slides)" : ""}`);
       if (out.via === "pdf" && out.data.length > cap) {
         addToast(
           `${chip.name} became a ${Math.round(out.data.length / 1024 / 1024)} MB PDF once encoded — over the ${cap / 1024 / 1024} MB limit${cap === MAX_AGENT_DOCUMENT_BASE64 ? " on the subscription engine" : ""}; sending its text instead (no pictures)`,
@@ -235,17 +306,48 @@ async function attachOffice(chatKey: string, file: File, addToast: (text: string
         out = await prepareOfficeAttachment(chip.name, data, true);
       }
       const done: Partial<Attachment> = {
+        // A split deck's part 1 takes its part name (item 868).
+        ...(out.name && out.name !== chip.name ? { name: out.name } : {}),
         media_type: out.media_type,
         data: out.data,
-        label: convertedLabel(chip.name, out.via, out.count),
+        label: convertedLabel(out.name || chip.name, out.via, out.count),
         pending: false,
+        converting: undefined,
         ...(out.source_sha256 ? { source_sha256: out.source_sha256 } : {}),
         // Its pages route it (item 491): a deck that became a long PDF goes
         // by path on the Claude Code engine, as a dropped one does.
         ...(out.via === "pdf" && out.count ? { pages: out.count } : {}),
       };
-      if (!updateAttachment(chatKey, chip.id, done)) settledWhileOut.set(chip.id, done);
-      else stashLong(chatKey, { ...chip, ...done });
+      // Parts 2..n of a split deck: chips of their own beside part 1.
+      const parts: Attachment[] = (out.more ?? []).map((m) => ({
+        id: nextAttachmentId(),
+        kind: "document",
+        name: m.name,
+        media_type: m.media_type,
+        data: m.data,
+        label: convertedLabel(m.name, m.via, m.count),
+        ...(m.source_sha256 ? { source_sha256: m.source_sha256 } : {}),
+        ...(m.via === "pdf" && m.count ? { pages: m.count } : {}),
+      }));
+      if (parts.length) {
+        partsOf.set(
+          chip.id,
+          parts.map((p) => p.id),
+        );
+        for (const p of parts) partStore.set(p.id, p);
+      }
+      if (!updateAttachment(chatKey, chip.id, done)) {
+        // Out of the box (undone, or ×): the parts wait with part 1 and
+        // come back with it (`followParts`).
+        settledWhileOut.set(chip.id, done);
+        for (const p of parts) followedOut.add(p.id);
+      } else {
+        stashLong(chatKey, { ...chip, ...done });
+        for (const p of parts) {
+          addAttachment(chatKey, p);
+          stashLong(chatKey, p);
+        }
+      }
     } catch (e) {
       removeAttachment(chatKey, chip.id);
       settledWhileOut.set(chip.id, null);
@@ -362,7 +464,8 @@ export function splitChips(chips: Attachment[], engine: Engine = engineNow()) {
     images: chips.filter((a) => a.kind === "image").map(({ media_type, data }) => ({ media_type, data })),
     documents: chips
       .filter((a) => a.kind === "document" && !a.pending && !byPath(a))
-      .map(({ media_type, name, data }) => ({ media_type, name, data })),
+      .map(({ media_type, name, data }) => ({ media_type, name, data }))
+      .concat(pickDocuments(chips)),
     files: [
       ...chips.filter((a) => a.kind === "file").map(({ name, data }) => ({ name, data })),
       ...chips.filter(byPath).map(({ name, data, pages }) => ({ name: pdfFileName(name), data, pages })),

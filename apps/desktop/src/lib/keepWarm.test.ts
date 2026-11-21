@@ -5,6 +5,7 @@ import {
   POINTS_PER_PING,
   capOf,
   clockTime,
+  handedOffOff,
   holdPress,
   holdRows,
   holdWords,
@@ -23,6 +24,7 @@ import {
 } from "./keepWarm";
 import type { SessionEvent } from "./types";
 import noticeSrc from "./KeepWarmNotice.svelte?raw";
+import composerSrc from "./Composer.svelte?raw";
 
 const HOUR = 3_600_000;
 const MIN = 60_000;
@@ -59,7 +61,7 @@ describe("keep-warm words (backlog 582)", () => {
     expect(idle("noreply")).toBe("keep warm · starts after the next reply");
     expect(idle("cap")).toBe("keep warm · ended — 6 h since the last reply");
     expect(idle("cold")).toContain("went cold");
-    expect(idle("missed")).toContain("missed the cache");
+    expect(idle("missed")).toContain("had to rebuild the cache");
     expect(idle("busy")).toBe("keep warm on");
   });
 
@@ -74,30 +76,32 @@ describe("keep-warm words (backlog 582)", () => {
     expect(isOn(status({ scheduled: false, why: "small" }))).toBe(true);
   });
 
-  it("tells the whole rule and what was spent in the tooltip", () => {
+  it("keeps the tooltip to the state and the click, under 140 characters (item 697)", () => {
     const off = switchTitle(null, T0);
-    expect(off).toContain("every 55 min");
-    expect(off).toContain("up to 6 h");
-    expect(off).toContain("50k tokens or more");
-    expect(off).toContain("Off — click to switch on");
+    expect(off).toBe("Keep warm off.\nClick to switch on; right-click to hold 12 or 24 h.");
     const on = switchTitle(status({ spent: { pings: 2, cache_read: 240_000, cache_write: 600, output: 8, cost_usd: 0.05 } }), T0);
-    expect(on).toContain("warm until about 11:30 PM, next request 5:55 PM");
-    expect(on).toContain("2 pings, 240k tokens read from the cache, 600 written, about $0.05");
-    // A retuned cap shows as set, not as shipped.
-    expect(switchTitle(status({ policy: { every_ms: 55 * MIN, cap_ms: 4 * HOUR, min_context: 50_000 } }), T0)).toContain("up to 4 h");
+    expect(on).toContain("Warm until 11:30 PM, next ping 5:55 PM · 2 pings so far.");
+    expect(on).toContain("Click to switch off; right-click to hold 12 or 24 h.");
+    const missed = switchTitle(status({ scheduled: false, why: "missed" }), T0);
+    expect(missed).toContain("not running: stopped — a ping had to rebuild the cache");
+    for (const t of [off, on, missed]) expect(t.length).toBeLessThan(140);
+    // Item 776: the price of letting it go cold on the state line while off or idle; not while keeping (the chip has it).
+    const keeping = switchTitle(status({ spent: { pings: 2, cache_read: 240_000, cache_write: 600, output: 8, cost_usd: 0.05 } }), T0, 1.65);
+    expect(keeping).not.toContain("cold ≈");
+    expect(keeping.split("\n")).toHaveLength(2);
+    expect(switchTitle(null, T0, 1.65)).toBe("Keep warm off · cold ≈ $1.65.\nClick to switch on; right-click to hold 12 or 24 h.");
+    expect(switchTitle(status({ scheduled: false, why: "missed" }), T0, 1.65)).toContain("rebuild the cache · cold ≈ $1.65.\n");
     expect(idleWords(status({ why: "cap", policy: { every_ms: 55 * MIN, cap_ms: 4 * HOUR, min_context: 50_000 } }))).toContain("4 h");
   });
 
-  it("says whether the switch is the default's or his (item 608)", () => {
-    const byDefault = switchTitle(status({ chosen: false, default_on: true }), T0);
-    expect(byDefault).toContain("on by default for every chat — Settings → Subscription → Keeping caches warm");
-    expect(byDefault).toContain("Click to switch off for this chat.");
-    expect(switchTitle(status({ chosen: true, default_on: true }), T0)).toContain("switched on for this chat");
-    const hisOff = switchTitle(status({ mode: "off", scheduled: false, why: "off", chosen: true, default_on: true }), T0);
-    expect(hisOff).toContain("Off for this chat — you switched it off");
-    expect(hisOff).toContain("click to switch on for this chat");
-    const defaultOff = switchTitle(status({ mode: "off", scheduled: false, why: "off", chosen: false, default_on: false }), T0);
-    expect(defaultOff).toContain("Off — the default is off");
+  it("says whether the off is his or the default's, shortly (item 608)", () => {
+    expect(switchTitle(status({ mode: "off", scheduled: false, why: "off", chosen: true, default_on: true }), T0)).toContain(
+      "Keep warm off for this chat.",
+    );
+    expect(switchTitle(status({ mode: "off", scheduled: false, why: "off", chosen: false, default_on: false }), T0)).toContain(
+      "Keep warm off (the default is off).",
+    );
+    expect(switchTitle(status({ chosen: false, default_on: true }), T0)).toContain("Click to switch off");
     // A new chat on by default reads on before its first reply.
     const fresh = status({ scheduled: false, why: "noreply", next_ping_ms: null, warm_until_ms: null, chosen: false, default_on: true });
     expect(isOn(fresh)).toBe(true);
@@ -152,15 +156,15 @@ describe("hold longer (item 643)", () => {
   it("says the hold in the tooltip and uses its cap", () => {
     const held = status({ cap_ms: 24 * HOUR, hold_hours: 24, hold_until_ms: T0 + 24 * HOUR });
     const t = switchTitle(held, T0);
-    expect(t).toContain("for up to 24 h");
-    expect(t).toContain("Held 24 h for this chat (until ~Wed 5:00 PM unless you reply again), then back to 6 h.");
+    expect(t).toContain("· held 24 h.");
+    expect(holdWords(held, T0)).toBe(" Held 24 h for this chat (until ~Wed 5:00 PM unless you reply again), then back to 6 h.");
     expect(idleWords({ ...held, why: "cap" })).toBe("ended — 24 h since the last reply");
     expect(capOf(held)).toBe(24 * HOUR);
     expect(capOf(status())).toBe(6 * HOUR);
     expect(holdWords(status(), T0)).toBe("");
     // Discoverable: every tooltip, on or off, ends with the hint.
-    expect(switchTitle(status(), T0)).toContain("Right-click or press and hold to keep it warm for 12 h or 24 h.");
-    expect(switchTitle(null, T0)).toContain("Right-click or press and hold");
+    expect(switchTitle(status(), T0)).toContain("right-click to hold 12 or 24 h.");
+    expect(switchTitle(null, T0)).toContain("right-click to hold");
   });
 
   it("opens on a right-click or a 500 ms press, and swallows the click that ends a long press", () => {
@@ -242,5 +246,37 @@ describe("the keep-warm row is a toggle (item 681)", () => {
     expect(noticeSrc).toContain("await setKeepWarm(chat, mode)");
     // Motion only without Reduce motion.
     expect(noticeSrc).toMatch(/@media \(prefers-reduced-motion: no-preference\) \{\s*\.kw-knob \{\s*transition/);
+  });
+});
+
+describe("keep warm off at a hand-off (item 728)", () => {
+  const handed = (over: Partial<KeepWarmStatus> = {}) =>
+    status({ mode: "off", scheduled: false, why: "handedoff", chosen: true, default_on: true, next_ping_ms: null, ...over });
+
+  it("says the hand-off turned it off, on the chip and in its tooltip", () => {
+    expect(handedOffOff(handed())).toBe(true);
+    expect(switchLabel(handed(), T0)).toBe("keep warm · off — chat handed off");
+    const title = switchTitle(handed(), T0);
+    expect(title).toBe("Keep warm off — chat handed off.\nClick to switch on; right-click to hold 12 or 24 h.");
+    expect(title.length).toBeLessThan(140);
+    // A click switches it on, as on any off chip.
+    expect(isOn(handed())).toBe(false);
+  });
+
+  it("reads as his on once he switches it back on, and leaves other chats alone", () => {
+    const back = status({ chosen: true, default_on: true, scheduled: false, why: "noreply", next_ping_ms: null });
+    expect(handedOffOff(back)).toBe(false);
+    expect(switchLabel(back, T0)).toBe("keep warm · starts after the next reply");
+    // His own off, and a chat never handed off, read as before.
+    const his = status({ mode: "off", scheduled: false, why: "off", chosen: true, default_on: true });
+    expect(handedOffOff(his)).toBe(false);
+    expect(switchLabel(his, T0)).toBe("keep warm");
+    expect(switchTitle(his, T0)).toContain("Keep warm off for this chat.");
+    expect(handedOffOff(status())).toBe(false);
+    expect(handedOffOff(null)).toBe(false);
+  });
+
+  it("shows the chip for a handed-off chat with no cache reading (the one Composer, both layouts)", () => {
+    expect(composerSrc).toContain("|| handedOffOff(kw))}");
   });
 });

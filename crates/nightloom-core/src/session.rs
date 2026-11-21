@@ -693,6 +693,51 @@ pub enum SessionEvent {
         attachments: Option<EditedAttachments>,
         at: DateTime<Utc>,
     },
+    /// The chat handed off **in place** (nightshift item 763, blocker 2021,
+    /// 2026-11-17): the transcript goes on in the same chat, a divider here,
+    /// but the model's context starts again from `brief` — the files and
+    /// his words verbatim, collected by code — on the next request. A
+    /// marker, not a mutation: nothing before it is dropped from the log;
+    /// [`Session::agent_session`] reads as none past it (the next turn
+    /// starts a fresh agent session) and [`Session::pending_hand_off`]
+    /// carries the brief on the next message's wire. A rewind past it
+    /// takes it back.
+    HandOff {
+        brief: String,
+        /// The context (tokens) the chat had when it handed off.
+        #[serde(default)]
+        context: u64,
+        /// `soft` (past the soft mark, at an idle moment) or `hard`.
+        #[serde(default)]
+        reason: String,
+        at: DateTime<Utc>,
+    },
+    /// This chat hands off in place by itself (item 763): past `soft`
+    /// tokens once idle, past `hard` at the next message. `soft == 0` is
+    /// off. Latest wins, like a [`SessionEvent::Kind`]; metadata, never
+    /// drawn.
+    AutoHandOff {
+        soft: u64,
+        hard: u64,
+        at: DateTime<Utc>,
+    },
+    /// His rename or removal of one chapter (item 799's dividers; item 842
+    /// moved them here from the Mac's localStorage, so the phone and every
+    /// window read the same names). `key` is the window's chapter key,
+    /// `<kind>:<log index of the mark>` or `start`. The line states the
+    /// chapter's whole edit: `title` absent is the code's name, `removed`
+    /// false is shown. The latest line per key wins, read over the whole log
+    /// rather than the live events — a name is not conversation, so a rewind
+    /// does not undo it (the chapter itself drops out with its mark).
+    /// Metadata, never sent to a model.
+    ChapterEdit {
+        key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        removed: bool,
+        at: DateTime<Utc>,
+    },
     /// A log entry this build cannot read: an event written by a newer
     /// Nightloom, or a line the filesystem left damaged.
     ///
@@ -785,6 +830,19 @@ pub fn elision_marker(tokens: u64, images: usize, documents: usize) -> String {
         capitalized(&what),
         if singular { "was" } else { "were" }
     )
+}
+
+/// A chapter key (`<kind>:<index>`, item 842) with its index renumbered
+/// for a fork; `start` (no index) as it is; `None` when the mark was not
+/// copied or the key has no index to read.
+fn renumber_chapter_key(key: &str, renumber: &BTreeMap<usize, usize>) -> Option<String> {
+    match key.rsplit_once(':') {
+        None => Some(key.to_string()),
+        Some((kind, at)) => {
+            let at: usize = at.parse().ok()?;
+            renumber.get(&at).map(|n| format!("{kind}:{n}"))
+        }
+    }
 }
 
 fn capitalized(s: &str) -> String {
@@ -1517,6 +1575,22 @@ impl Session {
                         at: *at,
                     }
                 }
+                // A chapter's key names its mark's index (item 842): the
+                // fork's own index, or dropped with a mark not copied.
+                SessionEvent::ChapterEdit {
+                    key,
+                    title,
+                    removed,
+                    at,
+                } => match renumber_chapter_key(key, &renumber) {
+                    Some(key) => SessionEvent::ChapterEdit {
+                        key,
+                        title: title.clone(),
+                        removed: *removed,
+                        at: *at,
+                    },
+                    None => continue,
+                },
                 SessionEvent::Edit {
                     target,
                     block,
@@ -2882,7 +2956,113 @@ impl Session {
             .into_iter()
             .rev()
             .find_map(|(_, e)| match e {
-                SessionEvent::AgentSession { agent, id, .. } => Some((agent.as_str(), id.as_str())),
+                SessionEvent::AgentSession { agent, id, .. } => {
+                    Some(Some((agent.as_str(), id.as_str())))
+                }
+                // Item 763: handed off in place — the next turn starts a
+                // fresh agent session.
+                SessionEvent::HandOff { .. } => Some(None),
+                _ => None,
+            })
+            .flatten()
+    }
+
+    /// Item 763: the in-place hand-off the next message carries — the
+    /// newest live [`SessionEvent::HandOff`] that no reply and no new agent
+    /// session has followed yet. Its brief. Not "no message of his after
+    /// it": a turn that failed before the agent started would then leave
+    /// the next one on a fresh session with no brief at all.
+    pub fn pending_hand_off(&self) -> Option<&str> {
+        for (_, e) in self.live_events().into_iter().rev() {
+            match e {
+                SessionEvent::AssistantMessage { .. } | SessionEvent::AgentSession { .. } => {
+                    return None;
+                }
+                SessionEvent::HandOff { brief, .. } => return Some(brief.as_str()),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Item 763: record an in-place hand-off (see [`SessionEvent::HandOff`]).
+    pub fn record_hand_off(&mut self, brief: String, context: u64, reason: &str) {
+        self.record(SessionEvent::HandOff {
+            brief,
+            context,
+            reason: reason.to_string(),
+            at: Utc::now(),
+        });
+    }
+
+    /// Item 842: record his edit of one chapter (see
+    /// [`SessionEvent::ChapterEdit`]) — the whole edit, a blank title read
+    /// as none; a no-op when the latest line for the key already says it.
+    pub fn record_chapter_edit(&mut self, key: &str, title: Option<String>, removed: bool) {
+        let key = key.trim();
+        if key.is_empty() {
+            return;
+        }
+        let title = title
+            .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|t| !t.is_empty());
+        let now = self.events.iter().rev().find_map(|e| match e {
+            SessionEvent::ChapterEdit {
+                key: k,
+                title,
+                removed,
+                ..
+            } if k == key => Some((title.clone(), *removed)),
+            _ => None,
+        });
+        if now.unwrap_or((None, false)) == (title.clone(), removed) {
+            return;
+        }
+        self.record(SessionEvent::ChapterEdit {
+            key: key.to_string(),
+            title,
+            removed,
+            at: Utc::now(),
+        });
+    }
+
+    /// Item 763: this chat's automatic in-place hand-off marks, `(soft,
+    /// hard)` tokens, when it is on.
+    pub fn auto_hand_off(&self) -> Option<(u64, u64)> {
+        self.live_events()
+            .into_iter()
+            .rev()
+            .find_map(|(_, e)| match e {
+                SessionEvent::AutoHandOff { soft, hard, .. } => Some((*soft, *hard)),
+                _ => None,
+            })
+            .filter(|(soft, _)| *soft > 0)
+    }
+
+    /// Item 763: switch the automatic in-place hand-off on (`soft > 0`) or
+    /// off; a no-op when unchanged.
+    pub fn set_auto_hand_off(&mut self, soft: u64, hard: u64) {
+        let now = self.auto_hand_off().unwrap_or((0, 0));
+        if now == (soft, hard) || (soft == 0 && now.0 == 0) {
+            return;
+        }
+        self.record(SessionEvent::AutoHandOff {
+            soft,
+            hard,
+            at: Utc::now(),
+        });
+    }
+
+    /// Item 763: the newest reply's context (input + output tokens, as the
+    /// window's warm wrap-up reads it) and when it was recorded.
+    pub fn last_reply_context(&self) -> Option<(u64, DateTime<Utc>)> {
+        self.live_events()
+            .into_iter()
+            .rev()
+            .find_map(|(_, e)| match e {
+                SessionEvent::AssistantMessage { usage, at, .. } => {
+                    Some((usage.input_tokens + usage.output_tokens, *at))
+                }
                 _ => None,
             })
     }
@@ -5265,6 +5445,81 @@ mod tests {
         assert_eq!(r.thread(), Some("t"));
         r.rewind(1).unwrap();
         assert_eq!(r.thread(), None, "{:?}", r.events());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A chapter edit (item 842) is a log line: it round-trips through
+    /// `load` in the window's shape, a repeated edit writes nothing, it never
+    /// reaches the model, and a fork renumbers its key to the fork's index
+    /// (dropping one whose mark the fork cut off).
+    #[test]
+    fn a_chapter_edit_is_a_log_line_and_a_fork_renumbers_its_key() {
+        let dir = std::env::temp_dir().join(format!("nightloom-chapter-{}", uuid::Uuid::new_v4()));
+        let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        s.record_user("one"); // 1
+        s.record_hand_off("brief".into(), 10, "soft"); // 2
+        s.record_user("two"); // 3
+        let before = s.messages().len();
+        s.record_chapter_edit("hand_off:2", Some("  The  turn ".into()), false);
+        s.record_chapter_edit("hand_off:2", Some("The turn".into()), false);
+        s.record_chapter_edit("plan:9", None, true);
+        s.record_chapter_edit("plan:9", None, true);
+        s.record_chapter_edit("  ", Some("x".into()), false);
+        let edits: Vec<_> = s
+            .events()
+            .iter()
+            .filter(|e| matches!(e, SessionEvent::ChapterEdit { .. }))
+            .collect();
+        assert_eq!(edits.len(), 2, "{edits:?}");
+        assert_eq!(s.messages().len(), before, "an edit is never a message");
+        let raw = fs::read_to_string(dir.join(format!("{}.jsonl", s.id))).unwrap();
+        assert!(
+            raw.contains(r#"{"event":"chapter_edit","key":"hand_off:2","title":"The turn","at":"#),
+            "{raw}"
+        );
+        assert!(
+            raw.contains(r#"{"event":"chapter_edit","key":"plan:9","removed":true,"at":"#),
+            "{raw}"
+        );
+        let back = Session::load(dir.join(format!("{}.jsonl", s.id))).unwrap();
+        assert!(back.events().iter().any(|e| matches!(
+            e,
+            SessionEvent::ChapterEdit { key, title: Some(t), removed: false, .. }
+                if key == "hand_off:2" && t == "The turn"
+        )));
+        // Clearing a name is a line of its own (the code's name again).
+        let mut back = back;
+        back.record_chapter_edit("hand_off:2", None, false);
+        assert!(matches!(
+            back.events().last(),
+            Some(SessionEvent::ChapterEdit {
+                title: None,
+                removed: false,
+                ..
+            })
+        ));
+        // A fork past the hand-off keeps it under the fork's index; the
+        // plan's mark (9) is not in the fork, so its edit is dropped.
+        // A fork cuts at a user message: one more turn, cut before it.
+        back.record_user("three");
+        let fork = back.fork_from(&dir, back.events().len() - 1).unwrap();
+        let keys: Vec<String> = fork
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::ChapterEdit { key, .. } => Some(key.clone()),
+                _ => None,
+            })
+            .collect();
+        let hand_at = fork
+            .events()
+            .iter()
+            .position(|e| matches!(e, SessionEvent::HandOff { .. }))
+            .unwrap();
+        assert!(
+            !keys.is_empty() && keys.iter().all(|k| *k == format!("hand_off:{hand_at}")),
+            "{keys:?}"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

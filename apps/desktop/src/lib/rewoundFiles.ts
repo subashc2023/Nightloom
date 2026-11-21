@@ -35,6 +35,9 @@ export interface RewoundWrites {
   files: RewoundWrite[];
   /** Set once he chose: the folder the files went to, or "kept". */
   done: string | null;
+  /** Item 765: why the files cannot be restored instead (not a git
+   *  folder, or no snapshot of the turn). */
+  note?: string | null;
 }
 
 const FILE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);

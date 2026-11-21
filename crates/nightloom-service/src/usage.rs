@@ -309,6 +309,255 @@ pub fn cost(rec: &Record, model: &str, basis: Basis, rates: &Rates) -> Option<f6
     )
 }
 
+// ---- the next send's cache price (item 699) ----
+
+/// What reading the cache back and writing it afresh cost for one model,
+/// USD per million tokens, and where the figures came from — for the
+/// composer's `next ≈ $…` estimate: the chat's context times `read` while
+/// the cache is warm, times `write` (Claude Code writes the 1-hour kind)
+/// once it is cold. An API-price estimate, never a bill on the plan.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CacheRates {
+    pub model: String,
+    pub read: f64,
+    /// The 1-hour write, the kind Claude Code writes.
+    pub write_1h: f64,
+    pub write_5m: f64,
+    /// `"rates"`: `usage-rates.json`'s row. `"pings"`: fitted to the CLI's
+    /// own reported cost of the keep-warm pings on the model, every
+    /// project's (`fit_cache_rates`), when the table has no row for it.
+    /// `"pings_ratio"`: the same pings, all hits or all misses, fitted at
+    /// the family's read : write ratio (`fit_cache_rates_ratio`).
+    pub source: &'static str,
+    /// How many pings the fit was made from; 0 for the table's row.
+    pub pings: u32,
+    /// `"pings_ratio"` only: the table row (or "the API's standard
+    /// shape") whose read : write ratio the one-rate fit held
+    /// (`fit_cache_rates_ratio`).
+    pub ratio_from: Option<String>,
+}
+
+/// The model id as the rates table spells it: lower case, without a
+/// context-size suffix the CLI may append (`claude-opus-5-5[1m]`).
+pub fn rate_model(model: &str) -> String {
+    let m = model.trim().to_ascii_lowercase();
+    match m.find('[') {
+        Some(i) => m[..i].to_string(),
+        None => m,
+    }
+}
+
+/// The table's row for `model`, exactly — a new model is not priced as
+/// its family (nightshift backlog 182's lesson: `claude-fable-5-2` is not
+/// `claude-fable-5`).
+pub fn table_cache_rates(rates: &Rates, model: &str) -> Option<CacheRates> {
+    let id = rate_model(model);
+    let r = rates.models.get(&id)?;
+    (r.input > 0.0).then_some(CacheRates {
+        model: id,
+        read: r.input * r.cache_read_mult,
+        write_1h: r.input * rates.write_mult_1h,
+        write_5m: r.input * rates.write_mult_5m,
+        source: "rates",
+        pings: 0,
+        ratio_from: None,
+    })
+}
+
+/// The read and 1-hour write rates fitted to keep-warm pings on `model`
+/// (item 699), for a model the table does not price: each ping is one
+/// request whose cost the CLI reported, a hit mostly read and a miss
+/// mostly written, so least squares over
+///
+/// ```text
+/// cost·1e6 = read·rd + write·(wr + in/2 + 2.5·out)
+/// ```
+///
+/// separates the two. The small input and output terms take the API's
+/// standard shape (input = write/2 at the 1-hour multiplier 2, output =
+/// 5× input — `session_figures`' fallback shape). `None` without at least
+/// one hit and one miss to tell the rates apart, or when the fit is not
+/// positive.
+pub fn fit_cache_rates(lines: &[crate::keep_warm::PingLine], model: &str) -> Option<CacheRates> {
+    let id = rate_model(model);
+    let (mut saa, mut sab, mut sbb, mut sac, mut sbc) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    let (mut n, mut hits, mut misses) = (0u32, 0u32, 0u32);
+    for l in lines {
+        let Some(cost) = l.cost_usd else { continue };
+        if l.error.is_some() || cost <= 0.0 {
+            continue;
+        }
+        if l.model.as_deref().map(rate_model).as_deref() != Some(id.as_str()) {
+            continue;
+        }
+        let a = l.cache_read as f64;
+        let b = l.cache_write as f64 + l.input as f64 / 2.0 + 2.5 * l.output as f64;
+        let c = cost * 1e6;
+        saa += a * a;
+        sab += a * b;
+        sbb += b * b;
+        sac += a * c;
+        sbc += b * c;
+        n += 1;
+        if a > b {
+            hits += 1;
+        } else {
+            misses += 1;
+        }
+    }
+    if hits == 0 || misses == 0 {
+        return None;
+    }
+    let det = saa * sbb - sab * sab;
+    if det <= 1e-9 * saa * sbb {
+        return None;
+    }
+    let read = (sac * sbb - sbc * sab) / det;
+    let write = (sbc * saa - sac * sab) / det;
+    (read > 0.0 && write > 0.0).then_some(CacheRates {
+        model: id,
+        read,
+        write_1h: write,
+        write_5m: write * default_write_mult_5m() / default_write_mult_1h(),
+        source: "pings",
+        pings: n,
+        ratio_from: None,
+    })
+}
+
+/// The read : 1-hour-write ratio of `model`'s family (item 699, the price
+/// fix of 2026-11-16), and the row it came from: the newest priced row
+/// whose id shares the model's name up to its version (`claude-fable-5-1`
+/// for `claude-fable-5-2`), else the API's standard shape (read 0.1×,
+/// 1-hour write 2× input). Only the *ratio* is borrowed — the price level
+/// still comes from the model's own pings (`fit_cache_rates_ratio`), so a
+/// new model is never priced as its family (backlog 182's lesson).
+pub fn family_read_ratio(rates: Option<&Rates>, model: &str) -> (f64, String) {
+    let id = rate_model(model);
+    let parts: Vec<&str> = id.split('-').collect();
+    let keep = parts
+        .iter()
+        .position(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or(parts.len());
+    let family = parts[..keep].join("-");
+    let version = |k: &str| -> Vec<u32> {
+        k.strip_prefix(family.as_str())
+            .unwrap_or("")
+            .split('-')
+            .filter_map(|p| p.parse().ok())
+            .collect()
+    };
+    if let Some(r) = rates {
+        let best = r
+            .models
+            .iter()
+            .filter(|(k, v)| {
+                k.as_str() != id
+                    && !k.contains('#')
+                    && v.input > 0.0
+                    && v.cache_read_mult > 0.0
+                    && k.strip_prefix(family.as_str())
+                        .is_some_and(|rest| rest.starts_with('-'))
+            })
+            .max_by(|a, b| version(a.0).cmp(&version(b.0)).then_with(|| b.0.cmp(a.0)));
+        if let Some((k, v)) = best {
+            return (v.cache_read_mult / r.write_mult_1h, k.clone());
+        }
+    }
+    (
+        0.1 / default_write_mult_1h(),
+        "the API's standard shape".to_string(),
+    )
+}
+
+/// The fit for a model whose pings are all hits or all misses (item 699,
+/// 2026-11-16): such pings cannot separate two rates, but with the read
+/// rate held at `ratio` × the write rate (`family_read_ratio`), least
+/// squares over
+///
+/// ```text
+/// cost·1e6 = write·(ratio·rd + wr + in/2 + 2.5·out)
+/// ```
+///
+/// gives the write rate from even a single ping. `None` with no usable
+/// ping on the model.
+pub fn fit_cache_rates_ratio(
+    lines: &[crate::keep_warm::PingLine],
+    model: &str,
+    ratio: f64,
+    ratio_from: &str,
+) -> Option<CacheRates> {
+    let id = rate_model(model);
+    let (mut sxx, mut sxc, mut n) = (0.0, 0.0, 0u32);
+    for l in lines {
+        let Some(cost) = l.cost_usd else { continue };
+        if l.error.is_some() || cost <= 0.0 {
+            continue;
+        }
+        if l.model.as_deref().map(rate_model).as_deref() != Some(id.as_str()) {
+            continue;
+        }
+        let x = ratio * l.cache_read as f64
+            + l.cache_write as f64
+            + l.input as f64 / 2.0
+            + 2.5 * l.output as f64;
+        sxx += x * x;
+        sxc += x * cost * 1e6;
+        n += 1;
+    }
+    if n == 0 || sxx <= 0.0 {
+        return None;
+    }
+    let write = sxc / sxx;
+    (write > 0.0).then_some(CacheRates {
+        model: id,
+        read: write * ratio,
+        write_1h: write,
+        write_5m: write * default_write_mult_5m() / default_write_mult_1h(),
+        source: "pings_ratio",
+        pings: n,
+        ratio_from: Some(ratio_from.to_string()),
+    })
+}
+
+/// The table's row, else the two-rate fit over `pings`, else (all hits or
+/// all misses) the fit at the family's read : write ratio (item 699).
+pub fn cache_rates_with(
+    rates: Option<&Rates>,
+    pings: &[crate::keep_warm::PingLine],
+    model: &str,
+) -> Option<CacheRates> {
+    rates
+        .and_then(|r| table_cache_rates(r, model))
+        .or_else(|| fit_cache_rates(pings, model))
+        .or_else(|| {
+            let (ratio, from) = family_read_ratio(rates, model);
+            fit_cache_rates_ratio(pings, model, ratio, &from)
+        })
+}
+
+/// The rates for `model` as the composer's chip prices it (item 699):
+/// `usage-rates.json`'s row, else the fit over the keep-warm pings of every
+/// chat under each of `asks` (an `ask/` directory per project, one
+/// directory per chat in it). Moved here from the desktop's `cache_rates`
+/// command (wave O, 2026-11-17) so the phone's `GET /api/cache-rates` on
+/// either host reads the same figure. Blocking: it opens every ping file.
+pub fn cache_rates_in(asks: &[std::path::PathBuf], model: &str) -> Option<CacheRates> {
+    let rates = claude_dir().and_then(|d| load_rates_in(&d).ok());
+    if let Some(r) = rates.as_ref().and_then(|r| table_cache_rates(r, model)) {
+        return Some(r);
+    }
+    let mut pings = Vec::new();
+    for ask in asks {
+        if let Ok(chats) = std::fs::read_dir(ask) {
+            for c in chats.flatten() {
+                pings.extend(crate::keep_warm::read_pings(&c.path()));
+            }
+        }
+    }
+    cache_rates_with(rates.as_ref(), &pings, model)
+}
+
 // ---- the surfaces ----
 
 /// One snapshot of the desktop app's seven-day breakdown. Percents are of
@@ -586,6 +835,109 @@ pub fn refresh() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    // ---- item 699: the next send's cache price ----
+
+    fn ping(read: u64, write: u64, cost: f64, model: &str) -> crate::keep_warm::PingLine {
+        crate::keep_warm::PingLine {
+            sent_ms: 0,
+            cache_read: read,
+            cache_write: write,
+            input: 4,
+            output: 6,
+            cost_usd: Some(cost),
+            model: Some(model.into()),
+            context: read.max(write),
+            hit: read > write,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn a_priced_model_reads_its_table_row_exactly() {
+        let rates = parse_rates(RATES).unwrap();
+        let r = table_cache_rates(&rates, "claude-opus-5[1m]").unwrap();
+        assert_eq!(r.source, "rates");
+        assert!((r.read - 0.5).abs() < 1e-9, "{}", r.read);
+        assert!((r.write_1h - 10.0).abs() < 1e-9);
+        assert!((r.write_5m - 6.25).abs() < 1e-9);
+        // A new model is not priced as its family.
+        assert_eq!(table_cache_rates(&rates, "claude-fable-5-2"), None);
+    }
+
+    #[test]
+    fn an_unpriced_model_is_fitted_to_its_pings() {
+        // Made at read $0.20 / write $16 per MTok, input $8, output $40.
+        let cost =
+            |rd: u64, wr: u64| (rd as f64 * 0.2 + wr as f64 * 16.0 + 4.0 * 8.0 + 6.0 * 40.0) / 1e6;
+        let lines = vec![
+            ping(269_000, 900, cost(269_000, 900), "claude-fable-5-2"),
+            ping(120_000, 1_500, cost(120_000, 1_500), "claude-fable-5-2"),
+            ping(0, 269_843, cost(0, 269_843), "claude-fable-5-2"),
+            // Another model's ping is not this one's evidence.
+            ping(0, 100_000, 99.0, "claude-opus-5-5"),
+        ];
+        let r = cache_rates_with(None, &lines, "claude-fable-5-2").unwrap();
+        assert_eq!(r.source, "pings");
+        assert_eq!(r.pings, 3);
+        assert!((r.read - 0.2).abs() < 1e-6, "{}", r.read);
+        assert!((r.write_1h - 16.0).abs() < 1e-6, "{}", r.write_1h);
+        // Hits alone cannot tell the write rate: no figure, not a guess.
+        assert_eq!(fit_cache_rates(&lines[..2], "claude-fable-5-2"), None);
+    }
+
+    /// The price fix (2026-11-16, his bug "it doesnt say like what the
+    /// price of cache is"): a Fable 5.2 chat whose project's pings were all
+    /// hits got `None`, and the chip no price. With the family's read :
+    /// write ratio held, hits alone (or a lone miss) price it.
+    #[test]
+    fn an_unpriced_model_with_only_hits_still_gets_a_price() {
+        let rates = parse_rates(
+            r#"{"_write_mult_1h": 2.0, "models": {
+                "claude-fable-5": {"input": 10, "output": 50, "cache_read_mult": 0.1},
+                "claude-fable-5-1": {"input": 10, "output": 50, "cache_read_mult": 0.025},
+                "claude-fable-5-1#fast": {"input": 20, "output": 100, "cache_read_mult": 0.5}}}"#,
+        )
+        .unwrap();
+        // The newest priced sibling's ratio, never the fast row's.
+        let (ratio, from) = family_read_ratio(Some(&rates), "claude-fable-5-2[1m]");
+        assert_eq!(from, "claude-fable-5-1");
+        assert!((ratio - 0.025 / 2.0).abs() < 1e-12);
+        // No sibling: the API's standard shape.
+        let (r2, from2) = family_read_ratio(Some(&rates), "claude-haiku-5-5");
+        assert_eq!(from2, "the API's standard shape");
+        assert!((r2 - 0.05).abs() < 1e-12);
+
+        // Shaped on his real pings (keep-warm.jsonl, 2026-11-16), priced
+        // at the rates the two-rate fit finds there: read $0.20 / write $16.
+        let cost =
+            |rd: u64, wr: u64| (rd as f64 * 0.2 + wr as f64 * 16.0 + 4.0 * 8.0 + 6.0 * 40.0) / 1e6;
+        let hits = vec![
+            ping(96_892, 4_418, cost(96_892, 4_418), "claude-fable-5-2"),
+            ping(49_755, 2_315, cost(49_755, 2_315), "claude-fable-5-2"),
+        ];
+        assert_eq!(fit_cache_rates(&hits, "claude-fable-5-2"), None);
+        let r = cache_rates_with(Some(&rates), &hits, "claude-fable-5-2").unwrap();
+        assert_eq!(r.source, "pings_ratio");
+        assert_eq!(r.pings, 2);
+        assert_eq!(r.ratio_from.as_deref(), Some("claude-fable-5-1"));
+        assert!((r.write_1h - 16.0).abs() < 0.2, "{}", r.write_1h);
+        assert!((r.read - 0.2).abs() < 0.01, "{}", r.read);
+        // A lone miss prices it too.
+        let miss = vec![ping(
+            12_779,
+            269_854,
+            cost(12_779, 269_854),
+            "claude-fable-5-2",
+        )];
+        let m = cache_rates_with(Some(&rates), &miss, "claude-fable-5-2").unwrap();
+        assert!((m.write_1h - 16.0).abs() < 0.1, "{}", m.write_1h);
+        // No ping on the model at all: still no figure, not a guess.
+        assert_eq!(
+            cache_rates_with(Some(&rates), &hits, "claude-fable-6"),
+            None
+        );
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

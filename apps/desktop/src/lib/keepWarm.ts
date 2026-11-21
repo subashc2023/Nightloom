@@ -6,7 +6,8 @@
  */
 
 export type KeepWarmMode = "off" | "on" | "once";
-export type KeepWarmWhy = "off" | "noreply" | "small" | "notonehour" | "cap" | "cold" | "missed" | "busy";
+/** `handedoff` (item 728): off because the chat was handed off, once. */
+export type KeepWarmWhy = "off" | "handedoff" | "noreply" | "small" | "notonehour" | "cap" | "cold" | "missed" | "busy";
 
 export interface KeepWarmStatus {
   chat: string;
@@ -56,6 +57,15 @@ function span(ms: number): string {
 
 const k = (n: number): string => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
 
+/** Item 728: the words for a switch the chat's hand-off turned off. */
+const HANDED_OFF = "off — chat handed off";
+
+/** Item 728: the switch is off because the chat was handed off (the
+ *  backend switches it off once at the hand-off; his on clears it). */
+export function handedOffOff(s: KeepWarmStatus | null | undefined): boolean {
+  return !!s && s.mode === "off" && s.why === "handedoff";
+}
+
 /** Whether the switch is on in either form. */
 export function isOn(s: KeepWarmStatus | null | undefined): boolean {
   return !!s && s.mode !== "off";
@@ -80,7 +90,7 @@ export function idleWords(s: KeepWarmStatus): string | null {
     case "cold":
       return "ended — the cache went cold while the Mac slept";
     case "missed":
-      return "ended — a ping missed the cache";
+      return "stopped — a ping had to rebuild the cache";
     default:
       return null;
   }
@@ -89,6 +99,7 @@ export function idleWords(s: KeepWarmStatus): string | null {
 /** The switch's label: `keep warm` off, `warm until 11:40 PM` while it
  *  runs, `keep warm · <why not>` on but idle. */
 export function switchLabel(s: KeepWarmStatus | null | undefined, now: number): string {
+  if (handedOffOff(s)) return `keep warm · ${HANDED_OFF}`;
   if (!s || s.mode === "off") return "keep warm";
   if (isKeeping(s, now)) return `warm until ${clockTime(s.warm_until_ms as number)}`;
   const idle = idleWords(s);
@@ -103,25 +114,40 @@ export function spentWords(s: KeepWarmStatus): string {
   return ` So far: ${p.pings} ping${p.pings === 1 ? "" : "s"}, ${k(p.cache_read)} tokens read from the cache, ${k(p.cache_write)} written${cost}.`;
 }
 
-/** The switch's tooltip: what it does, in his numbers, and what it spent. */
-export function switchTitle(s: KeepWarmStatus | null | undefined, now: number): string {
-  const every = s ? span(s.policy.every_ms) : "55 min";
-  const cap = s ? span(capOf(s)) : "6 h";
-  const floor = s ? k(s.policy.min_context) : "50k";
-  const what =
-    `Keep this chat's prompt cache warm: a small hidden request every ${every} after the last reply, for up to ${cap}, ` +
-    `so your next message reads the context from the cache instead of paying to rebuild it. Only for contexts of ${floor} tokens or more. ` +
-    `It stops when you send, close the tab or delete the chat. The requests never appear in the chat or the chat list.`;
-  if (!s || s.mode === "off") return `${what} ${offWhy(s)} — click to switch on for this chat.${HOLD_HINT}`;
+/** The switch's tooltip: two short lines, the state and what a click does
+ *  (item 697, his "im not reading allat"). The rule itself — every 55 min,
+ *  up to 6 h, from 50k tokens, never in the chat — is told in Settings →
+ *  Subscription → Keeping caches warm. ~~The whole rule, his numbers and the
+ *  spend, here~~ (cut 2026-11-15; `spentWords` and `holdWords` stay for the
+ *  other places that say them). */
+export function switchTitle(s: KeepWarmStatus | null | undefined, now: number, coldUsd?: number | null): string {
+  // Item 776: two lines, the state then what a click does; the price of
+  // letting it go cold where he decides to keep it — off or idle. While it
+  // is keeping, the state line is full and the chip beside shows the price.
+  const cold = coldUsd != null && !isKeeping(s, now) ? ` · cold ≈ $${coldUsd.toFixed(2)}` : "";
+  if (handedOffOff(s)) return `Keep warm ${HANDED_OFF}${cold}.\nClick to switch on;${HOLD_HINT}`;
+  if (!s || s.mode === "off") return `Keep warm off${offShort(s)}${cold}.\nClick to switch on;${HOLD_HINT}`;
+  const once = s.mode === "once" ? " until your next message" : "";
   const state = isKeeping(s, now)
-    ? `On${s.mode === "once" ? " until your next message" : ""}: warm until about ${clockTime(s.warm_until_ms as number)}` +
-      (s.next_ping_ms != null ? `, next request ${clockTime(s.next_ping_ms)}.` : ".")
-    : `On${s.mode === "once" ? " until your next message" : ""}, not running: ${idleWords(s) ?? "waiting"}.`;
-  return `${what} ${state}${onWhy(s)}${holdWords(s, now)}${spentWords(s)} Click to switch off for this chat.${HOLD_HINT}`;
+    ? `Warm${once} until ${clockTime(s.warm_until_ms as number)}` +
+      (s.next_ping_ms != null ? `, next ping ${clockTime(s.next_ping_ms)}` : "")
+    : `Keep warm on${once}, not running: ${idleWords(s) ?? "waiting"}`;
+  const held = s.hold_hours != null ? ` · held ${s.hold_hours} h` : "";
+  const p = s.spent;
+  const pings = p.pings > 0 ? ` · ${p.pings} ping${p.pings === 1 ? "" : "s"} so far` : "";
+  return `${state}${held}${pings}${cold}.\nClick to switch off;${HOLD_HINT}`;
+}
+
+/** Whose off it is, in a few words (item 608's distinction, shortened). */
+function offShort(s: KeepWarmStatus | null | undefined): string {
+  if (!s || s.default_on === undefined) return "";
+  if (s.chosen && s.default_on) return " for this chat";
+  if (!s.chosen && !s.default_on) return " (the default is off)";
+  return "";
 }
 
 /** Item 643: how to find the hold, at the end of every tooltip. */
-const HOLD_HINT = " Right-click or press and hold to keep it warm for 12 h or 24 h.";
+const HOLD_HINT = " right-click to hold 12 or 24 h.";
 
 /** One ping ≈ 0.02 points of the 5-hour window: item 643's figure from
  *  item 541's numbers (`notes/runner-design/541-report-2026-11-10.md` in
@@ -189,22 +215,6 @@ export function holdWords(s: KeepWarmStatus, now: number): string {
   if (s.hold_hours == null) return "";
   const until = s.hold_until_ms != null ? ` (until ~${dayClock(s.hold_until_ms, now)} unless you reply again)` : "";
   return ` Held ${s.hold_hours} h for this chat${until}, then back to ${span(s.policy.cap_ms)}.`;
-}
-
-const SETTING = "Settings → Subscription → Keeping caches warm";
-
-/** Item 608: whose off it is — his for this chat, or the default's. */
-function offWhy(s: KeepWarmStatus | null | undefined): string {
-  if (!s || s.default_on === undefined) return "Off";
-  if (s.chosen && s.default_on) return `Off for this chat — you switched it off; every other chat is kept warm by default (${SETTING})`;
-  if (!s.chosen && !s.default_on) return `Off — the default is off (${SETTING})`;
-  return "Off";
-}
-
-/** Item 608: on by the default, or by his click. */
-function onWhy(s: KeepWarmStatus): string {
-  if (s.default_on === undefined || s.mode === "once") return "";
-  return s.chosen ? " (switched on for this chat.)" : ` (on by default for every chat — ${SETTING}.)`;
 }
 
 /**

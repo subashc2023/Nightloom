@@ -4,7 +4,10 @@
 // the shuttle, the transitions) is proven in WebKit (notes/runner-design/342-report.md);
 // the suite runs without a DOM.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import src from "./AssistantMessage.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+import srcRaw from "./AssistantMessage.svelte?raw";
+const src = asOneFile(srcRaw, assistantMessageLogicRaw);
 import {
   arrive,
   Births,

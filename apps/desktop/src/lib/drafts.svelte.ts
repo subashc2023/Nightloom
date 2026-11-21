@@ -88,6 +88,8 @@
 import type { Attachment, ChatMode } from "./types";
 import type { EditState } from "./edit";
 import type { BoxPlace } from "./boxPlace";
+import { copyComments, readComments, type CommentSource, type PassageComment } from "./passageComments";
+import { sentComments } from "./sentComments";
 
 export interface Draft {
   text: string;
@@ -109,6 +111,14 @@ export interface Draft {
    * put back only by the composer (`ScrollHold`, `boxPlace.ts`).
    */
   scroll?: number;
+  /**
+   * Comments on passages (item 754, `passageComments.ts`): chips over the
+   * box, each a quoted passage and his words about it, sent with the box's
+   * text as one message. Absent or empty when none. Part of the draft, so
+   * a switch, a reload and a quit keep them; Send clears them with the
+   * text, and × drops one only after its confirm.
+   */
+  comments?: PassageComment[];
 }
 
 /** A caret (`start === end`) or a selection, in characters of the draft. */
@@ -251,7 +261,8 @@ export function loadDrafts(storage: Pick<Storage, "getItem"> = localStorage): Re
       const queue = readQueue(d.queue);
       const sel = readSel(d.sel);
       const scroll = typeof d.scroll === "number" && Number.isFinite(d.scroll) && d.scroll > 0 ? d.scroll : undefined;
-      if (!text && attachments.length === 0 && queue.length === 0) continue;
+      const comments = readComments(d.comments);
+      if (!text && attachments.length === 0 && queue.length === 0 && comments.length === 0) continue;
       // The pre-094 pending key, read once into the unfiled ordinary slot.
       // Appended if that slot is already in the store, so neither is lost.
       const k = raw_k === LEGACY_NEW_DRAFT_KEY ? newDraftKey(null) : raw_k;
@@ -263,11 +274,13 @@ export function loadDrafts(storage: Pick<Storage, "getItem"> = localStorage): Re
           queue,
           ...(sel ? { sel } : {}),
           ...(scroll !== undefined ? { scroll } : {}),
+          ...(comments.length > 0 ? { comments } : {}),
         };
       } else {
         prior.text = prior.text ? (text ? `${prior.text}\n${text}` : prior.text) : text;
         prior.attachments.push(...attachments);
         prior.queue.push(...queue);
+        if (comments.length > 0) prior.comments = [...(prior.comments ?? []), ...comments];
       }
     }
   } catch {
@@ -312,6 +325,7 @@ export function serializeDrafts(map: Record<string, Draft>): string {
         ...(a.pages ? { pages: a.pages } : {}),
         ...(a.whole ? { whole: true } : {}),
         ...(a.stash ? { stash: a.stash } : {}),
+        ...(a.pick ? { pick: a.pick } : {}),
       });
     }
     return kept;
@@ -325,13 +339,15 @@ export function serializeDrafts(map: Record<string, Draft>): string {
     // still follow a chat switch and an unmount, which never reload.
     if (k.startsWith(EDIT_DRAFT_PREFIX)) continue;
     const queue = d.queue ?? [];
-    if (!d.text && d.attachments.length === 0 && queue.length === 0) continue;
+    const comments = copyComments(d.comments);
+    if (!d.text && d.attachments.length === 0 && queue.length === 0 && comments.length === 0) continue;
     out[k] = {
       text: d.text,
       attachments: keep(d.attachments),
       queue: queue.map((q) => ({ id: q.id, text: q.text, attachments: keep(q.attachments) })),
       ...(d.sel ? { sel: { start: d.sel.start, end: d.sel.end } } : {}),
       ...(d.scroll ? { scroll: d.scroll } : {}),
+      ...(comments.length > 0 ? { comments } : {}),
     };
   }
   return JSON.stringify(out);
@@ -357,6 +373,7 @@ export function saveDrafts(
           queue: (d.queue ?? []).map((q) => ({ id: q.id, text: q.text, attachments: pastedOnly(q.attachments) })),
           ...(d.sel ? { sel: d.sel } : {}),
           ...(d.scroll ? { scroll: d.scroll } : {}),
+          ...(d.comments?.length ? { comments: d.comments } : {}),
         };
       storage.setItem(KEY, serializeDrafts(bare));
     } catch {
@@ -377,7 +394,10 @@ export const drafts: Record<string, Draft> = $state(readInitial());
 let attachSeq = 0;
 // Queue row ids likewise: per launch, unique among the rows on screen.
 let queueSeq = 0;
+// Comment ids (item 754) likewise.
+let commentSeq = 0;
 for (const d of Object.values(drafts)) {
+  for (const c of d.comments ?? []) commentSeq = Math.max(commentSeq, c.id);
   for (const a of d.attachments) attachSeq = Math.max(attachSeq, a.id);
   for (const q of d.queue) {
     queueSeq = Math.max(queueSeq, q.id);
@@ -456,7 +476,10 @@ export function draftFor(key: string): Draft {
  *  `hasBoxDraft`. */
 export function hasDraft(key: string): boolean {
   const d = drafts[key];
-  return d !== undefined && (d.text.trim().length > 0 || d.attachments.length > 0 || d.queue.length > 0);
+  return (
+    d !== undefined &&
+    (d.text.trim().length > 0 || d.attachments.length > 0 || d.queue.length > 0 || (d.comments?.length ?? 0) > 0)
+  );
 }
 
 /** What is in the box itself — non-empty text or a chip — and not a held
@@ -466,7 +489,7 @@ export function hasDraft(key: string): boolean {
  *  empty box (live check 2026-10-12). */
 export function hasBoxDraft(key: string): boolean {
   const d = drafts[key];
-  return d !== undefined && (d.text.trim().length > 0 || d.attachments.length > 0);
+  return d !== undefined && (d.text.trim().length > 0 || d.attachments.length > 0 || (d.comments?.length ?? 0) > 0);
 }
 
 export function setDraftText(key: string, text: string): void {
@@ -517,6 +540,68 @@ export function draftScroll(key: string): number | null {
 export function draftSelection(key: string): DraftSel | null {
   const s = drafts[key]?.sel;
   return s ? { start: s.start, end: s.end } : null;
+}
+
+// ---- comments on passages (item 754) ---------------------------------------
+
+/** Add a comment chip for a passage to `key`'s box; returns its id. */
+export function addComment(key: string, quote: string, source: CommentSource, ordinal: number, note = ""): number {
+  const d = draftFor(key);
+  const c: PassageComment = { id: ++commentSeq, quote, source, ordinal, note };
+  d.comments = [...(d.comments ?? []), c];
+  schedule();
+  return c.id;
+}
+
+/** His words on comment `id`, written as he types. */
+export function setCommentNote(key: string, id: number, note: string): void {
+  const c = drafts[key]?.comments?.find((x) => x.id === id);
+  if (!c || c.note === note) return;
+  c.note = note;
+  schedule();
+}
+
+/** Drop comment `id` (after its confirm). Its words go to the ring first. */
+export function removeComment(key: string, id: number): void {
+  const d = drafts[key];
+  if (!d?.comments) return;
+  const c = d.comments.find((x) => x.id === id);
+  if (!c) return;
+  if (c.note.trim()) recordDraft(key, c.note);
+  d.comments = d.comments.filter((x) => x.id !== id);
+  if (d.comments.length === 0) delete d.comments;
+  if (!d.text && d.attachments.length === 0 && d.queue.length === 0 && !d.comments) delete drafts[key];
+  schedule();
+}
+
+/**
+ * Item 892: a sent message's comments back in `key`'s box as chips (a
+ * rewind, a failed send, a held row taken back) — before any already
+ * there, as its chips go before his; fresh ids. Returns the ids given.
+ */
+export function restoreComments(key: string, list: readonly PassageComment[]): number[] {
+  if (list.length === 0) return [];
+  const back = copyComments([...list]).map((c) => ({ ...c, id: ++commentSeq }));
+  const d = draftFor(key);
+  d.comments = [...back, ...(d.comments ?? [])];
+  schedule();
+  return back.map((c) => c.id);
+}
+
+/** Item 892: the chips `restoreComments` gave, taken out again (a rewind's
+ *  Undo) — silently, since the message they came with is back in the thread. */
+export function withdrawComments(key: string, ids: readonly number[]): void {
+  const d = drafts[key];
+  if (!d?.comments || ids.length === 0) return;
+  d.comments = d.comments.filter((c) => !ids.includes(c.id));
+  if (d.comments.length === 0) delete d.comments;
+  if (!d.text && d.attachments.length === 0 && d.queue.length === 0 && !d.comments) delete drafts[key];
+  schedule();
+}
+
+/** The comments in `key`'s box, oldest first; empty when none. */
+export function draftComments(key: string): PassageComment[] {
+  return drafts[key]?.comments ?? [];
 }
 
 export function addAttachment(key: string, a: Attachment): void {
@@ -633,12 +718,16 @@ export function setDraftAttachments(key: string, attachments: Attachment[]): voi
 }
 
 /** Sending is the one thing that clears a draft — the box, never the
- *  queue: a held message is not the one that just went. */
-export function clearDraft(key: string): void {
+ *  queue: a held message is not the one that just went. Comments on
+ *  passages (item 754) go only when the send carried them
+ *  (`withComments`: Send, Queue, the council); any other send from the box
+ *  (Ask aside, Send later, the wrap-up) leaves them where they are. */
+export function clearDraft(key: string, withComments = false): void {
   const d = drafts[key];
   if (!d) return;
   recordDraft(key, d.text);
-  if (d.queue.length === 0) {
+  if (withComments) delete d.comments;
+  if (d.queue.length === 0 && !d.comments?.length) {
     delete drafts[key];
   } else {
     d.text = "";
@@ -661,6 +750,7 @@ export function discardDraft(key: string, ring: string = key): void {
   if (d) {
     recordDraft(ring, d.text);
     for (const q of d.queue) recordDraft(ring, q.text);
+    for (const c of d.comments ?? []) if (c.note.trim()) recordDraft(ring, c.note);
     delete drafts[key];
     schedule();
   }
@@ -761,8 +851,13 @@ export function takeBackQueued(key: string, id?: number): QueuedMessage | null {
   const i = id === undefined ? d.queue.length - 1 : d.queue.findIndex((q) => q.id === id);
   if (i < 0) return null;
   const [q] = d.queue.splice(i, 1);
-  d.text = d.text ? (q!.text ? `${q!.text}\n${d.text}` : d.text) : q!.text;
+  // Item 892: a held message that carried comments comes back as its
+  // typed text and its chips, not the comments flattened into the text.
+  const sc = sentComments(q!.text);
+  const words = sc ? sc.typed : q!.text;
+  d.text = d.text ? (words ? `${words}\n${d.text}` : d.text) : words;
   d.attachments.push(...q!.attachments);
+  if (sc) restoreComments(key, sc.comments);
   schedule();
   return q!;
 }
@@ -864,11 +959,13 @@ export function moveDraft(from: string, to: string): void {
       queue: src.queue.slice(),
       ...(src.sel ? { sel: { ...src.sel } } : {}),
       ...(src.scroll ? { scroll: src.scroll } : {}),
+      ...(src.comments?.length ? { comments: src.comments.slice() } : {}),
     };
   } else {
     dst.text = dst.text ? (src.text ? `${dst.text}\n${src.text}` : dst.text) : src.text;
     dst.attachments.push(...src.attachments);
     dst.queue.push(...src.queue);
+    if (src.comments?.length) dst.comments = [...(dst.comments ?? []), ...src.comments];
   }
   delete drafts[from];
   schedule();
@@ -884,10 +981,11 @@ export function moveDraft(from: string, to: string): void {
 export function carryDraft(from: string, to: string): void {
   if (from === to) return;
   const src = drafts[from];
-  if (!src || (!src.text && src.attachments.length === 0)) return;
+  if (!src || (!src.text && src.attachments.length === 0 && !src.comments?.length)) return;
   const dst = draftFor(to);
   dst.text = dst.text ? (src.text ? `${dst.text}\n${src.text}` : dst.text) : src.text;
   dst.attachments.push(...src.attachments);
+  if (src.comments?.length) dst.comments = [...(dst.comments ?? []), ...src.comments];
   if (!dst.sel && src.sel) dst.sel = { ...src.sel };
   if (!dst.scroll && src.scroll) dst.scroll = src.scroll;
   if (src.queue.length === 0) delete drafts[from];
@@ -896,6 +994,7 @@ export function carryDraft(from: string, to: string): void {
     src.attachments = [];
     delete src.sel;
     delete src.scroll;
+    delete src.comments;
   }
   schedule();
 }
@@ -1028,6 +1127,24 @@ export function recordDraft(
   ring.unshift({ text, at });
   if (ring.length > HISTORY_PER_KEY) ring.length = HISTORY_PER_KEY;
   scheduleHistory();
+}
+
+/**
+ * A text to the top of the key's ring whatever its length (item 724): a
+ * rewound message, or what a pick of it put out of the box. One already in
+ * the ring moves to the top rather than standing there twice.
+ */
+export function bumpDraft(key: string, text: string, at: string = new Date().toISOString()): void {
+  if (!text) return;
+  const ring = draftHistory[key];
+  const i = ring ? ring.findIndex((s) => s.text === text) : -1;
+  if (ring && i >= 0) {
+    ring.splice(i, 1);
+    ring.unshift({ text, at });
+    scheduleHistory();
+    return;
+  }
+  recordDraft(key, text, at, 1);
 }
 
 /**

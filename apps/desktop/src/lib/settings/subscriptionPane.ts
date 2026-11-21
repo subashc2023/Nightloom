@@ -10,7 +10,7 @@
 // one-line summaries. `SettingsModal.svelte` renders it; the test checks
 // every control here is still rendered and still bound.
 
-export type GroupId = "handoff" | "models" | "subagents" | "updates" | "cache";
+export type GroupId = "handoff" | "models" | "subagents" | "updates" | "cache" | "bitwarden";
 
 export interface Group {
   id: GroupId;
@@ -25,6 +25,8 @@ export const GROUPS: readonly Group[] = [
   { id: "updates", title: "Updates" },
   // Item 608: keep-warm, on by default for every chat.
   { id: "cache", title: "Keeping caches warm" },
+  // Item 766 part 2: the secret card's "Always for this command" rules.
+  { id: "bitwarden", title: "Bitwarden" },
 ];
 
 export interface Control {
@@ -40,6 +42,8 @@ export const CONTROLS: readonly Control[] = [
   { id: "handoff-cap", group: "handoff", label: "or at k tokens", terms: "token cap limit 300k thousand whichever first" },
   { id: "handoff-chat", group: "handoff", label: "This chat's mark", terms: "this chat own mark percent open chat use the default" },
   { id: "handoff-away", group: "handoff", label: "When you are away", terms: "away queue wrap-up automatic present notice minute" },
+  { id: "handoff-warm", group: "handoff", label: "Before the cache lapses", terms: "warm cache lapse cold wrap up early offer do it off idle keep-warm price" },
+  { id: "handoff-warm-size", group: "handoff", label: "A big chat is over", terms: "big chat size tokens cold chip hand off keep cost" },
   { id: "handoff-message", group: "handoff", label: "The wrap-up message", terms: "wrap-up message handoff.md prompt start reset default text" },
   { id: "handoff-readorder", group: "handoff", label: "The read order", terms: "read order new chat continue prompt box reset default" },
   { id: "models-list", group: "models", label: "Model list", terms: "models picker order alias id fable opus sonnet haiku move up down remove reset built-in" },
@@ -51,6 +55,10 @@ export const CONTROLS: readonly Control[] = [
   { id: "updates-auto", group: "updates", label: "Keep Claude Code up to date", terms: "auto update automatic cold moment claude update" },
   { id: "updates-layers", group: "updates", label: "Changed memory or instructions files", terms: "memory instructions claude.md layer file cold running chats" },
   { id: "cache-keepwarm", group: "cache", label: "Keep chats' caches warm automatically", terms: "keep warm cache ping 1-hour hour 6 h six automatic default every chat cold" },
+  { id: "bitwarden-always", group: "bitwarden", label: "Always allowed", terms: "bitwarden password manager secret token vault always rule command remove revoke" },
+  { id: "bitwarden-touch", group: "bitwarden", label: "Touch ID unlock", terms: "bitwarden touch id fingerprint unlock master password keychain set up forget lock" },
+  { id: "bitwarden-prearm", group: "bitwarden", label: "Pre-arm for a run", terms: "bitwarden pre-arm prearm overnight async away run night secrets end time touch id" },
+  { id: "bitwarden-session", group: "bitwarden", label: "Session", terms: "bitwarden session key unlock lock forget bw vault" },
 ];
 
 /** The filter's words, lower-cased; empty when the box is blank. */
@@ -120,4 +128,11 @@ export function updatesSummary(o: {
 export function cacheSummary(on: boolean | null): string {
   if (on === null) return "not read yet";
   return on ? "every chat kept warm, up to the cap" : "off unless a chat's switch is on";
+}
+
+/** Item 766 part 2: the Bitwarden group's header. */
+export function bitwardenSummary(rules: number | null, session: boolean): string {
+  if (rules === null) return "not read yet";
+  const r = rules === 0 ? "no always rules" : rules === 1 ? "1 always rule" : `${rules} always rules`;
+  return `${r} · ${session ? "unlocked" : "locked"}`;
 }

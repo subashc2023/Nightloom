@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- Items 880 + 881: the real Composer, app state stubbed, with passage-comment chips (and the held passage's chip)
+     holding maths, for nightshift-code bin/snap (WebKit). #case=his (his shot: one comment, open), two (his 881 shot:
+     two comments), held (the Ask aside chip); &layout=classic for Classic. -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { position: relative; display: flex; flex-direction: column; justify-content: flex-end; width: 900px; height: 340px; }
+      #cap { font: 12px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      localStorage.removeItem("nightloom.drafts");
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent = "rejection: " + e.reason));
+    </script>
+    <script type="module" src="./comment880.ts"></script>
+  </body>
+</html>

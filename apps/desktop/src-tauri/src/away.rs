@@ -300,6 +300,12 @@ async fn pass(app: &AppHandle, away: &Away, url: &str, pull_too: bool) -> Result
     .await?;
     let pushed = push::send(&client, outgoing, skipped).await?;
     away.update(|s| s.last_push = Some(Utc::now()));
+    // Item 739: the away server signs its pushes with the Mac's key (a
+    // phone holds one subscription, tied to one key). Best effort — a
+    // server from before push, or one that does not answer, fails no pass.
+    if let Some(p) = crate::remote::push_state(app) {
+        let _ = nightloom_service::push::hand_key_to_away(&p, url, &token).await;
+    }
     let mut summary = format!(
         "{} file{} up to date, {} sent",
         pushed.files,
@@ -311,6 +317,29 @@ async fn pass(app: &AppHandle, away: &Away, url: &str, pull_too: bool) -> Result
     }
     if !pushed.skipped.is_empty() {
         summary.push_str(&format!(", {} could not be read", pushed.skipped.len()));
+    }
+    // Item 781: the jobs of marked projects, so the server can run them
+    // while the Mac sleeps. Best effort, like the key.
+    if let Some(jobs) = crate::remote::jobs_store(app) {
+        let all: Vec<nightloom_service::jobs::Job> =
+            jobs.list().into_iter().map(|v| v.job).collect();
+        if let Some(away_cfg) = nightloom_service::sync::lease::MacAway::load(&config, &projects) {
+            match client.put_jobs(&away_cfg.away_jobs(&all)).await {
+                Ok(()) => summary.push_str(", jobs sent"),
+                Err(_) => summary.push_str(", jobs not sent this time"),
+            }
+        }
+    }
+    // Item 783: the approval rules for every chat are one set on both
+    // hosts. Best effort, like the key — a server from before this, or one
+    // that does not answer, fails no pass; the rules sync on the next.
+    match nightloom_service::approval_rules::shared::sync(&client, &config).await {
+        Ok(done) if done.notes > 0 => summary.push_str(&format!(
+            ", approval rules in step ({} changed on both — see Approval rules)",
+            done.notes
+        )),
+        Ok(_) => summary.push_str(", approval rules in step"),
+        Err(_) => summary.push_str(", approval rules not synced this time"),
     }
     if !pull_too {
         return Ok(summary);

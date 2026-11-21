@@ -36,6 +36,11 @@ pub struct AgentOutcome {
     /// [`Self::usage`] counts the prefix once per round. `None` when no
     /// round reported.
     pub last_round: Option<Usage>,
+    /// The first round's own usage (item 699): its cache read against the
+    /// context the run resumed says whether the run found the cache warm —
+    /// a later round reads back what the first one wrote, so the newest
+    /// round's read hides a miss. `None` when no round reported.
+    pub first_round: Option<Usage>,
     /// The CLI's own client-side estimate, and **not** a bill: under a
     /// subscription nothing here is charged per token. Carried so a shell
     /// can show what the same turn would have cost on the API, which is the
@@ -91,6 +96,14 @@ pub struct AgentOutcome {
     /// Why the reply ended before its `result` line (backlog 332), set by
     /// the driver: the text that arrived is kept, and this says so.
     pub cut_off: Option<String>,
+    /// `stream_event` lines read (item 723): zero on a turn whose every
+    /// round came whole — the CLI's non-streaming fallback after its
+    /// streamed request failed.
+    pub stream_events: u32,
+    /// Main-thread rounds whose text arrived whole on their `assistant`
+    /// line, with no `message_start` for them (item 723), and so were
+    /// emitted from it.
+    pub whole_rounds: u32,
 }
 
 /// The usage limit that stopped a turn (nightshift backlog 164).
@@ -185,6 +198,20 @@ pub struct Translator {
     text_break: bool,
     /// The live context reading (backlog 590).
     live: LiveContext,
+    /// The rounds that streamed, by the id their `message_start` named
+    /// (item 723): an `assistant` line for any other id came whole.
+    streamed: HashSet<String>,
+    /// The newest round's `message_start` usage while no `message_delta`
+    /// has closed it (item 786): a run killed mid-answer still says what
+    /// its request read and wrote, so [`Self::finish`] gives it to the
+    /// rounds when nothing else did.
+    open_start: Option<Usage>,
+    /// `stream_event` lines since the last main-thread `assistant` or
+    /// `user` line (item 723), where the rounds have no ids to go by.
+    events_since_line: u32,
+    /// The whole rounds counted in `whole_rounds`, once per id: the CLI
+    /// writes one `assistant` line per block, each with the round's id.
+    whole_ids: HashSet<String>,
 }
 
 /// The context a reply has built so far, as the stream lets it be known
@@ -207,6 +234,8 @@ struct LiveContext {
     prose_chars: u64,
     dense_chars: u64,
     thinking_chars: u64,
+    /// Of `dense_chars`, the tool-call arguments alone (item 829).
+    args_chars: u64,
     sent: u64,
 }
 
@@ -215,6 +244,9 @@ struct LiveContext {
 enum Streamed {
     Prose,
     Dense,
+    /// A tool call's arguments as they stream: dense, and counted apart
+    /// for the working line's "writing a call" (item 829).
+    Args,
     Thinking,
 }
 
@@ -234,6 +266,7 @@ impl LiveContext {
             estimate_tokens: self.estimate(),
             rough: self.thinking_chars > 0,
             steps: self.steps,
+            writing_chars: self.args_chars,
         }
     }
 
@@ -256,6 +289,10 @@ impl LiveContext {
         match kind {
             Streamed::Prose => self.prose_chars += n,
             Streamed::Dense => self.dense_chars += n,
+            Streamed::Args => {
+                self.dense_chars += n;
+                self.args_chars += n;
+            }
             Streamed::Thinking => self.thinking_chars += n,
         }
         let est = self.estimate();
@@ -446,13 +483,37 @@ impl Translator {
             return Vec::new();
         };
         match parsed {
-            Line::StreamEvent { event } => self.stream_event(event),
+            Line::StreamEvent { event } => {
+                self.outcome.stream_events += 1;
+                self.events_since_line += 1;
+                self.stream_event(event)
+            }
             Line::Assistant(t) => {
                 self.limit_on(&t);
                 self.api_error_on(&t);
-                self.blocks(t.message, t.parent_tool_use_id)
+                let whole = self.came_whole(&t);
+                if whole
+                    && t.message
+                        .content
+                        .iter()
+                        .any(|b| matches!(b, Block::Text { text } if !text.is_empty()))
+                    && self
+                        .whole_ids
+                        .insert(t.message.id.clone().unwrap_or_default())
+                {
+                    self.outcome.whole_rounds += 1;
+                }
+                if t.parent_tool_use_id.is_none() {
+                    self.events_since_line = 0;
+                }
+                self.blocks(t.message, t.parent_tool_use_id, whole)
             }
-            Line::User(t) => self.blocks(t.message, t.parent_tool_use_id),
+            Line::User(t) => {
+                if t.parent_tool_use_id.is_none() {
+                    self.events_since_line = 0;
+                }
+                self.blocks(t.message, t.parent_tool_use_id, false)
+            }
             Line::System(s) => self.system(s),
             Line::Result(r) => self.result(r),
             Line::RateLimitEvent { rate_limit_info } => {
@@ -544,6 +605,14 @@ impl Translator {
     }
 
     pub fn finish(mut self) -> AgentOutcome {
+        // Item 786: a round that started and never ended (a stop the CLI
+        // did not close with its own `message_delta`, a kill): its prompt
+        // side is what the request read and wrote. Measured on 2.1.326 the
+        // interrupt does send the `message_delta`; this is the backstop.
+        if let Some(start) = self.open_start.take() {
+            self.outcome.last_round = Some(start);
+            self.outcome.first_round.get_or_insert(start);
+        }
         if let Some(hit) = self.outcome.limit.as_mut() {
             hit.agents = stopped_agents(&hit.subagents, &self.subagent_order, &self.subagents);
         }
@@ -568,6 +637,24 @@ impl Translator {
         self.subagents.entry(id.to_string()).or_default()
     }
 
+    /// Main-thread prose, as a delta or a whole round's block (item 723):
+    /// led by a paragraph break when a new block follows prose, and fed to
+    /// the live reading.
+    fn prose(&mut self, text: String) -> Vec<TurnEvent> {
+        if text.is_empty() {
+            return vec![TurnEvent::TextDelta { text }];
+        }
+        let text = match (std::mem::take(&mut self.text_break), self.prose_tail) {
+            (true, Some(tail)) => paragraph_break(tail, &text) + &text,
+            _ => text,
+        };
+        self.prose_tail = text.chars().last();
+        let live = self.live.grow(Streamed::Prose, text.chars().count());
+        std::iter::once(TurnEvent::TextDelta { text })
+            .chain(live)
+            .collect()
+    }
+
     fn stream_event(&mut self, event: StreamEv) -> Vec<TurnEvent> {
         match event {
             StreamEv::ContentBlockStart { content_block } => {
@@ -577,20 +664,7 @@ impl Translator {
                 Vec::new()
             }
             StreamEv::ContentBlockDelta { delta } => match delta {
-                Delta::Text { text } => {
-                    if text.is_empty() {
-                        return vec![TurnEvent::TextDelta { text }];
-                    }
-                    let text = match (std::mem::take(&mut self.text_break), self.prose_tail) {
-                        (true, Some(tail)) => paragraph_break(tail, &text) + &text,
-                        _ => text,
-                    };
-                    self.prose_tail = text.chars().last();
-                    let live = self.live.grow(Streamed::Prose, text.chars().count());
-                    std::iter::once(TurnEvent::TextDelta { text })
-                        .chain(live)
-                        .collect()
-                }
+                Delta::Text { text } => self.prose(text),
                 Delta::Thinking { thinking } => {
                     self.prose_tail = None;
                     self.text_break = false;
@@ -601,23 +675,38 @@ impl Translator {
                 }
                 Delta::InputJson { partial_json } => self
                     .live
-                    .grow(Streamed::Dense, partial_json.chars().count())
+                    .grow(Streamed::Args, partial_json.chars().count())
                     .into_iter()
                     .collect(),
                 Delta::Other => Vec::new(),
             },
             // Backlog 590: the round's prompt, exact — the live reading's anchor.
-            StreamEv::MessageStart { message } => match message.usage {
-                Some(raw) => vec![self.live.exact(raw.to_usage().input_tokens)],
-                None => Vec::new(),
-            },
+            StreamEv::MessageStart { message } => {
+                // Item 723: this round streams; its `assistant` line repeats it.
+                if let Some(id) = message.id {
+                    self.streamed.insert(id);
+                }
+                match message.usage {
+                    Some(raw) => {
+                        let usage = raw.to_usage();
+                        self.open_start = Some(Usage {
+                            output_tokens: 0,
+                            ..usage
+                        });
+                        vec![self.live.exact(usage.input_tokens)]
+                    }
+                    None => Vec::new(),
+                }
+            }
             // One per API call, so this is the round's accounting rather
             // than a running total — which is exactly what a context gauge
             // wants and what `TurnEvent::Usage` documents itself as.
             StreamEv::MessageDelta { usage: Some(raw) } => {
                 let usage = raw.to_usage();
+                self.open_start = None;
                 self.outcome.usage.add(usage);
                 self.outcome.last_round = Some(usage);
+                self.outcome.first_round.get_or_insert(usage);
                 let live = self.live.exact(usage.input_tokens + usage.output_tokens);
                 vec![TurnEvent::Usage { usage }, live]
             }
@@ -641,7 +730,14 @@ impl Translator {
     /// name, which no provider accepts on replay. The child's text and
     /// thinking are emitted here too — a nested line is their only copy
     /// (`protocol::Block::Text`); a top-level line's are still dropped.
-    fn blocks(&mut self, message: ApiMessage, nested: Option<String>) -> Vec<TurnEvent> {
+    /// `whole` (item 723): a main-thread round with no deltas before it,
+    /// whose text and thinking are emitted here, as a child's are.
+    fn blocks(
+        &mut self,
+        message: ApiMessage,
+        nested: Option<String>,
+        whole: bool,
+    ) -> Vec<TurnEvent> {
         let mut out = Vec::new();
         let mut live = Vec::new();
         // A child's round, once per message id (backlog 152): the status
@@ -689,6 +785,21 @@ impl Translator {
                     }
                 }
                 Block::RedactedThinking => TurnEvent::RedactedThinking,
+                // Item 723: a main-thread round that came whole — its line
+                // is the reply's only copy, drawn as prose would have been.
+                Block::Text { text } if whole && !text.is_empty() => {
+                    if self.prose_tail.is_some() {
+                        self.text_break = true;
+                    }
+                    out.extend(self.prose(text));
+                    continue;
+                }
+                Block::Thinking { thinking } if whole && !thinking.is_empty() => {
+                    self.prose_tail = None;
+                    self.text_break = false;
+                    out.push(TurnEvent::ThinkingDelta { text: thinking });
+                    continue;
+                }
                 Block::Text { text } if nested.is_some() && !text.is_empty() => {
                     TurnEvent::TextDelta { text }
                 }
@@ -933,6 +1044,43 @@ impl Translator {
                     }
                 }
             }
+        }
+    }
+
+    /// Whether a main-thread `assistant` line's text came whole, with no
+    /// deltas before it (item 723): the CLI's streamed request failed and
+    /// it retried without streaming ("Error streaming, falling back to
+    /// non-streaming mode", 2.1.325), so the only copy of the reply is
+    /// this line. Measured on his chat 8e2f20a1 (2026-11-15): four API
+    /// requests, the last at half the `max_tokens`, no `stream_event` at
+    /// all, and "ok" never drawn. Not the CLI's own sentences — an API
+    /// error or the limit, which [`Self::api_error_on`] and
+    /// [`Self::limit_on`] already say as notices.
+    fn came_whole(&self, t: &TurnLine) -> bool {
+        if t.parent_tool_use_id.is_some()
+            || t.is_api_error_message
+            || t.error.is_some()
+            || t.api_error_status.is_some()
+            || t.message.model.as_deref() == Some("<synthetic>")
+        {
+            return false;
+        }
+        let limit = t
+            .message
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::Text { text } if text.starts_with(LIMIT_TEXT_PREFIX)));
+        if limit {
+            return false;
+        }
+        // By id where the stream named its rounds; else (a stream with no
+        // ids on its `message_start`s, or none at all) by whether any
+        // event came since the last main-thread line — the CLI writes each
+        // block's line after that block's deltas, and a whole round's
+        // after none.
+        match &t.message.id {
+            Some(id) if !self.streamed.is_empty() => !self.streamed.contains(id),
+            _ => self.events_since_line == 0,
         }
     }
 
@@ -1215,11 +1363,15 @@ mod tests {
         assert!(matches!(&events[2], TurnEvent::Subagent { event, .. }
             if matches!(&**event, TurnEvent::TextDelta { text } if text == "## Project Summary\n\nTiny.")));
         // The main thread's calls keep their plain, unwrapped names, and
-        // its text blocks are still left to the deltas.
+        // its text blocks are still left to the deltas. ~~A text line with
+        // no delta before it was dropped too~~ — 2026-11-16 (item 723):
+        // that is a round the CLI fetched without streaming and is drawn
+        // from its line, so here its delta comes first, as on the wire.
         const TOP_TEXT: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]},"parent_tool_use_id":null}"#;
-        let (top, _) = drive(&[TOOL_USE, TOP_TEXT]);
-        assert_eq!(top.len(), 1, "{top:?}");
+        let (top, _) = drive(&[TOOL_USE, TEXT, TOP_TEXT]);
+        assert_eq!(top.len(), 2, "{top:?}");
         assert!(matches!(&top[0], TurnEvent::ToolCall { name, .. } if name == "Read"));
+        assert!(matches!(&top[1], TurnEvent::TextDelta { text } if text == "hello"));
         // The wire shape the window reads.
         let json = serde_json::to_string(&events[2]).unwrap();
         assert!(json.contains(r#""type":"subagent""#), "{json}");
@@ -1412,6 +1564,7 @@ mod tests {
                     estimate_tokens,
                     rough,
                     steps,
+                    ..
                 } => Some((*exact_tokens, *estimate_tokens, *rough, *steps)),
                 _ => None,
             })
@@ -1480,6 +1633,25 @@ mod tests {
         );
     }
 
+    /// Item 829: the reading says how much of the next call's arguments
+    /// has streamed — the arguments alone, not thinking or a result.
+    #[test]
+    fn the_reading_counts_the_call_being_written() {
+        let args = serde_json::json!({"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"y".repeat(150)}}}).to_string();
+        let result = serde_json::json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"z".repeat(300)}]},"parent_tool_use_id":null}).to_string();
+        let (events, _) = drive(&[MSG_START, &args, &args, &result]);
+        let writing: Vec<u64> = events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::ContextLive { writing_chars, .. } => Some(*writing_chars),
+                _ => None,
+            })
+            .collect();
+        // The round's start, then a reading per 32 tokens grown: 150 and
+        // 300 characters of arguments; the result adds none of its own.
+        assert_eq!(writing, vec![0, 150, 300, 300]);
+    }
+
     /// Backlog 590's measurement: a real recorded stream (`NIGHTLOOM_590_STREAM`
     /// names the file), each live reading printed beside the next exact one,
     /// so the estimate's error at each step can be read off. Run by hand.
@@ -1498,6 +1670,7 @@ mod tests {
                     estimate_tokens,
                     rough,
                     steps,
+                    ..
                 } = e
                 {
                     println!(
@@ -1541,8 +1714,35 @@ mod tests {
         let last = outcome.last_round.expect("a round reported");
         assert_eq!(last.input_tokens, 10 + 7619 + 12144);
         assert_eq!(last.output_tokens, 42);
+        // Item 699: the first round is kept too — its read is the miss test's.
+        let first = outcome.first_round.expect("a round reported");
+        assert_eq!(first.input_tokens, 3656);
         let (_, none) = drive(&[]);
         assert_eq!(none.last_round, None);
+        assert_eq!(none.first_round, None);
+    }
+
+    /// Item 786: a round stopped before its `message_delta` (a kill) still
+    /// reports what its request read, from its `message_start`; one the CLI
+    /// closed itself keeps the closing figure, as before.
+    #[test]
+    fn a_round_cut_off_after_its_start_still_reports_its_read() {
+        let (_, cut) = drive(&[MSG_START]);
+        let first = cut.first_round.expect("the start's figure");
+        assert_eq!(first.cache_read_tokens, Some(20000));
+        assert_eq!(first.cache_write_tokens, Some(500));
+        assert_eq!(first.output_tokens, 0);
+        assert_eq!(cut.last_round, Some(first));
+        assert_eq!(
+            cut.usage.input_tokens, 0,
+            "the sum counts closed rounds only"
+        );
+        let (_, closed) = drive(&[MSG_START, MSG_DELTA_263]);
+        assert_eq!(closed.last_round.expect("closed").output_tokens, 42);
+        assert_eq!(
+            closed.first_round.expect("closed").cache_read_tokens,
+            Some(12144)
+        );
     }
 
     /// Verbatim from one `claude -p` turn on 2.1.263 (2026-09-15, nightshift
@@ -2172,5 +2372,94 @@ mod tests {
             json,
             r#"{"type":"tool_output","tool_use_id":"toolu_FG","lines":["tick 3"]}"#
         );
+    }
+
+    /// Item 723: a round the CLI fetched without streaming — its streamed
+    /// request failed and it retried — arrives as one `assistant` line with
+    /// no `stream_event` before it (his chat 8e2f20a1, 2026-11-15: "ok",
+    /// never drawn). Its text is the reply's only copy and is emitted.
+    #[test]
+    fn a_round_that_came_whole_is_drawn_from_its_line() {
+        const WHOLE: &str = r#"{"type":"assistant","message":{"id":"msg_011Ch6E5","model":"claude-fable-5-2","role":"assistant","content":[{"type":"text","text":"ok"}]},"parent_tool_use_id":null,"session_id":"s"}"#;
+        const DONE: &str = r#"{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"s","usage":{"input_tokens":3,"output_tokens":4}}"#;
+        let (events, outcome) = drive(&[INIT, WHOLE, DONE]);
+        let text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "ok");
+        assert_eq!(outcome.stream_events, 0);
+        assert_eq!(outcome.whole_rounds, 1);
+    }
+
+    /// Item 723: a streamed round's line repeats what its deltas drew, and
+    /// stays dropped — by its `message_start` id, and with no ids at all by
+    /// the deltas that came before it.
+    #[test]
+    fn a_streamed_rounds_line_is_still_dropped() {
+        const START: &str = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_s","usage":{"input_tokens":3,"output_tokens":1}}}}"#;
+        const LINE: &str = r#"{"type":"assistant","message":{"id":"msg_s","model":"m","role":"assistant","content":[{"type":"text","text":"hello"}]},"parent_tool_use_id":null}"#;
+        let count = |events: &[TurnEvent]| {
+            events
+                .iter()
+                .filter(|e| matches!(e, TurnEvent::TextDelta { .. }))
+                .count()
+        };
+        let (events, outcome) = drive(&[INIT, START, TEXT, LINE, MSG_DELTA, RESULT]);
+        assert_eq!(count(&events), 1);
+        assert_eq!(outcome.whole_rounds, 0);
+        let (events, outcome) = drive(&[INIT, TEXT, ASSISTANT_TEXT, MSG_DELTA, RESULT]);
+        assert_eq!(count(&events), 1);
+        assert_eq!(outcome.whole_rounds, 0);
+    }
+
+    /// Item 723: a streamed round, a tool call, then a round that came
+    /// whole: the second is drawn, as a paragraph after the first.
+    #[test]
+    fn a_whole_round_after_a_streamed_one_is_drawn() {
+        const START: &str = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":3,"output_tokens":1}}}}"#;
+        const LINE1: &str = r#"{"type":"assistant","message":{"id":"msg_1","model":"m","role":"assistant","content":[{"type":"text","text":"hello"}]},"parent_tool_use_id":null}"#;
+        const CALL: &str = r#"{"type":"assistant","message":{"id":"msg_1","model":"m","role":"assistant","content":[{"type":"tool_use","id":"toolu_012V","name":"Read","input":{}}]},"parent_tool_use_id":null}"#;
+        const LINE2: &str = r#"{"type":"assistant","message":{"id":"msg_2","model":"m","role":"assistant","content":[{"type":"text","text":"done"}]},"parent_tool_use_id":null}"#;
+        let (events, outcome) = drive(&[
+            INIT,
+            START,
+            TEXT,
+            LINE1,
+            CALL,
+            MSG_DELTA,
+            TOOL_RESULT_ERR,
+            LINE2,
+            RESULT,
+        ]);
+        let text: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, ["hello", "done"]);
+        assert_eq!(outcome.whole_rounds, 1);
+    }
+
+    /// Item 723: the CLI's own sentences on a whole line — an API error,
+    /// the limit — stay notices, never drawn as the reply.
+    #[test]
+    fn an_api_error_line_is_not_drawn_as_a_whole_round() {
+        const ERR: &str = r#"{"type":"assistant","message":{"id":"e1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"API Error: 500 boom"}]},"parent_tool_use_id":null,"isApiErrorMessage":true}"#;
+        const LIMIT: &str = r#"{"type":"assistant","message":{"id":"e2","model":"m","role":"assistant","content":[{"type":"text","text":"You've hit your session limit"}]},"parent_tool_use_id":null}"#;
+        let (events, outcome) = drive(&[INIT, ERR, LIMIT]);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, TurnEvent::TextDelta { .. })),
+            "{events:?}"
+        );
+        assert_eq!(outcome.whole_rounds, 0);
+        assert!(outcome.api_error.is_some());
     }
 }

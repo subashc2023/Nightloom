@@ -66,6 +66,9 @@ enum Command {
     /// The phone page and Claude Code turns with the desktop app closed:
     /// the listener on this Mac's tailnet address (nightshift item 268)
     Serve(serve::ServeArgs),
+    /// Write the GitHub workflow that wakes the away server before each
+    /// job it keeps a copy of (item 781), from the Mac's job list.
+    JobsKnock(serve::KnockArgs),
     /// Serve search_chats, read_chat, remember and fetch_page over MCP on
     /// stdio, for `claude -p --mcp-config`. Hidden: nothing to see if run
     /// by hand (see `mcp_serve.rs`).
@@ -101,6 +104,7 @@ async fn main() -> Result<()> {
         Some(Command::CouncilTrial(args)) => council_trial::run(args).await,
         Some(Command::McpServe(args)) => mcp_serve::run(args).await,
         Some(Command::Serve(args)) => serve::run(args).await,
+        Some(Command::JobsKnock(args)) => serve::knock(args),
         Some(Command::PermissionHook { dir, side }) => {
             let mut args = vec![dir];
             if side {

@@ -68,6 +68,16 @@ pub enum SegmentKind {
     /// the same ladder position, after the model's file and before the
     /// project's rules.
     ChatInstructions,
+    /// How the user works, for every chat (nightshift item 738, from 709):
+    /// `~/.claude/practices/nightloom-chat.md`, the short chat-sized layer
+    /// of his practices file — files as memory, supersede notes, provenance,
+    /// hand off past ~300k. Read from the practices folder rather than the
+    /// config dir because that repo owns and re-words it (its own drift
+    /// check keeps it in step with practices.md); switched off for every
+    /// chat by one Settings switch. Both engines, after
+    /// [`SegmentKind::ChatInstructions`] and before the project's rules,
+    /// which refine it.
+    Practices,
     /// The short gloss the Claude Code bridge appends after the layers above,
     /// saying how their names (`read_file`, `@kb/`) read on an engine that
     /// has its own tools. Its own kind rather than a [`SegmentKind::Custom`]
@@ -113,12 +123,13 @@ impl SegmentKind {
     /// offers as switches. Excludes [`SegmentKind::Custom`]: the shell's own
     /// text is chosen by the shell's own control (a dropdown, a flag), not by
     /// a layer switch, and offering it twice would leave the two disagreeing.
-    pub const LAYERS: [SegmentKind; 13] = [
+    pub const LAYERS: [SegmentKind; 14] = [
         SegmentKind::Identity,
         SegmentKind::Environment,
         SegmentKind::UserMemory,
         SegmentKind::ModelInstructions,
         SegmentKind::ChatInstructions,
+        SegmentKind::Practices,
         SegmentKind::ProjectInstructions,
         SegmentKind::ProjectNotes,
         SegmentKind::Thread,

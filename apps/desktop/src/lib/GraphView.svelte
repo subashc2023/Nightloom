@@ -1,7 +1,8 @@
 <script lang="ts">
   import { tip } from "./tip";
   import * as api from "./api";
-  import { app, closeNote, showNote } from "./state.svelte";
+  import { app, closeNote, noteDraftKey, showNote } from "./state.svelte";
+  import { UNSAVED_TIP, isUnsaved } from "./unsavedCue";
   import type { LinkGraph } from "./types";
   import { classic } from "./layout.svelte";
 
@@ -225,6 +226,8 @@
         nodeDim: "rgba(160,150,220,0.25)",
         labelLit: "#e8e4ff",
         label: "rgba(200,195,225,0.75)",
+        unsaved: getComputedStyle(c).getPropertyValue("--accent").trim() || "#ffb454",
+        unsavedGlow: 0,
         font: "11px ui-sans-serif, system-ui, sans-serif",
       };
     const cs = getComputedStyle(c);
@@ -247,6 +250,9 @@
       nodeDim: mix(ink2, 22),
       labelLit: v("--ink", "#e9edf2"),
       label: mix(ink2, 80),
+      unsaved: accent,
+      // Lit under Jarvis, as --glow-accent is; none under Calm.
+      unsavedGlow: v("--glow-accent", "none") === "none" ? 0 : 7,
       font: `11px ${v("--sans", "system-ui, sans-serif")}`,
     };
   }
@@ -294,6 +300,20 @@
       ctx.arc(n.x, n.y, radius(n), 0, Math.PI * 2);
       ctx.fill();
 
+      // Item 867: a note with edits not yet saved wears the hollow ring
+      // the tabs and the Notes list use, just outside its dot.
+      if (unsavedNote(n.name)) {
+        ctx.save();
+        ctx.strokeStyle = k.unsaved;
+        ctx.lineWidth = 1.5;
+        ctx.shadowColor = k.unsaved;
+        ctx.shadowBlur = k.unsavedGlow;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, radius(n) + 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       // Labels only where they can be read: every node at rest in a small
       // vault, and only the hovered neighbourhood in a crowded one.
       const label = nodes.length <= 60 || near;
@@ -305,6 +325,13 @@
       }
     }
   }
+
+  /** Item 867: the vault note has edits not yet saved. */
+  function unsavedNote(name: string): boolean {
+    return isUnsaved(app.noteDrafts, noteDraftKey("knowledge", name));
+  }
+  /** The hover: the note's path, and the words when it is unsaved. */
+  const hoverWords = $derived(hovered && unsavedNote(hovered) ? `${hovered} · ${UNSAVED_TIP}` : hovered);
 
   /** `rust/async.md` -> `async` — the full path is in the tooltip. */
   function short(name: string): string {
@@ -390,10 +417,10 @@
         onmousemove={onMove}
         onmouseleave={() => (hovered = null)}
         onclick={onClick}
-        use:tip={hovered ?? ""}
+        use:tip={hoverWords ?? ""}
       ></canvas>
       {#if hovered}
-        <div class="tip">{hovered}</div>
+        <div class="tip">{hoverWords}</div>
       {/if}
     {/if}
   </div>

@@ -76,6 +76,14 @@
  *    window, 300k on a 1M one (`mark`). A chat's own percent is his explicit
  *    choice and is not capped.
  *
+ * 9. **What a hand-off carries** (item 747, 2026-11-16, from item 736's
+ *    survey): the wrap-up goes out with the fixed sections under it
+ *    (`wrapUpToSend`, `handoffCarry.ts` `sectionsAddendum`) and the goal he
+ *    typed on the notice; the reply's card then shows the goal as a field,
+ *    lists his messages the hand-off does not quote (tickable, carried word
+ *    for word), the files, commits, subagent reports and items read from the
+ *    tool calls, and what the wrap-up cost (`handoffButton.ts`).
+ *
  * The stage machine is pure (`nextStage`, `autoQueues`, `isAway`,
  * `extractStartPrompt`) so it can be tested without a window: the running
  * app could not be driven the day it was built.
@@ -84,6 +92,7 @@ import type { SessionEvent } from "./types";
 import { dropQueued, enqueueMessage } from "./drafts.svelte";
 import { windowFocused } from "./notify";
 import { extractHandoff, HANDOFF_ASK } from "./handoffTag";
+import { wrapUpWithSections } from "./handoffCarry";
 
 export type HandoffStage = "idle" | "due" | "wrapping" | "wrapped";
 
@@ -98,6 +107,10 @@ export const DEFAULT_THRESHOLD = 0.7;
 export const DEFAULT_CAP_TOKENS = 300_000;
 /** Past this a chat that chose *Stay here* is asked the wrap-up again. */
 export const RE_ASK = 0.85;
+
+/** Item 702: how far (a share of the window) an ordinary reading must fall
+ *  under the mark before a shown notice goes — 10k on a 1M window. */
+export const UNDER_MARGIN = 0.01;
 /** No send and no keystroke for this long, and he counts as away (blocker 120). */
 export const AWAY_MS = 60_000;
 /** No keyboard or mouse input on the Mac for this long, and he counts as
@@ -125,32 +138,70 @@ export const CODE_CLOSE =
 /**
  * The default wrap-up, sent as a message of its own. The shape is his:
  * update the files, write the hand-off, and produce a brief start prompt
- * naming which files to read in which order. The `start-prompt` fence is
+ * naming which files to read in which order. The `<handoff>` tags are
  * what Nightloom reads the new chat's first message out of.
+ *
+ * Item 760 (2026-11-16, his words: "every piece has a reason to be there"):
+ * each step below carries its reason in the comment beside it; the full
+ * before/after with reasons is nightshift-code
+ * `notes/runner-design/760-wrapup-message-2026-11-16.md`. What Nightloom
+ * adds under it (`handoffCarry.ts` `sectionsAddendum`, item 747) holds the
+ * section headings and the Goal line, so this text names them and does not
+ * repeat them. ~~"what we were doing, what is done, what is next, the
+ * decisions taken and why, and the files that matter — in your own words"~~
+ * (item 760: duplicated 747's sections, "in your own words" fought the
+ * verbatim section, and "the files that matter" fought "do not list files").
  */
 export const WRAP_UP =
+  // Why: says the reason, so the model scopes the turn to a hand-off; the
+  // usage line swaps this line for its own (`budget.ts` `usageWrapUp`).
   "This chat's context window is nearly full, so let's hand off to a new chat. Before anything else:\n" +
-  "1. Finish or save whatever edit is half-done, so every file is in a coherent state.\n" +
-  "2. Add a new section at the top of HANDOFF.md, the file at the top of the project folder (create the file " +
+  // Why: a hard stop must not leave half an edit (CONTRACT.md); a late
+  // subagent report can change the state (procedures.md §Wrap-up step 4).
+  "1. Finish or save whatever edit is half-done, so every file is in a coherent state. If a subagent you launched " +
+  "has not reported yet, wait for it and fold its report in before you go on.\n" +
+  // Why: his own line, kept from his Settings copy (blocker 2015); scoped to
+  // facts so it never becomes a trim at wrap-up (procedures.md step 2), and
+  // notes keep the old claim struck with a date (practices §1).
+  "2. Fix any fact this chat made outdated in CLAUDE.md or any other .md file (in notes, strike the old claim with " +
+  "today's date and put the new one beside it, never delete). Fix facts only; do not trim or restructure.\n" +
+  // Why: a tired session cuts what matters, so FLAGs are queued, not acted
+  // on (procedures.md step 2).
+  "3. If ~/.claude/practices/bin/mdcheck.py exists, run it in the project folder and keep each FLAG it prints for the " +
+  "top of the queue as \"trim <file>\"; do not trim now.\n" +
+  // Why: a new section, never an overwrite (an overwrite lost every earlier
+  // hand-off, 2026-09-25); AM/PM times (practices §4); the sub-headings
+  // live in the addendum below (747); measurements, spend and questions
+  // waiting on him are STATE fields of practices §5 and §4's "Waiting on
+  // you", which the six headings do not name.
+  "4. Add a new section at the top of HANDOFF.md, the file at the top of the project folder (create the file " +
   "if there is none; never delete or rewrite the sections already in it), headed " +
-  "`## STATE AS OF <date time> — <one line>`, for the chat that continues this one: what we were " +
-  "doing, what is done, what is next, the decisions taken and why, and the files that matter — in " +
-  "your own words, complete enough that a fresh session can carry on without this conversation — " +
-  "ending with the queue of next steps in order as its last list. If ~/.claude/practices/bin/mdcheck.py " +
-  "exists, run it in the project folder first and put each FLAG it prints at the top of that queue as " +
-  "\"trim <file>\"; do not trim now.\n" +
-  `3. ${CODE_CLOSE}\n` +
+  "`## STATE AS OF <date time AM/PM> — <one line>`, for the chat that continues this one — complete enough that a " +
+  "fresh session can carry on without this conversation — with the sub-headings listed under \"Hand-off contents\" " +
+  "below. Under Done, give what was measured with its numbers, and what the subagents you launched cost when you " +
+  "know it; under Blocked, every question still waiting on me, in a full sentence with what it holds; the trim " +
+  "FLAGs open Next steps.\n" +
+  // Why: commit by path and the index (practices §5, §6); push only where
+  // the project says.
+  `5. ${CODE_CLOSE}\n` +
   // ~~"The new chat is already told to read the newest HANDOFF.md section, then backlog/INDEX.md,
   // then blockers/INDEX.md, so say only what that does not: …"~~ — item 520 (2026-11-09): the
   // prompt is sent alone, so it carries the read order itself.
-  "4. End your reply with a short start prompt for the new chat. It is that chat's whole first message — " +
-  "nothing is added above it — so open it with what to read, one file per command: the newest HANDOFF.md " +
+  // ~~"so open it with what to read"~~ — item 760: the addendum opens the
+  // prompt with its Goal line, so the reads come after it.
+  // Why: the prompt is the next chat's whole first message (item 520); the
+  // read order is practices §5's; "ask him X first" is procedures.md step 4's
+  // way to carry a needed answer without a placeholder.
+  "6. End your reply with a short start prompt for the new chat. It is that chat's whole first message — " +
+  "nothing is added above it — so after its Goal line say what to read, one file per command: the newest HANDOFF.md " +
   "section by its line range, then backlog/INDEX.md, then blockers/INDEX.md; then what changed since the " +
   "section was written, any other file to read, and " +
   // ~~"Put it in a fenced code block tagged `start-prompt` (a line of three
   // backticks followed by start-prompt, the prompt, then a line of three
   // backticks)."~~ — item 464 (2026-10-28): the tagged hand-off.
-  `what to do first. ${HANDOFF_ASK}\n` +
+  "what to do first. If an answer of mine truly matters before that, say in it which question to ask me first. " +
+  `${HANDOFF_ASK}\n` +
+  // Why: the prompt means the chat is over; work after it is not in the hand-off.
   "Then stop; do not start the next step.";
 
 /**
@@ -224,12 +275,17 @@ export function nextStage(
   fill: number,
   threshold: number,
   dismissedAt: number,
+  /** Item 702: a rewind's reading compares at the mark itself; any other
+   *  reading must fall `UNDER_MARGIN` under it before the notice goes. */
+  exact = false,
 ): HandoffStage {
   if (stage === "wrapping") return "wrapped";
   // Item 390 (his bug, 2026-10-18): a fill back under the mark — a rewind
   // took turns off — puts the notice away; it was kept up whatever the
-  // fill did after.
-  if ((stage === "due" || stage === "wrapped") && fill < threshold) return "idle";
+  // fill did after. Item 702 (his bug, 2026-11-15): ~~at the mark exactly~~
+  // a 300k reading then a 299k one flashed the notice up and away; only a
+  // rewind uses the exact mark now.
+  if ((stage === "due" || stage === "wrapped") && fill < threshold - (exact ? 0 : UNDER_MARGIN)) return "idle";
   if (stage === "due" || stage === "wrapped") return stage;
   if (fill < threshold) return "idle";
   if (dismissedAt > 0 && (fill < RE_ASK || fill <= dismissedAt)) return "idle";
@@ -397,6 +453,8 @@ export function noteFill(
   events: SessionEvent[] | null = null,
   /** This reading is a turn's end (544); a log is given only at one. */
   atEnd: boolean = events !== null,
+  /** Item 702: a rewind's reading — compared at the mark exactly. */
+  exact = false,
 ): void {
   if (handoff.chat !== chat) {
     // Another chat's reading: this one's stage goes under its id and the
@@ -428,11 +486,11 @@ export function noteFill(
   // Item 390: under the mark, a *Stay here* is forgotten, so the next
   // crossing asks afresh; a wrap-up queued for the crossing goes.
   const at = markDue(chat, limit);
-  if (fill < at) {
+  if (fill < at - (exact ? 0 : UNDER_MARGIN)) {
     handoff.dismissedAt = 0;
     if (before === "due") dropAutoQueued();
   }
-  const after = nextStage(before, fill, at, handoff.dismissedAt);
+  const after = nextStage(before, fill, at, handoff.dismissedAt, exact);
   handoff.stage = after;
   if (before === "wrapping" && after === "wrapped") {
     handoff.startPrompt = events ? extractStartPrompt(lastReplyText(events)) : null;
@@ -444,7 +502,8 @@ export function noteFill(
     crossing ||
     (atEnd && before === "due" && queuesAtTurnEnd(after, away, handoff.dismissedAt, handoff.queuedId, isUnattended(chat)))
   ) {
-    const text = message(chat);
+    // ~~`message(chat)`~~ — item 747: with the fixed sections and his goal.
+    const text = wrapUpToSend(chat);
     if (text.trim()) {
       handoff.queuedId = enqueueMessage(chat, text, []).id;
       // What follows — the wrap-up, the next chat — runs without him (544).
@@ -458,7 +517,7 @@ export function noteFill(
  *  mark does not queue the wrap-up. */
 export function noteRewound(chat: string | null, used: number | null, limit: number | null): void {
   if (handoff.chat !== chat || handoff.stage === "wrapping") return;
-  noteFill(chat, used, limit, false);
+  noteFill(chat, used, limit, false, null, false, true);
 }
 
 /** Called at the end of every agent turn with the gauge's pair and the log. */
@@ -568,6 +627,8 @@ export function resetHandoff(): void {
   // Item 506: the button can leave a chat with the wrap-up still queued.
   dropAutoQueued();
   if (handoff.chat !== null) stages.delete(handoff.chat);
+  // Item 747: its goal went out with the wrap-up; the next chat has it.
+  setGoal(handoff.chat, "");
   handoff.chat = null;
   handoff.stage = "idle";
   handoff.fill = 0;
@@ -587,6 +648,7 @@ export function leaveHandoff(chat: string | null): void {
   const kept = chat === null ? undefined : stages.get(chat);
   if (chat && kept?.queuedId) dropQueued(chat, kept.queuedId);
   if (chat) stages.delete(chat);
+  setGoal(chat, "");
 }
 
 // ---- the preferences: the threshold and the message, global and per chat ----
@@ -613,6 +675,36 @@ export interface Stored {
   perThread: Record<string, number>;
   /** A project's own mark (545), by project id (`UNFILED` for none). */
   perProject: Record<string, number>;
+  /** Item 747: the goal he typed on a chat's notice, for its next chat. */
+  goals: Record<string, string>;
+  /** Item 760: the Settings wrap-up Nightloom replaced because it carried
+   *  September's stale parts (`isStaleWrapUp`), kept so Settings can offer
+   *  it back; `restored` once he took it back (it is then not replaced
+   *  again). null when nothing was replaced. */
+  replaced: Replaced | null;
+}
+
+export interface Replaced {
+  text: string;
+  /** When it was replaced, ms since the epoch. */
+  at: number;
+  restored: boolean;
+}
+
+/**
+ * Item 760: a wrap-up message carrying September's parts that are wrong
+ * now — it tells the model to overwrite HANDOFF.md (an overwrite lost every
+ * earlier hand-off; superseded 2026-09-25) or asks for the `start-prompt`
+ * fence (superseded by the `<handoff>` tags, item 464). His Settings copy
+ * (an edited copy of September's default, blocker 2015) has both.
+ */
+export function isStaleWrapUp(text: string): boolean {
+  return /overwrite it if one exists/i.test(text) || /fenced code block tagged `?start-prompt/i.test(text);
+}
+
+function isReplaced(v: unknown): v is Replaced {
+  const r = v as Replaced;
+  return !!r && typeof r === "object" && isText(r.text) && typeof r.at === "number" && typeof r.restored === "boolean";
 }
 
 /**
@@ -720,6 +812,8 @@ export function parseStored(raw: string | null): Stored {
         readOrder: isString(p.readOrder) ? p.readOrder : null,
         readOrders: readMap(p.readOrders, isString),
         cap: typeof p.cap === "number" && Number.isFinite(p.cap) && p.cap >= 0 ? p.cap : DEFAULT_CAP_TOKENS,
+        goals: readMap(p.goals, isText),
+        replaced: isReplaced(p.replaced) ? p.replaced : null,
       };
     }
   } catch {
@@ -735,15 +829,39 @@ export function parseStored(raw: string | null): Stored {
     readOrder: null,
     readOrders: {},
     cap: DEFAULT_CAP_TOKENS,
+    goals: {},
+    replaced: null,
   };
 }
 
+/**
+ * Item 760: a Settings wrap-up with September's stale parts gives way to
+ * the built-in, once, and is kept in `replaced` so Settings offers it back
+ * (practices §7: no mechanic loses his text). Once replaced — restored or
+ * not — it is never replaced again. Returns whether it changed anything.
+ */
+export function replaceStaleWrapUp(s: Stored, now: number = Date.now()): boolean {
+  if (s.replaced || s.message === null || !isStaleWrapUp(s.message)) return false;
+  s.replaced = { text: s.message, at: now, restored: false };
+  s.message = null;
+  return true;
+}
+
 function load(): Stored {
+  let s: Stored;
   try {
-    return parseStored(localStorage.getItem(KEY));
+    s = parseStored(localStorage.getItem(KEY));
   } catch {
     return parseStored(null);
   }
+  if (replaceStaleWrapUp(s)) {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(s));
+    } catch {
+      // Storage refused; replaced again next launch, same text.
+    }
+  }
+  return s;
 }
 
 /** Reactive, so the notice, the Context page and Settings agree at once;
@@ -779,7 +897,7 @@ export function threadDir(slug: string): string {
  * line on Start here, condensing claim by claim, a start prompt with no
  * placeholders — and the upkeep flags Nightloom found, when there are any.
  */
-export function threadWrapUp(slug: string, flags: readonly string[] = [], code = false): string {
+export function threadWrapUp(slug: string, flags: readonly string[] = [], code = false, overCap = false): string {
   const dir = threadDir(slug);
   const lines = [
     `This chat's context is filling, so let's hand off to a new chat. This chat works from the thread ${dir}/. Before anything else:`,
@@ -807,18 +925,31 @@ export function threadWrapUp(slug: string, flags: readonly string[] = [], code =
     lines.push("Upkeep Nightloom found in the thread files (fix these in the same small edits):");
     for (const f of flags) lines.push(`- ${f}`);
   }
+  // Item 708: ~~"thread.md is ~16k tokens, over its ~10k cap. Nightloom archives struck
+  // lines; look for detail that belongs in .agents/notes/ behind a pointer."~~ — the trim
+  // is never asked here (practices §2: a tired session cuts what matters). Nightloom
+  // queues it first for the next chat, whose thread layer carries the method.
+  if (overCap) lines.push(TRIM_AT_WRAP_UP(dir));
   lines.push("Then stop; do not start the next step.");
   return lines.join("\n");
 }
 
+/** The wrap-up's line for an over-cap thread (item 708): no trim now; the
+ *  start prompt sends the next chat to the queued row first. */
+export const TRIM_AT_WRAP_UP = (dir: string): string =>
+  `${dir}/thread.md is over its ~10k-token cap. Do not trim it in this chat. When the next chat opens, Nightloom puts a "trim thread.md" row at the top of its Queue, and that chat's thread layer carries the method ("How to trim thread.md"). Make that row the first thing your start prompt asks for.`;
+
+/** The read order's line for an over-cap thread (item 708). */
+export const TRIM_FIRST = 'First do the "trim thread.md" row at the top of the Queue, by "How to trim thread.md" in your thread layer; then the rest.';
+
 /** The read order a bound chat's continuation opens with. */
-export function threadReadOrder(slug: string, then: string = THEN_START_PROMPT): string {
+export function threadReadOrder(slug: string, then: string = THEN_START_PROMPT, overCap = false): string {
   const dir = threadDir(slug);
   return (
     `This chat continues the research thread ${dir}/. Its "## Start here" is in your context as the thread layer (if it is not, read that section of ${dir}/thread.md first). Then read, one per command and by line range rather than whole:\n` +
     `1. the "## Queue" section of ${dir}/thread.md;\n` +
     `2. the newest entry of ${dir}/log.md.\n` +
-    `Read the rest of thread.md, the notes it points at, and source chats (read_chat at the cited event) only when a task needs them. ${then}`
+    `Read the rest of thread.md, the notes it points at, and source chats (read_chat at the cited event) only when a task needs them. ${overCap ? `${TRIM_FIRST} ` : ""}${then}`
   );
 }
 
@@ -862,6 +993,8 @@ export function codeProjectFor(chat: string | null): boolean {
 
 /** Each thread's upkeep flags from the last dry run. */
 const threadFlags = $state<Record<string, string[]>>({});
+/** The threads over their cap at the last upkeep run (item 708). */
+const threadOverCap = $state<Record<string, true>>({});
 
 /** Note the chat's thread (null: none), read from its log by the shell. */
 export function noteThread(chat: string | null, slug: string | null): void {
@@ -876,8 +1009,10 @@ export function threadFor(chat: string | null): string | null {
 }
 
 /** Note a thread's upkeep flags, for its wrap-up. */
-export function noteThreadFlags(slug: string, flags: string[]): void {
+export function noteThreadFlags(slug: string, flags: string[], overCap = false): void {
   threadFlags[slug] = flags;
+  if (overCap) threadOverCap[slug] = true;
+  else delete threadOverCap[slug];
 }
 
 /** The wrap-up a chat starts from before its own edit: the thread's, else Settings'. */
@@ -888,13 +1023,13 @@ function baseMessage(chat: string | null): string {
 /** The chat's thread's research wrap-up, flags included; null when unbound. */
 function threadMessage(chat: string | null): string | null {
   const t = threadFor(chat);
-  return t ? threadWrapUp(t, threadFlags[t] ?? [], codeProjectFor(chat)) : null;
+  return t ? threadWrapUp(t, threadFlags[t] ?? [], codeProjectFor(chat), threadOverCap[t] === true) : null;
 }
 
 /** The read order a chat starts from before its own edit. */
 function baseReadOrder(chat: string | null): string {
   const t = threadFor(chat);
-  return pickText(undefined, t ? threadReadOrder(t) : null, defaultReadOrder());
+  return pickText(undefined, t ? threadReadOrder(t, THEN_START_PROMPT, threadOverCap[t] === true) : null, defaultReadOrder());
 }
 
 /** The chat's threshold, 0..1: its own if set, else the default. */
@@ -1020,6 +1155,22 @@ export function hasOwnDefaultMessage(): boolean {
   return stored.message !== null;
 }
 
+/** Item 760: the Settings wrap-up Nightloom replaced, while he has not
+ *  taken it back and the box still holds the built-in; null otherwise (once
+ *  he types his own, Restore would overwrite it, so it is not offered). */
+export function replacedMessage(): Replaced | null {
+  return stored.replaced && !stored.replaced.restored && stored.message === null ? stored.replaced : null;
+}
+
+/** Item 760: Settings' *Restore my old message* — his replaced text back as
+ *  the Settings wrap-up, and never replaced again. */
+export function restoreReplacedMessage(): void {
+  if (!stored.replaced) return;
+  stored.message = stored.replaced.text;
+  stored.replaced = { ...stored.replaced, restored: true };
+  save();
+}
+
 /** Set the Settings wrap-up; the built-in text (or Reset to default) clears
  *  it. A blank is kept for this launch so the box can be emptied and
  *  retyped — nothing sends a blank — and reads back as the built-in. */
@@ -1032,6 +1183,38 @@ export function setDefaultMessage(text: string): void {
  *  research wrap-up (backlog 271), else the Settings default. */
 export function message(chat: string | null): string {
   return pickText(chat ? stored.messages[chat] : undefined, threadMessage(chat), defaultMessage());
+}
+
+// ---- item 747: the goal for the next chat, and the wrap-up as sent ----
+
+/** The goal he typed on this chat's notice; "" when none. */
+export function goal(chat: string | null): string {
+  return (chat && stored.goals[chat]) || "";
+}
+
+/** Keep the goal as he types it; a blank clears it. Kept on disk with the
+ *  other hand-off choices, so a relaunch mid-thought does not lose it. */
+export function setGoal(chat: string | null, text: string): void {
+  if (!chat) return;
+  if (text.trim()) stored.goals[chat] = text;
+  else delete stored.goals[chat];
+  save();
+}
+
+/** Whether this chat's wrap-up writes a HANDOFF.md section: every chat but a
+ *  thread chat in a project that keeps none (its memory is the thread). */
+export function writesHandoffFile(chat: string | null): boolean {
+  return !threadFor(chat) || codeProjectFor(chat);
+}
+
+/**
+ * The wrap-up as it is sent for this chat: `message(chat)` — the one he can
+ * edit — then the fixed sections Nightloom adds under any wrap-up, then his
+ * goal. The notice shows the added part under the message box, so all that
+ * is sent is on screen (blocker 1659's rule).
+ */
+export function wrapUpToSend(chat: string | null, text: string = message(chat)): string {
+  return wrapUpWithSections(text, goal(chat), writesHandoffFile(chat));
 }
 
 /** Whether the chat has a wrap-up of its own. */

@@ -55,6 +55,13 @@ describe("item 689: a Markdown table ⇄ the grid", () => {
     expect(edit(bare, 1, 0, "one\ntwo")).toBe("| a | b |\n|---|---|\n| one two ||");
   });
 
+  it("891: a word typed after a space keeps the space (the space alone reads as padding until then)", () => {
+    const bare = "| a | b |\n|---|---|\n| x | y |";
+    const one = edit(bare, 1, 0, "hi ");
+    expect(gridValues(parseTable(one)!)[1][0]).toBe("hi");
+    const two = edit(one, 1, 0, "hi n");
+    expect(gridValues(parseTable(two)!)[1][0]).toBe("hi n");
+  });
   it("a row with fewer cells than the header gets the missing ones when a later cell is typed", () => {
     const short = "| a | b | c |\n|---|---|---|\n| x |";
     const out = edit(short, 1, 2, "z");
@@ -83,6 +90,17 @@ describe("item 689: a Markdown table ⇄ the grid", () => {
     // "Answer": 6 letters × 8 + 20 padding.
     expect(px[2]).toBeGreaterThanOrEqual(68);
     expect(px[0]).toBeLessThan(px[1]);
+  });
+
+  it("column widths: whole pixels never wider than the box, so no scroll bar for a pixel (689 check)", () => {
+    const values = gridValues(parseTable(Q3)!);
+    for (let w = 300; w <= 900; w += 7) {
+      const px = columnPx(values, w);
+      expect(px.every((x) => Number.isInteger(x))).toBe(true);
+      expect(px.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(w);
+      expect(px.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(w - 1);
+    }
+    expect(columnPx([["Op", "Cost", "Why"], ["Op 1", "O(n)", "x"]], 648).reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(648);
   });
 
   it("hasTable: a pipe line then a rule; not a setext heading, not a pipe in prose", () => {

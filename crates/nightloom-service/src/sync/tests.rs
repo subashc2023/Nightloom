@@ -254,7 +254,8 @@ async fn a_push_writes_only_under_mirror_sends_only_changes_and_nothing_unmarked
     assert!(!new.is_empty());
     for p in &new {
         assert!(
-            p.starts_with(MIRROR_DIR),
+            // Item 781: the server's own note of when the Mac last spoke.
+            p.starts_with(MIRROR_DIR) || p.as_path() == std::path::Path::new("sync/mac-seen.json"),
             "written outside mirror/: {}",
             p.display()
         );
@@ -712,7 +713,10 @@ fn a_fork_leaves_the_original_byte_identical() {
     let parsed = cli_session::CliSession::parse(&fs::read_to_string(&copy).unwrap()).unwrap();
     assert_eq!(parsed.id(), new_sid);
     let text = fs::read_to_string(&copy).unwrap();
-    assert!(text.contains(&*server_ws.to_string_lossy()));
+    // The copy is JSON: the folder is there as a JSON string, which on
+    // Windows doubles its backslashes (item 864).
+    let ws_json = serde_json::to_string(&*server_ws.to_string_lossy()).unwrap();
+    assert!(text.contains(ws_json.trim_matches('"')), "{text}");
     assert!(!text.contains(mac_ws));
     // It is in the outbox, so it comes home beside the original.
     let outbox = sync.outbox().unwrap();

@@ -2,10 +2,12 @@
 // — it re-exports vite's own `defineConfig` and changes nothing about the build.
 import { defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+// Item 770: the visual kit (Vega-Lite, Mermaid, KaTeX, three.js) as strings a page inside the app loads by name.
+import { nightloomKit } from "./kit-plugin.js";
 
 // Tauri expects a fixed dev port and does its own console output.
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [svelte(), nightloomKit()],
   clearScreen: false,
   server: {
     port: 1420,
@@ -24,6 +26,8 @@ export default defineConfig({
       input: {
         main: "index.html",
         remote: "remote.html",
+        // Item 795: the Quick Entry box, a third entry (`quick_entry.rs` opens it).
+        quick: "quick.html",
       },
     },
   },

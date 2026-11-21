@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import stateSrc from "./state/projects.svelte.ts?raw"; // item 641: useProject moved here
 import welcomeSrc from "./Welcome.svelte?raw";
 import coverSrc from "./SwitchCover.svelte?raw";
-import stripSrc from "./TabStrip.svelte?raw";
-import classicStripSrc from "./TabStripClassic.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import tabStripLogicRaw from "./tabStrip/logic.svelte.ts?raw";
+import stripSrcRaw from "./TabStrip.svelte?raw";
+const stripSrc = asOneFile(stripSrcRaw, tabStripLogicRaw);
+import classicStripSrcRaw from "./TabStripClassic.svelte?raw";
+const classicStripSrc = asOneFile(classicStripSrcRaw, tabStripLogicRaw);
 
 describe("a project switch covers the new-chat page (item 598)", () => {
   const body = stateSrc.slice(stateSrc.indexOf("export async function useProject("), stateSrc.indexOf("export async function openProjectFolder("));
@@ -23,6 +27,7 @@ describe("a project switch covers the new-chat page (item 598)", () => {
 describe("tabs share one width (item 603)", () => {
   it("the Filament strip's tabs grow from one basis; Classic's strip is untouched", () => {
     expect(stripSrc).toMatch(/\.tab \{[^}]*flex: 1 1 0;/);
-    expect(classicStripSrc).not.toContain("TabFreeze");
+    // test-change: item 856 — Classic's strip gains the close freeze (603) from the shared logic.
+    expect(classicStripSrc).toContain("closeFromStrip(e, t)");
   });
 });

@@ -9,9 +9,15 @@ import { agentChatSpend, chatFigures, figuresOf, loadChatFigures } from "./chatF
 import { chatAgentSession, chatAgentSessions } from "./state.svelte";
 import type { SessionEvent } from "./types";
 import type { SessionFigures } from "./usageFigures";
-import topBar from "./TopBar.svelte?raw";
-import topBarClassic from "./TopBarClassic.svelte?raw";
-import rightRail from "./RightRail.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import topBarLogicRaw from "./topBar/logic.svelte.ts?raw";
+import topBarRaw from "./TopBar.svelte?raw";
+const topBar = asOneFile(topBarRaw, topBarLogicRaw);
+import topBarClassicRaw from "./TopBarClassic.svelte?raw";
+const topBarClassic = asOneFile(topBarClassicRaw, topBarLogicRaw);
+import rightRailLogicRaw from "./rightRail/logic.svelte.ts?raw";
+import rightRailRaw from "./RightRail.svelte?raw";
+const rightRail = asOneFile(rightRailRaw, rightRailLogicRaw);
 
 const figures = (over: Partial<SessionFigures> = {}): SessionFigures => ({
   found: true,

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
+  import { tabPlace } from "./tabPlace"; // Item 715: the view keeps its scroll across close and reopen.
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
   import * as api from "./api";
@@ -263,6 +264,12 @@
       kind: "chat_instructions",
       label: "Chat instructions",
       gloss: "How a Chat talks — ~/.nightloom/CHAT.md, read by chats of the Chat kind only; edited in Settings → Model instructions.",
+      engines: "both",
+    },
+    {
+      kind: "practices",
+      label: "Practices",
+      gloss: "How you work, in every chat — ~/.claude/practices/nightloom-chat.md: files as memory, strike-don't-delete, provenance, hand off past ~300k. Off for every chat in Settings → Model instructions; left out where the folder's CLAUDE.md already imports practices.md.",
       engines: "both",
     },
     {
@@ -921,7 +928,7 @@
 
   <div class="find-scope">
   <FindBar bind:this={finder} scoped prepare={prepareFind} onclosed={findClosed} />
-  <div class="pane">
+  <div class="pane" use:tabPlace={"context:" + chatKey}>
     {#if !app.connection}
       <p class="note">Not connected.</p>
     {:else if error}

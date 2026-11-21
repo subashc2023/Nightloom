@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import composerSrc from "./Composer.svelte?raw";
 import appSrc from "../App.svelte?raw";
-import sidebarSrc from "./Sidebar.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import sidebarLogicRaw from "./sidebar/logic.svelte.ts?raw";
+import sidebarSrcRaw from "./Sidebar.svelte?raw";
+const sidebarSrc = asOneFile(sidebarSrcRaw, sidebarLogicRaw);
 import type { Attachment, SessionEvent, SessionMeta } from "./types";
 
 // Items 531 (Send later carries attachments) and 532 (a chat made by Send
@@ -263,7 +266,8 @@ describe("532 — a chat made by Send later looks like a chat", () => {
     expect(chatPage(sent, false, "made", true)).toBe("chat");
     expect(hasNoTurns(made, false)).toBe(true);
     expect(appSrc).toContain("<WaitingChat key={app.activeSessionId} />");
-    expect(appSrc).toContain("{#if !blank || waiting}");
+    // Item 845: Home has no Welcome page, so its blank chat keeps the docked composer too.
+    expect(appSrc).toContain("{#if !blank || waiting || isHome(app.project)}");
   });
 
   it("the composer under the waiting page does not repeat the scheduled row", () => {

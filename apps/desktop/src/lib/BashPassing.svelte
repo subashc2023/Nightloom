@@ -7,19 +7,25 @@
   // below (a transform only, inside no-preference — Reduce motion: still).
   // Item 649: `ended` — the command's remnant, its last lines fading out
   // over LINGER_MS after its result (a fade, under no-preference only).
-  import { LINGER_MS, passingLines } from "./bashOutput.svelte";
+  // Item 721: the command's first line heads the passing text, as a
+  // terminal shows the prompt above what it prints (`commandHead`).
+  import { LINGER_MS, commandHead, passingLines } from "./bashOutput.svelte";
 
-  let { id, ended = false }: { id: string; ended?: boolean } = $props();
+  let { id, ended = false, input = null }: { id: string; ended?: boolean; input?: unknown } = $props();
   const lines = $derived(passingLines(id));
+  const head = $derived(commandHead(input));
   // Restarts the slide on each new last line.
   const last = $derived(lines.length ? `${lines.length}:${lines[lines.length - 1]}` : "");
 </script>
 
 {#if lines.length}
   <span class="passing" class:ended aria-hidden="true" data-testid="bash-passing" style:--linger="{LINGER_MS}ms">
-    {#key last}
-      <span class="pl">{#each lines as l, i (i)}<span>{l}</span>{/each}</span>
-    {/key}
+    {#if head}<span class="cmd" data-testid="bash-passing-cmd">{head}</span>{/if}
+    <span class="out">
+      {#key last}
+        <span class="pl">{#each lines as l, i (i)}<span>{l}</span>{/each}</span>
+      {/key}
+    </span>
   </span>
 {/if}
 
@@ -38,6 +44,25 @@
     pointer-events: none;
     z-index: -1;
     opacity: 0.7;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
+  /* Item 721: the command's first line, whole ink, on top; the output's
+     box below it keeps 656's mask (only older lines fade), so with the
+     head the newest output line still ends above the bus. */
+  .cmd {
+    flex: none;
+    font: 8.5px/10px var(--mono, ui-monospace, monospace);
+    color: var(--signal);
+    white-space: pre;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .out {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     justify-content: flex-end;

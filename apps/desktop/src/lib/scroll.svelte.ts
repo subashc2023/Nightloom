@@ -159,6 +159,54 @@ export function putBack(el: HTMLElement, entry: ScrollEntry | null): { busy: () 
 }
 
 /**
+ * Item 883: keep a view on the line he left while what is above it finishes
+ * drawing. A switch back put the place back once (and once more when the
+ * render window filled), but a diagram block draws a microtask later and a
+ * picture decodes later still, and the height they change above the line
+ * moved it under him: a block whose source was taller than its drawing left
+ * him lower than he was, one whose drawing was taller left him higher.
+ * `again` re-holds the place; it runs on every size change of the view's
+ * content (a ResizeObserver, before the frame is painted), on every change
+ * under it, on a picture's load, and on a few timers, until he scrolls,
+ * clicks, touches or types anywhere, or `PUT_BACK_MS` has gone. Returns the
+ * stop.
+ */
+export function holdWhileDrawing(el: HTMLElement, again: () => void, ms = PUT_BACK_MS): () => void {
+  let live = true;
+  const run = () => {
+    if (live) again();
+  };
+  const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(run);
+  const watch = () => {
+    if (ro) for (const c of Array.from(el.children)) ro.observe(c);
+  };
+  watch();
+  const mo =
+    typeof MutationObserver === "undefined"
+      ? null
+      : new MutationObserver(() => {
+          watch();
+          run();
+        });
+  mo?.observe(el, { childList: true, subtree: true, characterData: true });
+  el.addEventListener("load", run, true);
+  const timers = PUT_BACK_AT.map((t) => setTimeout(run, t));
+  timers.push(setTimeout(() => (run(), stop()), ms));
+  const input = ["wheel", "pointerdown", "keydown", "touchstart"] as const;
+  function stop() {
+    if (!live) return;
+    live = false;
+    ro?.disconnect();
+    mo?.disconnect();
+    el.removeEventListener("load", run, true);
+    for (const t of timers) clearTimeout(t);
+    for (const ev of input) window.removeEventListener(ev, stop, true);
+  }
+  for (const ev of input) window.addEventListener(ev, stop, true);
+  return stop;
+}
+
+/**
  * Where to put a view back on mount or on a switch back: nothing for a view
  * never scrolled (it opens where it always did); the foot for one that was
  * held at its foot (an answer that grew meanwhile is followed to its end);

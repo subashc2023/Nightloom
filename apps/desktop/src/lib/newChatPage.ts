@@ -21,6 +21,8 @@ export interface Reading {
   ok: boolean;
   /** Something is wrong (not connected, the folder is missing). */
   warn: boolean;
+  /** More for the hover (item 714: where the Model's window came from). */
+  title?: string;
 }
 
 export interface ReadingsInput {
@@ -33,6 +35,10 @@ export interface ReadingsInput {
   cliVersion: string | null;
   model: string | null;
   limit: number | null;
+  /** Where `limit` came from when no turn reported it (item 714): the
+   *  model it is of, named, and the source in full for the hover. */
+  windowName?: string | null;
+  windowFrom?: string | null;
   project: { root: string | null; exists: boolean } | null;
   notes: number;
   vault: number;
@@ -176,7 +182,14 @@ export function readings(i: ReadingsInput): Reading[] {
       label: "Model",
       short: m,
       value: m,
-      sub: i.limit ? `${shortTokens(i.limit)} window · cache cold` : "window unknown",
+      // ~~"window unknown" whenever no turn had reported one~~ (item 714): the
+      // alias's known model gives it, and the line names that source.
+      sub: i.limit
+        ? `${shortTokens(i.limit)} window${i.windowName ? ` · ${i.windowName}` : ""} · cache cold`
+        : "window unknown until the first turn",
+      ...(i.limit && i.windowFrom
+        ? { title: `The ${shortTokens(i.limit)} window is Nightloom's limits table's figure for ${i.windowFrom}; the first turn's own report replaces it.` }
+        : {}),
       ok: false,
       warn: false,
     });
@@ -280,6 +293,22 @@ export function readoutsFit(paneW: number, size: number): boolean {
  */
 export function columnWithoutRow(colH: number, rowH: number, gap = 10): number {
   return rowH > 0 ? Math.max(0, colH - rowH - gap) : colH;
+}
+
+/**
+ * Item 839 (his bug, 2026-11-18: the page kept "getting more zoomed out"):
+ * the column the dial is sized against, with the message box at rest. The
+ * box grows with his text (to its cap) and with each attachment; sizing
+ * the dial on the measured column shrank the dial, its title and the
+ * ground's camera with every line he typed — 382 px to 211 px over four
+ * lines at 1440 × 900. The box's growth past the smallest height it has
+ * had on this page is taken back out, so typing never rescales the hero;
+ * the page scrolls instead (`.page` is the scroller). `slotMin` is the
+ * smallest box height seen (Infinity before the first measure).
+ */
+export function columnAtRest(colH: number, slotH: number, slotMin: number): number {
+  if (!(slotH > 0) || !Number.isFinite(slotMin) || slotMin > slotH) return colH;
+  return Math.max(0, colH - (slotH - slotMin));
 }
 
 /** A thread's `touched` (YYYY-MM-DD) as the list's right-hand date: "today", "Nov 8". */

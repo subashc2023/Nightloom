@@ -33,6 +33,11 @@ pub(crate) struct AsideResult {
     /// The newest round's cache read (item 677): the share of the chat's
     /// prefix found warm, which `cache_read` (summed) overcounts.
     round_read: u64,
+    /// The first round's cache read and write (item 699): the miss test
+    /// reads the first, since a later round reads back what it wrote.
+    /// `None` when no round reported.
+    first_read: Option<u64>,
+    first_write: Option<u64>,
     /// The answer's share of the plan, estimated from `cost_usd` at the
     /// rates fitted over lone chat replies (item 674): an aside takes no
     /// readings of its own. `None` before the fit has enough replies.
@@ -40,6 +45,10 @@ pub(crate) struct AsideResult {
     /// The plan's usage limit stopped the answer (item 674): the shared
     /// transcript draws the chat's limit card under it, with Ask again.
     limit: Option<nightloom_service::agent::LimitHit>,
+    /// The files the aside changed (item 775): its edit calls, and what a
+    /// shell command moved in the workspace. The window carries them to
+    /// the main chat at the end of his next message there.
+    changes: Vec<nightloom_service::aside_changes::Change>,
 }
 
 /// A piece of an aside's answer as it streams (nightshift backlog 128):
@@ -203,12 +212,24 @@ pub(crate) async fn ask_aside(
     let agent = agent_guard
         .as_ref()
         .ok_or_else(|| "not connected".to_string())?;
+    // Item 766 (merge round T review): the secrets he typed for this chat
+    // are scrubbed from the aside too, even before the chat's first turn
+    // since launch has loaded them.
+    if let Some(chat) = target.id() {
+        agent.learn_secrets(chat);
+    }
     // Awake while the aside runs (nightshift backlog 101).
     let _awake = power.acquire();
     *state.cancel.lock().unwrap() = cancel.clone();
     let mut answer = String::new();
     let marks = timing.clone();
+    // Item 775: what it changes on disk — its edit calls from the stream,
+    // and a look at the workspace before, for what a shell command moves.
+    use nightloom_service::aside_changes::{Collector, Snapshot};
+    let workspace = agent.spec().workspace.clone();
+    let mut collector = Collector::new();
     let mut on_event = |e: TurnEvent| {
+        collector.on_event(&e);
         if let TurnEvent::TextDelta { text } = &e {
             answer.push_str(text);
             let _ = app.emit(
@@ -240,6 +261,11 @@ pub(crate) async fn ask_aside(
         images: images.unwrap_or_default(),
         documents: documents.unwrap_or_default(),
     };
+    let look_at = workspace.clone();
+    let before = tokio::task::spawn_blocking(move || Snapshot::take(&look_at))
+        .await
+        .ok()
+        .flatten();
     let outcome = agent
         .ask_aside(
             input,
@@ -249,7 +275,20 @@ pub(crate) async fn ask_aside(
             &cancel,
             &mut on_event,
         )
-        .await
+        .await;
+    // Item 775: the look after, only when it ran a shell command.
+    let after = match (&before, collector.ran_shell()) {
+        (Some(_), true) => {
+            let look_at = workspace.clone();
+            tokio::task::spawn_blocking(move || Snapshot::take(&look_at))
+                .await
+                .ok()
+                .flatten()
+        }
+        _ => None,
+    };
+    let changes = collector.finish(&workspace, before.as_ref().zip(after.as_ref()));
+    let outcome = outcome
         .ok_or_else(|| {
             "this chat has no Claude Code session to ask beside yet — send a message first"
                 .to_string()
@@ -268,11 +307,54 @@ pub(crate) async fn ask_aside(
         .last_round
         .and_then(|u| u.cache_read_tokens)
         .unwrap_or(0);
+    // Item 786: a stopped aside's read counts too, when the CLI reported it
+    // on its way out (measured on 2.1.326: the interrupt's `message_delta`
+    // carries the round's prompt side; a stopped aside on a warm chat had
+    // read 67,172 of 67,174 before its first word).
     if !outcome.is_error
-        && !cancel.is_cancelled()
+        && outcome.last_round.is_some()
         && let Some(chat) = target.id()
     {
         keep_warm::aside_read(&app, chat, sent_ms, round_read);
+        // Item 792: the automatic hand-off waits for the cache edge, and an
+        // aside that read the cache moved it, keep-warm on or off. A chat
+        // busy with a turn is skipped: its new reply sets a new edge.
+        if let Ok(open) = target.try_lock()
+            && let Some(session) = open.as_ref()
+            && let Some(dir) = nightloom_service::cache_miss::ask_dir_of(session)
+        {
+            nightloom_service::hand_off::note_aside_read(&dir, sent_ms, round_read);
+        }
+    }
+    // Item 727: the aside's prefix print and the cache-miss check, against
+    // the chat's newest reply. Its log is read without waiting: busy (a
+    // turn took the chat meanwhile) skips the check, never the answer.
+    if !outcome.is_error
+        && !cancel.is_cancelled()
+        && let Some(first) = outcome.first_round
+        && let Ok(open) = target.try_lock()
+        && let Some(session) = open.as_ref()
+        && let Some(fork) = agent.spec().aside_with(model.as_deref(), effort.as_deref())
+    {
+        use nightloom_service::cache_miss;
+        let dir = cache_miss::ask_dir_of(session);
+        if let Some(d) = &dir {
+            cache_miss::record_print_quiet(d, cache_miss::Kind::Aside, sent_ms, &fork);
+        }
+        let spec = agent.spec();
+        let other = fork.model != spec.model || fork.effort != spec.effort;
+        if let Some(req) = cache_miss::aside_request(
+            session,
+            dir.as_deref(),
+            &spec.workspace,
+            spec.resume.as_deref(),
+            sent_ms,
+            first.cache_read_tokens.unwrap_or(0),
+            outcome.cost_usd,
+            other,
+        ) {
+            crate::commands::cli::check_request(&app, req);
+        }
     }
     Ok(AsideResult {
         answer: if answer.trim().is_empty() {
@@ -292,6 +374,13 @@ pub(crate) async fn ask_aside(
         context_tokens: outcome.last_round.map(|u| u.input_tokens + u.output_tokens),
         sent_ms,
         round_read,
+        first_read: outcome
+            .first_round
+            .map(|u| u.cache_read_tokens.unwrap_or(0)),
+        first_write: outcome
+            .first_round
+            .map(|u| u.cache_write_tokens.unwrap_or(0)),
+        changes,
     })
 }
 

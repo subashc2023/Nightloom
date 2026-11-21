@@ -30,8 +30,17 @@
 //! headers yet (they need `tailscale serve` in front of the port; later).
 
 pub mod api;
+mod feedback_routes;
+mod home_routes;
+// Item 763 H8: what the phone's Home reads (feed, scan, held blockers, Siri's needs).
+mod home_phone_routes;
+mod job_routes;
 pub mod nightshift_routes;
+mod push_routes;
 pub mod resent;
+mod rules_routes;
+mod saved_prompt_routes;
+mod shortcut_routes;
 pub mod sync_routes;
 pub mod tailnet;
 pub mod token;
@@ -59,6 +68,7 @@ use api::{
     ContextReply, LayerChange, LimitPause, NOT_AVAILABLE, NewProjectRequest, NoteText, PassStarted,
     ProjectRenameRequest, Rail, RailPatch, Running, SearchScope, StateReply, UsageReply,
 };
+pub use home_routes::{RoutesReply, routes_reply};
 pub use nightshift_routes::NightshiftProject;
 use tokio::sync::{broadcast, oneshot};
 
@@ -214,7 +224,9 @@ pub struct SendReply {
 }
 
 /// An answer to one approval prompt: the desktop's `approve_call` arguments
-/// by another road. `decision` is `allow`, `always` or `deny`; `answer` is
+/// by another road. `decision` is `allow`, `always`, `deny`, or `later`
+/// ("Not now — carry on", item 743: a host that takes it names the `later`
+/// feature); `answer` is
 /// a question form's or a plan's updated input; `then` is the plan card's
 /// `ask` or `auto`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -304,11 +316,140 @@ pub trait Host: Send + Sync + 'static {
     fn voice(&self) -> Option<Arc<crate::voice::Engine>> {
         None
     }
+    /// Item 801: `text` rewritten for the ear in under two minutes, naming
+    /// what was left out (`crate::voice::listen::brief_message`). A host
+    /// with no Claude Code turn to run says so.
+    async fn brief(&self, text: &str) -> Result<String, String> {
+        let _ = text;
+        Err(NOT_AVAILABLE.into())
+    }
     /// The away server's sync home, when this host is one (`serve`): the
     /// `/api/sync/*` routes ([`sync_routes`], item 268 step 3). `None` —
     /// the desktop — serves none of them.
     fn sync(&self) -> Option<Arc<crate::sync::SyncServer>> {
         None
+    }
+    /// This host's push state (item 739, [`crate::push`]): the key, the
+    /// phones subscribed, the sender. `None` — the default — and every
+    /// `/api/push` route answers [`NOT_AVAILABLE`]. The listener tells it
+    /// when the phone opens, answers or writes in a chat ([`Push::seen`]);
+    /// the host tells it when a turn ends or a card waits.
+    ///
+    /// [`Push::seen`]: crate::push::Push::seen
+    fn push(&self) -> Option<Arc<crate::push::Push>> {
+        None
+    }
+    /// Where this host keeps the rules for every chat (item 783): the
+    /// config directory, which is also where the hook reads them. A test's
+    /// host names a folder of its own.
+    fn rules_home(&self) -> Option<std::path::PathBuf> {
+        crate::project::config_dir()
+    }
+    /// Where the saved message prompts live (item 800,
+    /// [`saved_prompt_routes`]): `<this>/saved-prompts.json`, the file the
+    /// Mac's Settings writes. The config directory; a test's host names its
+    /// own.
+    fn saved_prompts_home(&self) -> Option<std::path::PathBuf> {
+        crate::project::config_dir()
+    }
+    /// Where feedback from the phone is saved before it is filed (item
+    /// 805): `<this>/feedback/`. The config directory; a test's host names
+    /// a folder of its own.
+    fn feedback_home(&self) -> Option<std::path::PathBuf> {
+        crate::project::config_dir()
+    }
+    /// The folder Home's files live under (item 763 H8): `<this>/home/`
+    /// holds the feed, `seen.json` and the scan pages the phone's Home
+    /// screen reads. The config directory; a test's host names its own.
+    fn home_config(&self) -> Option<std::path::PathBuf> {
+        crate::project::config_dir()
+    }
+    /// The ask directory of `chat` (in `project`, when named) — where its
+    /// approval rules live (item 743, [`rules_routes`]). The directory need
+    /// not exist yet: a chat that never asked has none until a rule is
+    /// made. A host that serves the `rules` feature answers this.
+    async fn ask_dir(
+        &self,
+        project: Option<&str>,
+        chat: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        let _ = (project, chat);
+        Err(NOT_AVAILABLE.into())
+    }
+
+    /// Item 808: Messages, Contacts, Reminders and the Calendar app as
+    /// this host reads them (status read now, no dialog). The default — a
+    /// host with no reader of the Mac's stores, the away server — answers
+    /// every one "not on this Mac".
+    async fn home_sources(&self) -> Vec<crate::home::sources::Row> {
+        let config = self.rules_home().unwrap_or_default();
+        crate::home::sources::rows(&config, None)
+    }
+    /// Item 808: the phone asks for `source`; the Mac shows its Allow (it
+    /// never raises the macOS dialog itself). The sentence for the phone.
+    async fn home_source_ask(
+        &self,
+        source: crate::home::sources::Source,
+    ) -> Result<String, String> {
+        Err(format!(
+            "Only the Nightloom app on your Mac can ask for {}.",
+            source.name()
+        ))
+    }
+
+    /// This host's recurring jobs (item 746, [`crate::jobs`]): the store
+    /// the `/api/jobs` routes read and write, and what the listener's
+    /// clock ticks. `None` — the default — and every `/api/jobs` route
+    /// answers [`NOT_AVAILABLE`].
+    fn jobs(&self) -> Option<Arc<crate::jobs::Jobs>> {
+        None
+    }
+    /// He is at this host now (item 780): a job's push is not sent then —
+    /// the host's own window shows the card. The Mac answers by its idle
+    /// clock; a host with no screen is never "at".
+    fn at_the_mac(&self) -> bool {
+        false
+    }
+    /// Item 781: may this host run job `job`'s run due at `due`? The
+    /// default — a host with no away server — always may. The Mac asks the
+    /// away server's lease for a job of a project marked "available away";
+    /// the away server claims its stand-in copies itself
+    /// ([`crate::sync::lease`]).
+    async fn job_claim(
+        &self,
+        _job: &crate::jobs::Job,
+        _due: chrono::DateTime<chrono::Utc>,
+        _now: chrono::DateTime<chrono::Utc>,
+    ) -> crate::sync::lease::Claim {
+        crate::sync::lease::Claim::Granted
+    }
+    /// Item 781: before each tick of the jobs' clock (the away server takes
+    /// the Mac's latest list of away jobs here).
+    async fn before_tick(&self, _jobs: &crate::jobs::Jobs) {}
+    /// Before a job's run (item 746): its chat exists — made in the job's
+    /// project and named for it when the job has none yet — and is
+    /// read-only (the Chat policy over a Claude Code chat) or not, as the
+    /// job says now. Answers the chat's id. `Err` is why the run waits.
+    async fn job_prepare(&self, _prep: crate::jobs::Prep) -> Result<String, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// A job's run: `text` into its chat, wherever the host's screen is.
+    /// The default is a send that names the chat's project.
+    async fn job_send(
+        &self,
+        project: Option<&str>,
+        chat: &str,
+        text: &str,
+    ) -> Result<Handed, String> {
+        self.send_with(
+            Some(chat),
+            SendRequest {
+                text: text.to_string(),
+                project: project.map(str::to_string),
+                ..Default::default()
+            },
+        )
+        .await
     }
     /// A fresh subscriber to the event relay.
     fn events(&self) -> broadcast::Receiver<Event>;
@@ -352,6 +493,13 @@ pub trait Host: Send + Sync + 'static {
     async fn context(&self, _chat: &str) -> Result<ContextReply, String> {
         Err(NOT_AVAILABLE.into())
     }
+    /// Item 820: a picture or a video `chat`'s reply names, by the path
+    /// the reply wrote (a relative one against the chat's folder), as
+    /// `(media type, bytes)` — read under the same rules as the Mac's own
+    /// reply strip; `Err` with the sentence when it would not draw it.
+    async fn reply_media(&self, _chat: &str, _path: &str) -> Result<(String, Vec<u8>), String> {
+        Err(NOT_AVAILABLE.into())
+    }
     /// Hide or show items of `chat`'s context; the answer is the new view.
     async fn edit_context(
         &self,
@@ -379,6 +527,12 @@ pub trait Host: Send + Sync + 'static {
     }
     /// The plan's usage windows and the ledger's summary.
     async fn usage(&self) -> Result<UsageReply, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// The cache chip's rates for `model` (wave O): `usage-rates.json`'s
+    /// row, else the fit over the host's keep-warm pings; `None` with no
+    /// figure (never a guess).
+    async fn cache_rates(&self, _model: &str) -> Result<Option<crate::usage::CacheRates>, String> {
         Err(NOT_AVAILABLE.into())
     }
     /// Search everywhere, as the Mac's panel does.
@@ -615,6 +769,10 @@ impl Server {
             .map_err(|source| Error::Bind { addr, source })?;
         let (tx, rx) = oneshot::channel();
         let closing = tokio_util::sync::CancellationToken::new();
+        // The jobs' clock (item 746) lives and ends with the listener.
+        if let Some(jobs) = host.jobs() {
+            tokio::spawn(crate::jobs::run_loop(jobs, host.clone(), closing.clone()));
+        }
         let app = router(Arc::new(Shared {
             host,
             token: token.clone(),
@@ -724,12 +882,18 @@ fn router(shared: Arc<Shared>) -> Router {
             post(send_active).layer(DefaultBodyLimit::max(SEND_BODY_LIMIT)),
         )
         .route("/approve", post(approve))
+        .route("/secret", post(store_secret))
+        // Item 766 part 2: the phone's "From Bitwarden", read on this host.
+        .route("/bitwarden/ready", get(bitwarden_ready))
+        .route("/bitwarden/search", post(bitwarden_search))
+        .route("/bitwarden/store", post(bitwarden_store))
         .route("/cancel", post(cancel))
         .route("/chats/{id}/cancel", post(cancel_chat))
         .route("/events", get(events))
         // Item 246, wave 1: the ONE API (design §4; types in `api`).
         .route("/chats/{id}/act", post(act))
         .route("/chats/{id}/context", get(context).post(edit_context))
+        .route("/chats/{id}/media", post(reply_media))
         .route("/chats/{id}/layers", post(layers))
         .route("/chats/{id}/aside", post(aside))
         .route("/chats/{id}/aside/cancel", post(aside_cancel))
@@ -737,6 +901,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/rail", get(rail).post(set_rail))
         .route("/running", get(running))
         .route("/usage", get(usage))
+        .route("/cache-rates", get(cache_rates))
         .route("/search", get(search))
         .route("/notes", get(notes_list))
         .route(
@@ -747,7 +912,20 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/capture", post(capture))
         // A file a reply sent (nightshift backlog 343): the chip's tap.
         .route("/sent-files/{id}/{name}", get(sent_file))
+        .route("/listen", post(listen))
+        .route("/listen/brief", post(listen_brief))
         .merge(nightshift_routes::router())
+        .merge(feedback_routes::router())
+        // Item 808: Home's sources on this Mac (status, and ask the Mac).
+        .merge(home_routes::router())
+        .merge(push_routes::router())
+        .merge(rules_routes::router())
+        .merge(saved_prompt_routes::router())
+        .merge(job_routes::router())
+        // Item 744: Siri / Action Button Shortcuts (plain-text answers).
+        .merge(shortcut_routes::router())
+        // Item 763 H8: the phone's Home screen and `GET /shortcut/needs`.
+        .merge(home_phone_routes::router())
         .merge(sync_routes::router(shared.host.sync()))
         // An explicit fallback so the bearer layer below covers a miss
         // too: without one an unknown `/api` path fell through to the
@@ -771,12 +949,46 @@ fn router(shared: Arc<Shared>) -> Router {
         // links are not used; no token, like the page.
         .route("/apple-touch-icon.png", get(touch_icon))
         .route("/apple-touch-icon-precomposed.png", get(touch_icon))
+        // 739: the push service worker, at the root so its scope is the
+        // whole page (a worker under `/remote/` could only control that
+        // path); no token, like the page — it holds none and reads none.
+        .route("/push-sw.js", get(push_worker))
         // Outside the bearer layer: the socket's first frame carries the
         // token (a browser WebSocket cannot send the header), checked
         // before any audio is read (voice_ws.rs).
         .route("/api/voice", get(voice_ws::voice))
         .nest("/api", api)
+        .layer(middleware::from_fn(mark_used))
         .with_state(shared)
+}
+
+/// When this listener was last used, in Unix seconds (0: not yet) — item
+/// 781: `nightloom serve --idle-exit` on the away server stops itself
+/// after a quiet spell. One listener per `serve` process.
+static LAST_USED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// When the listener was last used: any request but a bare `GET /`, which
+/// is Fly's health check (the knock asks for `/?wake=job`).
+pub fn last_used() -> Option<chrono::DateTime<chrono::Utc>> {
+    match LAST_USED.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        s => chrono::DateTime::from_timestamp(s, 0),
+    }
+}
+
+/// Whether a request counts as use (item 781). Pure.
+pub fn counts_as_use(path: &str, query: Option<&str>) -> bool {
+    path != "/" || query.is_some_and(|q| !q.is_empty())
+}
+
+async fn mark_used(req: Request, next: Next) -> Response {
+    if counts_as_use(req.uri().path(), req.uri().query()) {
+        LAST_USED.store(
+            chrono::Utc::now().timestamp(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+    next.run(req).await
 }
 
 /// Cross-origin calls to `/api` (wave 3, A1; blocker 740, its default
@@ -817,6 +1029,13 @@ async fn cors(req: Request, next: Next) -> Response {
     resp.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
         HeaderValue::from_static("*"),
+    );
+    // A page on the other host reads these answer headers too (item 820's
+    // media type, item 801's Brief words, item 862's part count); a browser hides from a page any
+    // answer header it is not told it may read.
+    resp.headers_mut().insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("x-media-type, x-brief-words, x-listen-parts"),
     );
     resp
 }
@@ -883,6 +1102,16 @@ async fn state(State(shared): State<Arc<Shared>>) -> Json<StateReply> {
     features.retain(|f| f != api::feature::NIGHTSHIFT);
     if !shared.host.nightshift_roots().await.is_empty() {
         features.push(api::feature::NIGHTSHIFT.to_string());
+    }
+    // 739: named by the listener too, only while the host has push.
+    features.retain(|f| f != api::feature::PUSH);
+    if shared.host.push().is_some() {
+        features.push(api::feature::PUSH.to_string());
+    }
+    // 746: the same for the jobs.
+    features.retain(|f| f != api::feature::JOBS);
+    if shared.host.jobs().is_some() {
+        features.push(api::feature::JOBS.to_string());
     }
     Json(StateReply {
         state,
@@ -1004,7 +1233,11 @@ async fn open(
 
 async fn transcript(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
     match shared.host.transcript(None, &id).await {
-        Ok(events) => Json(events).into_response(),
+        Ok(events) => {
+            // 739: the phone read it, so it no longer waits on him.
+            seen_on_phone(&shared, &id);
+            Json(events).into_response()
+        }
         Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
     }
 }
@@ -1071,7 +1304,10 @@ async fn project_transcript(
     Path((pid, id)): Path<(String, String)>,
 ) -> Response {
     match shared.host.transcript(Some(&pid), &id).await {
-        Ok(events) => Json(events).into_response(),
+        Ok(events) => {
+            seen_on_phone(&shared, &id);
+            Json(events).into_response()
+        }
         Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
     }
 }
@@ -1114,6 +1350,9 @@ async fn send_impl(
         return again;
     }
     let outcome = shared.host.send_with(chat, req).await;
+    if let (Ok(_), Some(chat)) = (&outcome, chat) {
+        seen_on_phone(shared, chat);
+    }
     shared.sends.settle("send", nonce.as_deref(), &outcome);
     match outcome {
         // Accepted, not done: the turn runs on the Mac and its progress
@@ -1128,6 +1367,85 @@ async fn approve(State(shared): State<Arc<Shared>>, Json(req): Json<ApproveReque
     match shared.host.approve(req).await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => bad(e),
+    }
+}
+
+/// A secret he typed on the phone's `request_secret` card (nightshift
+/// item 766), sent before the card's Allow: kept in its one private file
+/// on this host, where the turn runs. The body is never logged or echoed;
+/// an error names nothing of the value.
+#[derive(Deserialize)]
+struct SecretRequest {
+    chat: String,
+    name: String,
+    value: String,
+}
+
+async fn store_secret(Json(req): Json<SecretRequest>) -> Response {
+    match crate::secret::Store::default().put(&req.chat, &req.name, &req.value) {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(e) => bad(format!("not kept: {e}")),
+    }
+}
+
+/// Item 766 part 2: whether this host can read from Bitwarden (`bw
+/// status` only). The phone cannot hand a session over: a locked vault is
+/// unlocked on the Mac's card.
+async fn bitwarden_ready() -> Response {
+    let vault = crate::bitwarden::Vault::global();
+    let ready = tokio::task::spawn_blocking(move || vault.ready())
+        .await
+        .unwrap_or(crate::bitwarden::Ready::Missing);
+    Json(serde_json::json!({ "ready": ready })).into_response()
+}
+
+#[derive(Deserialize)]
+struct BitwardenSearch {
+    query: String,
+}
+
+/// Items matching the phone's search: names, a host, field names — never
+/// a value.
+async fn bitwarden_search(Json(req): Json<BitwardenSearch>) -> Response {
+    let vault = crate::bitwarden::Vault::global();
+    match tokio::task::spawn_blocking(move || vault.search(&req.query)).await {
+        Ok(Ok(items)) => Json(serde_json::json!({ "items": items })).into_response(),
+        Ok(Err(e)) => bad(e),
+        Err(e) => bad(e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct BitwardenStore {
+    chat: String,
+    name: String,
+    item_id: String,
+    field: String,
+    #[serde(default)]
+    always_for: Option<String>,
+}
+
+/// The phone card's *Use once* / *Always*: the value goes from `bw` to its
+/// 0600 file on this host and is never in the answer.
+async fn bitwarden_store(Json(req): Json<BitwardenStore>) -> Response {
+    let vault = crate::bitwarden::Vault::global();
+    let done = tokio::task::spawn_blocking(move || {
+        crate::bitwarden::store_from_item(
+            &vault,
+            &crate::secret::Store::default(),
+            crate::project::config_dir().as_deref(),
+            &req.chat,
+            &req.name,
+            &req.item_id,
+            &req.field,
+            req.always_for.as_deref(),
+        )
+    })
+    .await;
+    match done {
+        Ok(Ok(())) => StatusCode::OK.into_response(),
+        Ok(Err(e)) => bad(e),
+        Err(e) => bad(e.to_string()),
     }
 }
 
@@ -1161,6 +1479,160 @@ async fn act(
         return bad(e);
     }
     answer::<ActReply>(shared.host.act(&id, action).await)
+}
+
+#[derive(Deserialize)]
+struct MediaRequest {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct ListenRequest {
+    text: String,
+    #[serde(default)]
+    brief: bool,
+    /// Item 862: one part of the reading ([`crate::voice::listen::plan`]),
+    /// for a player that starts on the first while the rest are made; the
+    /// count rides in `x-listen-parts`. Absent: the whole file, as before.
+    #[serde(default)]
+    part: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct BriefRequest {
+    text: String,
+}
+
+/// Item 862: the Brief's words alone, `{"words": …}`, so the page can then
+/// ask for them read aloud a part at a time.
+async fn listen_brief(
+    State(shared): State<Arc<Shared>>,
+    Json(req): Json<BriefRequest>,
+) -> Response {
+    match shared.host.brief(&req.text).await {
+        Ok(words) => Json(serde_json::json!({ "words": words })).into_response(),
+        Err(e) if e == NOT_AVAILABLE => (
+            StatusCode::NOT_IMPLEMENTED,
+            "Brief is not available on this host".to_string(),
+        )
+            .into_response(),
+        Err(e) => refused(e),
+    }
+}
+
+/// Item 801: `text` read aloud by this host's Piper voice as one WAV file
+/// (the phone plays it in an `<audio>`, which keeps playing with the screen
+/// locked); `brief` first rewrites it for the ear. The Brief's words ride
+/// in `x-brief-words` (percent-encoded) for the page to show.
+async fn listen(State(shared): State<Arc<Shared>>, Json(req): Json<ListenRequest>) -> Response {
+    let Some(engine) = shared.host.voice() else {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            "this host has no voice — run bin/voice-setup.sh on it".to_string(),
+        )
+            .into_response();
+    };
+    if let Some(part) = req.part {
+        if req.brief {
+            return (
+                StatusCode::BAD_REQUEST,
+                "ask /listen/brief first, then for its words a part at a time".to_string(),
+            )
+                .into_response();
+        }
+        return match crate::voice::listen::read_part(&*engine, &req.text, part).await {
+            Ok((wav, parts)) => {
+                let mut resp = wav.into_response();
+                let h = resp.headers_mut();
+                h.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/wav"));
+                h.insert(
+                    header::HeaderName::from_static("x-listen-parts"),
+                    HeaderValue::from(parts),
+                );
+                resp
+            }
+            Err(e) => refused(e),
+        };
+    }
+    let text = if req.brief {
+        match shared.host.brief(&req.text).await {
+            Ok(t) => t,
+            Err(e) if e == NOT_AVAILABLE => {
+                return (
+                    StatusCode::NOT_IMPLEMENTED,
+                    "Brief is not available on this host".to_string(),
+                )
+                    .into_response();
+            }
+            Err(e) => return refused(e),
+        }
+    } else {
+        req.text
+    };
+    match crate::voice::listen::read_aloud(&*engine, &text).await {
+        Ok(wav) => {
+            let mut resp = wav.into_response();
+            let h = resp.headers_mut();
+            h.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/wav"));
+            if req.brief {
+                let enc: String = text
+                    .bytes()
+                    .map(|b| {
+                        if b.is_ascii_alphanumeric() || b" -_.~".contains(&b) {
+                            (b as char).to_string()
+                        } else {
+                            format!("%{b:02X}")
+                        }
+                    })
+                    .collect();
+                if let Ok(v) = HeaderValue::from_str(&enc) {
+                    h.insert(header::HeaderName::from_static("x-brief-words"), v);
+                }
+            }
+            resp
+        }
+        Err(e) => refused(e),
+    }
+}
+
+/// Item 820: a picture or a video a reply names, for the phone's strip
+/// under the reply. Always bytes as `application/octet-stream`, an
+/// attachment, `nosniff` and a sandbox policy — the type the page builds
+/// its blob with rides in `x-media-type` — so the URL opened on its own
+/// renders nothing and runs nothing (an SVG among them); the page draws
+/// it through `<img>` or `<video>`, which never runs a script.
+async fn reply_media(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    Json(req): Json<MediaRequest>,
+) -> Response {
+    match shared.host.reply_media(&id, &req.path).await {
+        Ok((kind, bytes)) => {
+            let mut resp = bytes.into_response();
+            let h = resp.headers_mut();
+            h.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/octet-stream"),
+            );
+            h.insert(
+                header::HeaderName::from_static("x-content-type-options"),
+                HeaderValue::from_static("nosniff"),
+            );
+            h.insert(
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_static("attachment"),
+            );
+            h.insert(
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static("sandbox; default-src 'none'"),
+            );
+            if let Ok(v) = HeaderValue::from_str(&kind) {
+                h.insert(header::HeaderName::from_static("x-media-type"), v);
+            }
+            resp
+        }
+        Err(e) => refused(e),
+    }
 }
 
 async fn context(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
@@ -1233,6 +1705,15 @@ async fn running(State(shared): State<Arc<Shared>>) -> Response {
 
 async fn usage(State(shared): State<Arc<Shared>>) -> Response {
     answer::<UsageReply>(shared.host.usage().await)
+}
+
+/// `?model=` (required): the cache chip's rates on this host (wave O).
+async fn cache_rates(State(shared): State<Arc<Shared>>, uri: Uri) -> Response {
+    let model = api::query_param(uri.query(), "model").unwrap_or_default();
+    if model.trim().is_empty() {
+        return bad("no model named".into());
+    }
+    answer(shared.host.cache_rates(model.trim()).await)
 }
 
 /// `?q=` (required) and `?scope=this|all|notes` (default `all`).
@@ -1424,6 +1905,21 @@ async fn touch_icon(State(shared): State<Arc<Shared>>) -> Response {
     serve_asset(&shared, TOUCH_ICON, false)
 }
 
+/// The push service worker (739): `public/remote/push-sw.js`, served from
+/// the root. `serve_asset` marks a `remote/` file `no-cache`, so a new
+/// build's worker is picked up at the page's next open.
+async fn push_worker(State(shared): State<Arc<Shared>>) -> Response {
+    serve_asset(&shared, "remote/push-sw.js", false)
+}
+
+/// 739: the phone opened or wrote in `chat` — it stops counting toward the
+/// badge. Nothing when the host has no push.
+fn seen_on_phone(shared: &Shared, chat: &str) {
+    if let Some(p) = shared.host.push() {
+        p.seen(chat);
+    }
+}
+
 /// The 180 px Home Screen icon (321).
 const TOUCH_ICON: &str = "remote/apple-touch-icon.png";
 
@@ -1434,6 +1930,8 @@ const TOUCH_ICON: &str = "remote/apple-touch-icon.png";
 fn type_by_name(path: &str) -> Option<&'static str> {
     match path.rsplit('.').next()? {
         "webmanifest" => Some("application/manifest+json"),
+        // 739: a service worker registers only as a script type.
+        "js" => Some("text/javascript"),
         "png" => Some("image/png"),
         _ => None,
     }
@@ -1735,6 +2233,18 @@ mod tests {
         fn features(&self) -> Vec<String> {
             api::feature::ALL.iter().map(|s| s.to_string()).collect()
         }
+        /// Item 805: never his real config dir.
+        fn feedback_home(&self) -> Option<std::path::PathBuf> {
+            Some(self.nightshift.join("feedback-home"))
+        }
+        /// Item 763 H8: never his real Home folder.
+        fn home_config(&self) -> Option<std::path::PathBuf> {
+            Some(self.nightshift.join("home-config"))
+        }
+        /// Item 800: never his real saved prompts.
+        fn saved_prompts_home(&self) -> Option<std::path::PathBuf> {
+            Some(self.nightshift.join("saved-prompts-home"))
+        }
         async fn nightshift_roots(&self) -> Vec<NightshiftProject> {
             crate::nightshift::detect(&self.nightshift)
                 .map(|root| NightshiftProject {
@@ -1893,7 +2403,27 @@ mod tests {
                     ..Default::default()
                 },
                 ledger: serde_json::Value::Null,
+                pace: serde_json::Value::Null,
             })
+        }
+        async fn cache_rates(
+            &self,
+            model: &str,
+        ) -> Result<Option<crate::usage::CacheRates>, String> {
+            // A model with a figure, one without, and a failed read.
+            match model {
+                "claude-opus-5-5" => Ok(Some(crate::usage::CacheRates {
+                    model: model.into(),
+                    read: 0.5,
+                    write_1h: 10.0,
+                    write_5m: 6.25,
+                    source: "rates",
+                    pings: 0,
+                    ratio_from: None,
+                })),
+                "broken" => Err("reading the cache rates failed".into()),
+                _ => Ok(None),
+            }
         }
         async fn search(
             &self,
@@ -2477,6 +3007,209 @@ mod tests {
         server.stop().await;
     }
 
+    /// Item 744: the Shortcut routes — behind the token, a send by name or
+    /// to the open chat with a sentence back, and "what is running" spoken.
+    #[tokio::test]
+    async fn shortcut_routes_send_by_name_and_say_what_runs() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let r = c
+            .post(format!("{base}/api/shortcut/send"))
+            .json(&serde_json::json!({ "text": "hi" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401, "the token is required");
+        let r = c
+            .post(format!("{base}/api/shortcut/send"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "text": "dictated", "chat": "FIRST" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 202);
+        assert_eq!(r.text().await.unwrap(), "Sent to first.");
+        let r = c
+            .post(format!("{base}/api/shortcut/send"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "text": "queue me please" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 202);
+        assert!(r.text().await.unwrap().starts_with("Queued in first"));
+        let r = c
+            .post(format!("{base}/api/shortcut/send"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "text": "x", "chat": "budget" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 404);
+        let sent = host.sent.lock().unwrap().clone();
+        assert!(
+            sent.contains(&(Some("abc".into()), "dictated".into())),
+            "{sent:?}"
+        );
+        let r = c
+            .get(format!("{base}/api/shortcut/running"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(
+            r.headers()[reqwest::header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain")
+        );
+        let said = r.text().await.unwrap();
+        assert!(said.starts_with("1 chat is running: first, "), "{said}");
+        server.stop().await;
+    }
+
+    /// Item 763 H8: Siri's "what needs me?", and the Home screen's reads.
+    #[tokio::test]
+    async fn shortcut_needs_speaks_what_waits_and_home_routes_read_the_folder() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let r = c
+            .get(format!("{base}/api/shortcut/needs"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401, "the token is required");
+        let root = crate::nightshift::detect(&host.nightshift).unwrap().root;
+        std::fs::write(
+            root.join("blockers").join("9990-held-one.md"),
+            "---\nid: 9990\nstatus: open\nraised: 2026-11-17\nitem: 763\ndefault: held\n---\n\n## Question\nWhich first-screen layout?\n\n## What I would have done, and why\nx\n\n## What it blocks\ny\n\n## Answer\n",
+        )
+        .unwrap();
+        let r = c
+            .get(format!("{base}/api/shortcut/needs"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(
+            r.headers()[reqwest::header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain")
+        );
+        let said = r.text().await.unwrap();
+        assert!(said.contains("one held blocker"), "{said}");
+        assert!(said.ends_with('.'), "{said}");
+        let held: serde_json::Value = c
+            .get(format!("{base}/api/home/held"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(held["blockers"][0]["id"], "9990", "{held}");
+        assert_eq!(
+            held["blockers"][0]["question"],
+            "Which first-screen layout?"
+        );
+        let scan: serde_json::Value = c
+            .get(format!("{base}/api/home/scan"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(scan["scan"].is_null(), "no page yet: {scan}");
+        let r = c
+            .post(format!("{base}/api/home/seen"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let feed: serde_json::Value = c
+            .get(format!("{base}/api/home/feed"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(feed["rows"].as_array().unwrap().is_empty());
+        assert!(feed["seen_at"].is_string(), "{feed}");
+
+        // Item 845: Home's stage on the phone — the tasks, a click Home reads at its next look, and the tab's ×.
+        let cfg = host.nightshift.join("home-config");
+        crate::home::tasks::update(
+            &cfg,
+            &serde_json::json!({ "task": "Sorting what arrived", "view": "triage", "doing": "Reading mail" }),
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let tasks: serde_json::Value = c
+            .get(format!("{base}/api/home/tasks"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(tasks[0]["id"], "sorting-what-arrived", "{tasks}");
+        assert_eq!(tasks[0]["view"], "triage");
+        let r = c
+            .post(format!("{base}/api/home/tasks/event"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "task": "Sorting what arrived", "view": "triage", "line": "you moved Mom's message to Needs you" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let pending = crate::home::tasks::pending(&cfg);
+        assert_eq!(pending.len(), 1, "the click is kept for Home's next look");
+        let r = c
+            .post(format!("{base}/api/home/tasks/sorting-what-arrived/close"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let tasks: serde_json::Value = c
+            .get(format!("{base}/api/home/tasks"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            tasks.as_array().unwrap().is_empty(),
+            "the closed tab is gone: {tasks}"
+        );
+        // Item 872: Home's steps — none while the host has no Home chat.
+        let steps: serde_json::Value = c
+            .get(format!("{base}/api/home/steps"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(steps, serde_json::json!([]), "{steps}");
+        server.stop().await;
+    }
+
     #[tokio::test]
     async fn chats_transcript_send_approve_and_cancel_reach_the_host() {
         let (server, host, _tx, token) = up().await;
@@ -2599,6 +3332,33 @@ mod tests {
             assert_eq!(approved[0].reason.as_deref(), Some("not now"));
             assert!(approved[0].answer.is_none());
         }
+
+        // Item 766: the phone's secret card keeps the value on this host,
+        // and an unusable name is refused without it.
+        let chat = format!("remote-766-{}", uuid::Uuid::new_v4());
+        let r = c
+            .post(format!("{base}/api/secret"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"chat": chat, "name": "API_KEY", "value": "fake-766-phone-value"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let store = crate::secret::Store::default();
+        assert_eq!(
+            store.get(&chat, "API_KEY").map(|s| s.value().to_string()),
+            Some("fake-766-phone-value".to_string())
+        );
+        store.forget_chat(&chat);
+        let r = c
+            .post(format!("{base}/api/secret"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"chat": chat, "name": "no good", "value": "fake-766-phone-value"}))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(r.status(), 200);
+        assert!(!r.text().await.unwrap().contains("fake-766"));
 
         let r = c
             .post(format!("{base}/api/cancel"))
@@ -3127,6 +3887,47 @@ mod tests {
         server.stop().await;
     }
 
+    /// Item 808: a host with no reader of the Mac's stores lists all four
+    /// as "not on this Mac", and an ask says only the Mac can.
+    #[tokio::test]
+    async fn home_sources_on_a_host_without_the_macs_stores() {
+        let (server, _host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (status, v) = get_json(&c, format!("{base}/api/home/sources"), &token).await;
+        assert_eq!(status, 200, "{v}");
+        let ids: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["messages", "contacts", "reminders", "calendar"]);
+        assert!(
+            v.as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["status"] == "not_on_this_mac")
+        );
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/home/sources/contacts/ask"),
+            &token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, 409, "{v}");
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/home/sources/photos/ask"),
+            &token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, 400);
+        server.stop().await;
+    }
+
     #[tokio::test]
     async fn an_aside_is_accepted_refused_or_listed() {
         let (server, _host, _tx, token) = up().await;
@@ -3191,6 +3992,47 @@ mod tests {
         // Without the token, nothing.
         let r = c
             .get(format!("{base}/api/chats/abc/asides"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 401);
+        server.stop().await;
+    }
+
+    /// Wave O: the phone's cache price — the chip's rates for a model, `null`
+    /// with no figure, 400 without a model, the host's error as a refusal,
+    /// and behind the token like every route.
+    #[tokio::test]
+    async fn cache_rates_answer_for_a_model() {
+        let (server, _host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (status, v) = get_json(
+            &c,
+            format!("{base}/api/cache-rates?model=claude-opus-5-5"),
+            &token,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(v["model"], "claude-opus-5-5");
+        assert_eq!(v["read"], 0.5);
+        assert_eq!(v["write_1h"], 10.0);
+        assert_eq!(v["source"], "rates");
+        let (status, v) = get_json(
+            &c,
+            format!("{base}/api/cache-rates?model=claude-fable-5-2"),
+            &token,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(v, serde_json::Value::Null);
+        let (status, _) = get_json(&c, format!("{base}/api/cache-rates"), &token).await;
+        assert_eq!(status, 400);
+        let (status, _) =
+            get_json(&c, format!("{base}/api/cache-rates?model=broken"), &token).await;
+        assert!(status >= 400, "{status}");
+        let r = c
+            .get(format!("{base}/api/cache-rates?model=claude-opus-5-5"))
             .send()
             .await
             .unwrap();
@@ -3532,6 +4374,7 @@ mod tests {
             get_json(&c, format!("{base}/api/rail"), &token).await,
             get_json(&c, format!("{base}/api/running"), &token).await,
             get_json(&c, format!("{base}/api/usage"), &token).await,
+            get_json(&c, format!("{base}/api/cache-rates?model=m"), &token).await,
             get_json(&c, format!("{base}/api/search?q=x"), &token).await,
             get_json(&c, format!("{base}/api/notes"), &token).await,
             post_json(
@@ -3567,7 +4410,10 @@ mod tests {
     /// waves run against the Mac, `nightloom-cli serve` and the Fly
     /// machine) passes against both fakes: everything on the full host,
     /// and on the bare one the new routes reported as lacking, not failed.
-    /// Skipped where bash, curl or jq is missing.
+    /// Skipped where bash, curl or jq is missing. Unix only: on Windows
+    /// `bash` resolves to System32's WSL launcher ahead of PATH (CI's runner
+    /// has no distribution, item 864), and the script is for Unix hosts.
+    #[cfg(unix)]
     #[tokio::test]
     async fn the_api_check_script_passes_against_both_hosts() {
         let have = |tool: &str| {
@@ -3654,6 +4500,155 @@ mod tests {
             .map(|i| start + 2 + i + 1)
             .unwrap_or(body.len());
         (fm, format!("{}{}", &body[..start], &body[end..]))
+    }
+
+    /// Item 800: the phone reads the live saved prompts, name and body, in
+    /// the file's order — none before the Mac wrote any, never a trashed one.
+    #[tokio::test]
+    async fn phone_reads_the_live_saved_prompts() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (status, empty) = get_json(&c, format!("{base}/api/saved-prompts"), &token).await;
+        assert_eq!(status, 200);
+        assert_eq!(empty, serde_json::json!({ "prompts": [] }));
+        let dir = host.saved_prompts_home().unwrap();
+        let doc = crate::saved_prompts::Doc {
+            prompts: vec![
+                crate::saved_prompts::Prompt {
+                    id: "a".into(),
+                    name: "spec".into(),
+                    body: "Launch {item}".into(),
+                    ..Default::default()
+                },
+                crate::saved_prompts::Prompt {
+                    id: "b".into(),
+                    name: "gone".into(),
+                    body: "x".into(),
+                    deleted: Some(1),
+                    ..Default::default()
+                },
+            ],
+        };
+        crate::saved_prompts::write(&dir, &doc).unwrap();
+        let (status, listed) = get_json(&c, format!("{base}/api/saved-prompts"), &token).await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            listed,
+            serde_json::json!({ "prompts": [{ "name": "spec", "body": "Launch {item}" }] })
+        );
+    }
+
+    /// Item 805: the phone's feedback is one backlog item, his words
+    /// verbatim, saved first; a resend with the same nonce is the same item.
+    #[tokio::test]
+    async fn phone_feedback_files_one_item_with_his_words_verbatim() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let r = c
+            .post(format!("{base}/api/feedback"))
+            .json(&serde_json::json!({"text": "x"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401);
+        let words = "From the phone: the  send button\nhides behind the keyboard.";
+        let body = serde_json::json!({
+            "text": words, "chat": "abc", "chat_title": "Phone", "project": "nightloom", "nonce": "n805"
+        });
+        let (status, sent) =
+            post_json(&c, format!("{base}/api/feedback"), &token, body.clone()).await;
+        assert_eq!(status, 201, "{sent}");
+        let file = sent["filed"]["file"].as_str().unwrap().to_string();
+        let item = std::fs::read_to_string(host.nightshift.join(&file)).unwrap();
+        assert!(
+            item.contains(&format!("## What Swaraag said\n{words}\n")),
+            "{item}"
+        );
+        assert!(item.contains("feedback_from: \"the phone page\""), "{item}");
+        assert!(item.contains("- Chat: `abc` \"Phone\" in project nightloom"));
+        // The same try again: the same answer, no second item.
+        let (status, again) = post_json(&c, format!("{base}/api/feedback"), &token, body).await;
+        assert_eq!(status, 201);
+        assert_eq!(again["filed"]["item"], sent["filed"]["item"]);
+        let count = std::fs::read_dir(host.nightshift.join("backlog"))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref().is_ok_and(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .contains("feedback-from-the-phone")
+                })
+            })
+            .count();
+        assert_eq!(count, 1);
+        // Saved first, then marked filed.
+        assert!(crate::feedback::pending(&host.nightshift.join("feedback-home")).is_empty());
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/feedback"),
+            &token,
+            serde_json::json!({"text": "  "}),
+        )
+        .await;
+        assert_eq!(status, 400);
+        server.stop().await;
+    }
+
+    /// Item 815: the phone's photo button — an image with no words files
+    /// as an item with the image beside it; a big body is refused by size.
+    #[tokio::test]
+    async fn phone_feedback_takes_an_image() {
+        use base64::Engine as _;
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let jpeg = [0xFFu8, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4];
+        let data = base64::engine::general_purpose::STANDARD.encode(jpeg);
+        let (status, sent) = post_json(
+            &c,
+            format!("{base}/api/feedback"),
+            &token,
+            serde_json::json!({"text": "", "images": [{"data": data, "kind": "paste"}]}),
+        )
+        .await;
+        assert_eq!(status, 201, "{sent}");
+        let file = sent["filed"]["file"].as_str().unwrap().to_string();
+        let item = std::fs::read_to_string(host.nightshift.join(&file)).unwrap();
+        let at = item.find("](shots/").expect("linked") + 2;
+        let rel = &item[at..at + item[at..].find(')').unwrap()];
+        assert_eq!(
+            std::fs::read(host.nightshift.join("backlog").join(rel)).unwrap(),
+            jpeg
+        );
+        let (status, why) = post_json(
+            &c,
+            format!("{base}/api/feedback"),
+            &token,
+            serde_json::json!({"text": "x", "images": [{"data": "PHN2Zz4="}]}),
+        )
+        .await;
+        assert_eq!(status, 409, "{why}");
+        let filed = || std::fs::read_dir(host.nightshift.join("backlog")).map_or(0, |d| d.count());
+        let before = filed();
+        let huge = "A".repeat(60 * 1024 * 1024);
+        // The server answers before the body is all read and then closes,
+        // so the client sees the 413 or a reset while still writing — a
+        // race on loopback that Windows loses (error 10053, item 864), as
+        // `/api/send`'s limit test says. Either way nothing is filed.
+        match c
+            .post(format!("{base}/api/feedback"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"text": "x", "images": [{"data": huge}]}))
+            .send()
+            .await
+        {
+            Ok(r) => assert_eq!(r.status(), 413),
+            Err(e) => assert!(e.is_request(), "{e}"),
+        }
+        assert_eq!(filed(), before, "nothing filed");
+        server.stop().await;
     }
 
     #[tokio::test]

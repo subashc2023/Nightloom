@@ -231,6 +231,8 @@ pub fn run_fork(
     for (k, v) in &spec.env {
         cmd.env(k, v);
     }
+    // Homebrew and the CLI's installs on PATH (item 897).
+    cmd.env("PATH", super::child_path());
     let started = Instant::now();
     let mut child = cmd.spawn()?;
     let stdout = child.stdout.take();

@@ -49,7 +49,10 @@ use nightloom_core::ToolDef;
 use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+// The socket client and server write only where Unix sockets exist.
+#[cfg(unix)]
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 /// The tool's name on the server; the CLI calls it `mcp__nightloom__preview`.
@@ -64,6 +67,7 @@ const LINE_CAP: usize = 2000;
 /// How long a start waits for the port to answer before replying.
 pub const READY_WAIT: Duration = Duration::from_secs(20);
 /// How long a stop waits on SIGTERM before SIGKILL.
+#[cfg(unix)]
 const STOP_GRACE: Duration = Duration::from_millis(1500);
 
 /// Where a preview is.
@@ -829,8 +833,11 @@ pub(crate) async fn stop_group(pgid: Option<u32>) {
 /// so a stop takes it too.
 #[cfg(unix)]
 pub(crate) fn spawn_watchdog(pgid: u32, watch: u32) {
-    let script =
-        format!("while kill -0 {watch} 2>/dev/null; do sleep 2; done; kill -KILL -- -{pgid}");
+    // No `--` before the group: dash (Debian and Ubuntu's /bin/sh) reads it
+    // as a pid and fails "Illegal number", so the group outlived its app
+    // there (item 864). `kill -KILL -<pgid>` means the group in dash, bash
+    // and zsh alike.
+    let script = format!("while kill -0 {watch} 2>/dev/null; do sleep 2; done; kill -KILL -{pgid}");
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.arg("-c")
         .arg(script)
@@ -865,6 +872,13 @@ pub enum Request {
     Status {
         chat: String,
     },
+    /// Item 872: one change to his Reminders, already answered on its
+    /// card — made by the app, which is where Reminders is allowed
+    /// ([`crate::home::reminders::apply`]). Not a preview; it rides the
+    /// one socket the tool's server has to the app.
+    Reminder {
+        change: crate::home::reminders::Change,
+    },
 }
 
 /// The desktop's answer, as one JSON line.
@@ -875,6 +889,9 @@ pub struct Reply {
     pub preview: Option<Snapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// What a request that is not a preview's did, in words (item 872).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// The socket's path for this app process, under the config dir. Per
@@ -1050,6 +1067,7 @@ pub async fn serve_socket(listener: std::os::unix::net::UnixListener, previews: 
                     ok: false,
                     preview: None,
                     error: Some(format!("not a preview request: {e}")),
+                    text: None,
                 },
             };
             let mut out = serde_json::to_string(&reply).unwrap_or_default();
@@ -1072,17 +1090,20 @@ pub async fn answer(previews: &Arc<Previews>, req: Request) -> Reply {
                 ok: true,
                 preview: Some(snap),
                 error: None,
+                text: None,
             },
             Err(e) => Reply {
                 ok: false,
                 preview: None,
                 error: Some(e),
+                text: None,
             },
         },
         Request::Stop { chat } => Reply {
             ok: true,
             preview: previews.stop(&chat).await,
             error: None,
+            text: None,
         },
         Request::Status { chat } => {
             let preview = previews.status(&chat);
@@ -1091,6 +1112,32 @@ pub async fn answer(previews: &Arc<Previews>, req: Request) -> Reply {
                 ok: true,
                 preview,
                 error: None,
+                text: None,
+            }
+        }
+        Request::Reminder { change } => {
+            let done = tokio::task::spawn_blocking(move || {
+                let Some(config) = crate::project::config_dir() else {
+                    return Err("no Nightloom home".to_string());
+                };
+                let stores = crate::home::sources::installed();
+                crate::home::reminders::apply(&config, stores.as_deref(), &change)
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("the change did not finish: {e}")));
+            match done {
+                Ok(text) => Reply {
+                    ok: true,
+                    preview: None,
+                    error: None,
+                    text: Some(text),
+                },
+                Err(e) => Reply {
+                    ok: false,
+                    preview: None,
+                    error: Some(e),
+                    text: None,
+                },
             }
         }
     }
@@ -1167,6 +1214,8 @@ the port answers (up to 20 s) and returns the status and the log's tail; the ser
 
 /// `preview`, as Nightloom's MCP server serves it to a chat.
 pub struct PreviewTool {
+    // Read only by the Unix-socket request; Windows has no preview service.
+    #[cfg_attr(not(unix), allow(dead_code))]
     socket: PathBuf,
     chat: String,
     root: PathBuf,
@@ -1342,18 +1391,25 @@ mod tests {
     /// range (49152 up), so no outgoing connection is ever given one; a
     /// random start and a step per call keep this process's ports apart
     /// and away from another test run's.
+    /// A port nothing answers on, from 20000 to 32767: below every OS's
+    /// ephemeral range (Linux starts at 32768, macOS and Windows at
+    /// 49152). In Linux's range (item 864), an outgoing socket of another
+    /// test can hold the port as its local end; nothing answers there, but
+    /// Linux refuses the server's bind, and the preview exits unheard.
     fn free_port() -> u16 {
         use std::sync::atomic::AtomicU16;
+        const LOW: u16 = 20_000;
+        const SPAN: u16 = 32_768 - LOW;
         static NEXT: AtomicU16 = AtomicU16::new(0);
         let _ = NEXT.compare_exchange(
             0,
-            20_000 + (uuid::Uuid::new_v4().as_u128() % 20_000) as u16,
+            LOW + (uuid::Uuid::new_v4().as_u128() % u128::from(SPAN)) as u16,
             Ordering::SeqCst,
             Ordering::SeqCst,
         );
         loop {
             let p = NEXT.fetch_add(1, Ordering::SeqCst);
-            let p = 20_000 + p.wrapping_sub(20_000) % 25_000;
+            let p = LOW + p.wrapping_sub(LOW) % SPAN;
             if !port_answers(p) {
                 return p;
             }
@@ -1423,7 +1479,7 @@ mod tests {
         // A child of the shell that is not exec'd: a stop by pid would miss it.
         let cmd = format!("python3 -m http.server {port} --bind 127.0.0.1 & wait");
         let snap = p.start("chat-s", &dir, &cmd, port).await.unwrap();
-        assert_eq!(snap.status, Status::Listening);
+        assert_eq!(snap.status, Status::Listening, "{snap:?}");
         let pgid = snap.pgid.unwrap();
         let stopped = p.stop("chat-s").await.unwrap();
         assert_eq!(stopped.port, port);
@@ -1474,7 +1530,7 @@ mod tests {
         let dir = tmp("watchdog");
         let port = free_port();
         let snap = p.start("chat-w", &dir, &server(port), port).await.unwrap();
-        assert_eq!(snap.status, Status::Listening);
+        assert_eq!(snap.status, Status::Listening, "{snap:?}");
         fake_app.kill().unwrap();
         let _ = fake_app.wait();
         let until = std::time::Instant::now() + Duration::from_secs(6);

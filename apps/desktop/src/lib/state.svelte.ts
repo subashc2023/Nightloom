@@ -1,8 +1,9 @@
-import { noteContextLive } from "./liveContext.svelte";
+import { noteContextLive, noteStepMark } from "./liveContext.svelte";
 import { passingEvent } from "./bashOutput.svelte";
 import { isShellCall as isShellForPassing } from "./agentCommands";
 import { tick, untrack } from "svelte";
 import { noteThreadHandoff, takeThreadHandoff } from "./threadHandoff.svelte";
+import { noteHandoffOpened, noteNextTurns, type HandoffOpened } from "./handoffLog";
 import { switchSameToChoose } from "./subagentSwitch";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
@@ -53,8 +54,10 @@ import {
   type ChatChoice,
 } from "./chatChoice";
 import { madeChatRow } from "./afterWrite";
+import { coalesced } from "./notesFollow";
 import { runLaunch } from "./launch.svelte";
-import { chatName, notifyNeedsYou, postHeldNeedsYou } from "./notify";
+import { chatName, notifyNeedsYou, notifyNudge, postHeldNeedsYou } from "./notify";
+import { connectorWords } from "../remote/rules";
 import { onAway, watchPresence } from "./away.svelte";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
 import { type CouncilRequest } from "./council";
@@ -74,6 +77,7 @@ import { deliveredNotice } from "./midTurn";
 import { answerLanded, clearHandBack, handedHow, noteAnswered } from "./handBack.svelte";
 import { recordRelay } from "./relay.svelte";
 import { closeRunningRows, rowsOf } from "./subagentRows";
+import { recordTurnEnd } from "./sessionCut.svelte";
 import { lineText, lineView, matchTasks, type StillRunningSegment } from "./stillRunning";
 import { applyRetry, clearRetry, markRetryStopping, turnNotices, type RetrySegment } from "./retryLine";
 import { pressStop, releaseStop, type StopClock } from "./stopState";
@@ -106,7 +110,9 @@ import type {
   AgentTurnResult,
   SubagentStatus,
   PlanUsage,
+  PlanPace,
   ApprovalDecision,
+  ApprovalNudge,
   ApprovalRequest,
   AsideDelta,
   BlockerList,
@@ -156,8 +162,8 @@ import { showNightshift, syncNightshiftProject, refreshNightshiftRow, loadNights
 import { showNote, showGraph, leaveNote, currentModelId, followToolMoves, reviewProposal, noteDraftKey, closeNote, openModelInstructions, CHAT_INSTRUCTIONS_FILE, openChatInstructions, saveNote, deleteNote, moveNoteTo, followNoteMove, onNoteMove, movedNoteName, newNoteFolder, deleteNoteFolder, mirrorDraft, stageProposal, acceptProposal, unstageProposal, dismissProposal } from "./state/notes.svelte";
 import { reflectTabs, frontOpenChat, tabOpening, showContentOf, newTab, closeTab, stepTab, splitActiveTab, dropNoteTabs, flushTabs, shownContent, openContent, dropContent, focusPane, moveTab, splitTab, registerTerminalHooks, flushNewProject, startContentDrag, endContentDrag, droppedContent } from "./state/tabs.svelte";
 import { history, chatScope, undo, redo, inTextField, editAttachments, sendInFork, contextUsed, undoLabel, redoLabel, syncUndoMenu, saveEdit, removeTurn, restoreTurn, removeBlock, restoreBlock, saveReplyEdit, editContextItems, renameSession, sessionCost, roundCost, cacheHitRate } from "./state/edits.svelte";
-import { refreshDreamStatus, refreshCaptureStatus, maybeAutoDream, maybeHandoffPass, refreshCentre, maybeDailyPass, startDailyClock, passTargetFor, runCapture, saveMemoryFromChat, stopCapture, runDream, stopDream, centreCount, dismissNotice, openNotice, revertDreamFile, revertApplied, openInstructions, setDailyPrefs, runDailyPass, type AutoPassKind } from "./state/passes.svelte";
-import { refreshPlanUsage, readPlanAtReplyEnd, planUsageFromTurn, readTurnBudget, readCheckpoint, startBudgetPoll, ensureBudgetPoll, startPlanUsageClock, PLAN_USAGE_LIVE_EVERY_MS, TURN_BUDGET_EVERY_MS, setCheckpoint } from "./state/usage.svelte";
+import { refreshDreamStatus, refreshCaptureStatus, maybeAutoDream, maybeHandoffPass, refreshCentre, maybeDailyPass, startDailyClock, startMemoryClock, passTargetFor, runCapture, saveMemoryFromChat, stopCapture, runDream, stopDream, centreCount, dismissNotice, openNotice, revertDreamFile, revertApplied, openInstructions, setDailyPrefs, runDailyPass, type AutoPassKind } from "./state/passes.svelte";
+import { refreshPlanUsage, refreshPlanPace, readPlanAtReplyEnd, planUsageFromTurn, readTurnBudget, readCheckpoint, startBudgetPoll, ensureBudgetPoll, startPlanUsageClock, PLAN_USAGE_LIVE_EVERY_MS, TURN_BUDGET_EVERY_MS, setCheckpoint } from "./state/usage.svelte";
 import { refreshProjects, refreshNotes, refreshKnowledge, refreshProjectsFolder, useProject, openProjectFolder, showNewProject, importFromClaude, restoreTabs, refreshProposals, useProjectsFolder, useKnowledgeDir, offerPracticesClaudeMd, closeNewProject, discardNewProject, pickNewProjectFolder, resolveNewProjectPath, createNewProject, renameProject, forgetProject, revealFolder, tabsOwner } from "./state/projects.svelte";
 import { layersBeforeTurn, refreshLayerVersions, updateLayerNow, chooseLayerVersion, setAutoLayers, promptLayersOff, sameLayers, setPromptLayer, promptLayerEdits, sameEdits, setPromptLayerText, promoteLayerText, syncPromptLayers, retryConnect } from "./state/layers.svelte";
 import { subagentRow, upsertSubagentRow, subagentRunning, findCall, applyToSegments, openChatSubagents, latestSubagents, subagentsOfTurn, denialReason, currentTodos } from "./state/segments.svelte";
@@ -165,20 +171,27 @@ import { resumes, showResume, armResumes, liveText, homeFor, noteTurnLimit, read
 import { pendingChatKey, clearPendingThread, bindPendingThread, showBoundChat, defaultKind, firstTurnChat, chatMode, chatKind, bornKind, declaredKind, kindSwitchCost, switchChatKind, kindWorkspace, adoptCreatedChat, chatFolders, setChatFolders, chatThread, setChatThread, startPendingChat, moveChatToThread, backToNewChat, pendingThreadDeleted, writePendingThread, newChatInThread, createThread, refreshThreadFlags, promoteThreadText, setProjectFolders, kindLabel, KIND_LINES, newChatSelected, threadPlusSelected, chatSelected, threadSelected, newChatLabel, MODE_LINES, MODE_GLYPH } from "./state/threads.svelte";
 import { usable, autoConnect, chatChoice, saveChatChoices, adoptChatRules, windowFromInit, applyDraft, useEngine, subagentRules, RULES_DEBOUNCE_MS, setOpenChatRules, useDefaultRules, setDefaultRules, sendHeld, APPLY_DEBOUNCE_MS, applyTimer, scheduleApply, lastSent, sentKey, restoreChatChoice, applyAgentDraft, filesChangedGen, filesSeenGen, projectFilesChanged, closePrompts, usePrompt, storePrompt, deletePrompt, refreshProviders, refreshSearchBackends, fetchModels, setPrefs } from "./state/connection.svelte";
 import { bgTurns, backgroundTurnOf, backgroundName, whereItRuns, openRunningChat, turnsRunning, canDeleteChat, keepPaneLog, refreshPaneLog, providerElsewhere, providerElsewhereName, providerDrains, canLeaveProject, openWaiting, waitingChatName, liveChats, connectionWindowFor, chatRuns, runningWork, openRun, paneChat, loadPaneLog, browseFree, registerProviderDrain, registerRunDrain, runDrainNow, turnChatRef, canLeaveRunning, type LiveChat } from "./state/running.svelte";
-import { stillRunningAsked, injectIntoTurn, nudgeInjects, openChatKey, takeQueuedFor, injectLater, retryInjects, handWhy, handKey, handReason, RETRY_HAND_MS, replyToPending, turnOwnsKey, takeQueued, sendNowRow, sendNowPlan, stopSend, stopSendFor, takeStopSend, frontQueued, stopAndSendRow, sendNowAny, type HandReason, type SendNowPlan } from "./state/queue.svelte";
+import { stillRunningAsked, injectIntoTurn, nudgeInjects, openChatKey, takeQueuedFor, injectLater, retryInjects, handWhy, handKey, handReason, RETRY_HAND_MS, replyToPending, turnOwnsKey, takeQueued, sendNowRow, slipRow, sendNowPlan, stopSend, stopSendFor, takeStopSend, frontQueued, stopAndSendRow, sendNowAny, type HandReason, type SendNowPlan } from "./state/queue.svelte";
 import { peekNew, viewMark, sameView, adoptOpen, settleTurnView, openSession, compactSession, deleteSession, moveSession, remoteSend, remoteNewChat } from "./state/sessions.svelte";
-import { loadLastProject, saveLastProject, loadDreamPrefs, loadPalette, loadLayout, viewport, loadReadPages, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY, type Palette, type DreamPrefs, type Layout } from "./state/prefs.svelte";
+import { loadLastProject, loadLastProjectName, saveLastProject, loadDreamPrefs, loadPalette, loadLayout, viewport, loadReadPages, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY, type Palette, type DreamPrefs, type Layout } from "./state/prefs.svelte";
+import { nextModel } from "./nextChatModel.svelte";
 import { runMenuCommand, menuInterceptors, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits } from "./state/menu.svelte";
-import { rewindTo, setAsideRewound, keepRewound } from "./state/rewind.svelte";
+import { rewindTo, setAsideRewound, keepRewound, restoreRewound, keepRewindFiles, undoRestore } from "./state/rewind.svelte";
 import { addToast, TOAST_MS, ACTION_TOAST_MS, dismissToast, runToastAction } from "./state/toasts.svelte";
+import { turnMissToast } from "./cacheCost";
 import { inViewLane } from "./viewLane";
+import { pickDocuments } from "./pick";
+import { withNote } from "./asideNotes";
+import { loadNoteDrafts, noteDraftsWriter, type DraftBase } from "./noteDraftStore";
+import { saveDelay } from "./drafts.svelte";
+import { restoreAsideNotes, takeAsideNote } from "./asideNotes.svelte";
 export { TOAST_MS, ACTION_TOAST_MS, addToast, dismissToast, runToastAction };
-export { rewindTo, setAsideRewound, keepRewound };
+export { rewindTo, setAsideRewound, keepRewound, restoreRewound, keepRewindFiles, undoRestore };
 export { menuInterceptors, runMenuCommand, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits };
 export { saveLastProject, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY };
 export type { DreamPrefs, Palette, Layout };
 export { viewMark, sameView, adoptOpen, openSession, compactSession, deleteSession, moveSession, remoteSend, remoteNewChat };
-export { injectIntoTurn, handWhy, handKey, handReason, RETRY_HAND_MS, nudgeInjects, replyToPending, turnOwnsKey, openChatKey, takeQueuedFor, takeQueued, retryInjects, sendNowRow, sendNowPlan, stopSend, stopSendFor, takeStopSend, frontQueued, stopAndSendRow, sendNowAny };
+export { injectIntoTurn, handWhy, handKey, handReason, RETRY_HAND_MS, nudgeInjects, replyToPending, turnOwnsKey, openChatKey, takeQueuedFor, takeQueued, retryInjects, sendNowRow, slipRow, sendNowPlan, stopSend, stopSendFor, takeStopSend, frontQueued, stopAndSendRow, sendNowAny };
 export type { HandReason, SendNowPlan };
 export { bgTurns, backgroundTurnOf, backgroundName, canLeaveProject, openRunningChat, openWaiting, waitingChatName, liveChats, connectionWindowFor, turnsRunning, chatRuns, runningWork, openRun, canDeleteChat, paneChat, loadPaneLog, browseFree, providerElsewhere, providerElsewhereName, registerProviderDrain, registerRunDrain, runDrainNow, turnChatRef, canLeaveRunning };
 export type { LiveChat };
@@ -188,7 +201,7 @@ export { resumes, clearResumes, limitWakeDue, resumeAfterLimit };
 export { openChatSubagents, latestSubagents, subagentRunning, subagentsOfTurn, applyToSegments, denialReason, currentTodos };
 export { refreshLayerVersions, updateLayerNow, chooseLayerVersion, setAutoLayers, promptLayersOff, sameLayers, setPromptLayer, promptLayerEdits, sameEdits, setPromptLayerText, promoteLayerText, syncPromptLayers, retryConnect };
 export { refreshProjects, refreshNotes, refreshProposals, refreshKnowledge, refreshProjectsFolder, useProjectsFolder, useKnowledgeDir, useProject, openProjectFolder, offerPracticesClaudeMd, showNewProject, closeNewProject, discardNewProject, pickNewProjectFolder, resolveNewProjectPath, createNewProject, importFromClaude, renameProject, forgetProject, revealFolder, tabsOwner, restoreTabs };
-export { refreshPlanUsage, readPlanAtReplyEnd, planUsageFromTurn, PLAN_USAGE_LIVE_EVERY_MS, TURN_BUDGET_EVERY_MS, readTurnBudget, readCheckpoint, setCheckpoint };
+export { refreshPlanUsage, refreshPlanPace, readPlanAtReplyEnd, planUsageFromTurn, PLAN_USAGE_LIVE_EVERY_MS, TURN_BUDGET_EVERY_MS, readTurnBudget, readCheckpoint, setCheckpoint };
 export { refreshDreamStatus, refreshCaptureStatus, passTargetFor, runCapture, saveMemoryFromChat, stopCapture, runDream, maybeHandoffPass, stopDream, refreshCentre, centreCount, dismissNotice, openNotice, revertDreamFile, revertApplied, openInstructions, setDailyPrefs, runDailyPass, maybeDailyPass };
 export type { AutoPassKind };
 export { history, chatScope, undoLabel, redoLabel, undo, redo, inTextField, syncUndoMenu, saveEdit, removeTurn, restoreTurn, removeBlock, restoreBlock, saveReplyEdit, editContextItems, renameSession, contextUsed, sessionCost, roundCost, cacheHitRate };
@@ -294,6 +307,12 @@ export interface Connection {
   tools: boolean;
   /** Context window of the connected model; null when unknown. */
   contextLimit: number | null;
+  /** Where `contextLimit` came from when no turn of this chat reported it
+   *  (item 714): the alias's learned model, named (`knownWindow.ts`).
+   *  Absent when the backend knew it; cleared by a turn's own report. */
+  windowFrom?: string | null;
+  /** The model that window is of, named (`Fable 5.1`), beside `windowFrom`. */
+  windowName?: string | null;
   /** Per-MTok rates for the connected model; null when unpriced. */
   price: Price | null;
   /** MCP servers for this workspace, including ones that failed to start. */
@@ -339,6 +358,10 @@ function loadNewProjectNow(): SavedNewProject {
 }
 const newProjectAtLaunch = loadNewProjectNow();
 
+/** Item 871: the note drafts left by the last run (empty without storage). */
+const restoredNoteDrafts =
+  typeof localStorage === "undefined" ? { drafts: {}, bases: {} } : loadNoteDrafts(localStorage);
+
 export const app = $state({
   providers: [] as ProviderInfo[],
   /** Web-search backends and which one has a key (settings modal edits this). */
@@ -368,6 +391,12 @@ export const app = $state({
    */
   noteFolders: { project: [] as string[], knowledge: [] as string[] },
   notesComplete: { project: true, knowledge: true },
+  /** Item 871: which listings have been read — the project id whose notes
+   *  were listed, and whether the vault was — so a recovered draft (its
+   *  note missing) is told only from a listing that exists. */
+  notesListed: { project: null as string | null, knowledge: false },
+  /** Item 871: the Recovered drafts list is open. */
+  showRecoveredDrafts: false,
   /** Where the vault is; null on a machine with no user config directory. */
   knowledge: null as KnowledgeInfo | null,
   /**
@@ -443,6 +472,9 @@ export const app = $state({
   /** The files the last rewind's turns wrote, offered to be set aside
    *  (item 259); null when it removed none, or once he chose. */
   rewoundWrites: null as import("./rewoundFiles").RewoundWrites | null,
+  /** Item 765: the last rewind's restore card — the files its turns
+   *  changed, read off the hidden snapshots; null without them. */
+  rewindRestore: null as import("./rewindRestore").RewindRestore | null,
   /** The connected chat's *newer version exists* marks (backlog 174). */
   promptPending: null as import("./types").PendingView | null,
   /** Settings: take changed layers at the next cold moment (backlog 174). */
@@ -549,7 +581,7 @@ export const app = $state({
   noteFrom: null as null | "rail" | "settings",
   /** Which pane Settings opens on next time, then clears; the round trip
    *  back from a model's file lands on the Model instructions row. */
-  settingsOpenOn: null as null | "models" | "usage" | "claude-code",
+  settingsOpenOn: null as null | "models" | "usage" | "claude-code" | "home",
   /**
    * The library's unsaved edit, kept here rather than in the component so
    * that no way out of the modal loses typed text (memory never-lose-work):
@@ -561,10 +593,21 @@ export const app = $state({
    * Unsaved note text, keyed `scope:name`, kept for the life of the app (the
    * never-lose-work rule): leaving a note and coming back finds the edit
    * still there, marked as a draft, with Revert to drop it and Save to keep
-   * it. Not persisted to disk — a draft the user has not saved is not the
-   * file's content — and cleared on save and on revert.
+   * it. Not written to the note's file — a draft the user has not saved is
+   * not the file's content — and cleared on save and on revert. Item 871:
+   * kept across a quit in localStorage (`noteDraftStore.ts`) and read back
+   * here at launch.
    */
-  noteDrafts: {} as Record<string, string>,
+  noteDrafts: restoredNoteDrafts.drafts,
+  /**
+   * Item 870: the file text each editor draft was typed against, with the
+   * draft it belongs to (trusted only while that draft is still the one in
+   * `noteDrafts`). Reopening a note whose file changed outside Nightloom
+   * since then asks Keep mine / Take theirs / Show both instead of letting
+   * Save write over the outside version. Hashes since item 871, kept on
+   * disk with the drafts.
+   */
+  noteDraftBases: restoredNoteDrafts.bases as Record<string, DraftBase>,
   /**
    * The dream's pending proposals for the two always-loaded files, per
    * scope, newest first — the badge on each pinned row. Re-listed with the
@@ -669,6 +712,12 @@ export const app = $state({
    */
   planUsage: null as PlanUsage | null,
   /**
+   * The plan's pace (item 769): each window's forecast 80% and empty times
+   * from his own reading history, with the forecast's measured error.
+   * Re-read whenever a new plan reading lands (`refreshPlanPace`).
+   */
+  planPace: null as PlanPace | null,
+  /**
    * What the open chat's Claude Code session has — the CLI's `system/init`
    * line from its latest turn (nightshift backlog 077), for the Context
    * page's *This session* pane. Cleared when the chat changes; null before
@@ -689,6 +738,8 @@ export const app = $state({
   turnSeq: 0,
   /** The Running-tasks popover under the top bar's agents chip. */
   showTasks: false,
+  /** Item 753: the Needs-you view is open. */
+  showNeeds: false,
   /** Bumped to send the chat on screen's transcript to its foot, where the
    *  running turn is (backlog 309's jump from the running list). */
   toLatest: 0,
@@ -917,9 +968,61 @@ let initialized = false;
  */
 let compactedThisTurn = false;
 
+/** Item 869: the notes re-read a folder change or a focus asks for —
+ *  coalesced, so a sync landing many files is at most two re-reads. */
+const followNotesNow = coalesced(() => refreshNotes());
+
+/**
+ * Item 871: every change to the note drafts (any scope) or their baselines
+ * is written to localStorage on the composer drafts' debounce (400 ms, never
+ * past ~1 s of steady typing), and at once when the page goes away — a quit
+ * to install a release keeps his half-typed note edits. Restored drafts say
+ * so once, so a draft whose note was deleted meanwhile is not a surprise;
+ * every one stays in the store until he saves or reverts it.
+ */
+let persistingNoteDrafts = false;
+export function persistNoteDrafts(): (() => void) | null {
+  if (persistingNoteDrafts || typeof localStorage === "undefined") return null;
+  persistingNoteDrafts = true;
+  const writer = noteDraftsWriter(
+    () => ({ drafts: $state.snapshot(app.noteDrafts), bases: $state.snapshot(app.noteDraftBases) }),
+    saveDelay,
+  );
+  $effect.root(() => {
+    let first = true;
+    $effect(() => {
+      // Read every entry, so any change to either map re-runs this.
+      JSON.stringify(app.noteDrafts);
+      JSON.stringify(app.noteDraftBases);
+      if (first) {
+        first = false;
+        return;
+      }
+      writer.changed();
+    });
+  });
+  if (typeof window !== "undefined") window.addEventListener("pagehide", writer.flush);
+  const n = Object.keys(app.noteDrafts).length;
+  if (n > 0)
+    addToast(`${n === 1 ? "An unsaved note draft" : `${n} unsaved note drafts`} from last time ${n === 1 ? "is" : "are"} kept — marked as unsaved on the notes`, {
+      label: "Show",
+      run: () => (app.showRecoveredDrafts = true),
+    });
+  return writer.flush;
+}
+
 export async function init(): Promise<void> {
   if (initialized) return;
   initialized = true;
+  persistNoteDrafts();
+  // Item 865: the provider list (a keychain read per provider) is asked for
+  // now and read beside the listeners below, awaited where it always was;
+  // the two marks say where the time before the launch steps goes.
+  const initStart = performance.now();
+  const providersRead = api.providers().then(
+    (rows) => ({ rows }),
+    (e: unknown) => ({ error: e }),
+  );
   await listen<TurnEvent & { chat?: string }>("turn-event", (e) => applyTurnEvent(e.payload));
   // The aside's answer as it streams (nightshift backlog 128): a delta
   // for the live exchange is appended; one for a cancelled or replaced
@@ -960,12 +1063,19 @@ export async function init(): Promise<void> {
   // Claude Code's version (nightshift backlog 182): a check shortly after
   // launch and every six hours; an Update waits for a cold moment.
   startCliClock();
+  // Claude Code's memory and its sessions outside Nightloom (item 751).
+  startMemoryClock();
+  // Feedback saved while a shift was live goes in now (item 805).
+  void import("./feedback.svelte").then((f) => f.flushFeedback());
   // The Refresh-now banner's click (nightshift backlog 116): Rust has
   // already brought the window forward; this opens Settings on Usage.
   await listen("usage-banner-clicked", () => {
     app.settingsOpenOn = "usage";
     app.showSettings = true;
   });
+  // Item 808: the phone asked for a source (Settings opens on Home at its
+  // row), and macOS answered an Allow (the rows re-read).
+  void import("./home.svelte").then((h) => h.listenSources());
   void refreshCentre().then(() => maybeDailyPass());
   // The dream's own channel: a running chat and a running dream must not
   // interleave in the transcript, so its events never reach applyTurnEvent.
@@ -996,6 +1106,23 @@ export async function init(): Promise<void> {
     // window is behind something else nothing on screen says so.
     void notifyNeedsYou(bannerChat(), e.payload);
   });
+  // Item 783: a card nobody answered. At 2:30 the phone is pushed again;
+  // at 3:30 the call was set aside (not run) — its card goes, the phone is
+  // told, and the same call comes back at the end of the reply.
+  await listen<ApprovalNudge>("approval-nudge", (e) => {
+    const n = e.payload;
+    const bg = eventHost(app.background, n.chat);
+    const name = bg ? backgroundName(bg.session) : bannerChat();
+    notifyNudge(name, n);
+    if (n.stage === "remind") return;
+    if (bg) bg.approvals = bg.approvals.filter((r) => r.id !== n.id);
+    else app.pendingApprovals = app.pendingApprovals.filter((r) => r.id !== n.id);
+    addToast(
+      n.stage === "unattended"
+        ? `Nobody was here to approve ${connectorWords(n.name)}, so it was set aside and did not run.`
+        : `No answer, so ${connectorWords(n.name)} was set aside. It asks again when the rest is done.`,
+    );
+  });
   // A card that landed while he looked posts its banner when he leaves with
   // it still waiting (nightshift backlog 373).
   watchPresence();
@@ -1007,6 +1134,8 @@ export async function init(): Promise<void> {
   // in `remoteHandlers.ts`; loaded here so it imports this module after
   // it has finished evaluating.
   await (await import("./remoteHandlers")).installRemoteHandlers();
+  // Item 795: Quick Entry — his shortcut registered, the box's targets kept, its sends run.
+  await (await import("./quickEntry.svelte")).installQuickEntry();
   // A chat's first turn names its chat as it starts (backlog 192; review
   // 2026-09-23 finding 4): the budget meter and stop card follow it now,
   // not only once the turn has ended.
@@ -1022,6 +1151,9 @@ export async function init(): Promise<void> {
   // Only the watched project (selectNightshiftProject calls nightshiftWatch)
   // emits this, and only that project's row and morning page are worth
   // re-reading — a change event for anything else could not reach here.
+  // Item 869: a notes folder changed (outside Nightloom or in); one
+  // coalesced re-read, so a burst is never a re-read storm.
+  await listen("notes-changed", () => void followNotesNow());
   await listen<NightshiftChange>("nightshift-change", (e) => {
     // The bell's morning and blocker counts follow the watched root.
     void refreshCentre();
@@ -1065,7 +1197,11 @@ export async function init(): Promise<void> {
   // the time they return. Cheap enough to leave unconditional — one command
   // that stats a handful of paths, and only when the window is activated —
   // where a poll would be a filesystem check every few seconds forever.
-  window.addEventListener("focus", () => void refreshProjects());
+  // Item 869: the notes too — the safety net under the folder watch.
+  window.addEventListener("focus", () => {
+    void refreshProjects();
+    void followNotesNow();
+  });
   const last = loadLastConnection();
   if (last) {
     app.draft = last;
@@ -1078,11 +1214,12 @@ export async function init(): Promise<void> {
   } catch {
     // Never blocks the launch.
   }
-  try {
-    app.providers = await api.providers();
-  } catch (e) {
-    app.error = String(e);
-  }
+  const listened = performance.now();
+  void api.startupMark("init_listeners", listened - initStart).catch(() => {});
+  const providers = await providersRead;
+  if ("rows" in providers) app.providers = providers.rows;
+  else app.error = String(providers.error);
+  void api.startupMark("providers_wait", performance.now() - listened).catch(() => {});
   // The launch (item 220, 2026-09-26; `launch.svelte.ts`): ~~each step
   // awaited in turn, the connect last~~ — the window showed an empty app
   // saying "not connected" for 7–86 s on 2026-09-25. Now the launch screen
@@ -1092,13 +1229,17 @@ export async function init(): Promise<void> {
   // would root the tools at the previous folder and then re-connect.
   await runLaunch({
     listProjects: refreshProjects,
+    // ~~The row from the list just read~~ — item 865: the list is read
+    // beside the reopen now, so the id and name are the ones kept when it
+    // was last opened; one the registry no longer has fails to open and is
+    // forgotten, as a missing row was skipped before.
     lastProject: () => {
       const id = loadLastProject();
-      const row = id ? app.projects.find((p) => p.id === id) : undefined;
-      return row ? { id: row.id, name: row.name } : null;
+      return id ? { id, name: app.projects.find((p) => p.id === id)?.name ?? loadLastProjectName() } : null;
     },
     openProject: async (id) => {
       app.project = await api.openProject(id);
+      saveLastProject(app.project.id, app.project.name);
       // Opening bumps last-opened on the backend, so the list read a
       // moment ago is stale in its ordering — re-read behind the launch.
       void refreshProjects();
@@ -1265,6 +1406,19 @@ export async function activateTab(tabId: string): Promise<void> {
   }
 }
 
+/**
+ * Item 874 (his blocker 2203): Chats or Notes in the sidebar, while the focused tab shows the Nightshift page it took
+ * over in place, turn that tab back into what it held (the same chat — its draft is app state, kept — or note). Other
+ * tabs are untouched. A chat no longer in the open project (deleted, or he switched project): the tab stays Nightshift. True when it turned.
+ */
+export async function backFromNightshift(): Promise<boolean> {
+  const alive = (c: TabContent) => c.kind !== "chat" || c.session === null || app.sessions.some((x) => x.id === c.session);
+  const tab = tabs.takeBack(app.tabs, alive);
+  if (!tab) return false;
+  await activateTab(tab.id);
+  return true;
+}
+
 export async function refreshSessions(): Promise<void> {
   try {
     // A chat made by Send later is named by its scheduled message until
@@ -1386,6 +1540,8 @@ export async function continueChat(): Promise<void> {
     const opened = await openContinuation(from, !!start);
     const first = start ? firstMessage("", start) : firstMessage(readOrder(from), null);
     if (first) setDraftText(opened, first);
+    // Item 757: logged for scoring, as put in the box.
+    noteHandoffOpened({ route: "box", from, index: null, to: opened, sent: first ?? "" });
     if (!start) {
       handoff.noStartPromptChat = opened;
       addToast(
@@ -1429,6 +1585,16 @@ async function openContinuation(from: string | null, prompted: boolean): Promise
   if (thread && prompted) void takeThreadHandoff(thread, res.session);
   // The chat just left is finished as far as memory is concerned (item 278).
   maybeHandoffPass();
+  // Item 705: the new chat on the *Next chat* pick; "" (this chat's) keeps the
+  // model it was opened on. A failed switch is a toast, never a lost continuation.
+  const pick = nextModel(from);
+  if (pick && app.draft.engine === "claude-code" && app.draft.agentModel !== pick) {
+    try {
+      await switchModel(pick);
+    } catch (e) {
+      addToast(`The next chat stayed on this chat's model: ${String(e)}`);
+    }
+  }
   return res.session;
 }
 
@@ -1451,7 +1617,12 @@ export function continuedThisRun(chat: string, index: number): boolean {
  * for this button only. Needs no wrap-up: the card is enough. A send that
  * fails, or cannot go, leaves the text in the new chat's box.
  */
-export async function continueWithPrompt(from: string, index: number, prompt: string): Promise<void> {
+export async function continueWithPrompt(
+  from: string,
+  index: number,
+  prompt: string,
+  log: Pick<HandoffOpened, "route" | "carry" | "goal" | "ticks"> = { route: "card" },
+): Promise<void> {
   if (continuing) return;
   if (app.busy || app.activeSessionId !== from) {
     addToast("A turn is running — continue when it ends");
@@ -1470,6 +1641,8 @@ export async function continueWithPrompt(from: string, index: number, prompt: st
       return;
     }
     continuedHere[`${from}|${index}`] = true;
+    // Item 757: what the hand-off carried, logged for scoring.
+    noteHandoffOpened({ ...log, from, index, to: opened, sent: text });
     leaveNote();
     void refreshSessions();
     if (!app.connection || app.busy) {
@@ -1494,7 +1667,7 @@ export async function continueWithPrompt(from: string, index: number, prompt: st
 async function applyThreadUpkeep(slug: string): Promise<void> {
   try {
     const up = await api.threadUpkeep(slug, true);
-    noteThreadFlags(slug, up.flags);
+    noteThreadFlags(slug, up.flags, up.over_cap === true);
     const parts: string[] = [];
     if (up.struck_moved > 0) parts.push(`${up.struck_moved} struck line${up.struck_moved === 1 ? "" : "s"} moved to archive.md`);
     if (up.merged.length > 0) parts.push(`${up.merged.length} duplicate queue row${up.merged.length === 1 ? "" : "s"} merged`);
@@ -1798,6 +1971,11 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
     ranIn: id,
     error: failed,
     cliError: res?.is_error === true,
+    limit: !!res?.limit,
+    stopped: t.stopped === true,
+    // Item 874: its record is gone by now — a chat Home's routes ran in
+    // another project is that project's, not the open one's.
+    ...(b ? { home: { id: b.project ?? null, name: b.projectName ?? null } } : {}),
   });
   addToast(backgroundEndToast(name, failed));
   for (const n of turnNotices(res?.notices ?? [], t.stopped === true)) addToast(n);
@@ -1810,6 +1988,8 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
     // (the open project's threads only).
     if (b) noteThreadHandoff(id, b.events);
   }
+  // Item 757: a hand-off's next chat logs its first turns' file use, in any project.
+  if (b) noteNextTurns(id, b.events, liveFlags(b.events));
   if (t.provider) {
     // A provider turn's end (A4 review, 2026-09-29) does what the
     // screen's provider end does — ~~the plan meter and the Claude Code
@@ -1889,13 +2069,18 @@ export async function runInChat(
   const images = q.attachments.filter((a) => a.kind === "image").map(({ media_type, data }) => ({ media_type, data }));
   const documents = q.attachments
     .filter((a) => a.kind === "document")
-    .map(({ media_type, name, data }) => ({ media_type, name, data }));
+    .map(({ media_type, name, data }) => ({ media_type, name, data }))
+    .concat(pickDocuments(q.attachments));
   const files = q.attachments.filter((a) => a.kind === "file").map(({ name, data }) => ({ name, data }));
   const project = was?.project ?? null;
+  // Item 775: what asides of this chat changed since its last turn, at the
+  // end of the message (past the cached prefix).
+  const asideNote = takeAsideNote(id);
+  const text = withNote(q.text, asideNote?.text ?? "");
   const turn: TurnCtx = { chat: id, detached: true, key: newTurnKey(), contextLimit: ended.contextLimit, pendingKey: null, choice: ended.choice };
   const mine: SessionEvent = {
     event: "user_message",
-    text: q.text,
+    text,
     ...(images.length > 0 ? { images } : {}),
     ...(documents.length > 0 ? { documents } : {}),
     at: new Date().toISOString(),
@@ -1930,7 +2115,7 @@ export async function runInChat(
   let delivered: string[] = [];
   try {
     res = await api.sendAgent(
-      q.text,
+      text,
       images.length > 0 ? images : undefined,
       documents.length > 0 ? documents : undefined,
       undefined,
@@ -1942,6 +2127,9 @@ export async function runInChat(
     delivered = res.delivered ?? [];
   } catch (e) {
     failed = String(e);
+    // Item 775: a failed send may not have reached the chat — its notes
+    // wait again (told twice is harmless; never told is the harm).
+    if (asideNote) restoreAsideNotes(id, asideNote.notes);
   }
   // Refused before anything was sent (the chat not loaded, or its project
   // closed with no agent of its own): back at the head of its own queue.
@@ -1949,6 +2137,8 @@ export async function runInChat(
   if (refused && !refusedTo) requeueFront(id, q);
   settleInjected(turn.key, delivered);
   injectLater.delete(turn.key);
+  // Item 703: what the end cut, as the screen's turn marks it.
+  recordTurnEnd(id, rowsOf(app.subagents, id));
   closeRunningRows(app.subagents, id);
   if (turn.detached) {
     if (refused) {
@@ -2041,7 +2231,8 @@ export function sendInChat(
     const images = attachments.filter((a) => a.kind === "image").map(({ media_type, data }) => ({ media_type, data }));
     const documents = attachments
       .filter((a) => a.kind === "document")
-      .map(({ media_type, name, data }) => ({ media_type, name, data }));
+      .map(({ media_type, name, data }) => ({ media_type, name, data }))
+      .concat(pickDocuments(attachments));
     const files = attachments.filter((a) => a.kind === "file").map(({ name, data }) => ({ name, data }));
     turnTyped = false;
     turnSpoken = false;
@@ -2207,6 +2398,8 @@ export async function send(
   await settleTurnView(pendingKey, turn.chat, choice);
   // Item 464: a thread chat's `<handoff>` prompt is kept on its thread.
   if (!app.parked) noteThreadHandoff(app.activeSessionId, app.events);
+  // Item 757: a hand-off's next chat logs its first turns' file use.
+  if (!app.parked) noteNextTurns(app.activeSessionId, app.events, liveFlags(app.events));
   void refreshSessions();
   // The turn may have written to the docspace, and the sidebar showing a
   // note the model just left is the visible half of "shared knowledge".
@@ -2283,6 +2476,15 @@ async function sendAgent(
   // (nightshift backlog 094).
   const pendingKey = pendingChatKey();
   app.error = null;
+  // Item 775: what asides of this chat changed since its last turn, at the
+  // end of his message — past the cached prefix, which stays as it was.
+  const noteChat = target?.chat ?? app.activeSessionId;
+  const asideNote = takeAsideNote(noteChat);
+  if (asideNote) text = withNote(text, asideNote.text);
+  // Item 699: the replies the log holds now — the turn's first round is
+  // the next one, whose read the cache-miss toast tests at the turn's end.
+  const repliesBefore = app.events.reduce((n, e) => n + (e.event === "assistant_message" ? 1 : 0), 0);
+  const missChat = app.activeSessionId;
   pushSent({
     event: "user_message",
     text,
@@ -2365,13 +2567,18 @@ async function sendAgent(
     // sent one with figures (nightshift backlog 073), else from the files
     // in `finally`.
     const fromTurn = planUsageFromTurn(res.plan);
-    if (fromTurn) app.planUsage = fromTurn;
+    if (fromTurn) {
+      app.planUsage = fromTurn;
+      void refreshPlanPace();
+    }
     // The CLI resolves an alias to a real model id, which is the first
     // moment a context window can be looked up at all: `sonnet` is in no
     // limits table and a guessed denominator would promise headroom nobody
     // verified.
     if (app.connection && res.context_limit != null) {
       app.connection.contextLimit = res.context_limit;
+      app.connection.windowFrom = null;
+      app.connection.windowName = null;
     }
     if (app.connection && res.model) app.connection.model = res.model;
     // The folder entrance's two halves (backlog 143, pass 2): a grant the
@@ -2386,6 +2593,8 @@ async function sendAgent(
     for (const notice of turnNotices(res.notices, stopped)) addToast(notice);
   } catch (e) {
     failed = String(e);
+    // Item 775: as `runInChat` — a failed send's notes wait again.
+    if (asideNote && noteChat) restoreAsideNotes(noteChat, asideNote.notes);
     if (turn.detached) {
       endBackground(turn, failed, null);
       return;
@@ -2398,7 +2607,10 @@ async function sendAgent(
     injectLater.delete(turn.key);
     // The turn's process is gone (backlog 331): whatever of its subagents
     // the CLI never reported finished ran inside it, and is not running.
-    closeRunningRows(app.subagents, turn.chat ?? (turn.detached ? null : app.activeSessionId));
+    // Item 703: marked first, so the transcript says what the end cut.
+    const ranChat = turn.chat ?? (turn.detached ? null : app.activeSessionId);
+    recordTurnEnd(ranChat, rowsOf(app.subagents, ranChat));
+    closeRunningRows(app.subagents, ranChat);
     if (turn.chat === null) closeRunningRows(app.subagents, null);
     // The window's timing marks, if no paint sent them (item 256).
     turnClock.ended(turn.key);
@@ -2436,6 +2648,13 @@ async function sendAgent(
       const ran = browsed ? ranIn : app.activeSessionId;
       noteTurnLimit(ran, limitRes, homeFor(ran), browsed ? parkedReply : lastReplyText(app.events));
     }
+    // Item 699: the turn's first round read under 80% of the context it
+    // resumed — say what the miss cost. Only with the turn's own chat in
+    // view (its log is the one read), never on a chat's first turn.
+    if (limitRes && !browsed && missChat && app.activeSessionId === missChat) {
+      const miss = turnMissToast(app.events, repliesBefore, limitRes.cost_usd, limitRes.plan_est);
+      if (miss) addToast(miss);
+    }
     // The meter's final figure, now that the chat exists and the hook's
     // last write is in (backlog 165, pass 2).
     void readTurnBudget(ranIn ?? app.activeSessionId);
@@ -2462,6 +2681,8 @@ async function sendAgent(
     );
     // Item 464: a thread chat's `<handoff>` prompt is kept on its thread.
     if (!browsed) noteThreadHandoff(app.activeSessionId, app.events);
+    // Item 757: a hand-off's next chat logs its first turns' file use.
+    if (!browsed) noteNextTurns(app.activeSessionId, app.events, liveFlags(app.events));
     // A turn that wrote HANDOFF.md is a hand-off (item 278).
     if (!browsed && turnWroteHandoff(app.events)) maybeHandoffPass();
     // Last, once the turn is fully over: was it sleep that ended it
@@ -2796,6 +3017,9 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
     }
     return;
   }
+  // Item 829: the working line's phase — a call landed whole, a result back.
+  if (ev.type === "tool_call") noteStepMark(host.chat, "call");
+  if (ev.type === "tool_result" || ev.type === "tool_denied") noteStepMark(host.chat, "result");
   if (ev.type === "tool_denied" || ev.type === "tool_result") {
     // The gate answered this one, whoever decided it — a prompt still on
     // screen for it (cancellation denies server-side) can no longer be used.

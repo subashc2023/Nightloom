@@ -11,13 +11,13 @@
    * it (backlog 531), copied to disk first (`stashChips`). The chat's
    * project is stored with the message (backlog 535).
    */
-  import { app, chatMode, refreshSessions, startPendingChat } from "./state.svelte";
+  import { addToast, app, chatMode, refreshSessions, startPendingChat } from "./state.svelte";
   import type { Attachment } from "./types";
   import { NEW_DRAFT_PREFIX } from "./drafts.svelte";
   import { floatMenu } from "./floatMenu";
   import { tip } from "./tip";
-  import { atTime, clockText, dayClockText, resetTime, type ScheduleKind } from "./schedule";
-  import { scheduleSend, scheduledFor, stashChips } from "./scheduled.svelte";
+  import { atTime, clockText, dayClockText, dueAt, resetTime, type ScheduleKind } from "./schedule";
+  import { scheduleSend, scheduledFor, sendScheduledNow, stashChips } from "./scheduled.svelte";
   import { scheduledHere } from "./scheduleRuntime";
 
   let {
@@ -48,6 +48,10 @@
   const five = $derived(resetTime(app.planUsage?.five_hour_resets_at, now));
   const week = $derived(resetTime(app.planUsage?.seven_day_resets_at, now));
   const typed = $derived(atTime(when, now));
+  /** Item 840: a reading whose reset has gone by is not "unknown". */
+  const passed = (iso: string | null | undefined): boolean => !!iso && resetTime(iso, now) === null && !Number.isNaN(Date.parse(iso));
+  const noReset = (iso: string | null | undefined): string =>
+    passed(iso) ? "the reset has passed — waiting for a new usage reading" : "reset time unknown — no usage reading with one yet";
   const empty = $derived(!text.trim() && attachments.length === 0);
   const already = $derived(scheduledFor(key) !== null);
   /** Why every row is greyed, if one reason covers them all. */
@@ -103,6 +107,12 @@
       if (here) scheduledHere(to);
       open = false;
       onscheduled(to);
+      // Item 840: said where he looks, and a time already gone sends now.
+      const due = dueAt({ kind, at });
+      if (due <= Date.now()) {
+        addToast("That time has passed — sending now");
+        void sendScheduledNow(to);
+      } else addToast(`Scheduled for ${clockText(due)}`);
       // The row is named by the scheduled message now (backlog 532).
       void refreshSessions();
     }
@@ -160,7 +170,7 @@
     >
       <span class="sched-label">At the 5-hour reset{five !== null ? ` (${clockText(five)})` : ""}</span>
       <span class="sched-line"
-        >{five === null ? "reset time unknown — no usage reading with one yet" : "sends a minute after the reset"}</span
+        >{five === null ? noReset(app.planUsage?.five_hour_resets_at) : "sends a minute after the reset"}</span
       >
     </button>
     <button
@@ -172,7 +182,7 @@
     >
       <span class="sched-label">At the weekly reset{week !== null ? ` (${dayClockText(week)})` : ""}</span>
       <span class="sched-line"
-        >{week === null ? "reset time unknown — no usage reading with one yet" : "sends a minute after the reset"}</span
+        >{week === null ? noReset(app.planUsage?.seven_day_resets_at) : "sends a minute after the reset"}</span
       >
     </button>
     <div class="sched-sep hud-rule"></div>

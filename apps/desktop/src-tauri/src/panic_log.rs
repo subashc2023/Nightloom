@@ -52,7 +52,8 @@ pub fn install() {
 }
 
 /// Append a non-panic record (an Objective-C exception caught in event
-/// dispatch) to the same log.
+/// dispatch) to the same log. Only macOS has those.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn note(kind: &str, message: &str, location: &str) {
     if let Some(path) = log_path() {
         let thread = std::thread::current();

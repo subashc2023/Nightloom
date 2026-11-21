@@ -155,7 +155,10 @@ export const SEA_GRID = 64;
  * it full; after that it drains fast (τ 0.15 s). The response eases toward min(1, reservoir): τ 0.5 s rising, 0.22 s
  * falling, then a second 0.15 s ease so its slope stays continuous. From rest at 5 keys/s: 0.68 after 1 s, 0.96 after 2 s;
  * under 0.10 1.33 s after the last key. `roll` is the extra distance the grid has rolled (px, modulo SEA_GRID).
+ * Item 695 (his ask, 2026-11-15: "fades a little bit too quickly … 1.5x or maybe 1.75x"): every falling time constant is
+ * × SEA_FADE (1.75), so the settle after the last key takes 1.75× as long; the rise is unchanged.
  */
+export const SEA_FADE = 1.75;
 export interface SeaTyping {
   e: number;
   roll: number;
@@ -177,10 +180,10 @@ export function seaTyping(): SeaTyping {
     tick(dt: number) {
       if (!(dt > 0)) return this.e;
       since += dt;
-      s1 *= Math.exp(-dt / (since < 0.4 ? 2.0 : 0.15));
+      s1 *= Math.exp(-dt / (since < 0.4 ? 2.0 : 0.15 * SEA_FADE));
       const g = Math.min(1, s1);
-      s2 += (g - s2) * (1 - Math.exp(-dt / (g > s2 ? 0.5 : 0.22)));
-      this.e += (s2 - this.e) * (1 - Math.exp(-dt / 0.15));
+      s2 += (g - s2) * (1 - Math.exp(-dt / (g > s2 ? 0.5 : 0.22 * SEA_FADE)));
+      this.e += (s2 - this.e) * (1 - Math.exp(-dt / (s2 < this.e ? 0.15 * SEA_FADE : 0.15)));
       if (this.e < 1e-4 && s1 < 1e-4) this.e = 0;
       this.roll = (this.roll + 40 * SEA_TYPING_ROLL * this.e * dt) % SEA_GRID;
       return this.e;

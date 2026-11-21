@@ -71,8 +71,8 @@ describe("548: which waiting messages the transcript draws", () => {
   });
   it("the state lines are short, the long ones stay as their tips", () => {
     expect(pb.pendingHead("turn-end")).toBe("queued · goes when this turn ends");
-    expect(pb.pendingHead("next-step")).toBe("queued · goes at Claude's next step");
-    expect(pb.pendingHead("now")).toContain("sending now");
+    expect(pb.pendingHead("next-step")).toBe("waiting for a gap · goes at Claude's next step");
+    expect(pb.pendingHead("now")).toContain("interrupting");
     expect(pb.pendingHead("turn-end", false, "stopped")).toBe("queued · held — you stopped the turn");
     expect(pb.pendingHead("turn-end", false, "wrapped")).toContain("HANDOFF.md");
     expect(pb.pendingHead("turn-end", false, "idle")).toBe("queued · waiting to send");

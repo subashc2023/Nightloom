@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import { tip as tipAction } from "./tip";
   import {
     app,
@@ -52,6 +52,7 @@
     clockLine,
     columnWithoutRow,
     dialSize,
+    columnAtRest,
     greeting,
     quarterLabels,
     readings,
@@ -153,7 +154,16 @@
   let colH = $state(0);
   const PAD = 26;
   /** Page padding (10 + 44), the dial's margin (4) and its box's pad (2 × PAD). */
-  const size = $derived(dialSize(h, colH + 58 + PAD * 2));
+  // Item 839: the message box's height and the least it has been on this
+  // page — its growth (text, attachments) never shrinks the dial.
+  let slotH = $state(0);
+  let slotMin = $state(Infinity);
+  $effect(() => {
+    const s = slotH;
+    if (s > 0 && s < untrack(() => slotMin)) slotMin = s;
+  });
+  const restH = $derived(columnAtRest(colH, slotH, slotMin));
+  const size = $derived(dialSize(h, restH + 58 + PAD * 2));
   const box = $derived(size + PAD * 2);
   const mid = $derived(box / 2);
   const limit = $derived(app.connection?.contextLimit ?? null);
@@ -259,6 +269,20 @@
     seaTyped = n;
     untrack(() => shaderCtl?.typed());
   });
+  // Item 839: the hero keeps its size while the box grows, so a box that
+  // reaches past the pane's foot scrolls the page to keep its foot (the
+  // caret and Send) in view — the page moves, it never rescales.
+  let pageEl = $state<HTMLElement | null>(null);
+  function keepBoxInView() {
+    // After the box's own autogrow and Svelte's flush (a frame would wait
+    // on a hidden window's throttled rAF).
+    void tick().then(() => {
+      const card = pageEl?.querySelector<HTMLElement>(".composer-slot .composer");
+      if (!pageEl || !card) return;
+      const over = card.getBoundingClientRect().bottom + 8 - pageEl.getBoundingClientRect().bottom;
+      if (over > 0) pageEl.scrollTop += over;
+    });
+  }
   /** A change in the parts (a layer switched) swells the wave. */
   const flowKey = $derived(groups.map((g) => `${g.tone}:${g.tokens}`).join(","));
   /** The hovered part's span, read off the dial's hit bands (ContextDial is not changed). */
@@ -334,6 +358,8 @@
       cliVersion: app.connection?.agent?.version ?? null,
       model: app.connection?.model ?? null,
       limit,
+      windowName: app.connection?.windowName ?? null,
+      windowFrom: app.connection?.windowFrom ?? null,
       project: app.project ? { root: app.project.root ?? null, exists: app.project.exists } : null,
       notes: app.project ? app.notes.length : 0,
       vault: app.vault.length,
@@ -369,7 +395,7 @@
   // hides while the read-outs show — else the choice flips every frame in a
   // band of widths (w4 review; `columnWithoutRow`).
   let rowH = $state(0);
-  const bareSize = $derived(dialSize(h, columnWithoutRow(colH, row.length > 0 ? rowH : 0) + 58 + PAD * 2));
+  const bareSize = $derived(dialSize(h, columnWithoutRow(restH, row.length > 0 ? rowH : 0) + 58 + PAD * 2));
   const wide = $derived(size > 0 && bareSize > 0 && readoutsFit(w, bareSize));
   const readouts = $derived.by(() => {
     const R = size / 2 + 20;
@@ -477,7 +503,7 @@
 <div class="welcome" data-drop-chat bind:clientWidth={w} bind:clientHeight={h} class:wide bind:this={groundEl}>
   <canvas class="ground-canvas" bind:this={groundCanvas} aria-hidden="true"></canvas>
   <canvas class="ground-canvas" bind:this={shaderCanvas} aria-hidden="true"></canvas>
-  <div class="page">
+  <div class="page" bind:this={pageEl}>
     {#if size > 0}
       <div class="core" style:width="{box}px" style:height="{box}px" use:pointsAt>
         <DialMotion
@@ -506,7 +532,7 @@
               style:top="{o.y - 8}px"
               style:left={o.side === "r" ? `${mid + o.at}px` : undefined}
               style:right={o.side === "l" ? `${mid + o.at}px` : undefined}
-              use:tipAction={actTip[o.key]}
+              use:tipAction={o.r.title ? `${actTip[o.key]}\n${o.r.title}` : actTip[o.key]}
               onclick={() => act(o.r)}
             >
               <span class="ro-k">{o.r.label}</span>
@@ -608,7 +634,7 @@
       {#if row.length > 0}
         <div class="ready" aria-label="What is ready" bind:clientHeight={rowH}>
           {#each row as r (r.key)}
-            <button class="rd" class:warn={r.warn} use:tipAction={`${r.value} — ${r.sub}`} onclick={() => act(r)}>
+            <button class="rd" class:warn={r.warn} use:tipAction={`${r.value} — ${r.sub}${r.title ? `\n${r.title}` : ""}`} onclick={() => act(r)}>
               <span class="rd-k">{r.label}</span>
               <span class="rd-v">{#if r.ok}<i>✓</i>{/if}{r.short}</span>
             </button>
@@ -632,7 +658,7 @@
         <p class="warn">{app.error}</p>
       {/if}
 
-      <div class="composer-slot" oninput={() => typed++}>
+      <div class="composer-slot" bind:clientHeight={slotH} oninput={() => { typed++; keepBoxInView(); }}>
         <Composer floating />
       </div>
 

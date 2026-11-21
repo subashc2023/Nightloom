@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- Item 837: his five maths reports (831 834 835 836, sigma/Sigma) drawn by the real pieces, built by a vite config
+     outside the repo and snapped with nightshift-code bin/snap (WebKit).  #case=831|834|835|836|sigma|dollars
+     &layout=classic  &cut=N (836: the streamed prefix's length). -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); color: var(--ink); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { position: relative; width: 860px; padding: 24px; box-sizing: border-box; }
+      #cap { font: 11px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 10px; white-space: pre-wrap; }
+    </style>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      try { localStorage.clear(); } catch {}
+      if (/(^|[#&])layout=classic/.test(location.hash)) { try { localStorage.setItem("nightloom.layout", "classic"); } catch {} document.documentElement.dataset.layout = "classic"; document.documentElement.dataset.palette = "classic-A"; }
+      window.__TAURI_INTERNALS__ = { invoke: () => Promise.resolve(null), transformCallback: () => 0, unregisterCallback: () => {}, metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } } };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+      window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+      window.cancelAnimationFrame = (id) => clearTimeout(id);
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent += "\nerror: " + e.message));
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script type="module" src="./math837.ts"></script>
+  </body>
+</html>

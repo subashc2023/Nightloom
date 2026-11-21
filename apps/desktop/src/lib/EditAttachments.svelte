@@ -12,7 +12,8 @@
   import Icon from "./Icon.svelte";
   import { app } from "./state.svelte";
   import { tip } from "./tip";
-  import { badgeOf, extOf, routeLabel } from "./attachKinds";
+  import { badgeOf, convertingWords, extOf, routeLabel } from "./attachKinds";
+  import { clock, tickWhile } from "./convertClock.svelte";
   import PdfRouteSwitch from "./PdfRouteSwitch.svelte";
   import { acceptFiles } from "./attachFiles.svelte";
   import { readDraft, removeAttachment } from "./drafts.svelte";
@@ -24,6 +25,8 @@
   let { key }: { key: string } = $props();
 
   const chips = $derived(readDraft(key).attachments);
+  // Item 868: "converting slides · 1:12" ticks while a chip converts.
+  tickWhile(() => chips.some((a) => a.pending && !!a.converting));
   /** A long PDF's route is the connection's engine's (item 491), as the
    *  edit's send (`splitChips`) reads it. */
   const engine = $derived(app.connection?.engine === "claude-code" ? "claude-code" : "api");
@@ -57,7 +60,8 @@
         >
           <span class="file-ext">{a.pending ? extOf(a.name).toUpperCase() : badgeOf(a)}</span>
           <span class="file-name">{a.name}</span>
-          {#if a.label && !routeLabel(a, engine)}<span class="file-label">{a.label}</span>{/if}
+          {#if a.pending && a.converting}<span class="file-label">{convertingWords(a.name, a.converting.to, clock.now - a.converting.since)}</span>
+          {:else if a.label && !routeLabel(a, engine)}<span class="file-label">{a.label}</span>{/if}
           <PdfRouteSwitch chip={a} draftKey={key} {engine} />
         </span>
       {/if}

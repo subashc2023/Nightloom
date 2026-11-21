@@ -30,11 +30,20 @@ use base64::Engine as _;
 use nightloom_core::DocumentInput;
 use serde::Serialize;
 
-/// How long one conversion may take before it is killed and the text path
-/// taken instead. A 60-slide deck converts in seconds once LibreOffice is
-/// warm; its first start on a fresh profile takes longer, and that is what
-/// the margin is for.
+/// How long one small file's conversion may take before it is killed and
+/// the text path taken instead ([`convert_timeout`] scales it by size). A
+/// 60-slide deck converts in seconds once LibreOffice is warm; its first
+/// start on a fresh profile takes longer, and that is what the margin is for.
 pub const CONVERT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The timeout for one file of `len` bytes (item 868, his bug): the flat
+/// 60 s killed a 184-slide, 8.2 MB deck that takes 97–113 s here, and it
+/// went as text. 60 s, plus 30 s per MB past the first, at most 10 min.
+pub fn convert_timeout(len: usize) -> Duration {
+    const MB: usize = 1024 * 1024;
+    let extra = (len.saturating_sub(MB) as u64).saturating_mul(30) / MB as u64;
+    (CONVERT_TIMEOUT + Duration::from_secs(extra)).min(Duration::from_secs(10 * 60))
+}
 
 /// The most text an extraction returns, in bytes. Past ~150k tokens a file
 /// would fill a model's window by itself; the text says it was cut.
@@ -125,6 +134,19 @@ pub async fn convert_to_pdf(
     bytes: &[u8],
     timeout: Duration,
 ) -> Result<Vec<u8>, String> {
+    convert_to_pdf_as(soffice, name, bytes, timeout, "pdf").await
+}
+
+/// [`convert_to_pdf`] with `--convert-to` given whole: `pdf`, or
+/// `pdf:<filter>:<options JSON>` for a page range or smaller pictures
+/// ([`export_options`], item 868).
+async fn convert_to_pdf_as(
+    soffice: &Path,
+    name: &str,
+    bytes: &[u8],
+    timeout: Duration,
+    convert_to: &str,
+) -> Result<Vec<u8>, String> {
     let ext = Path::new(name)
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
@@ -136,6 +158,7 @@ pub async fn convert_to_pdf(
     }
     let _one = CONVERT_LOCK.lock().await;
     let base = std::env::temp_dir();
+    sweep_stale_convert_dirs(&base, STALE_CONVERT_DIR);
     let dir = base.join(format!("nightloom-convert-{}", uuid::Uuid::new_v4()));
     let out = dir.join("out");
     std::fs::create_dir_all(&out).map_err(|e| format!("temp folder: {e}"))?;
@@ -147,7 +170,7 @@ pub async fn convert_to_pdf(
     let mut cmd = tokio::process::Command::new(soffice);
     cmd.arg(format!("-env:UserInstallation={profile_url}"))
         .args(["--headless", "--norestore", "--nologo", "--nolockcheck"])
-        .args(["--convert-to", "pdf", "--outdir"])
+        .args(["--convert-to", convert_to, "--outdir"])
         .arg(&out)
         .arg(&input)
         .stdin(std::process::Stdio::null())
@@ -186,6 +209,38 @@ pub async fn convert_to_pdf(
                     format!(": {}", err.lines().last().unwrap_or(err))
                 }
             ))
+        }
+    }
+}
+
+/// A conversion folder older than this was left by a run that never got
+/// to remove it — the app quit mid-conversion, where `RemoveOnDrop` does
+/// not run (868 review: a long deck now converts for minutes, and its copy
+/// is megabytes). Far past the longest conversion (10 min), so another
+/// instance's live folder is never taken.
+const STALE_CONVERT_DIR: Duration = Duration::from_secs(60 * 60);
+
+/// Remove `nightloom-convert-*` folders under `base` older than `age`.
+fn sweep_stale_convert_dirs(base: &Path, age: Duration) {
+    let Ok(rd) = std::fs::read_dir(base) else {
+        return;
+    };
+    for e in rd.flatten() {
+        if !e
+            .file_name()
+            .to_string_lossy()
+            .starts_with("nightloom-convert-")
+        {
+            continue;
+        }
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|d| d > age);
+        if old {
+            let _ = std::fs::remove_dir_all(e.path());
         }
     }
 }
@@ -323,6 +378,266 @@ pub struct Prepared {
     /// 428): the PDF LibreOffice makes differs byte for byte on every run,
     /// so Keep tells the same file dropped twice by this instead.
     pub source_sha256: String,
+    /// Parts 2..n when the PDF was split to fit ([`prepare_office_within`],
+    /// item 868); this one is part 1. Empty otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub more: Vec<Prepared>,
+}
+
+/// What one PDF must fit to go as one file (item 868): its base64 length
+/// (the engine's cap) and its pages (the API's 100). `None`: no limit.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PdfLimits {
+    pub max_base64: Option<usize>,
+    pub max_pages: Option<usize>,
+}
+
+impl PdfLimits {
+    fn fits(&self, base64_len: usize, pages: usize) -> bool {
+        self.max_base64.is_none_or(|m| base64_len <= m) && self.max_pages.is_none_or(|m| pages <= m)
+    }
+}
+
+/// LibreOffice's PDF export filter for an office file, by extension: the
+/// one whose options (a page range, smaller pictures) apply to it.
+fn export_filter(name: &str) -> &'static str {
+    match ext_of(name).as_str() {
+        ".pptx" | ".ppsx" | ".potx" | ".pptm" | ".ppt" | ".pps" | ".odp" | ".key" => {
+            "impress_pdf_Export"
+        }
+        ".xlsx" | ".xltx" | ".xlsm" | ".xls" | ".ods" | ".numbers" => "calc_pdf_Export",
+        _ => "writer_pdf_Export",
+    }
+}
+
+/// Pictures are brought down to this many pixels per inch when a PDF is
+/// over the size cap: slides stay readable (measured on his 184-slide deck:
+/// pages 1–100 went from ~3.2 MB to 2.2 MB, 2026-11-19).
+const SHRUNK_DPI: u32 = 150;
+
+/// How many of one file's timeouts the shrink-then-split may take in all
+/// (868 review): his 184-slide deck, whole then in two parts, is ~3 of
+/// its own conversions; 4 leaves room and still ends.
+const SPLIT_BUDGET: u32 = 4;
+
+/// `--convert-to` for a page range and/or smaller pictures.
+fn export_options(name: &str, pages: Option<(usize, usize)>, shrink: bool) -> String {
+    let mut opts = Vec::new();
+    if let Some((a, b)) = pages {
+        opts.push(format!(
+            r#""PageRange":{{"type":"string","value":"{a}-{b}"}}"#
+        ));
+    }
+    if shrink {
+        opts.push(r#""ReduceImageResolution":{"type":"boolean","value":true}"#.into());
+        opts.push(format!(
+            r#""MaxImageResolution":{{"type":"long","value":{SHRUNK_DPI}}}"#
+        ));
+        opts.push(r#""Quality":{"type":"long","value":75}"#.into());
+    }
+    if opts.is_empty() {
+        return "pdf".into();
+    }
+    format!("pdf:{}:{{{}}}", export_filter(name), opts.join(","))
+}
+
+/// `deck.pptx` → `deck (part 1 of 2).pptx`: the extension stays, so Keep
+/// still names the PDF `deck (part 1 of 2).pdf`.
+pub fn part_name(name: &str, i: usize, n: usize) -> String {
+    let p = Path::new(name);
+    match (p.file_stem(), p.extension()) {
+        (Some(stem), Some(ext)) => format!(
+            "{} (part {i} of {n}).{}",
+            stem.to_string_lossy(),
+            ext.to_string_lossy()
+        ),
+        _ => format!("{name} (part {i} of {n})"),
+    }
+}
+
+fn pdf_prepared(name: &str, pdf: &[u8], source_sha256: String, note: Option<String>) -> Prepared {
+    Prepared {
+        media_type: "application/pdf".into(),
+        name: name.to_string(),
+        count: Some(pdf_pages(pdf).unwrap_or_else(|| pdf_page_count(pdf))),
+        data: base64::engine::general_purpose::STANDARD.encode(pdf),
+        via: "pdf",
+        note,
+        source_sha256,
+        more: Vec::new(),
+    }
+}
+
+/// `n` page ranges covering 1..=pages as evenly as they go.
+fn page_ranges(pages: usize, n: usize) -> Vec<(usize, usize)> {
+    let mut out = Vec::with_capacity(n);
+    let mut start = 1;
+    for i in 0..n {
+        let len = pages / n + usize::from(i < pages % n);
+        out.push((start, start + len - 1));
+        start += len;
+    }
+    out
+}
+
+/// [`prepare_office`], and a PDF that is over `limits` is made to fit
+/// rather than sent as text (item 868, his bug: a 184-slide deck): first
+/// with smaller pictures when the size is what binds, then — a deck only —
+/// split into parts by page range (`deck (part 1 of 2).pptx` …), each
+/// under both limits; part 1 is the result, the rest in `more`. Text is
+/// the last resort, and its `note` says why in plain words.
+///
+/// All of it ends within [`SPLIT_BUDGET`] × `timeout` (868 review): each
+/// part re-reads the whole deck, and n doubles on a part that does not
+/// fit, so without a cap the conversions in a row had no end while Send
+/// waits on them.
+pub async fn prepare_office_within(
+    name: &str,
+    bytes: &[u8],
+    soffice: Option<&Path>,
+    timeout: Duration,
+    limits: PdfLimits,
+) -> Result<Prepared, String> {
+    let started = std::time::Instant::now();
+    let budget = timeout * SPLIT_BUDGET;
+    // What the next conversion may take: its own timeout, or what is left
+    // of the whole budget; `None` once it is spent.
+    let left = || {
+        let rest = budget.saturating_sub(started.elapsed()).min(timeout);
+        (rest >= Duration::from_secs(1)).then_some(rest)
+    };
+    let too_long = || {
+        format!(
+            "making its PDF fit took longer than {} min, so it stopped",
+            budget.as_secs().div_ceil(60)
+        )
+    };
+    let whole = prepare_office(name, bytes, soffice, timeout).await?;
+    let pages = whole.count.unwrap_or(0);
+    let (Some(soffice), "pdf") = (soffice, whole.via) else {
+        return Ok(whole);
+    };
+    if limits.fits(whole.data.len(), pages) {
+        return Ok(whole);
+    }
+    let source = whole.source_sha256.clone();
+    let mb = |len: usize| (len as f64 * 3.0 / 4.0 / 1024.0 / 1024.0).round() as usize;
+    let mut size = whole.data.len();
+    let over_size = !limits.fits(size, 0);
+    let as_text = |why: String| async move {
+        let mut t = prepare_office(name, bytes, None, timeout).await?;
+        t.note = Some(why);
+        Ok::<Prepared, String>(t)
+    };
+    // Smaller pictures first, when the size is what binds.
+    if over_size {
+        let Some(t) = left() else {
+            return as_text(too_long()).await;
+        };
+        match convert_to_pdf_as(soffice, name, bytes, t, &export_options(name, None, true)).await {
+            Ok(pdf) => {
+                let p = pdf_prepared(
+                    name,
+                    &pdf,
+                    source.clone(),
+                    Some(format!(
+                        "a {} MB PDF, over the size limit — its pictures were made smaller",
+                        mb(whole.data.len())
+                    )),
+                );
+                if limits.fits(p.data.len(), p.count.unwrap_or(0)) {
+                    return Ok(p);
+                }
+                size = p.data.len();
+            }
+            // Cut short by the budget: say that, not the converter's words.
+            Err(e) => return as_text(if t < timeout { too_long() } else { e }).await,
+        }
+    }
+    let slides = export_filter(name) == "impress_pdf_Export";
+    if !slides || pages < 2 {
+        return as_text(format!(
+            "its PDF ({} MB, {pages} pages) is over the limit for one file, and only slides are split into parts",
+            mb(size)
+        ))
+        .await;
+    }
+    // `PageRange` counts every slide, hidden ones too, while the PDF has
+    // only the shown ones (868 review, measured on LibreOffice 26.8: a
+    // 3-slide deck with slide 2 hidden gives a 2-page PDF, and range 2-2 no
+    // PDF at all). Ranges over the PDF's pages would drop the last slides
+    // of a deck with hidden ones, so they run over the deck's own count
+    // where it can be read, and the parts must add up to the PDF's pages.
+    let deck_slides = OfficeFormat::of(name)
+        .filter(|f| f.is_slides())
+        .and_then(|f| extract(name, f, bytes).ok())
+        .map(|(_, n)| n)
+        .filter(|&n| n >= pages)
+        .unwrap_or(pages);
+    // Parts: enough for the pages, and for the size with a margin.
+    let by_pages = limits.max_pages.map_or(1, |m| pages.div_ceil(m.max(1)));
+    let by_size = limits
+        .max_base64
+        .map_or(1, |m| (size + size / 10).div_ceil(m.max(1)));
+    let mut n = by_pages.max(by_size).max(2);
+    for _ in 0..4 {
+        if n > pages {
+            break;
+        }
+        let mut parts = Vec::with_capacity(n);
+        let mut all_fit = true;
+        for (i, range) in page_ranges(deck_slides, n).into_iter().enumerate() {
+            let opts = export_options(name, Some(range), over_size);
+            let Some(t) = left() else {
+                return as_text(too_long()).await;
+            };
+            let pdf = match convert_to_pdf_as(soffice, name, bytes, t, &opts).await {
+                Ok(pdf) => pdf,
+                Err(e) => return as_text(if t < timeout { too_long() } else { e }).await,
+            };
+            let mut p = pdf_prepared(
+                &part_name(name, i + 1, n),
+                &pdf,
+                // Each part its own: Keep's "already there" (item 428)
+                // must not take part 2 for part 1.
+                crate::sync::manifest::sha256_hex(format!("{source}:{}/{n}", i + 1).as_bytes()),
+                None,
+            );
+            if !limits.fits(p.data.len(), p.count.unwrap_or(0)) {
+                all_fit = false;
+                break;
+            }
+            if i == 0 {
+                let limit = match limits.max_pages {
+                    Some(m) if pages > m => format!("{m}-page limit"),
+                    _ => "size limit".into(),
+                };
+                p.note = Some(format!(
+                    "{pages} slides, over the {limit} for one PDF — split into {n} parts"
+                ));
+            }
+            parts.push(p);
+        }
+        if all_fit {
+            // Every slide once, in order: anything else is not his deck.
+            let got: usize = parts.iter().map(|p| p.count.unwrap_or(0)).sum();
+            if got != pages {
+                return as_text(format!(
+                    "its {pages} slides could not be split into parts that keep every slide (the parts had {got})"
+                ))
+                .await;
+            }
+            let mut first = parts.remove(0);
+            first.more = parts;
+            return Ok(first);
+        }
+        n *= 2;
+    }
+    as_text(format!(
+        "its PDF ({} MB, {pages} pages) would not fit the limit even in parts",
+        mb(size)
+    ))
+    .await
 }
 
 /// An office file made sendable: a PDF when `soffice` is given and the
@@ -340,15 +655,12 @@ pub async fn prepare_office(
     if let Some(soffice) = soffice {
         match convert_to_pdf(soffice, name, bytes, timeout).await {
             Ok(pdf) => {
-                return Ok(Prepared {
-                    media_type: "application/pdf".into(),
-                    name: name.to_string(),
-                    count: Some(pdf_pages(&pdf).unwrap_or_else(|| pdf_page_count(&pdf))),
-                    data: base64::engine::general_purpose::STANDARD.encode(&pdf),
-                    via: "pdf",
-                    note: None,
-                    source_sha256: crate::sync::manifest::sha256_hex(bytes),
-                });
+                return Ok(pdf_prepared(
+                    name,
+                    &pdf,
+                    crate::sync::manifest::sha256_hex(bytes),
+                    None,
+                ));
             }
             Err(e) => note = Some(e),
         }
@@ -374,6 +686,7 @@ pub async fn prepare_office(
         count: Some(count),
         note,
         source_sha256: crate::sync::manifest::sha256_hex(bytes),
+        more: Vec::new(),
     })
 }
 
@@ -1657,6 +1970,322 @@ mod tests {
         let _ = std::fs::remove_dir_all(d);
     }
 
+    /// Item 868 (his bug): ICS51-MIPS-Architecture.pptx, 8,177,860 bytes and
+    /// 184 slides, took 113 s cold and 97 s warm to convert (measured
+    /// 2026-11-19, this Mac under load) — past the flat 60 s, so it was
+    /// killed and kept as text. The timeout grows with the file, with room
+    /// for a loaded machine, and still ends.
+    #[test]
+    fn a_big_deck_gets_time_to_convert() {
+        let measured = Duration::from_secs(113);
+        assert!(
+            convert_timeout(8_177_860) >= measured * 2,
+            "{:?}",
+            convert_timeout(8_177_860)
+        );
+        assert_eq!(convert_timeout(200_000), CONVERT_TIMEOUT);
+        assert!(convert_timeout(usize::MAX) <= Duration::from_secs(15 * 60));
+    }
+
+    /// A stand-in LibreOffice for item 868: a 6-page deck, or the pages a
+    /// `PageRange` names, each padded to 3000 bytes (1000 with smaller
+    /// pictures asked for) — what the split is measured against.
+    #[cfg(unix)]
+    fn fake_paging_soffice(dir: &Path) -> PathBuf {
+        fake_soffice(
+            dir,
+            r#"conv=""; while [ $# -gt 0 ]; do case "$1" in --convert-to) conv="$2"; shift;; --outdir) out="$2"; shift;; esac; shift; done
+a=1; b=6
+r=$(printf '%s' "$conv" | sed -n 's/.*"PageRange":{"type":"string","value":"\([0-9]*\)-\([0-9]*\)".*/\1 \2/p')
+[ -n "$r" ] && set -- $r && a=$1 && b=$2
+pad=3000; case "$conv" in *ReduceImageResolution*) pad=1000;; esac
+f="$out/input.pdf"; printf '%%PDF-1.4\n' > "$f"
+i=$a; while [ $i -le $b ]; do printf '%s 0 obj << /Type /Page >> endobj\n' "$i" >> "$f"; head -c $pad /dev/zero | tr '\0' 'x' >> "$f"; i=$((i+1)); done"#,
+        )
+    }
+
+    /// Item 868: a deck over the page limit comes back as parts, each
+    /// under it, named "(part i of n)", never as text.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_deck_over_the_page_limit_is_split_into_parts_not_text() {
+        let d = scratch("split");
+        let soffice = fake_paging_soffice(&d);
+        let p = prepare_office_within(
+            "ICS51-MIPS.pptx",
+            &fixture("lecture.pptx"),
+            Some(&soffice),
+            CONVERT_TIMEOUT,
+            PdfLimits {
+                max_base64: None,
+                max_pages: Some(4),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(p.via, "pdf");
+        assert_eq!(p.name, "ICS51-MIPS (part 1 of 2).pptx");
+        assert_eq!(p.count, Some(3));
+        assert_eq!(p.more.len(), 1);
+        assert_eq!(p.more[0].name, "ICS51-MIPS (part 2 of 2).pptx");
+        assert_eq!(p.more[0].count, Some(3));
+        assert_ne!(p.source_sha256, p.more[0].source_sha256);
+        let note = p.note.unwrap();
+        assert!(
+            note.contains("4-page limit") && note.contains("2 parts"),
+            "{note}"
+        );
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Item 868: over the size cap, smaller pictures come first; a PDF they
+    /// bring under it goes whole.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_deck_over_the_size_cap_goes_whole_with_smaller_pictures_when_that_fits() {
+        let d = scratch("shrink");
+        let soffice = fake_paging_soffice(&d);
+        let p = prepare_office_within(
+            "deck.pptx",
+            &fixture("lecture.pptx"),
+            Some(&soffice),
+            CONVERT_TIMEOUT,
+            PdfLimits {
+                // 6 × 3000 bytes is ~24k encoded; 6 × 1000 is ~8k.
+                max_base64: Some(12_000),
+                max_pages: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((p.via, p.count, p.more.len()), ("pdf", Some(6), 0));
+        assert!(p.note.unwrap().contains("pictures were made smaller"));
+        // Tighter still: smaller pictures and parts.
+        let p = prepare_office_within(
+            "deck.pptx",
+            &fixture("lecture.pptx"),
+            Some(&soffice),
+            CONVERT_TIMEOUT,
+            PdfLimits {
+                max_base64: Some(4_500),
+                max_pages: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(p.via, "pdf");
+        let n = p.more.len() + 1;
+        assert!(n >= 2, "{n}");
+        let total: usize =
+            p.count.unwrap() + p.more.iter().map(|m| m.count.unwrap()).sum::<usize>();
+        assert_eq!(total, 6);
+        assert!(p.data.len() <= 4_500 && p.more.iter().all(|m| m.data.len() <= 4_500));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Item 868 end to end with the real LibreOffice, on a deck named by
+    /// `NIGHTLOOM_868_DECK` (his 184-slide one): whole, it comes back as one
+    /// PDF of every slide within its timeout; under the API's 100 pages, as
+    /// parts. Ignored by default (CI has neither).
+    #[tokio::test]
+    #[ignore]
+    async fn libreoffice_converts_a_long_deck_whole_and_in_parts() {
+        let Ok(path) = std::env::var("NIGHTLOOM_868_DECK") else {
+            return;
+        };
+        let soffice = find_soffice().expect("LibreOffice is not installed");
+        let bytes = std::fs::read(&path).unwrap();
+        let name = Path::new(&path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let t = std::time::Instant::now();
+        let whole = prepare_office_within(
+            &name,
+            &bytes,
+            Some(&soffice),
+            convert_timeout(bytes.len()),
+            PdfLimits {
+                max_base64: Some(20 * 1024 * 1024),
+                max_pages: None,
+            },
+        )
+        .await
+        .unwrap();
+        eprintln!(
+            "whole: via {} count {:?} b64 {} in {:?} note {:?}",
+            whole.via,
+            whole.count,
+            whole.data.len(),
+            t.elapsed(),
+            whole.note
+        );
+        assert_eq!(whole.via, "pdf", "{:?}", whole.note);
+        assert!(whole.more.is_empty());
+        let t = std::time::Instant::now();
+        let parts = prepare_office_within(
+            &name,
+            &bytes,
+            Some(&soffice),
+            convert_timeout(bytes.len()),
+            PdfLimits {
+                max_base64: Some(32 * 1024 * 1024),
+                max_pages: Some(100),
+            },
+        )
+        .await
+        .unwrap();
+        let counts: Vec<_> = std::iter::once(&parts)
+            .chain(parts.more.iter())
+            .map(|p| (p.name.clone(), p.count, p.data.len()))
+            .collect();
+        eprintln!(
+            "parts in {:?}: {counts:?} note {:?}",
+            t.elapsed(),
+            parts.note
+        );
+        assert_eq!(parts.via, "pdf", "{:?}", parts.note);
+        assert!(counts.iter().all(|(_, c, _)| c.unwrap() <= 100));
+        assert_eq!(
+            counts.iter().map(|(_, c, _)| c.unwrap()).sum::<usize>(),
+            whole.count.unwrap()
+        );
+    }
+
+    #[test]
+    fn page_ranges_cover_every_page_once() {
+        assert_eq!(page_ranges(184, 2), vec![(1, 92), (93, 184)]);
+        assert_eq!(page_ranges(7, 3), vec![(1, 3), (4, 5), (6, 7)]);
+        assert_eq!(part_name("a.b.pptx", 2, 3), "a.b (part 2 of 3).pptx");
+    }
+
+    /// 868 review: LibreOffice's `PageRange` counts hidden slides, the PDF
+    /// leaves them out (measured: slide 2 of 3 hidden → a 2-page PDF, and
+    /// range 2-2 writes no PDF). This stand-in does the same for the
+    /// 3-slide fixture; the parts must still carry slides 1 and 3.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_deck_with_a_hidden_slide_splits_without_losing_its_last_slide() {
+        let d = scratch("hidden");
+        let soffice = fake_soffice(
+            &d,
+            r#"conv=""; while [ $# -gt 0 ]; do case "$1" in --convert-to) conv="$2"; shift;; --outdir) out="$2"; shift;; esac; shift; done
+a=1; b=3
+r=$(printf '%s' "$conv" | sed -n 's/.*"PageRange":{"type":"string","value":"\([0-9]*\)-\([0-9]*\)".*/\1 \2/p')
+[ -n "$r" ] && set -- $r && a=$1 && b=$2
+body=""; i=$a; while [ $i -le $b ]; do [ $i -ne 2 ] && body="$body$i 0 obj << /Type /Page >> endobj
+"; i=$((i+1)); done
+[ -z "$body" ] && exit 1
+printf '%%PDF-1.4\n%s' "$body" > "$out/input.pdf""#,
+        );
+        let p = prepare_office_within(
+            "deck.pptx",
+            &fixture("lecture.pptx"),
+            Some(&soffice),
+            CONVERT_TIMEOUT,
+            PdfLimits {
+                max_base64: None,
+                max_pages: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(p.via, "pdf", "{:?}", p.note);
+        let counts: Vec<_> = std::iter::once(&p)
+            .chain(p.more.iter())
+            .map(|m| m.count.unwrap())
+            .collect();
+        assert_eq!(counts.iter().sum::<usize>(), 2, "{counts:?}");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// 868 review: a conversion folder left by a quit mid-conversion is
+    /// removed by the next conversion once it is old; a fresh one stays.
+    #[test]
+    fn stale_conversion_folders_are_swept_and_fresh_ones_kept() {
+        let base = scratch("sweep");
+        let old = base.join("nightloom-convert-old");
+        let fresh = base.join("nightloom-convert-fresh");
+        let other = base.join("someone-else");
+        for d in [&old, &fresh, &other] {
+            std::fs::create_dir_all(d.join("out")).unwrap();
+        }
+        let past = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+        // A folder's time is set through a handle to it. Windows opens a
+        // folder only with FILE_FLAG_BACKUP_SEMANTICS, and setting its time
+        // needs FILE_WRITE_ATTRIBUTES; a plain open is "Access is denied"
+        // there (item 864).
+        let set_time = |d: &Path| {
+            #[cfg(windows)]
+            let dir = {
+                use std::os::windows::fs::OpenOptionsExt;
+                const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+                const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+                std::fs::OpenOptions::new()
+                    .access_mode(FILE_WRITE_ATTRIBUTES)
+                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                    .open(d)
+                    .unwrap()
+            };
+            #[cfg(not(windows))]
+            let dir = std::fs::File::open(d).unwrap();
+            dir.set_modified(past).unwrap();
+        };
+        set_time(&old);
+        set_time(&other);
+        sweep_stale_convert_dirs(&base, STALE_CONVERT_DIR);
+        assert!(!old.exists());
+        assert!(fresh.exists());
+        assert!(other.exists());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// 868 review: the shrink-then-split ends within its budget (4 × the
+    /// timeout) however many parts it tries, and says so in plain words —
+    /// Send waits on it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn splitting_stops_at_its_budget_and_sends_the_text() {
+        let d = scratch("budget");
+        let soffice = fake_soffice(
+            &d,
+            r#"conv=""; while [ $# -gt 0 ]; do case "$1" in --convert-to) conv="$2"; shift;; --outdir) out="$2"; shift;; esac; shift; done
+sleep 1.5
+a=1; b=6
+r=$(printf '%s' "$conv" | sed -n 's/.*"PageRange":{"type":"string","value":"\([0-9]*\)-\([0-9]*\)".*/\1 \2/p')
+[ -n "$r" ] && set -- $r && a=$1 && b=$2
+f="$out/input.pdf"; printf '%%PDF-1.4\n' > "$f"
+i=$a; while [ $i -le $b ]; do printf '%s 0 obj << /Type /Page >> endobj\n' "$i" >> "$f"; i=$((i+1)); done"#,
+        );
+        let started = std::time::Instant::now();
+        let p = prepare_office_within(
+            "deck.pptx",
+            &fixture("lecture.pptx"),
+            Some(&soffice),
+            Duration::from_secs(2),
+            PdfLimits {
+                max_base64: None,
+                max_pages: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(p.via, "text");
+        assert!(
+            p.note.as_deref().unwrap_or("").contains("took longer"),
+            "{:?}",
+            p.note
+        );
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[cfg(unix)]
     fn count_convert_dirs() -> usize {
         std::fs::read_dir(std::env::temp_dir())
             .map(|r| {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { homeFirst, paletteKeys } from "./home";
   import { browseFree, canLeaveProject } from "./state.svelte";
   import {
     app,
@@ -70,12 +71,14 @@
   }
 
   const projectRows = $derived.by((): Row[] => {
-    const rows: Row[] = app.projects.map((p, i) => ({
+    // Item 763 finish: Home is listed first but shifts nobody's number.
+    const keys = paletteKeys(app.projects);
+    const rows: Row[] = homeFirst(app.projects).map((p) => ({
       id: `p:${p.id}`,
       label: p.name,
       meta: `${p.chats} chat${p.chats === 1 ? "" : "s"} · ${p.notes} note${p.notes === 1 ? "" : "s"}${p.exists ? "" : " · folder missing"}`,
       icon: "folder",
-      key: i < 9 ? String(i + 1) : "",
+      key: keys.get(p.id) ?? "",
       group: "Projects · press a number",
       run: () => go(() => void useProject(p.id)),
       disabled: !canLeaveProject(),
@@ -416,6 +419,15 @@
             },
           ]
         : []),
+      {
+        id: "feedback",
+        label: "Send feedback",
+        meta: "to the agent that builds Nightloom",
+        icon: "send",
+        key: "",
+        group: "Go",
+        run: () => go(() => runMenuCommand("feedback")),
+      },
       {
         id: "settings",
         label: "Settings",

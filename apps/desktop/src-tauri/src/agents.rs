@@ -47,6 +47,12 @@ struct Inner {
     generation: u64,
     /// The newest connection's spec; `None` is "not on the agent engine".
     spec: Option<AgentSpec>,
+    /// The chat that spec was built for (`connect`'s `focus`); `None` is
+    /// New chat. Item 893: the keep-warm ping of a chat with no agent of
+    /// its own took the newest spec because its chat was focused, and the
+    /// newest spec was a New chat's — no thread, the notes index fresh, no
+    /// `--system-prompt-snapshot off` — so the ping read 0 of 201,671.
+    spec_chat: Option<String>,
     /// New chat's agent, until its first turn names the chat.
     pending: Option<Entry>,
     per_chat: HashMap<String, Entry>,
@@ -128,6 +134,7 @@ impl Agents {
         inner.generation += 1;
         let generation = inner.generation;
         inner.spec = Some(agent.spec().clone());
+        inner.spec_chat = focus.map(str::to_string);
         let entry = Entry {
             generation,
             slot: Arc::new(AsyncMutex::new(agent)),
@@ -154,6 +161,7 @@ impl Agents {
         let mut inner = self.inner();
         inner.generation += 1;
         inner.spec = None;
+        inner.spec_chat = None;
         prune(&mut inner);
     }
 
@@ -204,7 +212,11 @@ impl Agents {
             .and_then(|e| e.slot.try_lock().ok().map(|a| a.spec().clone()));
         let spec = match own {
             Some(spec) => Some(spec),
-            None if focused => inner.spec.clone(),
+            // Only a spec built for this chat (item 893, as in `spec_of`):
+            // a launch can connect New chat first while the chat is on
+            // screen, and a send kept on that spec loses its thread and
+            // its held prompt.
+            None if focused && inner.spec_chat.as_deref() == Some(chat) => inner.spec.clone(),
             None => None,
         };
         match spec {
@@ -223,7 +235,10 @@ impl Agents {
         let inner = self.inner();
         match inner.per_chat.get(chat) {
             Some(e) => e.slot.try_lock().ok().map(|a| a.spec().clone()),
-            None if focused => inner.spec.clone(),
+            // Only a spec built for this chat (item 893): the focus alone
+            // does not say the newest connection was — at a launch, the
+            // first connect can be New chat's while the chat is on screen.
+            None if focused && inner.spec_chat.as_deref() == Some(chat) => inner.spec.clone(),
             None => None,
         }
     }
@@ -255,6 +270,132 @@ impl Agents {
             }
             None => false,
         }
+    }
+
+    /// Whether `chat` has a spec here: its own agent's, or one kept for it.
+    pub fn has_spec_for(&self, chat: &str) -> bool {
+        let inner = self.inner();
+        inner.per_chat.contains_key(chat) || inner.reserved.contains_key(chat)
+    }
+
+    /// Keep `spec` for `chat` (item 763 H4: Home's, built off screen), for
+    /// [`Self::reserve_for_job`] to hold to the job's policy.
+    pub fn keep_for_job(&self, chat: &str, spec: AgentSpec) {
+        self.inner().reserved.insert(chat.to_string(), spec);
+    }
+
+    /// Keep for a job's chat the spec its next run goes on (item 746),
+    /// held to the job's own policy: `read_only` sets the Chat policy (the
+    /// hook that refuses the shell, the file-editing tools and subagents),
+    /// whatever the chat on screen may do. The spec is the newest
+    /// connection's when the job's project is the open one and that
+    /// connection runs in the project's folder (`workspace`; `None` — the
+    /// unfiled chats — is not checked), else the one the chat already has
+    /// (its own idle agent's, or one kept before). An idle agent it has
+    /// under the other policy, or of an older connection, is dropped so
+    /// the run makes a new one from what is kept here. `Err` is why the
+    /// run must wait.
+    pub fn reserve_for_job(
+        &self,
+        chat: &str,
+        read_only: bool,
+        project_open: bool,
+        workspace: Option<&std::path::Path>,
+    ) -> Result<(), String> {
+        let mut inner = self.inner();
+        let generation = inner.generation;
+        let own = match inner.per_chat.get(chat) {
+            Some(e) => match e.slot.try_lock() {
+                Ok(agent) => Some((e.generation == generation, agent.spec().clone())),
+                Err(_) => return Err("its chat is running a turn".into()),
+            },
+            None => None,
+        };
+        let had = match own {
+            Some((true, spec)) if spec.chat_policy == read_only => return Ok(()),
+            Some((_, spec)) => {
+                inner.per_chat.remove(chat);
+                Some(spec)
+            }
+            None => inner.reserved.get(chat).cloned(),
+        };
+        let newest = inner
+            .spec
+            .clone()
+            .filter(|s| project_open && workspace.is_none_or(|w| s.workspace == w));
+        let mut spec = match newest.or(had) {
+            Some(spec) => spec,
+            None if inner.spec.is_none() => {
+                return Err("Claude Code is not connected on the Mac".into());
+            }
+            None if !project_open => {
+                return Err("its project is not open on the Mac — the job runs when it is".into());
+            }
+            None => {
+                return Err(
+                    "the chat open on the Mac does not run in the job's project folder — the job runs when a Claude Code chat of its project is open".into(),
+                );
+            }
+        };
+        spec.chat_policy = read_only;
+        inner.reserved.insert(chat.to_string(), spec);
+        Ok(())
+    }
+
+    /// After [`Self::reserve_for_job`]: the run goes on `model` at `effort`
+    /// (item 763, blocker 2041: Home's scan on Opus 5.5 low). An idle agent
+    /// the chat has on another model or effort is dropped and its spec kept
+    /// with these, so the run makes a new one; a kept spec takes them.
+    pub fn pick_for_job(&self, chat: &str, model: &str, effort: &str) -> Result<(), String> {
+        let mut inner = self.inner();
+        let own = match inner.per_chat.get(chat) {
+            Some(e) => match e.slot.try_lock() {
+                Ok(agent) => Some(agent.spec().clone()),
+                Err(_) => return Err("its chat is running a turn".into()),
+            },
+            None => None,
+        };
+        if let Some(spec) = own {
+            if spec.model.as_deref() == Some(model) && spec.effort.as_deref() == Some(effort) {
+                return Ok(());
+            }
+            inner.per_chat.remove(chat);
+            inner.reserved.insert(chat.to_string(), spec);
+        }
+        let Some(spec) = inner.reserved.get_mut(chat) else {
+            return Err("no spec is kept for the job's chat".into());
+        };
+        spec.model = Some(model.to_string());
+        spec.effort = Some(effort.to_string());
+        Ok(())
+    }
+
+    /// After [`Self::reserve_for_job`]: the run's chat gets his claude.ai
+    /// connectors, less `off` (item 804: Home's scan reads mail and
+    /// calendars; its chat is held read-only). As [`Self::pick_for_job`]:
+    /// an idle agent without them is dropped and its spec kept with them.
+    pub fn connectors_for_job(&self, chat: &str, off: Vec<String>) -> Result<(), String> {
+        let mut inner = self.inner();
+        let own = match inner.per_chat.get(chat) {
+            Some(e) => match e.slot.try_lock() {
+                Ok(agent) => Some(agent.spec().clone()),
+                Err(_) => return Err("its chat is running a turn".into()),
+            },
+            None => None,
+        };
+        if let Some(spec) = own {
+            if spec.claude_ai_connectors && spec.claude_ai_blocked == off {
+                return Ok(());
+            }
+            inner.per_chat.remove(chat);
+            inner.reserved.insert(chat.to_string(), spec);
+        }
+        let Some(spec) = inner.reserved.get_mut(chat) else {
+            return Err("no spec is kept for the job's chat".into());
+        };
+        spec.claude_ai_connectors = true;
+        spec.claude_ai_blocked = off;
+        Ok(())
     }
 
     /// Let `chat`'s kept spec go (its scheduled message left or was
@@ -462,6 +603,42 @@ mod tests {
         assert!(agents.reserve("b", false), "the earlier one stays");
     }
 
+    /// Item 893, the same rule for a scheduled send's kept spec: New
+    /// chat's or another chat's spec is never kept for the chat on screen;
+    /// one kept before stays.
+    #[tokio::test]
+    async fn reserve_never_keeps_another_connections_spec() {
+        let agents = Agents::default();
+        agents.connect(agent("new-chat"), None);
+        assert!(!agents.reserve("a", true), "New chat's spec");
+        assert!(agents.make_reserved("a", None).is_none());
+        agents.connect(agent("a-own"), Some("a"));
+        assert!(agents.reserve("a", true), "a's own");
+        agents.connect(agent("b-own"), Some("b"));
+        assert!(agents.reserve("a", true), "the one kept before stays");
+        let slot = agents.make_reserved("a", None).expect("a's kept spec");
+        assert_eq!(
+            slot.try_lock().unwrap().spec().model.as_deref(),
+            Some("a-own")
+        );
+        assert!(!agents.reserve("c", true), "built for b");
+    }
+
+    /// Item 893: a keep-warm ping takes the newest spec for the chat on
+    /// screen only when that spec was built for it — never New chat's,
+    /// which a launch can connect first while the chat is focused.
+    #[tokio::test]
+    async fn the_keep_warm_spec_is_never_another_connections() {
+        let agents = Agents::default();
+        agents.connect(agent("new-chat"), None);
+        assert!(agents.spec_of("a", true).is_none(), "New chat's spec");
+        agents.connect(agent("a-own"), Some("a"));
+        let own = agents.spec_of("a", true).expect("a's own agent");
+        assert_eq!(own.model.as_deref(), Some("a-own"));
+        agents.connect(agent("b-own"), Some("b"));
+        assert!(agents.spec_of("c", true).is_none(), "built for b");
+    }
+
     #[tokio::test]
     async fn two_chats_lock_their_own_agents_at_once() {
         let agents = Agents::default();
@@ -522,6 +699,203 @@ mod tests {
         assert!(Arc::ptr_eq(&ready(agents.slot(Some("made"))), &pending));
         // The next New chat gets its own agent.
         assert!(matches!(agents.slot(None), Found::Make));
+    }
+
+    fn policy_of(slot: &Slot) -> bool {
+        slot.try_lock().unwrap().spec().chat_policy
+    }
+
+    /// Item 759, the Mac's half: the held job's agent refuses connector
+    /// Item 763 (blocker 2041): Home's scan runs on Opus 5.5 low — a kept
+    /// spec takes them, and an idle agent on another model is replaced.
+    #[tokio::test]
+    async fn homes_scan_runs_on_the_model_and_effort_it_names() {
+        let agents = Agents::default();
+        agents.connect(agent("open"), Some("job"));
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        agents
+            .pick_for_job("job", "claude-opus-5-5", "low")
+            .unwrap();
+        let slot = agents.make_reserved("job", None).expect("a kept spec");
+        let spec = slot.try_lock().unwrap().spec().clone();
+        assert_eq!(spec.model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(spec.effort.as_deref(), Some("low"));
+        assert!(spec.chat_policy, "still held read-only");
+        // The same pick again keeps the agent it made.
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        agents
+            .pick_for_job("job", "claude-opus-5-5", "low")
+            .unwrap();
+        assert!(agents.existing("job").is_some());
+    }
+
+    /// Item 804: Home's scan gets his connectors, less the ones he turned
+    /// off for Home, on an agent that still refuses their writers; the
+    /// chat on screen is left without them.
+    #[tokio::test]
+    async fn homes_scan_gets_the_connectors_and_still_refuses_their_writers() {
+        let agents = Agents::default();
+        agents.connect(agent("open"), Some("job"));
+        agents.connect(agent("open"), Some("other"));
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        let off = vec!["claude.ai Google Drive".to_string()];
+        agents.connectors_for_job("job", off.clone()).unwrap();
+        let slot = agents.make_reserved("job", None).expect("a kept spec");
+        let spec = slot.try_lock().unwrap().spec().clone();
+        assert!(spec.claude_ai_connectors);
+        assert_eq!(spec.claude_ai_blocked, off);
+        assert!(spec.refuses_mcp_writers(), "still held read-only");
+        let other = ready(agents.slot(Some("other")));
+        assert!(!other.try_lock().unwrap().spec().claude_ai_connectors);
+        // The same again keeps the agent it made; a changed list remakes it.
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        agents.connectors_for_job("job", off).unwrap();
+        assert!(agents.existing("job").is_some());
+        agents.connectors_for_job("job", Vec::new()).unwrap();
+        assert!(agents.existing("job").is_none());
+    }
+
+    /// writes; the open chat's writer agent does not.
+    #[tokio::test]
+    async fn a_read_only_jobs_agent_refuses_connector_writes() {
+        // `refuses_mcp_writers` is what registers the connector-writes
+        // deny in `--settings` (the service crate's tests read the JSON).
+        let denies =
+            |slot: &Slot| -> bool { slot.try_lock().unwrap().spec().refuses_mcp_writers() };
+        let agents = Agents::default();
+        agents.connect(agent("open"), Some("job"));
+        assert!(!denies(&ready(agents.slot(Some("job")))));
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        let made = agents.make_reserved("job", None).unwrap();
+        assert!(denies(&made));
+    }
+
+    /// Item 746's review: the job's chat is the one on screen, its idle
+    /// agent made from the open chat's spec (writers on). A read-only run
+    /// drops it and keeps the spec under the Chat policy; the send's
+    /// `existing` then finds nothing and `make_reserved` builds the held one.
+    #[tokio::test]
+    async fn a_read_only_job_never_runs_on_the_open_chats_writers() {
+        let agents = Agents::default();
+        agents.connect(agent("open"), Some("job"));
+        assert!(!policy_of(&ready(agents.slot(Some("job")))));
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        assert!(
+            agents.existing("job").is_none(),
+            "the writer agent is dropped"
+        );
+        let made = agents.make_reserved("job", None).unwrap();
+        assert!(policy_of(&made));
+        assert_eq!(
+            made.try_lock().unwrap().spec().model.as_deref(),
+            Some("open")
+        );
+        // The next run: its own idle agent of this connection, under the
+        // policy, is kept as is.
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        assert!(Arc::ptr_eq(&agents.existing("job").unwrap(), &made));
+    }
+
+    /// A second connection (he opens another project) after the run was
+    /// prepared keeps the job's spec; an older agent of the job's chat is
+    /// pruned, and the run is made from the kept, held spec — never the
+    /// new connection's.
+    #[tokio::test]
+    async fn a_later_connection_keeps_the_jobs_held_spec() {
+        let agents = Agents::default();
+        agents.connect(agent("college"), Some("other"));
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        agents.connect(agent("value"), Some("elsewhere"));
+        let made = agents.make_reserved("job", None).unwrap();
+        assert!(policy_of(&made));
+        assert_eq!(
+            made.try_lock().unwrap().spec().model.as_deref(),
+            Some("college")
+        );
+        // Prepared again with the project no longer open: the kept spec.
+        agents.forget("job");
+        agents.reserve_for_job("job", true, false, None).unwrap();
+        let again = agents.make_reserved("job", None).unwrap();
+        assert!(policy_of(&again));
+        assert_eq!(
+            again.try_lock().unwrap().spec().model.as_deref(),
+            Some("college")
+        );
+    }
+
+    /// Approving the plan lets the next run write; taking it back holds it
+    /// again — the agent under the other policy is dropped each time.
+    #[tokio::test]
+    async fn approving_and_taking_back_swap_the_jobs_agent() {
+        let agents = Agents::default();
+        agents.connect(agent("open"), Some("other"));
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        let ro = agents.make_reserved("job", None).unwrap();
+        agents.reserve_for_job("job", false, true, None).unwrap();
+        assert!(agents.existing("job").is_none());
+        let rw = agents.make_reserved("job", None).unwrap();
+        assert!(!Arc::ptr_eq(&ro, &rw));
+        assert!(!policy_of(&rw));
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        assert!(agents.existing("job").is_none());
+        assert!(policy_of(&agents.make_reserved("job", None).unwrap()));
+    }
+
+    #[tokio::test]
+    async fn a_job_waits_rather_than_run_on_a_spec_it_cannot_trust() {
+        let agents = Agents::default();
+        let off = agents.reserve_for_job("job", true, true, None).unwrap_err();
+        assert!(off.contains("not connected"), "{off}");
+        agents.connect(agent("open"), Some("other"));
+        let shut = agents
+            .reserve_for_job("job", true, false, None)
+            .unwrap_err();
+        assert!(shut.contains("not open"), "{shut}");
+        // The open chat runs in /tmp; the job's project is elsewhere.
+        let folder = agents
+            .reserve_for_job("job", true, true, Some(std::path::Path::new("/elsewhere")))
+            .unwrap_err();
+        assert!(folder.contains("project folder"), "{folder}");
+        assert!(!agents.reserved("job"), "nothing kept on a refusal");
+        // Its turn holds its agent: wait, and leave the agent alone.
+        agents.connect(agent("open"), Some("job"));
+        let slot = ready(agents.slot(Some("job")));
+        let _turn = slot.clone().lock_owned().await;
+        let busy = agents.reserve_for_job("job", true, true, None).unwrap_err();
+        assert!(busy.contains("running a turn"), "{busy}");
+        assert!(Arc::ptr_eq(&agents.existing("job").unwrap(), &slot));
+    }
+
+    /// Item 763 H4: with another project open (its connection the newest)
+    /// and after a relaunch (no connection at all), a Home job's run goes
+    /// on Home's own spec, kept off screen, held read-only — never the open
+    /// project's.
+    #[tokio::test]
+    async fn a_home_job_runs_on_homes_own_spec_whatever_project_is_open() {
+        let agents = Agents::default();
+        let mut home = AgentSpec::new(PathBuf::from("/home-folder"));
+        home.model = Some("home-model".into());
+        // After a relaunch: nothing connected, only Home's kept spec.
+        assert!(!agents.has_spec_for("scan"));
+        agents.keep_for_job("scan", home.clone());
+        assert!(agents.has_spec_for("scan"));
+        agents.reserve_for_job("scan", true, false, None).unwrap();
+        let slot = agents.make_reserved("scan", None).unwrap();
+        {
+            let a = slot.lock().await;
+            assert_eq!(a.spec().workspace, PathBuf::from("/home-folder"));
+            assert!(a.spec().chat_policy, "held read-only");
+        }
+        // Another project open: its connection is the newest, and Home's
+        // run still goes on Home's spec.
+        let agents = Agents::default();
+        agents.connect(agent("other-project"), Some("open-chat"));
+        agents.keep_for_job("scan", home);
+        agents.reserve_for_job("scan", true, false, None).unwrap();
+        let slot = agents.make_reserved("scan", None).unwrap();
+        let a = slot.lock().await;
+        assert_eq!(a.spec().workspace, PathBuf::from("/home-folder"));
+        assert_eq!(a.spec().model.as_deref(), Some("home-model"));
     }
 
     #[test]

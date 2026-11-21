@@ -9,6 +9,7 @@ import type {
 } from "./types";
 import { liveFlags } from "./state.svelte";
 import { remainingText, type CacheState } from "./cache";
+import { usd } from "./cacheCost";
 import { isImeKey } from "./imeKey";
 
 /**
@@ -181,10 +182,12 @@ export function isEditable(events: SessionEvent[], index: number): boolean {
  * the next request and the cached prefix up to it survives; cold means
  * the next request pays full price whatever is done, so edit freely.
  */
-export function editLine(cache: CacheState | null): string {
+export function editLine(cache: CacheState | null, rewriteUsd?: number | null): string {
   const left = cache ? remainingText(cache.remainingMs) : null;
+  // Item 776: the price of the re-write, at API prices, where he decides.
+  const price = rewriteUsd != null ? ` (≈ ${usd(rewriteUsd)})` : "";
   return left
-    ? `cache warm · ${left} — this re-writes the history after this turn`
+    ? `cache warm · ${left} — this re-writes the history after this turn${price}`
     : "cache cold — edit freely";
 }
 

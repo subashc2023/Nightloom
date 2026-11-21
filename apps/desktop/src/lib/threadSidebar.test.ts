@@ -8,7 +8,10 @@ import { THREADS_CLOSED_KEY, newInThreadTip, threadGroups, threadKey } from "./t
 import type { SessionMeta, ThreadInfo } from "./types";
 // The components' source, for the wiring check (no DOM in this suite).
 import chipSource from "./ThreadChip.svelte?raw";
-import sidebarSource from "./Sidebar.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import sidebarLogicRaw from "./sidebar/logic.svelte.ts?raw";
+import sidebarSourceRaw from "./Sidebar.svelte?raw";
+const sidebarSource = asOneFile(sidebarSourceRaw, sidebarLogicRaw);
 
 // Nightshift backlog 288: threads in the sidebar (grouping, collapsed state,
 // bind/unbind by drag and by the row menu — both call `moveChatToThread`)

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fitToText } from "./boxGrow";
   // The model's questions (`AskUserQuestion`), backlog 354 — his pick of 2026-10-13: "have the tabs at the top
   // and after each question there should be a next button, but then you can also just scroll and once you scroll
   // to like the next question, then it just goes to the next tab. I like the structure of inline in terms of how
@@ -7,8 +8,9 @@
   // follows the scroll. Drawn by the desktop card (ApprovalPrompt) and the phone's card (Remote); each host
   // keeps its own note, Answer and Skip, and owns `picks`/`others`.
   import type { Snippet } from "svelte";
+  import { tip } from "./tip";
   import type { AskQuestion } from "./types";
-  import { hasPreviews, isAnswered, keyPick, previewOption, spyIndex } from "./askQuestions";
+  import { hasPreviews, isAnswered, keyPick, previewOption, spyIndex, type OptionNotes } from "./askQuestions";
 
   let {
     questions,
@@ -17,6 +19,9 @@
     others,
     ontoggle,
     onother,
+    notes = {},
+    onnote,
+    onquick,
     folded = false,
     tail,
   }: {
@@ -26,6 +31,13 @@
     others: Record<number, string>;
     ontoggle: (i: number, label: string, multi: boolean) => void;
     onother: (i: number, value: string) => void;
+    /** Item 712: his comment on each option, question → label → text; the host owns it and sends it with
+     *  the answer. Without `onnote` the options have no comment control. */
+    notes?: Record<number, OptionNotes>;
+    onnote?: (i: number, label: string, value: string) => void;
+    /** Item 753: the turn-end card. A click on an option answers at once — the option is picked (with
+     *  his comment on it, if any) and the host sends; Enter on a picked option or in Other sends too. */
+    onquick?: (i: number) => void;
     folded?: boolean;
     tail?: Snippet;
   } = $props();
@@ -36,7 +48,25 @@
   let root = $state<HTMLDivElement | null>(null);
   let strip = $state<HTMLDivElement | null>(null);
   const secs: (HTMLElement | null)[] = $state([]);
-  const otherEls: (HTMLInputElement | null)[] = $state([]);
+  const otherEls: (HTMLTextAreaElement | null)[] = $state([]);
+  // Item 712: which options' comment fields are open (`i:label`); one with text in it stays open.
+  let noteOpen = $state<Record<string, boolean>>({});
+  const noteKey = (i: number, label: string) => `${i}:${label}`;
+  const noteOf = (i: number, label: string) => notes[i]?.[label] ?? "";
+
+  function toggleNote(i: number, label: string) {
+    const k = noteKey(i, label);
+    const open = !(noteOpen[k] || noteOf(i, label).trim() !== "");
+    noteOpen[k] = open;
+    if (open) queueMicrotask(() => document.getElementById(`${idBase}-q${i}-n-${label}`)?.focus());
+  }
+
+  /** Typing a comment picks its option: the comment is about that answer. */
+  function typeNote(i: number, label: string, multi: boolean, el: HTMLTextAreaElement) {
+    fitToText(el);
+    if (el.value.trim() !== "" && !(picks[i] ?? []).includes(label)) ontoggle(i, label, multi);
+    onnote?.(i, label, el.value);
+  }
 
   // The box that scrolls the questions: the desktop card once it reaches its cap, else the transcript (or
   // the phone's page) — the nearest ancestor that scrolls.
@@ -86,23 +116,30 @@
       const y = box.scrollTop + sec.getBoundingClientRect().top - top - sh - 6;
       box.scrollTo({ top: Math.max(0, y), behavior: reduced() ? "auto" : "smooth" });
     }
-    const first = sec?.querySelector<HTMLInputElement>("input.aq-in, input.aq-otherin");
+    const first = sec?.querySelector<HTMLInputElement | HTMLTextAreaElement>("input.aq-in, textarea.aq-otherin");
     first?.focus({ preventScroll: true });
   }
 
   function onKey(e: KeyboardEvent, i: number) {
     const q = questions[i];
     const t = e.target as HTMLElement;
-    const typing = t instanceof HTMLInputElement && t.type === "text";
+    // Item 711: Other is a wrapping textarea now; Enter still never types a newline.
+    const typing = t instanceof HTMLTextAreaElement || (t instanceof HTMLInputElement && t.type === "text");
     if (typing) {
       // Enter in Other moves on, as Next does; it never answers (the card's Answer is a deliberate click).
-      if (e.key === "Enter" && !e.isComposing && many && i < questions.length - 1) {
+      if (e.key === "Enter" && !e.isComposing) {
         e.preventDefault();
-        go(i + 1);
+        if (many && i < questions.length - 1) go(i + 1);
+        else if (onquick && !e.shiftKey && isAnswered(picks[i], others[i])) onquick(i);
       }
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (onquick && e.key === "Enter" && isAnswered(picks[i], others[i])) {
+      e.preventDefault();
+      onquick(i);
+      return;
+    }
     const p = keyPick(e.key, q.options.length);
     if (!p) return;
     e.preventDefault();
@@ -184,9 +221,18 @@
           <div class="aq-opts" role={multi ? "group" : "radiogroup"} aria-labelledby="{idBase}-q{i}-t">
             {#each q.options as o, k (o.label)}
               {@const on = (picks[i] ?? []).includes(o.label)}
+              <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
               <label
                 class="aq-opt"
                 class:on
+                class:quick={!!onquick}
+                onclick={(e) => {
+                  // Item 753: on the turn-end card a click answers (the comment button is its own control).
+                  if (!onquick || (e.target as HTMLElement).closest(".aq-cb")) return;
+                  e.preventDefault();
+                  if (!on) ontoggle(i, o.label, multi);
+                  onquick(i);
+                }}
                 onmouseenter={() => (hover[i] = o.label)}
                 onmouseleave={() => (hover[i] = null)}
               >
@@ -206,8 +252,46 @@
                   <span class="aq-ol">{o.label}</span>
                   {#if o.description}<span class="aq-od">{o.description}</span>{/if}
                 </span>
+                {#if onnote}
+                  {@const has = noteOf(i, o.label).trim() !== ""}
+                  <button
+                    type="button"
+                    class="aq-cb"
+                    class:has
+                    aria-label="comment on {o.label}"
+                    aria-expanded={!!noteOpen[noteKey(i, o.label)] || has}
+                    use:tip={has ? "Your comment goes with this answer" : "Add a comment to this option — it goes with the answer"}
+                    onclick={(e) => {
+                      e.preventDefault();
+                      toggleNote(i, o.label);
+                    }}
+                    ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"
+                      ><path
+                        d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.4"
+                        stroke-linejoin="round"
+                      /></svg
+                    ></button
+                  >
+                {/if}
                 <kbd class="aq-k" aria-hidden="true">{k + 1}</kbd>
               </label>
+              {#if onnote && (noteOpen[noteKey(i, o.label)] || noteOf(i, o.label).trim() !== "")}
+                <div class="aq-cm" class:on>
+                  <textarea
+                    class="aq-cmin"
+                    id="{idBase}-q{i}-n-{o.label}"
+                    rows="1"
+                    value={noteOf(i, o.label)}
+                    oninput={(e) => typeNote(i, o.label, multi, e.currentTarget)}
+                    placeholder="A comment on “{o.label}” — goes with the answer"
+                    aria-label="comment on {o.label}"
+                    autocomplete="off"
+                  ></textarea>
+                </div>
+              {/if}
             {/each}
             <label class="aq-opt aq-other" class:on={typed}>
               <span class="aq-mk" class:sq={multi} aria-hidden="true"
@@ -215,16 +299,21 @@
               >
               <span class="aq-ot">
                 {#if typed}<span class="aq-od">Other</span>{/if}
-                <input
+                <!-- Item 711 (his bug, 2026-11-15): wraps line by line and grows, ~~one line scrolling sideways~~. -->
+                <textarea
                   class="aq-otherin"
-                  type="text"
+                  rows="1"
                   value={others[i] ?? ""}
-                  oninput={(e) => onother(i, e.currentTarget.value)}
+                  oninput={(e) => {
+                    const el = e.currentTarget;
+                    fitToText(el);
+                    onother(i, el.value);
+                  }}
                   bind:this={otherEls[i]}
                   placeholder="Other — type an answer"
                   aria-label="other answer"
                   autocomplete="off"
-                />
+                ></textarea>
               </span>
               <kbd class="aq-k" aria-hidden="true">{q.options.length + 1}</kbd>
             </label>
@@ -425,6 +514,14 @@
     min-width: 0;
     transition: background 0.12s;
   }
+  /* Item 753: on the turn-end card an option is a button — a click answers. */
+  .aq-opt.quick {
+    border: 1px solid var(--line2);
+    margin-bottom: 5px;
+  }
+  .aq-opt.quick:hover {
+    border-color: var(--accent-ink);
+  }
   .aq-opt:hover {
     background: var(--well);
   }
@@ -503,10 +600,77 @@
     padding: 0 5px;
     margin-top: 2px;
   }
+  /* Item 712: a comment on an option — a quiet bubble beside its number key, lit when it holds a comment;
+     the field opens under the option, indented to its text. */
+  .aq-cb {
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    width: 22px;
+    height: 20px;
+    margin-top: 0;
+    padding: 0;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--dim);
+    opacity: 0.55;
+    cursor: pointer;
+  }
+  .aq-opt:hover .aq-cb,
+  .aq-cb:focus-visible,
+  .aq-cb[aria-expanded="true"] {
+    opacity: 1;
+  }
+  .aq-cb:hover {
+    color: var(--ink);
+    border-color: var(--line);
+  }
+  .aq-cb.has {
+    color: var(--accent);
+    opacity: 1;
+  }
+  .aq-cb:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 0;
+  }
+  .aq-cm {
+    padding: 0 8px 6px 37px;
+    margin-top: -4px;
+  }
+  .aq-cmin {
+    display: block;
+    resize: none;
+    overflow: hidden;
+    width: 100%;
+    box-sizing: border-box;
+    background: transparent;
+    border: 0;
+    border-left: 2px solid var(--line2);
+    border-radius: 0;
+    padding: 2px 0 2px 8px;
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--ink2, var(--ink));
+  }
+  .aq-cm.on .aq-cmin {
+    border-left-color: var(--accent);
+  }
+  .aq-cmin::placeholder {
+    color: var(--dim);
+  }
+  .aq-cmin:focus {
+    outline: none;
+    border-left-color: var(--accent);
+  }
   .aq-other {
     cursor: text;
   }
   .aq-otherin {
+    display: block;
+    resize: none;
+    overflow: hidden;
     width: 100%;
     box-sizing: border-box;
     background: transparent;
@@ -589,6 +753,125 @@
     }
     .aq-mk {
       margin-top: 0;
+    }
+  }
+  /* Item 713: Jarvis's face for the questions — mono capital heads (tabs, the
+     "1 · STORE" line, "Claude asks"), the lit tab's amber underline with the
+     accent glow, the Next a Jarvis control. Classic keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .aq-tab {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-tab.on {
+    color: var(--accent-ink, var(--ink));
+    box-shadow: 0 1px 0 0 var(--accent), 0 3px 6px -3px var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-h,
+  :global(:where(:root:not([data-layout="classic"]))) .aq-one {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-any {
+    font-family: var(--mono);
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt.on {
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-next {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    min-height: 28px;
+    border-radius: var(--r1);
+    border: 1px solid var(--line2);
+    background: var(--well);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-next:hover {
+    border-color: var(--accent);
+  }
+
+  /* Wave K, Lock-on (his pick, blocker 2031): an answer under the pointer is bracketed — two corner ticks
+     in `--bracket` (none under calm) and an amber wash; the picked one keeps its ticks, and its mark locks
+     in with a short pulse. Jarvis only; the ticks slide in only with motion allowed. */
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt::before,
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt::after {
+    content: "";
+    position: absolute;
+    width: 7px;
+    height: 7px;
+    box-sizing: border-box;
+    border: 1.5px solid var(--bracket, transparent);
+    opacity: 0;
+    pointer-events: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt::before {
+    left: -3px;
+    top: -3px;
+    border-right: 0;
+    border-bottom: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt::after {
+    right: -3px;
+    bottom: -3px;
+    border-left: 0;
+    border-top: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt:not(.aq-other):hover::before,
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt:not(.aq-other):hover::after,
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt.on:not(.aq-other)::before,
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt.on:not(.aq-other)::after {
+    opacity: 1;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt:not(.aq-other):hover {
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt.quick:hover {
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt::before {
+      transform: translate(-5px, -5px);
+      transition:
+        opacity 0.15s,
+        transform 0.25s cubic-bezier(0.2, 0.9, 0.25, 1.3);
+    }
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt::after {
+      transform: translate(5px, 5px);
+      transition:
+        opacity 0.15s,
+        transform 0.25s cubic-bezier(0.2, 0.9, 0.25, 1.3);
+    }
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt:not(.aq-other):hover::before,
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt:not(.aq-other):hover::after,
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt.on:not(.aq-other)::before,
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt.on:not(.aq-other)::after {
+      transform: none;
+    }
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt.on .aq-mk {
+      animation: aq-lock 0.4s cubic-bezier(0.2, 0.9, 0.3, 1);
+    }
+  }
+  @keyframes aq-lock {
+    0% {
+      transform: scale(1.7);
+      box-shadow: 0 0 0 0 var(--accent);
+    }
+    60% {
+      transform: scale(0.92);
+    }
+    100% {
+      transform: none;
+      box-shadow: 0 0 0 8px transparent;
     }
   }
 </style>

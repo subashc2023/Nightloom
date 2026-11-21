@@ -7,25 +7,35 @@
    * Open and Reveal. Read-only: there is no text to edit, so the note
    * view's Plain / Formatted / Preview / Edit / Save are not offered.
    */
-  import { untrack } from "svelte";
   import { tip } from "./tip";
   import * as api from "./api";
   import { addToast } from "./state.svelte";
   import { fmtSize } from "./cards";
+  // Item 879: a transparent PNG/GIF/WebP with dark ink sits on white paper, as an SVG does.
+  import { paperIfDarkInk } from "./rasterBacking";
+  import { svgBacking } from "./diagramBlock";
   import { noteMediaShape } from "./noteMedia";
   import { viewGet, viewSet } from "./viewState";
+  // Item 885: a click zooms in at that spot (again: back to fit), pinch / ctrl-wheel zoom, a drag pans; kept per tab.
+  import { zoomable } from "./pictureZoomAction";
 
   let { file, name }: { file: api.FileTabData; name: string } = $props();
 
-  // Item 495: fit-or-own-size, kept per note past this view.
-  const fullKey = $derived(`noteMedia.full:${name}`);
-  let full = $state(false);
-  $effect.pre(() => {
-    full = viewGet(fullKey, false);
-  });
-  $effect(() => viewSet(untrack(() => fullKey), full, false));
+  // Item 495, as a zoom since item 885: the zoom and pan, kept per note past this view.
+  const zoomKey = $derived(`noteMedia.zoom:${name}`);
+  const kept = $derived(viewGet(zoomKey, ""));
   const shape = $derived(noteMediaShape(file));
   const src = $derived(file.data ? `data:${file.media_type};base64,${file.data}` : null);
+  // Item 879: an SVG in the notes folder is its own document as an <img>; unless it paints its own background
+  // (`svgBacking` "own") it sits on white paper, so default-black lines read on the dark looks.
+  const svgPaper = $derived.by(() => {
+    if (!file.data || !/^image\/svg\+xml\b/i.test(file.media_type ?? "")) return false;
+    try {
+      return svgBacking(new TextDecoder().decode(Uint8Array.from(atob(file.data), (c) => c.charCodeAt(0)))) !== "own";
+    } catch {
+      return false;
+    }
+  });
 
   async function reveal(): Promise<void> {
     try {
@@ -61,16 +71,15 @@
       <embed class="pdf" {src} type={file.media_type} title={name} />
     </div>
   {:else if shape.view === "image" && src}
-    <div class="media" class:scroll={full}>
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="media" data-picture-viewer use:zoomable={{ initial: kept, onchange: (v) => viewSet(zoomKey, v, "") }}>
       <img
         class="img"
-        class:full
+        class:nl-paper={svgPaper}
         {src}
         alt={name}
-        use:tip={full ? "Click to fit the pane" : "Click for the image's own size"}
-        onclick={() => (full = !full)}
+        draggable="false"
+        use:paperIfDarkInk
+        use:tip={"Click to zoom in there (again to fit) · pinch to zoom · drag to pan"}
       />
     </div>
   {:else}
@@ -113,12 +122,9 @@
     flex: 1;
     min-height: 0;
     display: flex;
+    align-items: center;
     justify-content: center;
     overflow: hidden;
-  }
-  .media.scroll {
-    overflow: auto;
-    justify-content: flex-start;
   }
   .pdf {
     width: 100%;
@@ -130,11 +136,9 @@
     max-height: 100%;
     object-fit: contain;
     cursor: zoom-in;
-  }
-  .img.full {
-    max-width: none;
-    max-height: none;
-    cursor: zoom-out;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-user-drag: none;
   }
   .card {
     margin: 24px;

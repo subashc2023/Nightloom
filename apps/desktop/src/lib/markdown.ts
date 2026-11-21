@@ -1,6 +1,7 @@
+import { askTag } from "./askTag";
 import { Marked, marked, Renderer, type Tokens } from "marked";
 import DOMPurify from "dompurify";
-import { math, renderMath } from "./math";
+import { math, openMathAt, renderMath } from "./math";
 import { tilde } from "./tilde";
 import { emphasisLines } from "./emphasisLines";
 import { cite } from "./cite";
@@ -8,9 +9,19 @@ import { proseBlocks } from "./proseBlock";
 import { handoffTag } from "./handoffTag";
 import { isRunFence, markRunFence } from "./shellRun";
 import "katex/dist/katex.min.css";
+// Item 837: a formula keeps its case and spacing under any parent (desktop and phone both load this file).
+import "./mathBase.css";
+import { isLocalTarget, mediaKindOf } from "./replyMedia";
+import { replyPage } from "./replyPage";
+import { diagramBlock } from "./diagramBlock";
+import { evidenceBlock } from "./evidenceBlock";
 
 marked.use(math);
 marked.use(tilde);
+// Item 821: a ```mermaid or ```svg block is a diagram placeholder in every markdown surface (diagrams.ts draws it).
+marked.use(diagramBlock);
+// Item 798: an ```evidence block is a checked evidence table (evidenceTables.ts draws it from its file).
+marked.use(evidenceBlock);
 
 /**
  * KaTeX wraps its glyphs in a copy of the formula as MathML, which is what a
@@ -41,12 +52,88 @@ export function markdownOptions(opts: { breaks?: boolean } = {}): { async: false
   return { async: false, gfm: true, breaks: opts.breaks === true };
 }
 
+/**
+ * Item 820: a markdown image whose target is a file on this Mac
+ * (`![plot](plot.png)`) drew a broken-image box — the webview resolves it
+ * against the app's own origin. In a reply it is its alt text instead, and
+ * the picture itself is drawn under the text by `ReplyMedia`, read through
+ * the Mac's rules. A web image (`https:`, `data:`) renders as before.
+ */
+const escapeHtml = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+export const localImageAsText = {
+  renderer: {
+    image(token: Tokens.Image) {
+      const local = token.href.startsWith("file://") || isLocalTarget(token.href);
+      if (!local) return false;
+      const name = token.href.slice(token.href.lastIndexOf("/") + 1);
+      const alt = `<em class="md-local-img">${escapeHtml(token.text || name)}</em>`;
+      // Item 875: a picture or a video is drawn where the reply put it —
+      // `replyMediaInline.ts` mounts it in this placeholder, read through the
+      // same rules as 820's strip. The alt text stays inside, shown wherever
+      // nothing mounts (a quote, a surface without the action).
+      if (!mediaKindOf(localMediaTarget(token.href))) return alt;
+      return `<span class="${MEDIA_CLASS}" data-media-src="${encodeURIComponent(token.href)}" data-media-alt="${encodeURIComponent(token.text)}">${alt}</span>`;
+    },
+  },
+};
+
+/** Item 875: the placeholder a local picture or video leaves in a reply's HTML. */
+export const MEDIA_CLASS = "md-media";
+
+/** A markdown image's target as a path: percent-decoded, `file://` dropped (as 820's `mediaCandidates` reads it). */
+export function localMediaTarget(href: string): string {
+  let w = href.trim();
+  try {
+    w = decodeURI(w);
+  } catch {
+    // A target that is not valid percent-encoding stays as written.
+  }
+  return w.replace(/^file:\/\//, "");
+}
+
+const inlineCache = new Map<string, string[]>();
+/**
+ * Item 875: the local pictures and videos a reply draws in place — every
+ * markdown image marked parses (so one inside code, or a half-typed one,
+ * is not), as paths, in order. The strip under the reply leaves these out.
+ */
+export function inlineMediaTargets(src: string): string[] {
+  const hit = inlineCache.get(src);
+  if (hit) return hit;
+  const out: string[] = [];
+  if (src.includes("![")) {
+    replyMarked.walkTokens(replyMarked.lexer(src), (t) => {
+      if (t.type !== "image") return;
+      const href = (t as Tokens.Image).href;
+      if (!(href.startsWith("file://") || isLocalTarget(href))) return;
+      const path = localMediaTarget(href);
+      if (mediaKindOf(path)) out.push(path);
+    });
+  }
+  if (inlineCache.size > 200) inlineCache.delete(inlineCache.keys().next().value!);
+  inlineCache.set(src, out);
+  return out;
+}
+
+/** The phone's replies (item 820): `renderMarkdown`'s, with a local image as its alt text. */
+const phoneMarked = new Marked();
+phoneMarked.use(math);
+phoneMarked.use(tilde);
+phoneMarked.use(localImageAsText);
+// Item 770: a ```html page block is a page, drawn where it stands (replyPages.ts mounts it).
+phoneMarked.use(replyPage);
+// Item 821: a ```mermaid or ```svg block is a diagram (diagrams.ts draws it).
+phoneMarked.use(diagramBlock);
+// Item 798: the placeholder (the phone shows the block's path; the Mac draws the table).
+phoneMarked.use(evidenceBlock);
+
 /** Render assistant markdown to sanitized HTML. `breaks` keeps a single
  *  newline as a line break (the phone's replies, nightshift 300 A32: a
  *  list of numbers one per line ran together as one paragraph); the
  *  desktop's callers leave it off and render exactly as before. */
-export function renderMarkdown(src: string, opts: { breaks?: boolean } = {}): string {
-  const html = marked.parse(src, markdownOptions(opts));
+export function renderMarkdown(src: string, opts: { breaks?: boolean; localImagesAsText?: boolean } = {}): string {
+  // Item 820: the phone's replies draw a local image's picture under the text.
+  const html = (opts.localImagesAsText ? phoneMarked : marked).parse(src, markdownOptions(opts)) as string;
   return DOMPurify.sanitize(html, SANITIZE);
 }
 
@@ -66,6 +153,10 @@ replyMarked.use(cite);
 replyMarked.use(proseBlocks);
 // Item 464: a `<handoff>` block shows as the next chat's prompt card.
 replyMarked.use(handoffTag);
+// Item 753: an `<ask>` block shows as the turn's question box.
+replyMarked.use(askTag);
+// Item 820: a local image is its alt text; the picture is drawn under the reply.
+replyMarked.use(localImageAsText);
 // Item 503: a real shell fence is told apart from raw HTML shaped like one.
 const plainBlock = new Renderer();
 replyMarked.use({
@@ -75,6 +166,12 @@ replyMarked.use({
     },
   },
 });
+// Item 770: a ```html page block is a page, drawn where it stands (replyPages.ts mounts it).
+replyMarked.use(replyPage);
+// Item 821: a ```mermaid or ```svg block is a diagram (diagrams.ts draws it).
+replyMarked.use(diagramBlock);
+// Item 798: an ```evidence block is a checked evidence table (evidenceTables.ts draws it from its file).
+replyMarked.use(evidenceBlock);
 
 export function renderReply(src: string): string {
   // Item 454: a tab switch remounts the whole transcript, and every reply
@@ -138,9 +235,13 @@ export function renderMathHtml(tex: string, display: boolean): string {
  * nothing follows them yet); a trailing table that has no complete separator row yet is held back a line or two.
  * The settled reply never goes through this.
  */
-export function streamingTail(src: string): string {
-  const fences = src.match(/^ {0,3}(```|~~~)/gm);
-  if (fences && fences.length % 2 === 1) return src;
+export function streamingTail(whole: string): string {
+  const fences = whole.match(/^ {0,3}(```|~~~)/gm);
+  if (fences && fences.length % 2 === 1) return whole;
+  // Item 837 (his 836): a formula that has opened and not closed yet is held back whole — `$\frac{x-1}{\` showed as
+  // those raw characters until its `$` arrived. It appears typeset, in one step, when it closes (`openMathAt`).
+  const open = openMathAt(whole);
+  const src = open < 0 ? whole : whole.slice(0, open);
   // A table still being typed: its header (and half a separator) wait for the separator row.
   const lines = src.split("\n");
   let k = lines.length;
@@ -148,8 +249,17 @@ export function streamingTail(src: string): string {
   if (k < lines.length) {
     const block = lines.slice(k);
     const sep = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
-    const cells = (l: string) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").length;
-    const ready = block.length >= 2 && sep.test(block[1]) && cells(block[1]) === cells(block[0]) && (block.length >= 3 || src.endsWith("\n"));
+    // Cells by the pipes that are not escaped (`\|` is a cell's own bar, as in `$P(A \| B)$`).
+    const cells = (l: string) => l.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "").split(/(?<!\\)\|/).length;
+    // Item 837: a table renders row-complete. A body row still arriving — its line not ended, and not yet as many
+    // cells as the header with its closing pipe — waits; before, a row grew cell by cell, its last cell half a word.
+    const table = block.length >= 2 && sep.test(block[1]) && cells(block[1]) === cells(block[0]);
+    if (table && block.length >= 3 && !src.endsWith("\n")) {
+      const last = block[block.length - 1];
+      const done = open < 0 && /(?<!\\)\|\s*$/.test(last) && cells(last) >= cells(block[0]);
+      if (!done) return lines.slice(0, -1).join("\n") + "\n";
+    }
+    const ready = table && (block.length >= 3 || src.endsWith("\n"));
     if (!ready) return lines.slice(0, k).join("\n");
   }
   const cut = src.lastIndexOf("\n") + 1;

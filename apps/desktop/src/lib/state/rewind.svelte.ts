@@ -1,10 +1,13 @@
 // Moved out of state.svelte.ts by item 641 (pure move; state.svelte.ts re-exports every name it exported).
 import * as api from "../api";
 import { noteRewound } from "../handoff.svelte";
-import { nextAttachmentId, readDraft, recordDraft, setDraftAttachments, setDraftText } from "../drafts.svelte";
+import { bumpDraft, nextAttachmentId, readDraft, recordDraft, restoreComments, setDraftAttachments, setDraftText, withdrawComments } from "../drafts.svelte";
+import { sentComments } from "../sentComments";
+import type { PassageComment } from "../passageComments";
 import { indexOfAim } from "../aim";
-import { requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "../rewindDraft.svelte";
+import { dismissRewoundOffer, keepIn, keepsBox, offerRewound, requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "../rewindDraft.svelte";
 import { rewoundWrites, setAsideFiles } from "../rewoundFiles";
+import { restoreFiles, restoreRewoundFiles, restoredSummary, rewindFiles, split, type RestoreFile } from "../rewindRestore";
 import type { Attachment, SessionEvent } from "../types";
 import { chatScope, pushUndo, undoToast, contextUsed } from "./edits.svelte";
 import { openChatKey } from "./queue.svelte";
@@ -33,7 +36,7 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
   // offered when this list does not have that message.
   const here = typeof aim === "string" ? indexOfAim(app.events, { at: aim }, to) : to;
   // His message at `to`, read before the rewind supersedes it (backlog 247).
-  const back = here === null ? null : rewoundMessage(app.events, here, nextAttachmentId);
+  const back = here === null ? null : withComments(rewoundMessage(app.events, here, nextAttachmentId));
   // What the removed turns wrote, read before the rewind supersedes them
   // (item 259): offered to be set aside, since the next run reads them.
   const written = here === null ? [] : rewoundWrites(app.events, liveFlags(app.events), here);
@@ -45,7 +48,9 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
       // He opened another chat meanwhile: the rewind is on disk in this
       // one; its message goes back in its own box, and nothing here (the
       // view, the size, the files card, the undo) is the chat now open.
-      if (back) fillBox(key, back);
+      // Item 724: no popover in a box he is not looking at; a toast says
+      // where the message went when that box kept his draft.
+      if (back && fillBox(key, back, false).kept && back.text.trim()) addToast("Rewound — the message is in that chat's drafts");
       return;
     }
     app.error = null;
@@ -65,6 +70,12 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
           done: null,
         }
       : null;
+  app.rewindRestore = null;
+  // Item 765: the files the rewound turns changed, from their snapshots.
+  // Where there are none (not a git folder, or turns from before them),
+  // the item-259 card stands and says why.
+  const gen = ++restoreGen;
+  if (here !== null) void offerRestore(here, written, gen);
   let swap = back ? fillBox(key, back) : null;
   // The inverse lifts the marker this call landed — and, after a redo,
   // the marker *that* call lands, which is why the index is a variable.
@@ -73,15 +84,22 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
     label: "rewind",
     undo: async () => {
       if (!(await adoptOpen(() => api.unrewind(marker)))) return;
+      // A restore plan still on its way is for turns that are back now.
+      restoreGen++;
       refill();
+      // Item 724: the message is back in the thread; its offer goes.
+      dismissRewoundOffer(key);
       // The turn is back; its files were left alone unless he set them
       // aside, and then the card says where they went.
       if (app.rewoundWrites && app.rewoundWrites.done === null) app.rewoundWrites = null;
+      if (app.rewindRestore && app.rewindRestore.done === null) app.rewindRestore = null;
       // The box gets back what it held — unless he changed the message
       // since, which then stays (never-lose-work).
       if (swap && untouched(readDraft(key), swap)) {
         setDraftText(key, swap.before.text);
         setDraftAttachments(key, swap.before.attachments);
+        // Item 892: the comment chips the rewind put back go with it.
+        withdrawComments(key, swap.commentIds ?? []);
       }
     },
     redo: async () => {
@@ -91,7 +109,18 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
       if (back) swap = fillBox(key, back);
     },
   });
-  undoToast(back ? "Rewound — your message is back in the box" : "Rewound to here", handle);
+  undoToast(
+    !back
+      ? "Rewound to here"
+      : swap?.kept
+        ? back.text.trim()
+          ? "Rewound — your draft stayed; the message is in drafts, above the box"
+          : back.comments.length > 0
+            ? "Rewound — your draft stayed; the message's comments joined it"
+            : "Rewound — your draft stayed; the message's files joined it"
+        : "Rewound — your message is back in the box",
+    handle,
+  );
 }
 
 /**
@@ -113,6 +142,87 @@ export async function setAsideRewound(paths: string[]): Promise<void> {
   }
 }
 
+/** Item 765: each rewind, and each undo of one, bumps this; a plan that
+ *  comes back after another bump is for a rewind no longer standing. */
+let restoreGen = 0;
+
+/** Item 765: read the rewound turns' snapshots and offer the restore. */
+async function offerRestore(to: number, written: import("../rewoundFiles").RewoundWrite[], gen: number): Promise<void> {
+  const chat = app.activeSessionId;
+  const workspace = app.connection?.workspace ?? null;
+  if (!chat || !workspace) return;
+  let plan;
+  try {
+    plan = await rewindFiles(workspace, chat, to);
+  } catch {
+    return;
+  }
+  if (app.activeSessionId !== chat || gen !== restoreGen) return;
+  if (plan.root && plan.start && plan.end && plan.now && plan.files.length > 0) {
+    // This card replaces item 259's: a restore covers what setting aside did.
+    app.rewoundWrites = null;
+    app.rewindRestore = {
+      session: chat,
+      chat,
+      root: plan.root,
+      start: plan.start,
+      end: plan.end,
+      now: plan.now,
+      files: restoreFiles(plan, workspace, written),
+      done: null,
+      undo: null,
+      busy: false,
+    };
+  } else if (app.rewoundWrites && app.rewoundWrites.session === chat && plan.note && plan.files.length === 0) {
+    app.rewoundWrites.note = plan.note;
+  }
+}
+
+/** Item 765: put the ticked files back as they were before the rewound
+ *  turns; files they made move aside. The card then says what happened,
+ *  with an Undo. */
+export async function restoreRewound(ticked: (f: RestoreFile) => boolean): Promise<void> {
+  const r = app.rewindRestore;
+  if (!r || r.busy || r.done !== null) return;
+  const { paths, added } = split(r.files, ticked);
+  if (paths.length + added.length === 0) return;
+  r.busy = true;
+  try {
+    const out = await restoreRewoundFiles(r.chat, r.root, r.start, r.end, paths, added);
+    const { text, undoPaths } = restoredSummary(r.root, out);
+    r.done = text;
+    r.undo = out.after && undoPaths.length ? { from: r.now, guard: out.after, paths: undoPaths } : null;
+  } catch (e) {
+    addToast(`Could not restore the files: ${String(e)}`);
+  } finally {
+    r.busy = false;
+  }
+}
+
+/** Item 765: put the files back as they were just before the restore;
+ *  anything changed since the restore is left alone. */
+export async function undoRestore(): Promise<void> {
+  const r = app.rewindRestore;
+  if (!r?.undo || r.busy) return;
+  r.busy = true;
+  try {
+    const out = await restoreRewoundFiles(r.chat, r.root, r.undo.from, r.undo.guard, r.undo.paths, []);
+    const left = [...out.skipped, ...out.aside.skipped].map((s) => `${s.path}: ${s.why}`);
+    const back = out.restored.length + out.aside.moved.length;
+    r.done = `Restore undone: ${back === 1 ? "1 file" : `${back} files`} as they were before it${out.aside.folder ? ` (brought-back files moved to ${out.aside.folder})` : ""}${left.length ? ` · left alone: ${left.join("; ")}` : ""}`;
+    r.undo = null;
+  } catch (e) {
+    addToast(`Could not undo the restore: ${String(e)}`);
+  } finally {
+    r.busy = false;
+  }
+}
+
+/** Item 765: keep the files as the rewound turns left them. */
+export function keepRewindFiles(): void {
+  app.rewindRestore = null;
+}
+
 /** Leave the rewound turn's files where they are (item 259). */
 export function keepRewound(): void {
   app.rewoundWrites = null;
@@ -121,8 +231,23 @@ export function keepRewound(): void {
 /** A rewound message into the box (backlog 247, blocker 581): what was
  *  half-typed goes to the top of the draft history, with a toast saying
  *  so; its chips stay after the message's own. */
-function fillBox(key: string, back: { text: string; attachments: Attachment[] }): BoxSwap {
-  const swap = swapIn(readDraft(key), back);
+function fillBox(key: string, back: Back, offer = true): BoxSwap & { commentIds?: number[] } {
+  const box = readDraft(key);
+  // Item 892: its comments come back as chips, before any in the box —
+  // into the box in both cases, as its file chips do (724's rule).
+  const commentIds = restoreComments(key, back.comments);
+  // Item 724: a draft in the box stays there; the message goes to the
+  // drafts, offered alone above the drafts button, and its chips join his.
+  if (keepsBox(box)) {
+    const kept = keepIn(box, back);
+    if (back.attachments.length > 0) setDraftAttachments(key, kept.after.attachments);
+    if (back.text.trim()) {
+      bumpDraft(key, back.text);
+      if (offer) offerRewound(key, back.text);
+    }
+    return { ...kept, commentIds };
+  }
+  const swap = swapIn(box, back);
   if (swap.stashed) {
     recordDraft(key, swap.before.text, undefined, 1);
     addToast("Your half-typed message is in drafts, under the box");
@@ -130,7 +255,18 @@ function fillBox(key: string, back: { text: string; attachments: Attachment[] })
   setDraftText(key, swap.after.text);
   setDraftAttachments(key, swap.after.attachments);
   requestComposerFocus();
-  return swap;
+  return { ...swap, commentIds };
+}
+
+/** A rewound message as the box takes it back (item 892). */
+type Back = { text: string; attachments: Attachment[]; comments: PassageComment[] };
+
+/** Item 892: a message sent with passage comments comes back as what he
+ *  typed plus its comments (`sentComments.ts`); any other as it reads. */
+function withComments(m: { text: string; attachments: Attachment[] } | null): Back | null {
+  if (!m) return null;
+  const sc = sentComments(m.text);
+  return sc ? { text: sc.typed, attachments: m.attachments, comments: sc.comments } : { ...m, comments: [] };
 }
 
 /** The log index of the newest event of `kind` — the marker an operation

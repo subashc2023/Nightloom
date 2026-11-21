@@ -3,8 +3,12 @@
 // read from the components' source, as 610's and 616's are.
 import { describe, expect, it } from "vitest";
 import passingSrc from "./BashPassing.svelte?raw";
-import messageSrc from "./AssistantMessage.svelte?raw";
-import classicSrc from "./AssistantMessageClassic.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+import messageSrcRaw from "./AssistantMessage.svelte?raw";
+const messageSrc = asOneFile(messageSrcRaw, assistantMessageLogicRaw);
+import classicSrcRaw from "./AssistantMessageClassic.svelte?raw";
+const classicSrc = asOneFile(classicSrcRaw, assistantMessageLogicRaw);
 import stateSrc from "./state.svelte.ts?raw";
 import { PASSING_LINES, endPassing, passingLines, setPassing } from "./bashOutput.svelte";
 
@@ -30,8 +34,9 @@ describe("the passing-text store", () => {
 
 describe("the row", () => {
   it("draws the passing text on a running shell row only, in the modern trace", () => {
-    expect(messageSrc).toContain('{#if running && kind === "shell"}<BashPassing id={seg.call.id} />{/if}');
-    expect(classicSrc).not.toContain("BashPassing");
+    expect(messageSrc).toContain('{#if running && kind === "shell"}<BashPassing id={seg.call.id} input={seg.call.input} />{/if}');
+    // ~~Classic draws none~~ (item 721, 2026-11-16: Classic too, headed by the command's first line).
+    expect(classicSrc).toContain("{#if running && shell}<BashPassing id={seg.call.id} input={seg.call.input} />{/if}");
   });
 
   it("is Combo's and Reticle's, never Sweep's, and behind the row", () => {

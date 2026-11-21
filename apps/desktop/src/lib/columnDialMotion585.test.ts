@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import motionSrc from "./DialMotion.svelte?raw";
-import railSrc from "./RightRail.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import rightRailLogicRaw from "./rightRail/logic.svelte.ts?raw";
+import railSrcRaw from "./RightRail.svelte?raw";
+const railSrc = asOneFile(railSrcRaw, rightRailLogicRaw);
 import welcomeSrc from "./Welcome.svelte?raw";
-import classicRailSrc from "./RightRailClassic.svelte?raw";
+import classicRailSrcRaw from "./RightRailClassic.svelte?raw";
+const classicRailSrc = asOneFile(classicRailSrcRaw, rightRailLogicRaw);
 
 // Item 585: the right column's dial carries a quiet subset of 581's new-chat motion.
 describe("the column dial's motion (585)", () => {
@@ -22,6 +26,8 @@ describe("the column dial's motion (585)", () => {
     expect(motionSrc).toContain("if (ink.glow && !ink.calm && !quiet) {");
   });
   it("leaves Classic's column alone", () => {
-    expect(classicRailSrc).not.toContain("DialMotion");
+    // test-change: item 856 — Classic draws 605's column beside an aside tab
+    // now, RightRail's column as it is, its dial's motion included.
+    expect(classicRailSrc).toContain("DialMotion");
   });
 });

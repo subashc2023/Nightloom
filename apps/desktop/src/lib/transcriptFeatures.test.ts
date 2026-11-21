@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
-import transcript from "./Transcript.svelte?raw";
+import transcriptRaw from "./Transcript.svelte?raw";
 import asideView from "./AsideView.svelte?raw";
 import asideCard from "./AsideCard.svelte?raw";
 import asideTranscript from "./AsideTranscript.svelte?raw";
 import source from "./transcriptSource.svelte.ts?raw";
 import { KIND_GUARDS, TRANSCRIPT_FEATURES, TRANSCRIPT_PIECES, featureTable } from "./transcriptFeatures";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcript = asOneFile(transcriptRaw, transcriptLogicRaw);
 
 /**
  * Item 674: an aside is drawn by the chat's own transcript, and whatever
@@ -12,16 +15,16 @@ import { KIND_GUARDS, TRANSCRIPT_FEATURES, TRANSCRIPT_PIECES, featureTable } fro
  */
 describe("674: one transcript for the chat and its asides", () => {
   it("an aside's thread is the chat's Transcript, given a source", () => {
-    expect(asideTranscript).toMatch(/<Transcript \{source\} \{lead\}>/);
+    // test-change: item 856 — the look's own transcript (Jarvis's or Classic's), one logic.
+    expect(asideTranscript).toMatch(/<View \{source\} \{lead\}>/);
+    expect(asideTranscript).toMatch(/const View = \$derived\(classic\(\) \? TranscriptClassic : Transcript\);/);
     // The wrapper draws no message itself.
     expect(asideTranscript).not.toMatch(/AssistantMessage|UserBubble/);
     for (const frame of [asideView, asideCard]) {
       expect(frame).toMatch(/<AsideTranscript\b/);
       expect(frame).not.toMatch(/import AssistantMessage|import UserBubble/);
-      // AsideThread is Classic's alone (blocker 1989).
-      const at = frame.indexOf("<AsideThread");
-      expect(at).toBeGreaterThan(-1);
-      expect(frame.lastIndexOf("classic()", at)).toBeGreaterThan(-1);
+      // ~~AsideThread is Classic's alone (blocker 1989)~~ — test-change: item 856, Classic too.
+      expect(frame).not.toMatch(/<AsideThread\b/);
     }
     expect(asideView).toMatch(/frame="full"/);
     expect(asideCard).toMatch(/frame="compact"/);

@@ -16,6 +16,7 @@
 use crate::AppState;
 use nightloom_core::Session;
 use nightloom_service::agent::AgentSpec;
+use nightloom_service::cache_miss;
 use nightloom_service::keep_warm::{self, Mode, Policy, Registry, Status};
 use std::path::Path;
 use std::sync::Arc;
@@ -63,6 +64,22 @@ fn tell(app: &AppHandle, holder: &Holder, chat: &str) {
     emit(app, &holder.0.status(chat, None, &policy(), now_ms()));
 }
 
+/// One ping's read and spend as the window hears it (item 699,
+/// `keep-warm-ping`): the cache-miss toast's facts. `context` is what the
+/// ping was meant to read (the reply's input plus output, as the ping's
+/// line in `keep-warm.jsonl` records it).
+#[derive(serde::Serialize, Clone)]
+struct PingHeard {
+    chat: String,
+    sent_ms: i64,
+    context: u64,
+    cache_read: u64,
+    cache_write: u64,
+    cost_usd: Option<f64>,
+    plan_est: Option<nightloom_service::turn_usage::Estimate>,
+    model: Option<String>,
+}
+
 /// Tick for the life of the app.
 /// Whether any chat has a keep-warm ping scheduled or running (blocker
 /// 1799, his "yeah"): `wake::watch` keeps the Mac awake while it is, as it
@@ -105,6 +122,10 @@ fn tick(app: &AppHandle) {
         tauri::async_runtime::spawn(async move {
             let sent = now_ms();
             emit(&app, &holder.0.status(&job.chat, None, &policy(), sent));
+            // Item 727: the ping's prefix print, for the cache-miss check.
+            if let Some(fork) = job.spec.keep_warm_ping() {
+                cache_miss::record_print_quiet(&job.dir, cache_miss::Kind::Ping, sent, &fork);
+            }
             let result = keep_warm::ping(&job.spec, &job.cancel).await;
             crate::wake::log(
                 "keep-warm",
@@ -124,6 +145,44 @@ fn tick(app: &AppHandle) {
                     Err(e) => format!("chat {} ping failed: {e}", job.chat),
                 },
             );
+            // Item 699: what the ping read and spent, for the window's
+            // cache-miss toast — not for a ping his send cancelled, which
+            // leaves no trace, nor one that failed.
+            if !job.cancel.is_cancelled()
+                && let Ok(r) = &result
+                && r.error.is_none()
+            {
+                let _ = app.emit(
+                    "keep-warm-ping",
+                    PingHeard {
+                        chat: job.chat.clone(),
+                        sent_ms: sent,
+                        context: job.context,
+                        cache_read: r.cache_read,
+                        cache_write: r.cache_write,
+                        cost_usd: r.cost_usd,
+                        plan_est: nightloom_service::turn_usage::estimate_cost(r.cost_usd),
+                        model: r.model.clone(),
+                    },
+                );
+                // Item 727: an unexplained miss goes to cache-miss.jsonl,
+                // off this task (it reads the parent's session file).
+                let req = cache_miss::Request {
+                    kind: cache_miss::Kind::Ping,
+                    chat: job.chat.clone(),
+                    project: cache_miss::project_of(&job.dir),
+                    at_ms: sent,
+                    read: r.cache_read,
+                    context: job.context,
+                    last_ms: Some(job.last_ms),
+                    one_hour: job.one_hour,
+                    cost_usd: r.cost_usd,
+                    chosen: None,
+                    cli_file: cache_miss::cli_file(&job.spec.workspace, job.spec.resume.as_deref()),
+                    ask_dir: Some(job.dir.clone()),
+                };
+                crate::commands::cli::check_request(&app, req);
+            }
             holder.0.done(&job, sent, result);
             tell(&app, &holder, &job.chat);
         });
@@ -171,6 +230,31 @@ pub fn aside_read(app: &AppHandle, chat: &str, sent_ms: i64, cache_read: u64) {
     if holder.0.aside_read(chat, sent_ms, cache_read) {
         emit(app, &holder.0.status(chat, None, &policy(), now_ms()));
     }
+}
+
+/// Item 728: chat `chat` was handed off — a next chat now continues it.
+/// The first time only, its keep-warm switches off (a scheduled ping is
+/// cancelled) and the chip says why; a later hand-off of the same chat,
+/// after he switched it back on, does nothing. `dir` is [`ask_dir`]'s.
+pub fn handed_off(app: &AppHandle, chat: &str, dir: &Path) {
+    let Some(holder) = app.try_state::<Holder>() else {
+        return;
+    };
+    let now = now_ms();
+    if holder.0.handed_off(chat, dir, now) {
+        emit(app, &holder.0.status(chat, Some(dir), &policy(), now));
+    }
+}
+
+/// A chat's keep-warm folder, as [`held_chat`] finds it: `ask/<id>`
+/// beside the chat's log, else under `log_dir`.
+pub fn ask_dir(session: &Session, log_dir: &Path) -> std::path::PathBuf {
+    session
+        .log_path()
+        .and_then(|p| p.parent())
+        .unwrap_or(log_dir)
+        .join("ask")
+        .join(&session.id)
 }
 
 /// Now, unix ms — for a caller outside this file (an aside's send).

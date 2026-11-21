@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import transcriptSrc from "./Transcript.svelte?raw";
-import messageSrc from "./AssistantMessage.svelte?raw";
+import transcriptSrcRaw from "./Transcript.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import messageSrcRaw from "./AssistantMessage.svelte?raw";
+const messageSrc = asOneFile(messageSrcRaw, assistantMessageLogicRaw);
 import { removeAsk, removeSnippet, removeTip } from "./removeAsk";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSrc = asOneFile(transcriptSrcRaw, transcriptLogicRaw);
 
 /*
  * Nightshift item 356: Remove on a message looked like Edit (a ringed

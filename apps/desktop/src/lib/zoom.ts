@@ -28,6 +28,7 @@ import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import { addToast } from "./state.svelte";
 import { keepPlacesAcross } from "./zoomAnchor";
+import { zoomNow } from "./zoomLevel.svelte";
 
 /** Chrome's presets as labels, ascending; 1 is Actual Size ("100%"). */
 export const ZOOM_STEPS = [
@@ -39,6 +40,35 @@ export const ZOOM_BASE = 1.1;
 export const ZOOM_KEY = "nightloom.zoom";
 /** Since item 619: the level (the label ÷ 100). */
 export const ZOOM_LEVEL_KEY = "nightloom.zoom.level";
+/**
+ * Item 839: the last changes, newest last — when, from, to, and what asked
+ * (`menu`: the View menu or its ⌘= / ⌘− / ⌘0; `key`: the app's own key
+ * handler; `chip`: the top bar's chip). His stored level drifted to 90 %
+ * with no record of what moved it; the next drift says.
+ */
+/**
+ * Item 876 (his words, 2026-11-19: 90 % "is kind of my default zoom"): the
+ * level he made his default. ⌘0 and the chip return to it, and the chip is
+ * quiet while the window sits at it. Absent on a fresh install: 100 %.
+ */
+export const ZOOM_DEFAULT_KEY = "nightloom.zoom.default";
+export const ZOOM_LOG_KEY = "nightloom.zoom.log";
+export type ZoomVia = "menu" | "key" | "chip" | "settings";
+export type ZoomLogEntry = { at: string; from: number; to: number; via: ZoomVia };
+const LOG_MAX = 20;
+
+/** The log with one more entry, capped (pure). */
+export function appendZoomLog(raw: string | null, e: ZoomLogEntry): ZoomLogEntry[] {
+  let list: ZoomLogEntry[] = [];
+  try {
+    const v = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(v)) list = v.filter((x) => x && typeof x === "object");
+  } catch {
+    list = [];
+  }
+  list.push(e);
+  return list.slice(-LOG_MAX);
+}
 
 /** The page-zoom factor a level draws at. */
 export function zoomFactor(level: number): number {
@@ -82,6 +112,24 @@ export function migrateZoom(
   const raw = f / ZOOM_BASE;
   for (const s of ZOOM_STEPS) if (Math.abs(s - raw) / s < 0.005) return s;
   return parseZoom(String(Math.round(raw * 10000) / 10000));
+}
+
+/** His default level read back: on the scale, else 1 (pure; `parseZoom`'s rule). */
+export function parseZoomDefault(raw: string | null): number {
+  return parseZoom(raw);
+}
+
+export function loadZoomDefault(): number {
+  try {
+    return parseZoomDefault(localStorage.getItem(ZOOM_DEFAULT_KEY));
+  } catch {
+    return 1;
+  }
+}
+
+/** Whether the chip has anything to say: the level is not his default. */
+export function zoomOffDefault(level: number, def: number): boolean {
+  return Math.abs(level - def) > 1e-6;
 }
 
 export function loadZoom(): number {
@@ -149,6 +197,7 @@ export function currentZoom(): number {
 /** Scale the window to level `level`: the webview's page zoom, else CSS `zoom`. */
 async function apply(level: number): Promise<void> {
   current = level;
+  zoomNow.level = level;
   const f = zoomFactor(level);
   try {
     await api.setZoom(f);
@@ -166,14 +215,62 @@ async function apply(level: number): Promise<void> {
 /** `zoom_in`, `zoom_out`, `zoom_reset` — the menu ids and the key handler's. */
 export async function runZoom(
   id: "zoom_in" | "zoom_out" | "zoom_reset",
+  via: ZoomVia = "menu",
 ): Promise<void> {
+  // Item 839: one change at a time — a second press waits for the first,
+  // so it steps from the level the first left, never from a stale one.
+  const run = queue.then(() => step(id, via));
+  queue = run.catch(() => {});
+  return run;
+}
+let queue: Promise<void> = Promise.resolve();
+async function step(id: "zoom_in" | "zoom_out" | "zoom_reset", via: ZoomVia): Promise<void> {
+  const from = current;
   const next =
-    id === "zoom_reset" ? 1 : stepZoom(current, id === "zoom_in" ? 1 : -1);
+    id === "zoom_reset" ? zoomNow.def : stepZoom(current, id === "zoom_in" ? 1 : -1);
+  await moveTo(next, from, via);
+}
+async function moveTo(next: number, from: number, via: ZoomVia): Promise<void> {
   if (next === current) return;
   // Item 672: every scrolled view keeps the line it was on.
   await keepPlacesAcross(() => apply(next));
   saveZoom(next);
-  addToast(zoomLabel(next));
+  try {
+    const log = appendZoomLog(localStorage.getItem(ZOOM_LOG_KEY), { at: new Date().toISOString(), from, to: next, via });
+    localStorage.setItem(ZOOM_LOG_KEY, JSON.stringify(log));
+  } catch {
+    // best-effort
+  }
+  // Item 839: never silent — every change says the level and the way back.
+  // Item 876: the way back is to his default, which is what ⌘0 does now.
+  addToast(
+    zoomOffDefault(next, zoomNow.def)
+      ? `${zoomLabel(next)} · ⌘0 for ${zoomLabel(zoomNow.def)}`
+      : zoomLabel(next),
+  );
+}
+
+/**
+ * Item 876: make `level` his default (Settings → Appearance, or the chip's
+ * "Make N% default"). Stored at once. A window sitting at the old default
+ * follows to the new one, as Chrome's default zoom moves pages left at it;
+ * a window zoomed elsewhere stays where it is.
+ */
+export async function setZoomDefault(level: number, via: ZoomVia = "chip"): Promise<void> {
+  const def = parseZoomDefault(String(level));
+  const run = queue.then(async () => {
+    const old = zoomNow.def;
+    zoomNow.def = def;
+    try {
+      localStorage.setItem(ZOOM_DEFAULT_KEY, String(def));
+    } catch {
+      // best-effort
+    }
+    if (!zoomOffDefault(current, old)) await moveTo(def, current, via);
+    else if (!zoomOffDefault(current, def)) addToast(`${zoomLabel(def)} is your default zoom`);
+  });
+  queue = run.catch(() => {});
+  return run;
 }
 
 /**
@@ -181,14 +278,22 @@ export async function runZoom(
  * is for a change), and the View menu's three ids listened for. Anything
  * else on the `menu` channel is `runMenuCommand`'s and ignored here.
  */
+let unlistenMenu: (() => void) | null = null;
 export async function initZoom(): Promise<void> {
   // Every level applies now, 100 % too: its factor is 1.1, not the webview's 1.
+  zoomNow.def = loadZoomDefault();
   await apply(loadZoom());
-  await listen<string>("menu", (e) => {
+  // Item 839: one listener, ever — a second `initZoom` (a remount, a dev
+  // reload) would else step the level twice per ⌘−.
+  unlistenMenu?.();
+  unlistenMenu = null;
+  const un = await listen<string>("menu", (e) => {
     const id = e.payload;
     if (id === "zoom_in" || id === "zoom_out" || id === "zoom_reset")
-      void runZoom(id);
+      void runZoom(id, "menu");
   });
+  (unlistenMenu as (() => void) | null)?.(); // a call that raced this one registered too: keep only ours
+  unlistenMenu = un;
 }
 
 /**

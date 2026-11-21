@@ -384,6 +384,17 @@ pub(crate) async fn session_figures(
     .map_err(|e| format!("reading the chat's figures failed: {e}"))
 }
 
+/// The plan's pace (item 769): when each window is expected to reach 80%
+/// and empty, forecast from his own reading history and checked against
+/// past windows (`nightloom_service::pace`). Reads the log on the
+/// blocking pool; also writes `plan-pace.json` for `usagectl.py`.
+#[tauri::command]
+pub(crate) async fn plan_pace() -> Result<nightloom_service::pace::PlanPace, String> {
+    tokio::task::spawn_blocking(nightloom_service::pace::read)
+        .await
+        .map_err(|e| format!("reading the plan pace failed: {e}"))
+}
+
 /// A plan reading is also the end reading of any reply that finished
 /// before its sample was taken (item 323, `turn_usage`).
 pub(crate) fn observed(
@@ -409,6 +420,52 @@ pub(crate) async fn turn_usage(
     tokio::task::spawn_blocking(move || nightloom_service::turn_usage::read_lines(&dir))
         .await
         .map_err(|e| format!("reading the reply usage failed: {e}"))
+}
+
+/// The read and write rates the composer's `next ≈ $…` estimate prices
+/// the chat's context at (item 699): `usage-rates.json`'s row for the
+/// model, else a fit to the CLI's own reported cost of the keep-warm pings
+/// on it in **every** project (`usage::cache_rates_with`). The price fix of
+/// 2026-11-16: this read only the open project's pings, and needed a hit
+/// and a miss among them — so a Fable 5.2 chat (no table row) in a project
+/// with one or two pings showed no figure at all. Every project's pings are
+/// one model's evidence; with only hits or only misses the fit holds the
+/// family's read : write ratio. `None` only with no ping on the model.
+/// Reads only; on the blocking pool, since it opens every chat's ping file.
+#[tauri::command]
+pub(crate) async fn cache_rates(
+    state: State<'_, AppState>,
+    model: String,
+) -> Result<Option<nightloom_service::usage::CacheRates>, String> {
+    cache_rates_for(&state, model).await
+}
+
+/// The command's read, for the phone's `GET /api/cache-rates` too (wave O,
+/// 2026-11-17): every project's `ask/` directory, then
+/// `usage::cache_rates_in` on the blocking pool.
+pub(crate) async fn cache_rates_for(
+    state: &AppState,
+    model: String,
+) -> Result<Option<nightloom_service::usage::CacheRates>, String> {
+    let mut asks = vec![
+        state.log_dir().await.join("ask"),
+        state.default_log_dir.join("ask"),
+    ];
+    {
+        let guard = state.workspaces.lock().await;
+        asks.extend(
+            guard
+                .registry
+                .projects()
+                .iter()
+                .map(|p| p.session_dir().join("ask")),
+        );
+    }
+    asks.sort();
+    asks.dedup();
+    tokio::task::spawn_blocking(move || nightloom_service::usage::cache_rates_in(&asks, &model))
+        .await
+        .map_err(|e| format!("reading the cache rates failed: {e}"))
 }
 
 /// The plan's figure refreshed through the CLI's print-mode `/usage` when

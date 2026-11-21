@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import dialSrc from "./ContextDial.svelte?raw";
-import railSrc from "./RightRail.svelte?raw";
+import { asOneFile } from "../test/oneFile";
+import rightRailLogicRaw from "./rightRail/logic.svelte.ts?raw";
+import railSrcRaw from "./RightRail.svelte?raw";
+const railSrc = asOneFile(railSrcRaw, rightRailLogicRaw);
 import {
   clockText,
   dialGeometry,

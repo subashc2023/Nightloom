@@ -2,6 +2,7 @@
   import { onDestroy, tick, untrack } from "svelte";
   import { app, asideInTab, unfoldAside } from "./state.svelte";
   import type { Aside } from "./state.svelte";
+  import { blankDraft } from "./state/asides.svelte";
   import AsideCard from "./AsideCard.svelte";
   import AsidesList from "./AsidesList.svelte";
   import { cardWaits } from "./transcriptWindow.svelte";
@@ -62,22 +63,30 @@
 
   const session = $derived(app.activeSessionId);
   /** Item 484: a thread about a passage on a turn the transcript has not
-   *  drawn — its card is drawn when the turn is. One he moved is fixed to
-   *  the window, not to the passage, and stays. */
+   *  drawn — its card is drawn when the turn is. ~~One he moved is fixed to
+   *  the window, not to the passage, and stays.~~ (struck 2026-11-16, item
+   *  734: a moved card is kept from its passage and waits with it.) */
   const waitsForTurn = (a: Aside) => cardWaits(a, drawn);
   /** The cards drawn here: every open thread not in a tab or the panel,
    *  and not waiting for its turn to be drawn. */
-  const shown = $derived(app.asides.filter((a) => !asideInTab(session, a.id) && !waitsForTurn(a)));
+  // Item 704: an empty aside made for a tab whose thread was gone holds
+  // nothing of his — no card for it once that tab closes.
+  const shown = $derived(app.asides.filter((a) => !asideInTab(session, a.id) && !waitsForTurn(a) && !blankDraft(a)));
   /** The thread the side panel shows beside this chat, if any. */
   const besideId = $derived.by(() => {
     if (session === null || app.asidePanel !== session) return null;
     return app.asidePanelThread ?? app.asides[app.asides.length - 1]?.id ?? null;
   });
   /** The newest open card claims a stray Escape (one Escape, one card). */
-  const frontId = $derived([...shown].reverse().find((a) => !a.folded)?.id ?? null);
+  // Item 735: nor a minimized one — a stray Escape never closes a line.
+  const frontId = $derived([...shown].reverse().find((a) => !a.folded && !a.minimized)?.id ?? null);
 
   let cards = $state<Record<number, AsideCard | null>>({});
   let placements = $state<Record<number, Placement | null>>({});
+  /** Item 734: each card's passage top in the column's px (null: not
+   *  found), and the column's width — what a moved card is drawn from. */
+  let passageTops = $state<Record<number, number | null>>({});
+  let frameWidth = $state(0);
   /** Each composer card's `bottom` in the stack above the composer. */
   let footBottoms = $state<Record<number, number>>({});
   const footIds = $derived(shown.filter((a) => !placements[a.id]).map((a) => a.id));
@@ -131,7 +140,11 @@
     const shownIds = new Set(shown.map((a) => a.id));
     const wanted = new Set<number>();
     const next: Record<number, Placement | null> = {};
-    for (const a of shown) next[a.id] = null;
+    const tops734: Record<number, number | null> = {};
+    for (const a of shown) {
+      next[a.id] = null;
+      tops734[a.id] = null;
+    }
     const boxes: CardBox[] = [];
     const spread: number[] = [];
     const hostRect = host.getBoundingClientRect();
@@ -154,9 +167,12 @@
       wanted.add(a.id);
       if (!onCard) continue; // marked for the panel; no card here
       const height = cards[a.id]?.element()?.offsetHeight ?? PREFERRED_CARD_HEIGHT;
-      const p = placeCard(m.range.getBoundingClientRect(), hostRect, vpRect, height, a.anchor.side);
+      const sel = m.range.getBoundingClientRect();
+      tops734[a.id] = sel.top - hostRect.top;
+      const p = placeCard(sel, hostRect, vpRect, height, a.anchor.side);
       next[a.id] = p;
-      // A card he moved stays exactly where he put it (backlog 156).
+      // A card he moved stays exactly where he put it (backlog 156) — in
+      // the column, beside its passage (item 734).
       if (!a.moved) {
         boxes.push({ top: p.top, left: p.left, width: p.width, height });
         spread.push(a.id);
@@ -169,6 +185,8 @@
       if (p) next[id] = { ...p, top: tops[i]! };
     });
     placements = next;
+    passageTops = tops734;
+    frameWidth = hostRect.width;
     // The composer cards: the newest nearest the composer, each one's
     // `bottom` the heights of those under it.
     await tick();
@@ -199,6 +217,7 @@
       void a.draft;
       void a.folded;
       void a.moved;
+      void a.minimized;
     }
     void shown;
     void besideId;
@@ -261,5 +280,9 @@
     front={a.id === frontId}
     footBottom={footIds.length > 1 ? (footBottoms[a.id] ?? null) : null}
     footCount={footIds.length}
+    frame={inner}
+    {viewport}
+    passageTop={passageTops[a.id] ?? null}
+    {frameWidth}
   />
 {/each}

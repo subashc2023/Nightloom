@@ -84,8 +84,11 @@
             ? `Fold this aside into ◇ ${bound}: one turn here writes a summary (your words verbatim, with pointers); you review it, then Nightloom appends it to the thread's log.md`
             : "Fold this aside into a research thread — this chat has none yet, so you pick one first") +
           (warning ? `\n${warning}` : "")}
+      aria-label="Fold into thread"
       onclick={() => void startFold(aside)}
-      >{#if twin && !classic()}<FilamentMark kind="aside" />{:else}<Icon name="think" size={11} />{/if} Fold into thread</button
+      >{#if twin && !classic()}<FilamentMark kind="aside" />{:else}<Icon name="think" size={11} />{/if}<span class="fold-btn-word">
+        Fold into thread</span
+      ></button
     >
   {/if}
 {:else if fold}

@@ -1,7 +1,10 @@
 // Item 667: a running step's motion eases in over its first 5 s.
 import { describe, expect, it } from "vitest";
 import { RAMP_MS, RAMP_START, rampOrigin, rampRate } from "./stepRamp";
-import messageSrc from "./AssistantMessage.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+import messageSrcRaw from "./AssistantMessage.svelte?raw";
+const messageSrc = asOneFile(messageSrcRaw, assistantMessageLogicRaw);
 import previewSrc from "./StepMotionPreview.svelte?raw";
 
 describe("the ramp's rate curve", () => {

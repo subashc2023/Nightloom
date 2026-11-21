@@ -14,7 +14,12 @@ import "@fontsource/ibm-plex-sans/latin-500.css";
 import "@fontsource/ibm-plex-sans/latin-600.css";
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "@fontsource/ibm-plex-mono/latin-500.css";
+// Item 716: the composer's controls, lifted out of Composer.svelte so Settings' previews can
+// draw them; before app.css, where the scoped rules sat in the bundle, so app.css keeps its ties.
+import "./composerControls.css";
 import "./app.css";
+// Item 884: the question box in Jarvis, right after app.css so it wins the ties with app.css's .nl-ask rules.
+import "./askLook.css";
 // Item 618b: the composer row's looks, after app.css (the designs harness's order, so app.css never wins a tie).
 import "./composerRow.css";
 // Item 596: the cache on the message box's frame, after the row's looks.
@@ -23,15 +28,29 @@ import "./cacheLook.css";
 import "./modelFamily.css";
 import { app as state, applyPalette } from "./lib/state.svelte";
 import { applyLayout } from "./lib/layout.svelte";
-import { installMathCopy } from "./lib/mathCopy";
+import { installMathCopy, installMathSelection } from "./lib/mathCopy";
 import { installFieldUndo } from "./lib/fieldUndo";
 import { installSelectScope } from "./lib/selectScope";
+import { installDiagrams } from "./lib/diagrams";
+import { installEvidence } from "./lib/evidenceTables";
+import { copyText } from "./lib/clipRing.svelte";
+import { installErrorWatch } from "./lib/errorWatch.svelte";
+
+// Item 874: every uncaught error to logs/frontend-errors.log, and a Reload view bar if Svelte stops drawing.
+installErrorWatch();
 
 // Item 352: copying a rendered formula gives its TeX.
 installMathCopy();
+// Item 838: a selected formula highlights as one box.
+installMathSelection();
 
 // Item 421: ⌘Z in a plain field undoes that field, never another box.
 installFieldUndo();
+
+// Item 821: a ```mermaid or ```svg block draws as its diagram, wherever markdown is shown.
+installDiagrams({ copy: (t) => void copyText(t) });
+// Item 798: evidence tables in replies, notes and file tabs.
+installEvidence();
 
 // Item 646: ⌘A outside a text box selects the pane he is in, never the whole app.
 installSelectScope();

@@ -17,12 +17,18 @@
   import type { Attachment } from "./types";
   import { scheduleAsideSave } from "./asides.svelte";
   import { asideDraftKey } from "./asides";
+  import { dismissRewoundOffer, rewoundOffer } from "./rewindDraft.svelte";
   import { asideWait, quietLabel } from "./asideWait";
   import { RESUME_MARGIN_MS, pauseLabel, resetLabel, resumeDelayMs } from "./limit";
   import { asideEvents, asideLive } from "./asideTranscript";
   import type { LimitCard, TranscriptSource } from "./transcriptSource.svelte";
   import Transcript from "./Transcript.svelte";
+  // Item 856: Classic draws an aside through its own transcript too, now
+  // that both looks share one logic (supersedes blocker 1989's default).
+  import TranscriptClassic from "./TranscriptClassic.svelte";
+  import { classic } from "./layout.svelte";
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
+  import { noteWaiting } from "./asideNotes.svelte";
 
   /**
    * An aside's thread, drawn by the chat's own transcript (item 674,
@@ -71,7 +77,8 @@
   const onClaudeCode = $derived(app.connection?.engine === "claude-code");
   // The asking exchange's events read only its question, so a streamed
   // delta rebuilds the live turn alone, never the thread's items.
-  const ev = $derived(asideEvents(aside));
+  // Item 775: an answer that changed files says whether the main chat has heard.
+  const ev = $derived(asideEvents(aside, noteWaiting));
   const live = $derived(asideLive(aside));
 
   // The clock the queued / stalled words read (item 404), ticking only
@@ -98,14 +105,18 @@
     const i = ev.turnOf[index];
     if (i === undefined) return false;
     const before = aside.unsent ?? "";
+    const offered = rewoundOffer.seq;
     const gone = rewindAside(aside, i);
     if (gone.length === 0) return false;
     scheduleAsideSave();
     const after = aside.unsent ?? "";
     const n = gone.length;
-    addToast(n === 1 ? "Rewound 1 exchange — the question is back in the box" : `Rewound ${n} exchanges — the question is back in the box`, {
+    // Item 724: a draft in the box stayed; the question is in its drafts.
+    const where = rewoundOffer.seq !== offered ? "your draft stayed; the question is in drafts, above the box" : "the question is back in the box";
+    addToast(n === 1 ? `Rewound 1 exchange — ${where}` : `Rewound ${n} exchanges — ${where}`, {
       label: "Undo",
       run: () => {
+        dismissRewoundOffer(asideDraftKey(aside));
         if (!restoreAsideTurns(aside, i, gone)) {
           addToast("Not undone — the aside has moved on since");
           return;
@@ -141,6 +152,26 @@
     void (aside.draft ? askAside(words, aside.quote, aside, { attachments: chips }) : followUpAside(words, aside, { attachments: chips })).then(
       () => scheduleAsideSave(),
     );
+    return true;
+  }
+  /** Item 859: an option clicked on a question box in this aside goes as its follow-up, as typed would. */
+  async function answerPick(text: string): Promise<boolean> {
+    const words = text.trim();
+    if (!words || aside.draft) return false;
+    if (!open) {
+      addToast("Open the chat to answer — an aside answers from its context");
+      return false;
+    }
+    if (!onClaudeCode) {
+      addToast("An aside is answered by Claude Code — connect it to answer");
+      return false;
+    }
+    if (asking) {
+      addToast("This aside is still answering — send your pick when it is done");
+      return false;
+    }
+    await followUpAside(words, aside, { attachments: [] });
+    scheduleAsideSave();
     return true;
   }
   const chipsOfTurn = (at: number): Attachment[] =>
@@ -238,6 +269,7 @@
       rewind,
       askEdited,
       ...(open && onClaudeCode ? { retry: (index: number) => askAgain(ev.turnOf[index] ?? -1) } : {}),
+      answer: answerPick,
     },
     words: {
       rewindTip:
@@ -265,9 +297,10 @@
     },
     waitNote,
   });
+  const View = $derived(classic() ? TranscriptClassic : Transcript);
 </script>
 
-<Transcript {source} {lead}>
+<View {source} {lead}>
   {#snippet afterLive()}
     {#if asking && wait?.kind === "stalled" && !waiting}
       <!-- Item 404: silence past ASIDE_STALL_MS is said, with a way on. -->
@@ -288,7 +321,7 @@
   {#snippet foot()}
     {#if !aside.draft}<AsideFoldPanel {aside} part="panel" {open} />{/if}
   {/snippet}
-</Transcript>
+</View>
 
 <style>
   .aside-stalled {

@@ -25,6 +25,7 @@
   import type { ThreadInfo } from "./types";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import { tip } from "./tip";
+  import HudSelect from "./HudSelect.svelte";
 
   /*
    * `list` (nightshift backlog 281): the rows drawn as buttons, each with
@@ -33,11 +34,17 @@
    * thread) is bound, so a popover can close; never for *New thread…*,
    * whose form stays open.
    */
+  /*
+   * `menu` (item 705, option A): the hand-off card's themed button and the
+   * shared HUD menu instead of the native select ("that thread dropdown is
+   * ugly asf"); the status line is in the rows, so none is drawn under it.
+   */
   let {
     compact = false,
     list = false,
+    menu = false,
     onpicked,
-  }: { compact?: boolean; list?: boolean; onpicked?: () => void } = $props();
+  }: { compact?: boolean; list?: boolean; menu?: boolean; onpicked?: () => void } = $props();
 
   let threads = $state<ThreadInfo[]>([]);
   let loadError = $state<string | null>(null);
@@ -164,7 +171,7 @@
   }
 </script>
 
-<div class="thread-picker" class:compact class:list>
+<div class="thread-picker" class:compact class:list class:menu>
   {#if list}
     <div class="tp-list" role="listbox" aria-label="The research thread this chat works from">
       {#each options.filter((o) => o.value !== NEW_THREAD) as o (o.value)}
@@ -200,6 +207,25 @@
     {#if app.busy || app.connecting}
       <p class="tp-detail">The binding changes once the chat's turn ends.</p>
     {/if}
+  {:else if menu}
+    <HudSelect
+      kicker="Thread"
+      value={form?.open ? "New thread…" : (current?.label ?? "No thread")}
+      head="Research thread"
+      label="The research thread this chat works from"
+      disabled={working || app.busy || app.connecting || !app.project}
+      hint={app.project
+        ? "A research thread: its Start here is loaded into the chat, the wrap-up updates its files instead of HANDOFF.md, and Continue opens the next chat on the same thread."
+        : "Threads live in a project; open one first."}
+      rows={options.map((o) => ({
+        id: o.value,
+        label: o.value === NEW_THREAD ? "New thread…" : o.label,
+        detail: o.detail,
+        on: o.value !== NEW_THREAD && o.value === (bound ?? ""),
+        action: o.value === NEW_THREAD,
+      }))}
+      onpick={(v) => void pick(v)}
+    />
   {:else}
   <label class="tp-row">
     <span class="tp-label">Thread</span>
@@ -219,7 +245,7 @@
     </select>
   </label>
   {/if}
-  {#if !list && !compact && current && current.value !== NEW_THREAD && !form?.open}
+  {#if !list && !compact && !menu && current && current.value !== NEW_THREAD && !form?.open}
     <p class="tp-detail">{current.detail}</p>
   {/if}
   {#if loadError}
@@ -295,6 +321,12 @@
     flex-direction: column;
     gap: 4px;
     font-size: 12.5px;
+  }
+  /* Item 705: one control in the card's row; the New thread form opens under it. */
+  .thread-picker.menu {
+    display: inline-flex;
+    min-width: 0;
+    max-width: 100%;
   }
   .tp-row {
     display: flex;

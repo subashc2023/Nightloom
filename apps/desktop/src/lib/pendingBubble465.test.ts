@@ -2,10 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { drafts, enqueueMessage, historyFor, markInjected, readDraft } from "./drafts.svelte";
 import { cancelPending, editPending, offersChoice, pendingLabel, pendingRows, pendingState } from "./pendingBubble.svelte";
-import assistantSource from "./AssistantMessage.svelte?raw";
-import transcriptSource from "./Transcript.svelte?raw";
+import assistantMessageLogicRaw from "./assistantMessage/logic.svelte.ts?raw";
+import assistantSourceRaw from "./AssistantMessage.svelte?raw";
+const assistantSource = asOneFile(assistantSourceRaw, assistantMessageLogicRaw);
+import transcriptSourceRaw from "./Transcript.svelte?raw";
 import bubbleSource from "./MidTurnBubble.svelte?raw";
 import stateSource from "./state.svelte.ts?raw";
+import transcriptLogicRaw from "./transcript/logic.svelte.ts?raw";
+import { asOneFile } from "../test/oneFile";
+const transcriptSource = asOneFile(transcriptSourceRaw, transcriptLogicRaw);
 
 // Item 465 (2026-10-28): a message sent while a turn runs is his bubble —
 // greyed with a pending mark and its choices until the turn takes it, an
@@ -31,7 +36,7 @@ describe("where a pending message stands", () => {
 
   it("after Let it arrive: no choice left, still not sent", () => {
     expect(offersChoice("next-step", true)).toBe(false);
-    expect(pendingLabel("next-step", true)).toBe("not sent yet — Claude reads it at its next step");
+    expect(pendingLabel("next-step", true)).toBe("not sent yet — waiting for a gap: Claude reads it at its next step");
   });
 
   it("sending now, and a row the turn cannot take (provider engine, files): no Send now", () => {
