@@ -9,7 +9,7 @@
   import { recordedAnswers } from "./askAnswers.svelte";
   import { tip } from "./tip";
 
-  import { closedAskReason, closedPickText, sendAskAnswer } from "./askSettled";
+  import { askStacks, closedAskReason, closedPickText, numberKey, sendAskAnswer } from "./askSettled";
   // Item 859: `ended` — the reply this call is in is not streaming (its turn is over, or it is from the log).
   let { call, ended = false }: { call: ToolCallView; ended?: boolean } = $props();
 
@@ -47,7 +47,19 @@
     {#each questions as q, i (i)}
       <div class="aa-q">
         <div class="aa-qt">{q.question}</div>
-        <div class="aa-opts">
+        <!-- Item 884: 1–9 on a focused answer sends that numbered answer (each shows its key). -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="aa-opts"
+          data-stack={askStacks(q.options.map((o) => o.label)) ? "1" : undefined}
+          onkeydown={(e) => {
+            const n = numberKey(e);
+            const o = n ? q.options[n - 1] : undefined;
+            if (!o) return;
+            e.preventDefault();
+            pick(q, o.label);
+          }}
+        >
           {#each q.options as o (o.label)}
             <button type="button" class="aa-pick" disabled={sent} onclick={() => pick(q, o.label)}>{o.label}</button>
           {/each}
@@ -101,7 +113,8 @@
       0 1px 2px rgba(0, 0, 0, 0.16),
       0 8px 22px -12px rgba(0, 0, 0, 0.45);
   }
-  .aa-chip-closed {
+  /* Item 884: two classes, so it beats `.aa-chip` below (the closed chip drew in the answered green). */
+  .aa-chip.aa-chip-closed {
     background: var(--well);
     color: var(--dim);
   }
@@ -123,6 +136,8 @@
   .aa-pick {
     font: inherit;
     font-size: 12.5px;
+    /* Item 884: a long answer that wraps reads left-aligned, not centred. */
+    text-align: left;
     padding: 3px 12px;
     border-radius: 999px;
     border: 1px solid var(--accent-ink);
@@ -134,71 +149,75 @@
     opacity: 0.5;
     cursor: default;
   }
-  /* Item 884 (option B, Console rows): in Jarvis a closed card's answers are the question box's rows — a
-     number, the answer, hairline rules; hover or focus draws the lock-on's amber edge and wash and SEND ↵ —
-     not tan pills. Classic keeps the pills above. */
+  /* Item 884 (option A, Control row — his pick; the stack rule): in Jarvis a closed card's answers are the
+     question box's buttons (src/askLook.css) — a number key first, side by side while short; once any
+     answer of a question passes 40 characters (`data-stack`), that question's answers stack full width.
+     Hover or focus lights the edge amber; 1–9 on a focused answer sends that one. Classic keeps the pills. */
   :global(:where(:root:not([data-layout="classic"]))) .aa-closed .aa-opts {
-    display: block;
-    margin: 10px -12px 0;
-    border-top: 1px solid var(--line);
+    align-items: flex-start;
+    gap: 8px;
+    margin-top: 10px;
     counter-reset: aa-pick;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aa-closed .aa-opts[data-stack] {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
   }
   :global(:where(:root:not([data-layout="classic"]))) .aa-pick {
     counter-increment: aa-pick;
-    position: relative;
-    display: block;
-    width: 100%;
-    text-align: left;
+    display: inline-flex;
+    align-items: flex-start;
+    gap: 9px;
+    max-width: 100%;
+    min-height: 30px;
+    box-sizing: border-box;
     margin: 0;
-    padding: 9px 80px 9px 44px;
-    border: 0;
-    border-bottom: 1px solid var(--line);
-    border-radius: 0;
-    background: none;
+    padding: 5px 12px 5px 7px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--well);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
     color: var(--ink);
-    font: 13.5px/1.4 var(--sans);
+    font: 500 13.5px/18px var(--sans);
+    text-align: left;
     overflow-wrap: anywhere;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .aa-pick:last-child {
-    border-bottom: 0;
+  :global(:where(:root:not([data-layout="classic"]))) .aa-opts[data-stack] .aa-pick {
+    display: flex;
+    width: 100%;
+    padding-top: 6px;
+    padding-bottom: 6px;
   }
   :global(:where(:root:not([data-layout="classic"]))) .aa-pick::before {
     content: counter(aa-pick);
-    position: absolute;
-    left: 12px;
-    top: 10px;
-    padding: 0 5px;
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    min-width: 18px;
+    height: 18px;
+    box-sizing: border-box;
+    padding: 0 4px;
     border: 1px solid var(--line2);
-    border-radius: 4px;
-    font: 10.5px/16px var(--mono);
+    border-radius: 3px;
+    background: var(--term);
+    font: 10.5px/1 var(--mono);
     color: var(--dim);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .aa-pick::after {
-    content: "Send ↵";
-    position: absolute;
-    right: 12px;
-    top: 11px;
-    font: 10px var(--mono);
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--accent-ink);
-    opacity: 0;
   }
   :global(:where(:root:not([data-layout="classic"]))) .aa-pick:is(:hover, :focus-visible):not(:disabled) {
     outline: none;
-    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 11%, transparent), transparent 75%);
-    box-shadow: inset 2px 0 0 var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
+    background: var(--well2);
+    box-shadow:
+      inset 0 0 10px color-mix(in srgb, var(--accent) 12%, transparent),
+      var(--glow-main, none);
     color: var(--accent-ink);
   }
   :global(:where(:root:not([data-layout="classic"]))) .aa-pick:is(:hover, :focus-visible):not(:disabled)::before {
     border-color: color-mix(in srgb, var(--accent) 60%, var(--line2));
     color: var(--accent-ink);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .aa-pick:is(:hover, :focus-visible):not(:disabled)::after {
-    opacity: 1;
-  }
   :global(:where(:root:not([data-layout="classic"]))) .aa-closed .aa-why {
-    border-top: 1px solid var(--line);
     font: 11px var(--mono);
   }
   .aa-why {
