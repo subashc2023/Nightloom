@@ -89,6 +89,8 @@ impl Key {
         for (k, v) in &self.env_set {
             cmd.env(k, v);
         }
+        // Homebrew and the CLI's installs on PATH (item 897).
+        cmd.env("PATH", super::child_path());
         cmd
     }
 }

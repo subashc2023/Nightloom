@@ -54,10 +54,13 @@ pub fn run_from_launchd() {
 /// The PATH the runner's turns see: where `claude` is installed, then the
 /// system's.
 fn runner_path(user_home: &Path) -> String {
-    let h = user_home.display();
-    format!(
-        "{h}/.local/bin:{h}/.claude/local:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-    )
+    // The shared list (item 897), joined in its order: the plist text is
+    // unchanged, so an installed runner is not rewritten.
+    nightloom_service::fallback_path_dirs(Some(user_home))
+        .iter()
+        .map(|d| d.display().to_string())
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// At the app's launch, off the main thread: put the agent in place (or

@@ -1344,6 +1344,12 @@ fn refuse_to_open(why: &str) {
 }
 
 fn main() {
+    // Item 897: an app opened from the Dock inherits launchd's bare PATH,
+    // so chats could not find Homebrew's tools. Widen it once, first, so
+    // every child (the CLI, git, soffice, node…) inherits it.
+    // SAFETY (Rust 2024's `set_var`): the first statement of `main`, before
+    // any thread exists, so nothing can read the environment concurrently.
+    unsafe { std::env::set_var("PATH", nightloom_service::child_path()) };
     // The startup log's clock (item 220): every line's `+N ms` counts from here.
     startup_log::mark_launch();
     // Item 486: every panic is written to `~/.nightloom/logs/panic.log`;
