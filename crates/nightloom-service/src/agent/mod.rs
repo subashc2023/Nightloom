@@ -3506,6 +3506,64 @@ fn which_on_path(_name: &str) -> Option<PathBuf> {
     None
 }
 
+/// Where a Mac keeps the tools a chat runs (item 897): the CLI's own
+/// installs, Homebrew (Apple silicon, then Intel), then the system's. The
+/// jobs runner's launchd PATH is this list joined (`jobs_runner.rs`).
+pub fn fallback_path_dirs(home: Option<&std::path::Path>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(h) = home {
+        dirs.push(h.join(".local/bin"));
+        dirs.push(h.join(".claude/local"));
+    }
+    for d in [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ] {
+        dirs.push(PathBuf::from(d));
+    }
+    dirs
+}
+
+/// `inherited` with every fallback dir that `exists` and is missing
+/// appended (item 897). An app opened from the Dock inherits launchd's
+/// `/usr/bin:/bin:/usr/sbin:/sbin`, so a chat's `pdftotext` (and the CLI's
+/// own `pdftoppm` for a PDF Read) was "not found" though Homebrew has it.
+/// Inherited entries keep their order and priority; nothing is repeated.
+pub fn widened_path(
+    inherited: Option<&std::ffi::OsStr>,
+    home: Option<&std::path::Path>,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(p) = inherited {
+        for d in std::env::split_paths(p) {
+            if !d.as_os_str().is_empty() && !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+    }
+    for d in fallback_path_dirs(home) {
+        if !dirs.contains(&d) && exists(&d) {
+            dirs.push(d);
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_else(|_| inherited.map(Into::into).unwrap_or_default())
+}
+
+/// The PATH every process Nightloom spawns for a chat gets: this process's
+/// own, widened ([`widened_path`]). The desktop app also sets it on itself
+/// at start, so children spawned anywhere else inherit it.
+pub fn child_path() -> std::ffi::OsString {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    widened_path(std::env::var_os("PATH").as_deref(), home.as_deref(), |d| {
+        d.is_dir()
+    })
+}
+
 /// Ask the CLI to stop the way Ctrl-C does, and say whether it was asked.
 ///
 /// `kill -INT <pid>` rather than `libc::kill`: the crate has no `libc`
@@ -7037,6 +7095,47 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":
         // A cut that lands on a boundary keeps exactly the tail.
         let exact = "y".repeat(STDERR_TAIL + 10);
         assert_eq!(stderr_tail(&exact).len(), STDERR_TAIL);
+    }
+
+    /// Item 897: a Dock-launched app's PATH gains Homebrew; the inherited
+    /// order is kept and nothing is repeated.
+    #[test]
+    fn a_launchd_path_is_widened_with_homebrew_in_order_without_duplicates() {
+        let home = std::path::Path::new("/Users/someone");
+        let got = widened_path(
+            Some(std::ffi::OsStr::new("/usr/bin:/bin")),
+            Some(home),
+            |_| true,
+        );
+        let dirs: Vec<PathBuf> = std::env::split_paths(&got).collect();
+        assert_eq!(dirs[0], PathBuf::from("/usr/bin"));
+        assert_eq!(dirs[1], PathBuf::from("/bin"));
+        assert!(dirs.contains(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(dirs.contains(&home.join(".local/bin")));
+        let mut seen = dirs.clone();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), dirs.len(), "no duplicates: {dirs:?}");
+        // Inherited entries keep priority over a fallback dir they name.
+        let got = widened_path(
+            Some(std::ffi::OsStr::new("/x:/opt/homebrew/bin:/x")),
+            None,
+            |_| true,
+        );
+        let dirs: Vec<PathBuf> = std::env::split_paths(&got).collect();
+        assert_eq!(dirs[0], PathBuf::from("/x"));
+        assert_eq!(dirs[1], PathBuf::from("/opt/homebrew/bin"));
+        assert_eq!(
+            dirs.iter()
+                .filter(|d| d.as_path() == std::path::Path::new("/x"))
+                .count(),
+            1
+        );
+        // A dir that does not exist is not added; no PATH at all still works.
+        let got = widened_path(None, None, |d| {
+            d == std::path::Path::new("/opt/homebrew/bin")
+        });
+        assert_eq!(got, std::ffi::OsString::from("/opt/homebrew/bin"));
     }
 
     #[test]

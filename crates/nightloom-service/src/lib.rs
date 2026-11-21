@@ -90,7 +90,7 @@ pub mod voice;
 
 pub use agent::{
     AgentError, AgentOutcome, AgentSpec, ClaudeCodeAgent, PassSpec, Recorder, carry_transcript,
-    resolve_binary, searched_locations,
+    child_path, fallback_path_dirs, resolve_binary, searched_locations, widened_path,
 };
 pub use approval::{Approver, AutoApprove, Decision, PendingCall};
 pub use credentials::{CredentialError, KeySource, provider_key, search_key};
