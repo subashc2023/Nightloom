@@ -23,6 +23,8 @@
   import { answerText, isAnswered } from "./askQuestions";
   import type { Ask } from "./askTag";
   import { askStacks } from "./askSettled";
+  import { askCardLook } from "./askCardLook.svelte";
+  import { classic } from "./layout.svelte";
   import type { AskQuestion } from "./types";
 
   let {
@@ -58,6 +60,10 @@
   const ready = $derived(isAnswered(picks[0], others[0]));
   // Item 884 (option A, the stack rule): any answer past 40 characters stacks every answer full width.
   const stack = $derived(askStacks(ask.options));
+  // Item 884b: Send ↵ sits at the card's foot. In Buttons a click on an answer sends it, so Send is there only
+  // for the Other text; in Rows (and Classic) it is always there, muted until an answer is picked or typed.
+  const typed = $derived((others[0] ?? "").trim() !== "");
+  const showSend = $derived(classic() || askCardLook.value !== "buttons" || typed);
 
   function toggle(i: number, label: string) {
     picks[i] = picks[i]?.[0] === label ? [] : [label];
@@ -100,12 +106,13 @@
     {notes}
     onnote={(i, label, value) => (notes[i] = { ...(notes[i] ?? {}), [label]: value })}
     {onquick}
-  >
-    {#snippet tail()}
-      <button type="button" class="ta-send" disabled={!ready || sending} onclick={onquick}>{sending ? "Sending…" : "Send answer"}</button>
-    {/snippet}
-  </AskQuestions>
-  {#if note}<div class="ta-note">{note}</div>{/if}
+  />
+  {#if note || showSend}
+    <div class="ta-foot">
+      {#if note}<div class="ta-note">{note}</div>{/if}
+      {#if showSend}<button type="button" class="ta-send" disabled={!ready || sending} onclick={onquick}>{sending ? "Sending…" : "Send ↵"}</button>{/if}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -145,16 +152,25 @@
     cursor: default;
   }
   .ta-note {
-    margin-top: 8px;
     font-size: 12px;
     color: var(--dim);
   }
-  /* Item 884 (option A, Control row — his pick; the stack rule for long answers): in Jarvis the card is the
-     question box's and the hand-off card's glass — the amber-tinted top and thin amber edge — and Send
-     answer is the hand-off's Wrap up now (the terminal fill, the amber edge and glow), not a tan pill. The
-     answers are the box's buttons (src/askLook.css): the number key first, no radio dot (a click sends),
-     side by side while short; once any answer passes 40 characters (`data-stack`), all stack full width.
-     Other and an option's comment field always take a full row. Classic keeps the rules above. */
+  /* Item 884b: the card's foot — the hint line, and Send ↵ right-aligned beside it. */
+  .ta-foot {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 10px;
+  }
+  .ta-foot .ta-send {
+    margin-left: auto;
+  }
+  /* Item 884, both looks (884b: Settings → Appearance → Question cards, askCardLook.svelte.ts): in Jarvis the
+     card is the question box's and the hand-off card's glass — the amber-tinted top and thin amber edge.
+     Rows (the default) keeps AskQuestions' rows. Buttons (`data-askcard="buttons"`, the rules at the end)
+     makes the answers the box's buttons (src/askLook.css): the number key first, no radio dot (a click
+     sends), side by side while short; once any answer passes 40 characters (`data-stack`), all stack full
+     width. Other and an option's comment field always take a full row. Classic keeps the rules above. */
   :global(:where(:root:not([data-layout="classic"]))) .turn-ask {
     border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line2));
     border-radius: var(--r2);
@@ -165,39 +181,54 @@
     /* The sticky header strip's fill: the glass's tinted top, so no band shows under it. */
     --aq-bg: color-mix(in srgb, var(--accent) 6%, var(--raised));
   }
+  /* Item 884b (his "The one thing i dont like is the send answer button"; blocker 2247): Send ↵ at the foot,
+     right of the hint line, drawn like the composer's Send — 32 px, its corner, 13 px type — filled amber
+     with dark text once an answer is picked or typed; muted (the dark bulb, a dim edge) until then. */
   :global(:where(:root:not([data-layout="classic"]))) .ta-send {
-    min-height: 28px;
-    padding: 3px 12px;
+    min-height: 32px;
+    padding: 0 16px;
     border-radius: var(--r1);
-    border: 1px solid color-mix(in srgb, var(--accent) 70%, var(--line2));
-    background: var(--term);
-    color: var(--accent-ink);
-    font-weight: 500;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: var(--on-accent);
+    font: 600 13px var(--sans);
     box-shadow:
-      inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.22),
       var(--glow-main, none);
+    transition:
+      background 140ms ease,
+      border-color 140ms ease,
+      box-shadow 180ms ease;
   }
   :global(:where(:root:not([data-layout="classic"]))) .ta-send:hover:not(:disabled) {
-    background: var(--well);
+    background: color-mix(in srgb, var(--accent) 86%, #fff);
+    border-color: color-mix(in srgb, var(--accent) 86%, #fff);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ta-send:active:not(:disabled) {
+    transform: translateY(1px);
   }
   :global(:where(:root:not([data-layout="classic"]))) .ta-send:focus-visible {
     outline: 2px solid var(--accent);
-    outline-offset: 1px;
+    outline-offset: 2px;
   }
   :global(:where(:root:not([data-layout="classic"]))) .ta-send:disabled {
+    background: var(--term);
+    border-color: color-mix(in srgb, var(--accent) 22%, var(--line2));
+    color: color-mix(in srgb, var(--accent-ink) 45%, var(--dim));
     box-shadow: none;
+    opacity: 1;
   }
   :global(:where(:root:not([data-layout="classic"]))) .ta-note {
     font: 11px var(--mono);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opts) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opts) {
     flex-direction: row;
     flex-wrap: wrap;
     align-items: flex-start;
     gap: 8px;
     margin-left: 0;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opt.quick) {
     align-items: flex-start;
     gap: 9px;
     max-width: 100%;
@@ -210,19 +241,19 @@
     background: var(--well);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick .aq-mk) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opt.quick .aq-mk) {
     display: none;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick .aq-ot) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opt.quick .aq-ot) {
     flex: 0 1 auto;
     padding-right: 4px;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick .aq-ol) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opt.quick .aq-ol) {
     font-size: 13.5px;
     font-weight: 500;
     line-height: 18px;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick .aq-k) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opt.quick .aq-k) {
     order: -1;
     display: inline-grid;
     place-items: center;
@@ -236,11 +267,11 @@
     background: var(--term);
     line-height: 1;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick .aq-cb) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opt.quick .aq-cb) {
     height: 18px;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick:hover),
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick:has(.aq-in:focus-visible)) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opt.quick:hover),
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opt.quick:has(.aq-in:focus-visible)) {
     outline: none;
     border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
     background: var(--well2);
@@ -248,33 +279,33 @@
       inset 0 0 10px color-mix(in srgb, var(--accent) 12%, transparent),
       var(--glow-main, none);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick:hover .aq-ol),
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick:has(.aq-in:focus-visible) .aq-ol) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opt.quick:hover .aq-ol),
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opt.quick:has(.aq-in:focus-visible) .aq-ol) {
     color: var(--accent-ink);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick:hover .aq-k) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opt.quick:hover .aq-k) {
     border-color: color-mix(in srgb, var(--accent) 60%, var(--line2));
     color: var(--accent-ink);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-opt.quick.on) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opt.quick.on) {
     border-color: var(--accent);
     background: color-mix(in srgb, var(--accent-soft) 70%, var(--well));
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-other),
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-cm) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-other),
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-cm) {
     flex: 1 0 100%;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask[data-stack] :global(.aq-opts) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask[data-stack] :global(.aq-opts) {
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask[data-stack] :global(.aq-opt.quick) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask[data-stack] :global(.aq-opt.quick) {
     width: 100%;
     padding-top: 6px;
     padding-bottom: 6px;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .turn-ask[data-stack] :global(.aq-opt.quick .aq-ot) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask[data-stack] :global(.aq-opt.quick .aq-ot) {
     flex: 1 1 auto;
   }
 </style>

@@ -149,22 +149,88 @@
     opacity: 0.5;
     cursor: default;
   }
-  /* Item 884 (option A, Control row — his pick; the stack rule): in Jarvis a closed card's answers are the
+  /* Item 884, Rows (option B, Console rows; the default — 884b, Settings → Appearance → Question cards): in Jarvis a closed card's answers are the question box's rows — a
+     number, the answer, hairline rules; hover or focus draws the lock-on's amber edge and wash and SEND ↵ —
+     not tan pills. Classic keeps the pills above. */
+  :global(:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"]))) .aa-closed .aa-opts {
+    display: block;
+    margin: 10px -12px 0;
+    border-top: 1px solid var(--line);
+    counter-reset: aa-pick;
+  }
+  :global(:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"]))) .aa-pick {
+    counter-increment: aa-pick;
+    position: relative;
+    display: block;
+    width: 100%;
+    text-align: left;
+    margin: 0;
+    padding: 9px 80px 9px 44px;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    background: none;
+    color: var(--ink);
+    font: 13.5px/1.4 var(--sans);
+    overflow-wrap: anywhere;
+  }
+  :global(:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"]))) .aa-pick:last-child {
+    border-bottom: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"]))) .aa-pick::before {
+    content: counter(aa-pick);
+    position: absolute;
+    left: 12px;
+    top: 10px;
+    padding: 0 5px;
+    border: 1px solid var(--line2);
+    border-radius: 4px;
+    font: 10.5px/16px var(--mono);
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"]))) .aa-pick::after {
+    content: "Send ↵";
+    position: absolute;
+    right: 12px;
+    top: 11px;
+    font: 10px var(--mono);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    opacity: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"]))) .aa-pick:is(:hover, :focus-visible):not(:disabled) {
+    outline: none;
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 11%, transparent), transparent 75%);
+    box-shadow: inset 2px 0 0 var(--accent);
+    color: var(--accent-ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"]))) .aa-pick:is(:hover, :focus-visible):not(:disabled)::before {
+    border-color: color-mix(in srgb, var(--accent) 60%, var(--line2));
+    color: var(--accent-ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"]))) .aa-pick:is(:hover, :focus-visible):not(:disabled)::after {
+    opacity: 1;
+  }
+  :global(:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"]))) .aa-closed .aa-why {
+    border-top: 1px solid var(--line);
+  }
+  /* Item 884, Buttons (option A, Control row, with the stack rule; `data-askcard="buttons"`): in Jarvis a closed card's answers are the
      question box's buttons (src/askLook.css) — a number key first, side by side while short; once any
      answer of a question passes 40 characters (`data-stack`), that question's answers stack full width.
      Hover or focus lights the edge amber; 1–9 on a focused answer sends that one. Classic keeps the pills. */
-  :global(:where(:root:not([data-layout="classic"]))) .aa-closed .aa-opts {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .aa-closed .aa-opts {
     align-items: flex-start;
     gap: 8px;
     margin-top: 10px;
     counter-reset: aa-pick;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .aa-closed .aa-opts[data-stack] {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .aa-closed .aa-opts[data-stack] {
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .aa-pick {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .aa-pick {
     counter-increment: aa-pick;
     display: inline-flex;
     align-items: flex-start;
@@ -183,13 +249,13 @@
     text-align: left;
     overflow-wrap: anywhere;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .aa-opts[data-stack] .aa-pick {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .aa-opts[data-stack] .aa-pick {
     display: flex;
     width: 100%;
     padding-top: 6px;
     padding-bottom: 6px;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .aa-pick::before {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .aa-pick::before {
     content: counter(aa-pick);
     flex: none;
     display: inline-grid;
@@ -204,7 +270,7 @@
     font: 10.5px/1 var(--mono);
     color: var(--dim);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .aa-pick:is(:hover, :focus-visible):not(:disabled) {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .aa-pick:is(:hover, :focus-visible):not(:disabled) {
     outline: none;
     border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
     background: var(--well2);
@@ -213,7 +279,7 @@
       var(--glow-main, none);
     color: var(--accent-ink);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .aa-pick:is(:hover, :focus-visible):not(:disabled)::before {
+  :global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .aa-pick:is(:hover, :focus-visible):not(:disabled)::before {
     border-color: color-mix(in srgb, var(--accent) 60%, var(--line2));
     color: var(--accent-ink);
   }

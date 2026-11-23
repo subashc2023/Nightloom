@@ -3,15 +3,14 @@
    layout, and every rule here is Jarvis-only.
 
    His words: "these button choices look ugly as hell … this panel just looks disastrous compared to the rest
-   of the theme"; then, of the options page (nightshift-code notes/runner-design/884-options/), "Lowk like
-   control row more than console" and "make sure it'll still look good w like longer answer choices".
-   So option A, Control row, with the stack rule: the box takes the hand-off card's glass (an amber-tinted
-   top, a thin amber edge, a mono kicker, a mono status with a lit dot); its answers are the composer's
-   Jarvis buttons, each with its number key (1–9 answer from the keyboard, askSettled.ts), side by side while
-   they are short. Once any answer is longer than ASK_STACK_CHARS (40), askSettled marks the box
-   `data-stack` and every answer stacks full width — the same buttons, the text left-aligned and wrapping
-   inside even padding. Hover or focus lights the edge amber with the main glow. Answered keeps 851's green
-   pick and ✓ Answered. Classic keeps app.css's rules. */
+   of the theme". Two looks, both his (884b, 2026-11-20: "jus make both of htem options in settings"; "you
+   can have this one be the default and that one be the alternative choice"): Settings → Appearance →
+   Question cards (askCardLook.svelte.ts) stamps `data-askcard="buttons"` on <html> for Buttons; Rows, the
+   default, stamps nothing.
+
+   Both: the box takes the hand-off card's glass (an amber-tinted top, a thin amber edge, a mono kicker, a
+   mono status with a lit dot); each answer shows its number key (1–9 answer from the keyboard,
+   askSettled.ts); answered keeps 851's green pick and ✓ Answered. Classic keeps app.css's rules. */
 :where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) {
   border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line2));
   border-radius: var(--r2);
@@ -69,8 +68,111 @@
   margin: 6px 14px 0;
   color: var(--ink);
 }
+/* ---- Rows (option B, Console rows; the default): a number key, the answer, hairline rules; hover or focus
+   draws the lock-on's amber edge and wash and shows SEND ↵. ---- */
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o {
+  list-style: none;
+  display: block;
+  margin: 10px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o > li {
+  counter-increment: nl-ask;
+  position: relative;
+  display: block;
+  margin: 0;
+  padding: 9px 80px 9px 44px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: none;
+  color: var(--ink);
+  font-size: 0.95em;
+  line-height: 1.4;
+  filter: none;
+  overflow-wrap: anywhere;
+  outline: none;
+}
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o > li:last-child {
+  border-bottom: 0;
+}
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o > li::before {
+  content: counter(nl-ask);
+  position: absolute;
+  left: 14px;
+  top: 10px;
+  width: auto;
+  height: auto;
+  padding: 0 5px;
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  background: none;
+  font: 10.5px/16px var(--mono);
+  font-weight: 400;
+  color: var(--dim);
+  opacity: 1;
+}
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li::after {
+  content: "Send ↵";
+  position: absolute;
+  right: 14px;
+  top: 11px;
+  font: 10px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+  opacity: 0;
+}
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:is(:hover, :focus-visible) {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 11%, transparent), transparent 75%);
+  box-shadow: inset 2px 0 0 var(--accent);
+  color: var(--accent-ink);
+  filter: none;
+}
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:is(:hover, :focus-visible)::before {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line2));
+  color: var(--accent-ink);
+}
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:is(:hover, :focus-visible)::after {
+  opacity: 1;
+}
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask[data-note] .nl-ask-o {
+  border-bottom: 1px solid var(--line);
+}
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask[data-note]::after {
+  margin: 0;
+  padding: 8px 14px 11px;
+  font: 11px var(--mono);
+  color: var(--dim);
+}
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask[data-said]::after {
+  margin: 10px 14px 12px;
+}
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask[data-answered] .nl-ask-o > li {
+  padding-right: 14px;
+  color: var(--dim);
+}
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask[data-answered] .nl-ask-o > li[data-picked] {
+  color: var(--ink);
+  background: var(--done-soft);
+  box-shadow: inset 2px 0 0 var(--done);
+}
+:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"])) .nl-ask[data-answered] .nl-ask-o > li[data-picked]::before {
+  content: "✓";
+  left: 14px;
+  top: 10px;
+  border-color: transparent;
+  color: var(--done);
+  font-size: 12px;
+  font-weight: 700;
+}
+/* ---- Buttons (option A, Control row, with the stack rule): the composer's Jarvis buttons, side by side
+   while short. Once any answer is longer than ASK_STACK_CHARS (40), askSettled marks the box `data-stack`
+   and every answer stacks full width — the same buttons, the text left-aligned and wrapping inside even
+   padding. Hover or focus lights the edge amber with the main glow. ---- */
 /* The answers: buttons side by side, wrapping onto more rows as they must. */
-:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o {
+:where(:root:not([data-layout="classic"])[data-askcard="buttons"]) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o {
   list-style: none;
   display: flex;
   flex-wrap: wrap;
@@ -79,7 +181,7 @@
   margin: 12px 14px 12px;
   padding: 0;
 }
-:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o > li {
+:where(:root:not([data-layout="classic"])[data-askcard="buttons"]) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o > li {
   counter-increment: nl-ask;
   position: relative;
   display: inline-flex;
@@ -108,7 +210,7 @@
     border-color 120ms;
 }
 /* The number key: first in the button, on the text's first line. */
-:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o > li::before {
+:where(:root:not([data-layout="classic"])[data-askcard="buttons"]) .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o > li::before {
   content: counter(nl-ask);
   position: static;
   flex: none;
@@ -128,17 +230,17 @@
   opacity: 1;
 }
 /* The stack rule: any answer past 40 characters (askSettled.ts) — every answer full width, one per row. */
-:where(:root:not([data-layout="classic"])) .nl-ask[data-stack] .nl-ask-o {
+:where(:root:not([data-layout="classic"])[data-askcard="buttons"]) .nl-ask[data-stack] .nl-ask-o {
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
 }
-:where(:root:not([data-layout="classic"])) .nl-ask[data-stack] .nl-ask-o > li {
+:where(:root:not([data-layout="classic"])[data-askcard="buttons"]) .nl-ask[data-stack] .nl-ask-o > li {
   display: flex;
   width: 100%;
   padding: 6px 12px 6px 7px;
 }
-:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:is(:hover, :focus-visible) {
+:where(:root:not([data-layout="classic"])[data-askcard="buttons"]) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:is(:hover, :focus-visible) {
   border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
   background: var(--well2);
   box-shadow:
@@ -147,32 +249,32 @@
   color: var(--accent-ink);
   filter: none;
 }
-:where(:root:not([data-layout="classic"])) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:is(:hover, :focus-visible)::before {
+:where(:root:not([data-layout="classic"])[data-askcard="buttons"]) .nl-ask:is([data-state="open"], [data-state="closed"]) .nl-ask-o > li:is(:hover, :focus-visible)::before {
   border-color: color-mix(in srgb, var(--accent) 60%, var(--line2));
   color: var(--accent-ink);
 }
-:where(:root:not([data-layout="classic"])) .nl-ask[data-note]::after {
+:where(:root:not([data-layout="classic"])[data-askcard="buttons"]) .nl-ask[data-note]::after {
   margin: 0;
   padding: 0 14px 11px;
   font: 11px var(--mono);
   color: var(--dim);
 }
-:where(:root:not([data-layout="classic"])) .nl-ask[data-said]::after {
+:where(:root:not([data-layout="classic"])[data-askcard="buttons"]) .nl-ask[data-said]::after {
   margin: 0 14px 12px;
 }
 /* Answered (851): the others step back to outlines; his pick is green with a check in the key's place. */
-:where(:root:not([data-layout="classic"])) .nl-ask[data-answered] .nl-ask-o > li {
+:where(:root:not([data-layout="classic"])[data-askcard="buttons"]) .nl-ask[data-answered] .nl-ask-o > li {
   background: transparent;
   border-color: var(--line);
   box-shadow: none;
   color: var(--dim);
 }
-:where(:root:not([data-layout="classic"])) .nl-ask[data-answered] .nl-ask-o > li[data-picked] {
+:where(:root:not([data-layout="classic"])[data-askcard="buttons"]) .nl-ask[data-answered] .nl-ask-o > li[data-picked] {
   color: var(--ink);
   background: var(--done-soft);
   border-color: color-mix(in srgb, var(--done) 55%, transparent);
 }
-:where(:root:not([data-layout="classic"])) .nl-ask[data-answered] .nl-ask-o > li[data-picked]::before {
+:where(:root:not([data-layout="classic"])[data-askcard="buttons"]) .nl-ask[data-answered] .nl-ask-o > li[data-picked]::before {
   content: "✓";
   left: auto;
   top: auto;

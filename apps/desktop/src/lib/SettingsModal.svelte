@@ -32,6 +32,7 @@
   // Item 631: a slide when a segmented choice changes, one style for Settings.
   import { pickMotion as pickSlide } from "./settings/pickMotion";
   import { COMPOSER_ROWS, composerRow, setComposerRow } from "./composerRow.svelte";
+  import { ASK_CARD_LOOKS, askCardLook, setAskCardLook } from "./askCardLook.svelte";
   import { CACHE_LOOKS, cacheLook, setCacheLook } from "./cacheLook.svelte";
   // Item 826: Touch ID unlock and the pre-arm card.
   import BitwardenTouch from "./BitwardenTouch.svelte";
@@ -2167,6 +2168,19 @@
               <span class="pick-n">{c.note}</span>
               <!-- Item 716: the look live on a small real box, over a sped-up hour. -->
               <CacheLookPreview look={c.id} />
+            </button>
+          {/each}
+        </div>
+      </section>
+      <!-- Item 884b (his "jus make both of htem options in settings", 2026-11-20): the question cards' look —
+           the reply's question box, the live card under the chat, and a closed card. Rows is the default. -->
+      <section class="card f4-only" aria-label="Question cards">
+        <div class="ch"><span class="t">Question cards</span></div>
+        <div class="pick2" role="radiogroup" aria-label="Question cards">
+          {#each ASK_CARD_LOOKS as a (a.id)}
+            <button class="pick" class:on={askCardLook.value === a.id} role="radio" aria-checked={askCardLook.value === a.id} onclick={() => setAskCardLook(a.id)}>
+              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{a.name}</span>
+              <span class="pick-n">{a.note}</span>
             </button>
           {/each}
         </div>

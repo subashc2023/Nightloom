@@ -76,6 +76,7 @@ export const CARDS: SettingEntry[] = [
   { pane: "appearance", section: "Motion colour", help: "The colour of what moves: the send thread, the rewind's strike, the notes card's shuttle, the running step in the trace. Each option is the current palette's own colour." },
   { pane: "appearance", section: "Composer row", terms: "composer box input row controls" },
   { pane: "appearance", section: "Cache on the box", terms: "cache warm cold timer composer" },
+  { pane: "appearance", section: "Question cards", terms: "question ask card answers rows buttons send claude asks needs you" },
   { pane: "appearance", section: "Transcript type", help: "The face and size of replies and your own messages. Applies at once to the transcript behind this window and is remembered. The rest of the interface stays in Plex Sans." },
   { pane: "appearance", section: "Links", help: "Where a link in a reply, a note or an aside opens when you click it. A Nightloom tab opens beside the chat, with back, forward and Open in browser; ⌘-click opens it in the other place." },
   { pane: "appearance", section: "Stop button", help: "The button that takes Send's place while a reply comes in. Applies at once and is remembered." },
