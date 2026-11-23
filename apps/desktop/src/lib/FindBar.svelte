@@ -69,8 +69,8 @@
    * `scoped` (nightshift backlog 242): a bar inside a modal — the Context
    * page — searching only its own parent. It is not the app's bar: it does
    * not register with the search panel, carries nothing to the next bar,
-   * has no "search all chats" link, and scrolls every box between the hit
-   * and the page (a layer's text scrolls inside the scrolling page).
+   * has no "search all chats" link. ~~and scrolls every box between the hit
+   * and the page~~ (every bar does since item 901, 2026-11-23).
    * `prepare(query)` runs before each fresh search, so the page can unfold
    * what holds a match; `onclosed(el)` hears the close, with the element
    * holding the current hit.
@@ -301,7 +301,7 @@
     litField = el;
     const r = root.ownerDocument.createRange();
     r.selectNode(el);
-    scrollRangeIntoView(r, root, scoped);
+    scrollRangeIntoView(r, root);
   }
 
   /** Scroll the current hit into the middle of its scroller. */
@@ -324,7 +324,7 @@
     } else {
       range = hitRange(segments, hits[current]);
     }
-    if (range) scrollRangeIntoView(range, root, scoped);
+    if (range) scrollRangeIntoView(range, root);
   }
 
   /** Watch the page for changes and search again on the next frame. */

@@ -532,22 +532,30 @@ export function markFallback(root: () => Element | null): Highlighter {
 }
 
 /**
- * Bring a range into view inside the nearest scrolling ancestor — the
- * transcript's viewport or the note's pane — centred, instantly. Only that
- * one element scrolls: `scrollIntoView` would also move any ancestor that
- * happened to overflow. Nothing moves when the hit is already in view.
+ * Bring a range into view, centred, instantly, by scrolling every
+ * scrolling box between it and `stop` (the page), innermost first. Nothing
+ * outside `stop` moves: `scrollIntoView` would also move any ancestor that
+ * happened to overflow. A box with the hit already in view stays put.
+ *
+ * ~~Only the nearest scroller moved, unless `nested` (backlog 242).~~
+ * 2026-11-23 (item 901, his bug "1 of 1 but clicking doesn't send me
+ * there"): the hit was in an aside card's draft, whose editor scrolls in
+ * its own box; that box scrolled and the transcript under it never did, so
+ * a hit inside any inner scroller (a draft's editor, a code block or a
+ * display formula with a sub-pixel overflow, a card body) far up the chat
+ * was never brought into view. Every box between the hit and the page
+ * moves now, and the `nested` switch is gone.
  */
-export function scrollRangeIntoView(range: Range, stop: Element, nested = false): void {
+export function scrollRangeIntoView(range: Range, stop: Element): void {
   const first = range.getBoundingClientRect();
   if (first.width === 0 && first.height === 0) return;
   let el: Element | null =
     range.startContainer.nodeType === Node.TEXT_NODE
       ? range.startContainer.parentElement
       : (range.startContainer as Element);
-  // `nested` (backlog 242): every scroller between the hit and `stop`
-  // moves, innermost first — the Context page's layer text scrolls in its
-  // own box inside the scrolling page, and a hit needs both. Without it,
-  // only the innermost, as before.
+  // Every scroller between the hit and `stop` moves, innermost first
+  // (backlog 242's rule for the Context page, every page since item 901):
+  // a hit in a box that scrolls inside the scrolling page needs both.
   while (el && el !== stop) {
     const oy = getComputedStyle(el).overflowY;
     if (
@@ -559,7 +567,6 @@ export function scrollRangeIntoView(range: Range, stop: Element, nested = false)
       const margin = 24;
       if (rect.top < box.top + margin || rect.bottom > box.bottom - margin)
         el.scrollTop += rect.top - box.top - box.height / 2 + rect.height / 2;
-      if (!nested) return;
     }
     el = el.parentElement;
   }

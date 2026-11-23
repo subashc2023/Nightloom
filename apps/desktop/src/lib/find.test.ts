@@ -11,6 +11,7 @@ import {
   foldOnClose,
   isField,
   keepHit,
+  scrollRangeIntoView,
   stepHit,
   unfoldPlan,
   type Segments,
@@ -242,5 +243,46 @@ describe("folded bodies (backlog 242)", () => {
     expect([...foldOnClose(open, new Set(["x", "y"]), "y")].sort()).toEqual(["mine", "y"]);
     expect([...foldOnClose(open, new Set(["x", "y"]), null)]).toEqual(["mine"]);
     expect([...foldOnClose(open, new Set(["x"]), "mine")].sort()).toEqual(["mine", "y"]);
+  });
+});
+
+// Item 901 (his bug, 2026-11-23): "1 of 1 but clicking doesn't send me
+// there". The match was in an aside card's draft, whose editor scrolls in
+// its own box far up a long chat; only that inner box moved and the chat
+// stayed at its foot. A fake layout (the suite has no DOM): the chat's
+// viewport 700 px tall, an inner box at y = 2600 in the chat, the hit 90 px
+// down inside the inner box. The real-WebKit measurement is the harness in
+// nightshift-code's notes/runner-design/901-harness.
+describe("scrollRangeIntoView brings a hit inside an inner scroller into view (item 901)", () => {
+  type Box = { scrollTop: number; scrollHeight: number; clientHeight: number; parentElement: unknown; top: () => number; height: number; overflowY: string };
+  function layout() {
+    const stop = { parentElement: null } as unknown as Box;
+    const outer: Box = { scrollTop: 4700, scrollHeight: 5400, clientHeight: 700, parentElement: stop, top: () => 0, height: 700, overflowY: "auto" };
+    const inner: Box = { scrollTop: 60, scrollHeight: 160, clientHeight: 60, parentElement: outer, top: () => 2600 - outer.scrollTop, height: 60, overflowY: "auto" };
+    const line = { parentElement: inner, overflowY: "visible", top: () => 0, height: 0, scrollTop: 0, scrollHeight: 0, clientHeight: 0 };
+    const hitTop = () => inner.top() + 10 - inner.scrollTop;
+    const text = { nodeType: 3, parentElement: line };
+    const range = { startContainer: text, getBoundingClientRect: () => ({ top: hitTop(), bottom: hitTop() + 20, height: 20, width: 80 }) };
+    for (const b of [outer, inner, line] as (Box & { getBoundingClientRect?: unknown })[])
+      b.getBoundingClientRect = () => ({ top: b.top(), bottom: b.top() + b.height, height: b.height });
+    return { stop, outer, inner, range, hitTop };
+  }
+  const g = globalThis as unknown as Record<string, unknown>;
+  it("moves the inner box and the chat, so the hit ends inside the chat's viewport", () => {
+    const hadNode = "Node" in g;
+    const hadStyle = "getComputedStyle" in g;
+    g.Node ??= { TEXT_NODE: 3 };
+    g.getComputedStyle = (el: { overflowY: string }) => ({ overflowY: el.overflowY });
+    try {
+      const { stop, outer, range, hitTop } = layout();
+      expect(hitTop()).toBeLessThan(0); // far above, out of view
+      scrollRangeIntoView(range as unknown as Range, stop as unknown as Element);
+      expect(outer.scrollTop).not.toBe(4700); // before the fix: still 4700
+      expect(hitTop()).toBeGreaterThanOrEqual(0);
+      expect(hitTop() + 20).toBeLessThanOrEqual(700);
+    } finally {
+      if (!hadNode) delete g.Node;
+      if (!hadStyle) delete g.getComputedStyle;
+    }
   });
 });
