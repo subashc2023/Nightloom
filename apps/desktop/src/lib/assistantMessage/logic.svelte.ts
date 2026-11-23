@@ -10,6 +10,9 @@ import { liveContextOf, stepMarksOf } from "../liveContext.svelte";
 import { type ApprovalRequest, type Usage } from "../types";
 import { type RunBlocks } from "../codeCopy";
 import { type NextChat } from "../handoffButton";
+import { shownHandoffTexts } from "../handoffTag";
+import { renderReply } from "../markdown";
+import { renderStreamingParts } from "../streamBlocks";
 import { runBlock, type RunFrom } from "../shellRun.svelte";
 import { flipOverride, resolveOpen, segmentIds, transcript, type BlockKind, type Override } from "../transcriptPrefs.svelte";
 import { groupSegments, modelOmitsThinking, resolveFolded, waitingLabel } from "../activity";
@@ -271,6 +274,14 @@ export function assistantMessageLogic(props: () => AssistantMessageLogicProps) {
   /** The summary's first line, for the row's argument column. */
   function firstLine(text: string): string {
     return text.trim().split(/\n/, 1)[0] ?? "";
+  }
+
+  // Item 905: one hand-off prompt per turn — earlier `<handoff>` blocks and prose copies of a prompt are not drawn.
+  const shownTexts = $derived(shownHandoffTexts(segs.map((s) => (s.kind === "text" ? s.text : null))));
+  /** A text segment's HTML as drawn (`use:liveHtml`): streaming by blocks, else whole (items 830, 905). */
+  function replyHtml(i: number, text: string): string | { html: string; stable: number } {
+    const shown = shownTexts[i] ?? text;
+    return streaming ? renderStreamingParts(shown) : renderReply(shown);
   }
 
   function runBlocks(text: string): RunBlocks | null {
@@ -913,6 +924,7 @@ export function assistantMessageLogic(props: () => AssistantMessageLogicProps) {
       return roots;
     },
     rowOf,
+    replyHtml,
     runBlocks,
     get runFrom() {
       return runFrom;

@@ -214,6 +214,11 @@ export function liveHtml(node: HTMLElement, input: LiveHtml) {
   const settle = (html: string, stable: number) => {
     stableLen = stable;
     stableNodes = stable ? parse(html.slice(0, stable)).childNodes.length : 0;
+    // Item 905: `prev` is the whole HTML parsed in one piece, which joins the finished blocks' trailing text (the
+    // "\n" after a block) with a tail that starts with text into one node — so `prev` no longer has a node edge
+    // at `stableNodes`, and the cheap path patched past a text it could not see (an unclosed `<handoff>`'s
+    // prompt, left above its card). No edge, no cheap path, until a delta settles one.
+    if (stable && stable < html.length && !html.slice(0, stable).endsWith(">") && html[stable] !== "<") stableNodes = 0;
   };
   if (typeof input !== "string") settle(input.html, input.stable);
   redraw(node, prev);
@@ -225,6 +230,13 @@ export function liveHtml(node: HTMLElement, input: LiveHtml) {
     const rest = parse(next.slice(stable));
     const joinText = done.lastChild?.nodeType === Node.TEXT_NODE && rest.firstChild?.nodeType === Node.TEXT_NODE;
     if (joinText) return false;
+    // Item 905: the same at the finished blocks' edge. Their last node is often the "\n" text marked puts after a
+    // block; a tail that starts with text (an unclosed `<handoff>` drew its prompt as bare text) joined it in one
+    // live text run, which `unitsOf` counts as one unit — so the units from `stableNodes` on skipped it, neither
+    // the patch nor the check below saw it, and the prompt's text stayed above its card once the tag closed.
+    const edge = prev.childNodes[stableNodes - 1];
+    const first = done.firstChild ?? rest.firstChild;
+    if (edge?.nodeType === Node.TEXT_NODE && first?.nodeType === Node.TEXT_NODE) return false;
     const doneCount = done.childNodes.length;
     const tree = document.createDocumentFragment();
     tree.append(done, rest);

@@ -2,11 +2,10 @@
   import { tip } from "./tip";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
-  // Item 626: while streaming, the unfinished tail renders as it will once finished (streamingTail); item 830: by blocks.
-  import { renderReply } from "./markdown";
+  // Item 626: while streaming, the unfinished tail renders as it will once finished (streamingTail); item 830: by blocks;
+  // item 905: one hand-off prompt per turn. All three in `T.replyHtml` (assistantMessage/logic.svelte.ts).
   import MathText from "./MathText.svelte";
   import { askSettled } from "./askSettled";
-  import { renderStreamingParts } from "./streamBlocks";
   import { liveHtml } from "./liveHtml";
   import { codeCopy } from "./codeCopy";
   import { handoffGo } from "./handoffButton";
@@ -567,7 +566,7 @@
       {:else}
         <!-- Item 452: patched in place (liveHtml), not replaced whole per
              streamed delta, so a selection in its written part survives. -->
-        <div class="markdown" use:replyPages={{ copy: (t) => void copyText(t) }} use:replyMediaInline={{ chat: app.activeSessionId, roots: T.roots, label: (c) => displayPath(c.path, T.roots), onopen: (p, e) => void T.openFile(p, e) }} use:askSettled use:liveHtml={T.streaming ? renderStreamingParts(g.seg.text) : renderReply(g.seg.text)} use:memoryRefs={{ hits: T.memHits, text: g.seg.text }} use:codeCopy={T.runBlocks(g.seg.text)} use:handoffGo={T.nextChat}></div>
+        <div class="markdown" use:replyPages={{ copy: (t) => void copyText(t) }} use:replyMediaInline={{ chat: app.activeSessionId, roots: T.roots, label: (c) => displayPath(c.path, T.roots), onopen: (p, e) => void T.openFile(p, e) }} use:askSettled use:liveHtml={T.replyHtml(g.i, g.seg.text)} use:memoryRefs={{ hits: T.memHits, text: g.seg.text }} use:codeCopy={T.runBlocks(g.seg.text)} use:handoffGo={T.nextChat}></div>
         {#if !T.streaming}
           <!-- Item 820: a picture or a video this text names, right under it
                (once the reply has stopped: a half-typed path is not a file). -->
