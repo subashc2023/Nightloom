@@ -402,6 +402,19 @@ export function researchOf(data: unknown): Research {
   };
 }
 
+// ---- Brief (a page Home writes on the stage, item 898) ----
+
+/** A brief task's page: `{title, body}`, body markdown (its line breaks kept), at most 20,000 characters. */
+export interface BriefPage {
+  title: string;
+  body: string;
+}
+export function briefPageOf(data: unknown): BriefPage {
+  const o = obj(data);
+  const raw = [o.body, o.text, o.page].find((v) => typeof v === "string" && v.trim()) as string | undefined;
+  return { title: str(o.title, 120), body: (raw ?? "").replace(/\r\n?/g, "\n").trim().slice(0, 20_000) };
+}
+
 /** A page of the stage kept as a note: a name not taken yet in `taken` ("Research — x.md", then "… (2).md"). */
 export function noteName(base: string, taken: readonly string[]): string {
   const clean = base.replace(/[\\/:*?"<>|\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "Home";

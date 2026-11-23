@@ -57,7 +57,8 @@
   let steps = $state<Ev[]>([]);
   setStageHost(phoneStageHost({ client: () => client, home: () => home, scan: () => scan, open: (c, p) => onopen(c, p), note: (t) => onnote(t), steps: () => steps }));
 
-  const TASK_VIEWS = ["timeline", "todo", "triage", "browse", "run", "research"];
+  // Item 898: "brief" too — a page Home wrote with update_task, drawn by the Brief view.
+  const TASK_VIEWS = ["timeline", "todo", "triage", "browse", "run", "research", "brief"];
   const shown = $derived(tasks.rows.filter((t) => TASK_VIEWS.includes(t.view)));
   const taskOf = (id: string): HomeTask | undefined => shown.find((t) => `task:${t.id}` === id);
   const brief = $derived(phoneBrief(scan));
@@ -216,8 +217,10 @@
     <div class="h9-body">
       {#key focus.id}
         <div class="h9-view">
-          {#if focus.view === "brief"}
+          {#if focus.view === "brief" && !focusTask}
             <Brief />
+          {:else if focusTask && focusTask.view === "brief"}
+            <Brief task={focusTask} />
           {:else if focusTask && focusTask.view === "timeline"}
             <Timeline task={focusTask} />
           {:else if focusTask && focusTask.view === "todo"}

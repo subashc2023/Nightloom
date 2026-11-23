@@ -866,19 +866,33 @@ impl AskMode {
 /// | spelling | init `tools` |
 /// |---|---|
 /// | `--disallowedTools Write Edit NotebookEdit Bash` | the four gone — and `EnterWorktree`, `CronCreate`, `CronDelete`, `Task` still there |
-/// | `--tools Read Glob Grep WebFetch WebSearch` | exactly those five |
+/// | `--tools Read Glob Grep WebFetch WebSearch ToolSearch` | exactly those six |
 ///
 /// A deny-list is honest about the release it was written against and
 /// drifts open on the next one; a worktree and a cron job both write. The
 /// positive list is default-closed, and `--tools` is already how the rail's
 /// "tools off" is spelled (`Some(vec![])`), so this is the same field with
-/// five names in it. MCP tools are untouched by `--tools` — Nightloom's own
+/// six names in it. MCP tools are untouched by `--tools` — Nightloom's own
 /// server still reaches the model, started without `remember`.
 ///
 /// The web stays. Incognito is about *his* data — nothing written here,
 /// nothing read by other chats — and a fetch writes nothing on this
 /// machine; egress has its own switch on the rail and keeps it.
-pub const READ_ONLY_TOOLS: [&str; 5] = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"];
+///
+/// `ToolSearch` too (nightshift item 899): without it the CLI cannot defer
+/// tools, so every MCP and connector schema is sent whole on every turn —
+/// measured on CLI 2.1.330 with his connectors on, a Chat-kind turn carried
+/// 179,525 tokens (196 tools inline; $1.44 written cold) against 14,372 with
+/// it. It adds no tool: it only loads the schemas of tools the chat already
+/// has, under the same permissions.
+pub const READ_ONLY_TOOLS: [&str; 6] = [
+    "Read",
+    "Glob",
+    "Grep",
+    "WebFetch",
+    "WebSearch",
+    "ToolSearch",
+];
 
 impl AgentSpec {
     /// `add_folder`'s `PreToolUse` entry (nightshift item 613): this
@@ -4749,7 +4763,7 @@ mod tests {
         s.apply_kind(ChatKind::Chat);
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--tools").expect("--tools");
-        assert_eq!(&a[i + 1..i + 6], READ_ONLY_TOOLS);
+        assert_eq!(&a[i + 1..i + 7], READ_ONLY_TOOLS);
         assert_eq!(s.workspace, spec().workspace);
 
         let mut none = spec();
@@ -5063,7 +5077,7 @@ mod tests {
         s.apply_mode(ChatMode::Incognito);
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--tools").expect("--tools");
-        assert_eq!(&a[i + 1..i + 6], READ_ONLY_TOOLS);
+        assert_eq!(&a[i + 1..i + 7], READ_ONLY_TOOLS);
         for writer in ["Write", "Edit", "NotebookEdit", "Bash"] {
             assert!(!a.iter().any(|x| x == writer), "{writer} in {a:?}");
         }
@@ -5080,7 +5094,7 @@ mod tests {
         s.apply_mode(ChatMode::Ephemeral);
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--tools").expect("--tools");
-        assert_eq!(&a[i + 1..i + 6], READ_ONLY_TOOLS);
+        assert_eq!(&a[i + 1..i + 7], READ_ONLY_TOOLS);
         assert!(a.iter().any(|x| x == "--no-session-persistence"), "{a:?}");
         // No resume, no Ask: the hook is not registered on an ephemeral chat
         // (a `--settings` JSON, when a chat's auto-compact switch puts one

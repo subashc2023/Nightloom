@@ -99,8 +99,8 @@ describe("watch", () => {
 
 describe("stage", () => {
   it("draws every task view", () => {
-    expect(stageSrc).toContain('const TASK_VIEWS = ["timeline", "todo", "triage", "browse", "run", "research"]');
-    for (const v of ["Timeline", "Todo", "Triage", "Browse", "Run", "Research"]) expect(stageSrc).toContain(`<${v} task={t} />`); // batch 4: one snippet draws the view in focus and the split's second
+    expect(stageSrc).toContain('const TASK_VIEWS = ["timeline", "todo", "triage", "browse", "run", "research", "brief"]');
+    for (const v of ["Timeline", "Todo", "Triage", "Browse", "Run", "Research", "Brief"]) expect(stageSrc).toContain(`<${v} task={t} />`); // batch 4: one snippet draws the view in focus and the split's second
     expect(stageSrc).toContain("{@render taskView(focusTask)}");
   });
 });

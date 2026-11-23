@@ -644,10 +644,11 @@
   const builtinTools = $derived((init?.tools ?? []).filter((t) => !t.startsWith("mcp__")));
   /** A Chat over a Claude Code declaration (nightshift backlog 144): the
    *  CLI still lists every tool — the list is what keeps the cached prefix
-   *  — and a `PreToolUse` hook refuses all but the five read-only ones and
-   *  Nightloom's own. The card strikes the refused ones through. */
+   *  — and a `PreToolUse` hook refuses all but the read-only ones (with
+   *  ToolSearch, which the policy keeps too — item 899) and Nightloom's own.
+   *  The card strikes the refused ones through. */
   const chatPolicy = $derived(chatKind(app.events) === "chat" && declaredKind(app.events) === "build");
-  const KEPT_ON_A_CHAT = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"];
+  const KEPT_ON_A_CHAT = ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "ToolSearch"];
   const refused = (t: string) => chatPolicy && !KEPT_ON_A_CHAT.includes(t);
   const mcpTools = $derived.by(() => {
     const by = new Map<string, string[]>();

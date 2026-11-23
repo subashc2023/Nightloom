@@ -120,6 +120,6 @@ describe("the stage (sources)", () => {
     expect(s).toMatch(/picked \? hudOut\(node\) : \{ duration: 0 \}/);
   });
   it("draws a task's tab only in a view that is built", () => {
-    expect(read("Stage.svelte")).toMatch(/const TASK_VIEWS = \["timeline", "todo", "triage", "browse", "run", "research"\]/);
+    expect(read("Stage.svelte")).toMatch(/const TASK_VIEWS = \["timeline", "todo", "triage", "browse", "run", "research", "brief"\]/);
   });
 });

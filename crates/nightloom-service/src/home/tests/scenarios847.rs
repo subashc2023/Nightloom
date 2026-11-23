@@ -259,7 +259,11 @@ fn call(id: &str) -> TurnEvent {
 
 #[test]
 fn c11_a_connector_refused_three_times_with_nobody_there_ends_on_the_third() {
-    let refusal = format!("Hook denied: {}", crate::agent::ask::UNATTENDED_REASON);
+    // The CLI's real words for a PreToolUse deny (measured on 2.1.330, 847 phase 2 r2).
+    let refusal = format!(
+        "PreToolUse:mcp__claude_ai_Gmail__create_draft hook error: {}",
+        crate::agent::ask::UNATTENDED_REASON
+    );
     let mut g = Guard::new(None);
     let mut trips = Vec::new();
     for i in 0..3 {
