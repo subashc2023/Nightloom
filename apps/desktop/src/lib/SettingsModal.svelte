@@ -210,7 +210,9 @@
     bitwardenSummary,
     type GroupId as SubGroupId,
   } from "./settings/subscriptionPane";
-  import { keepWarm, loadKeepWarmDefault, setKeepWarmDefault } from "./keepWarm.svelte";
+  import { keepWarm, loadHold, loadKeepWarmDefault, rescoreHold, setHoldRule, setHoldSleep, setKeepWarmDefault } from "./keepWarm.svelte";
+  import { boardWords, liveOvertake, nameIn, overtakeWords, ruleWords, sleepSource } from "./holdRule";
+  import { hourWords } from "./keepWarm";
   import { paneFilter, setPaneFilter, setOpen } from "./settings/paneState.svelte";
   // Item 844: the search box at the top of the nav.
   import { paneTitle, searchSettings, settingsIndex, type SettingHit } from "./settings/searchIndex";
@@ -1252,7 +1254,20 @@
   // Item 608: the keep-warm default, read once the pane opens.
   $effect(() => {
     void loadKeepWarmDefault();
+    void loadHold(); // item 878: the hold rule and its scoreboard
   });
+  // Item 878: the hold rule's controls.
+  const hold = $derived(keepWarm.hold);
+  const holdOvertake = $derived(hold ? liveOvertake(hold) : null);
+  const HOURS = Array.from({ length: 24 }, (_, h) => h);
+  async function switchHoldRule(id: string): Promise<void> {
+    const refused = await setHoldRule(id);
+    if (refused) addToast(`Keep warm: ${refused}`);
+  }
+  async function changeSleep(start: number | null, end: number | null): Promise<void> {
+    const refused = await setHoldSleep(start, end);
+    if (refused) addToast(`Keep warm: ${refused}`);
+  }
   async function flipKeepWarmDefault(on: boolean): Promise<void> {
     const refused = await setKeepWarmDefault(on);
     if (refused) addToast(`Keep warm: ${refused}`);
@@ -3350,12 +3365,69 @@
           {#snippet help()}
             On (the default): every chat whose cache is the 1-hour kind and
             holds 50k tokens or more gets a small hidden request every 55
-            minutes after its last reply, for up to 6 hours, so your next
+            minutes after its last reply, for up to {hold ? Math.round(hold.cap_ms / 3_600_000) : 8} hours{hold?.active.startsWith("sleep") ? " and never while you are usually asleep" : ""}, so your next
             message reads the context from the cache instead of paying to
             rebuild it. It stops when you send (the reply starts it again),
             close the chat's tab or delete the chat. The ♨ switch under the
             message box turns one chat off, or on while this is off; that
             choice is kept for the chat.
+          {/snippet}
+        </SettingRow>
+        <!-- Item 878: when pinging stops — the rule, his sleep, the scoreboard. -->
+        <SettingRow fold="subscription/cache-holdrule" shown={subShown("cache-holdrule")} stack>
+          {#snippet label()}<span>When pinging stops</span>{/snippet}
+          {#snippet control()}
+            {#if hold === null}
+              <p class="note small">Reading…</p>
+            {:else}
+              <div class="hold-rule" aria-label="Keep-warm hold rule">
+                <p class="hold-line"><b>{ruleWords(hold)}</b></p>
+                <p class="note small">
+                  Your sleep:
+                  <select aria-label="Sleep starts" value={hold.sleep.start} onchange={(e) => void changeSleep(Number(e.currentTarget.value), hold.sleep.end)}>
+                    {#each HOURS as h (h)}<option value={h}>{hourWords(h)}</option>{/each}
+                  </select>
+                  to
+                  <select aria-label="Sleep ends" value={hold.sleep.end} onchange={(e) => void changeSleep(hold.sleep.start, Number(e.currentTarget.value))}>
+                    {#each HOURS as h (h)}<option value={h}>{hourWords(h)}</option>{/each}
+                  </select>
+                  — {sleepSource(hold)}{#if hold.sleep_manual}
+                    <button class="ns-btn ghost small" onclick={() => void changeSleep(null, null)}>Use the learned one</button>{/if}
+                </p>
+                {#if boardWords(hold)}
+                  <p class="note small">{boardWords(hold)}
+                    <button class="ns-btn ghost small" disabled={hold.scoring} onclick={() => void rescoreHold()}>{hold.scoring ? "Scoring…" : "Re-score now"}</button>
+                  </p>
+                {:else}
+                  <p class="note small">Not scored yet — the first score runs a few minutes after the app starts.
+                    <button class="ns-btn ghost small" disabled={hold.scoring} onclick={() => void rescoreHold()}>{hold.scoring ? "Scoring…" : "Score now"}</button>
+                  </p>
+                {/if}
+                {#if holdOvertake}
+                  <p class="hold-overtake">{overtakeWords(holdOvertake, nameIn(hold))}
+                    <button class="ns-btn small" onclick={() => void switchHoldRule(holdOvertake.challenger)}>Switch to it</button>
+                  </p>
+                {/if}
+                {#if hold.board}
+                  <label class="note small">Rule:
+                    <select aria-label="Keep-warm hold rule" value={hold.active} onchange={(e) => void switchHoldRule(e.currentTarget.value)}>
+                      {#each hold.board.table.filter((l) => l.selectable) as l (l.id)}
+                        <option value={l.id}>{l.name} — ${l.window.half.toFixed(2)}</option>
+                      {/each}
+                    </select>
+                  </label>
+                {/if}
+              </div>
+            {/if}
+          {/snippet}
+          {#snippet help()}
+            Each rule replayed on your own last weeks of chats (each week
+            judged only from the weeks before it): what its pings cost
+            against the rebuilds they saved, in list dollars. It never
+            switches by itself — when another rule overtakes this one for
+            two weeks running, you get a notice and a Switch button here. A
+            chat you hold for 12 or 24 h, or keep warm until you're back,
+            runs through your sleep.
           {/snippet}
         </SettingRow>
       </SettingsGroup>
@@ -6324,6 +6396,23 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  /* Item 878: the keep-warm hold rule. */
+  .hold-rule {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 13px;
+  }
+  .hold-rule p {
+    margin: 0;
+  }
+  .hold-rule select {
+    font: inherit;
+  }
+  .hold-overtake {
+    color: var(--accent, inherit);
+    font-weight: 600;
   }
   /* Item 766 part 2: the Bitwarden always rules. */
   .bw-rules {

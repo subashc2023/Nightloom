@@ -55,6 +55,7 @@ export const CONTROLS: readonly Control[] = [
   { id: "updates-auto", group: "updates", label: "Keep Claude Code up to date", terms: "auto update automatic cold moment claude update" },
   { id: "updates-layers", group: "updates", label: "Changed memory or instructions files", terms: "memory instructions claude.md layer file cold running chats" },
   { id: "cache-keepwarm", group: "cache", label: "Keep chats' caches warm automatically", terms: "keep warm cache ping 1-hour hour 6 h six automatic default every chat cold" },
+  { id: "cache-holdrule", group: "cache", label: "When pinging stops", terms: "sleep asleep night stop rule policy 8 h eight scoreboard score overtake beats switch hours learned" },
   { id: "bitwarden-always", group: "bitwarden", label: "Always allowed", terms: "bitwarden password manager secret token vault always rule command remove revoke" },
   { id: "bitwarden-touch", group: "bitwarden", label: "Touch ID unlock", terms: "bitwarden touch id fingerprint unlock master password keychain set up forget lock" },
   { id: "bitwarden-prearm", group: "bitwarden", label: "Pre-arm for a run", terms: "bitwarden pre-arm prearm overnight async away run night secrets end time touch id" },

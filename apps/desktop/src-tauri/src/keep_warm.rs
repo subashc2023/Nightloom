@@ -107,6 +107,7 @@ pub fn watch(app: AppHandle) {
 }
 
 fn tick(app: &AppHandle) {
+    maybe_score(app);
     let (Some(holder), Some(state)) = (app.try_state::<Holder>(), app.try_state::<AppState>())
     else {
         return;
@@ -425,4 +426,165 @@ pub fn keep_warm_stop(app: AppHandle, holder: State<'_, Holder>, chat: String) -
         tell(&app, &holder, &chat);
     }
     was_on
+}
+
+// ---------- item 878: the hold rule's scoreboard ----------
+
+use nightloom_service::hold_policy::{self, Sleep, sim};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+
+/// A scoreboard run is going (one at a time).
+static SCORING: AtomicBool = AtomicBool::new(false);
+/// When this run of the app first ticked, unix ms (the first score waits
+/// [`SCORE_AFTER_START_MS`], so the start is never slowed by it).
+static STARTED_MS: AtomicI64 = AtomicI64::new(0);
+const SCORE_AFTER_START_MS: i64 = 2 * 60_000;
+/// The scoreboard re-runs once its table is this old: daily.
+const SCORE_EVERY_MS: i64 = 24 * 3_600_000;
+
+/// Run the scoreboard when the last one is a day old (item 878's "no-model
+/// background job, daily"), on a blocking thread.
+fn maybe_score(app: &AppHandle) {
+    let now = now_ms();
+    let started = STARTED_MS.load(Ordering::Relaxed);
+    if started == 0 {
+        STARTED_MS.store(now, Ordering::Relaxed);
+        return;
+    }
+    if now - started < SCORE_AFTER_START_MS || SCORING.load(Ordering::Relaxed) {
+        return;
+    }
+    let config = nightloom_service::project::config_dir();
+    let last = hold_policy::read_scoreboard(config.as_deref()).map(|b| b.computed_ms);
+    if last.is_some_and(|t| now - t < SCORE_EVERY_MS && t <= now) {
+        return;
+    }
+    rescore(app.clone());
+}
+
+/// Run the scoreboard now; tells the window when it is done, and of a new
+/// overtake (the notice; never a switch — his "we can make that change tgt").
+fn rescore(app: AppHandle) -> bool {
+    if SCORING.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    tauri::async_runtime::spawn(async move {
+        let result = tauri::async_runtime::spawn_blocking(|| {
+            let config = nightloom_service::project::config_dir().ok_or("no config folder")?;
+            let claude = nightloom_service::agent::cli_session::projects_dir()
+                .ok_or("no Claude Code folder")?;
+            hold_policy::score_now(&config, &claude, now_ms())
+        })
+        .await;
+        SCORING.store(false, Ordering::SeqCst);
+        match result {
+            Ok(Ok(board)) => {
+                crate::wake::log(
+                    "keep-warm",
+                    &format!(
+                        "hold scoreboard: {} moments, {} weeks, leader {}, active {}",
+                        board.moments,
+                        board.weeks.len(),
+                        board.leader,
+                        board.active
+                    ),
+                );
+                if board.overtake_new
+                    && let Some(o) = &board.overtake
+                {
+                    let _ = app.emit("keep-warm-overtake", o);
+                }
+                let _ = app.emit("keep-warm-board", ());
+                retell_all(&app);
+            }
+            Ok(Err(e)) => crate::wake::log("keep-warm", &format!("hold scoreboard failed: {e}")),
+            Err(e) => crate::wake::log("keep-warm", &format!("hold scoreboard failed: {e}")),
+        }
+    });
+    true
+}
+
+/// Every chat's status again: the rule (or his sleep) changed.
+fn retell_all(app: &AppHandle) {
+    let Some(holder) = app.try_state::<Holder>() else {
+        return;
+    };
+    let p = policy();
+    let now = now_ms();
+    for chat in holder.0.known() {
+        emit(app, &holder.0.status(&chat, None, &p, now));
+    }
+}
+
+/// What Settings → keep warm shows of the hold rule.
+#[derive(serde::Serialize)]
+pub struct BoardView {
+    /// The rule in force and its words.
+    pub active: String,
+    pub active_name: String,
+    /// His sleep in force, and whether he set it himself.
+    pub sleep: Sleep,
+    pub sleep_manual: bool,
+    /// The learned one (shown beside his own when he set one).
+    pub learned_sleep: Option<Sleep>,
+    /// The cap the rule runs under, ms.
+    pub cap_ms: i64,
+    /// The last scoreboard, if one ran.
+    pub board: Option<sim::Scoreboard>,
+    pub scoring: bool,
+}
+
+fn board_view() -> BoardView {
+    let config = nightloom_service::project::config_dir();
+    let board = hold_policy::read_scoreboard(config.as_deref());
+    let (sleep, manual) = hold_policy::sleep_in_force(config.as_deref(), board.as_ref());
+    let p = policy();
+    BoardView {
+        active: p.rule_id.to_string(),
+        active_name: sim::name_of(p.rule_id),
+        sleep,
+        sleep_manual: manual,
+        learned_sleep: board.as_ref().map(|b| b.learned_sleep),
+        cap_ms: p.cap_ms,
+        board,
+        scoring: SCORING.load(Ordering::Relaxed),
+    }
+}
+
+#[tauri::command]
+pub fn keep_warm_board() -> BoardView {
+    board_view()
+}
+
+/// His click: switch the hold rule (never done for him).
+#[tauri::command]
+pub fn keep_warm_set_rule(app: AppHandle, id: String) -> Result<BoardView, String> {
+    let config = nightloom_service::project::config_dir().ok_or("no config folder")?;
+    hold_policy::set_active(&config, &id, now_ms())?;
+    retell_all(&app);
+    Ok(board_view())
+}
+
+/// His sleep by hand (`start`/`end` local hours), or back to the learned
+/// one with neither.
+#[tauri::command]
+pub fn keep_warm_set_sleep(
+    app: AppHandle,
+    start: Option<u8>,
+    end: Option<u8>,
+) -> Result<BoardView, String> {
+    let config = nightloom_service::project::config_dir().ok_or("no config folder")?;
+    let sleep = match (start, end) {
+        (Some(start), Some(end)) => Some(Sleep { start, end }),
+        _ => None,
+    };
+    hold_policy::set_manual_sleep(&config, sleep)?;
+    retell_all(&app);
+    Ok(board_view())
+}
+
+/// Re-run the scoreboard now (Settings' "Re-score now"); false while one runs.
+#[tauri::command]
+pub fn keep_warm_rescore(app: AppHandle) -> bool {
+    rescore(app)
 }
