@@ -59,8 +59,9 @@ mod commands;
 mod connect_deadline;
 /// The cursor the page asks for kept on screen (nightshift item 828).
 mod cursor_keep;
-/// The composer's exact token count on the provider engine (backlog 155).
+/// Settings → Outside control and the sidebar's ↗ mark (nightshift item 767).
 mod door;
+/// The composer's exact token count on the provider engine (backlog 155).
 mod draft_count;
 /// An AppKit exception in event dispatch is logged, not fatal (item 486).
 #[cfg(target_os = "macos")]

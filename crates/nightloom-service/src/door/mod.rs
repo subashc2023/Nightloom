@@ -554,7 +554,7 @@ pub fn list(
             });
         }
     }
-    chats.sort_by(|a, b| b.modified.cmp(&a.modified));
+    chats.sort_by_key(|a| std::cmp::Reverse(a.modified));
     let total = chats.len();
     chats.truncate(limit.unwrap_or(DEFAULT_LIMIT).max(1));
     Ok(Listing {

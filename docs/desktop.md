@@ -1031,6 +1031,35 @@ and the ticker. `links.ts::resolveNote` is a fourth, mirroring
 `blockElisions` and `replyText`, mirroring `Session::block_edits`,
 `block_elisions` and `reply_text`.
 
+## Outside control — the door (2026-11-23, nightshift item 767)
+
+The app holds a Unix socket in the home, `<home>/door.sock` (mode 0600; a
+stale one is removed at bind), opened in `remote::Remote::install` over the
+same `DesktopHost` the phone's listener uses — whether or not the phone
+listener is on. A dev build on his real home opens none (item 447's rule,
+`may_restore_listener`), so it never takes the installed app's. Callers are
+`nightloom chat …` / `nightloom-desktop --chat …` and the MCP tools of
+`--mcp-serve --outside` ([cli.md](cli.md), [mcp.md](mcp.md)).
+
+A write runs as a recurring job's run does: `Host::outside_prepare` →
+`jobs::prepare_outside` (as `prepare`, except that a chat whose project is
+not the open one gets its agent built here, as Home's does, 763 H4), then
+`Host::job_send` → the window's `remote-job` → `runJob` → `sendInChat`. Off
+screen the chat runs in its own keyed run (`runInChat`); the chat on his
+screen, his view and his composer's draft do not move. A send into the chat
+he has open runs there as a scheduled message's does (535), and only when no
+turn runs in it (the door refuses a send into a running chat first).
+
+Settings → Remote → **Outside control** (`DoorSetting.svelte`; commands
+`door_card`, `door_set_writes` in `src-tauri/src/door.rs`) is one switch,
+"Let them start chats and send messages", off by default, written to
+`<home>/door/access.json` and read at every call (no restart). The pane shows
+the command and the MCP entry to paste, each with Copy. A chat started
+through the door is listed in `<home>/door/started.json`; both sidebars
+(Jarvis and Classic, `door_started` → `door.svelte.ts`) and the phone's chat
+list (`ChatRow.started_by`) mark its row ↗ with "Started from outside
+Nightloom by <who>".
+
 ## Importing from claude.ai
 
 Two commands and one entry point. `import_claude` runs on a **blocking thread** —
