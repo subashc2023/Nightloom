@@ -7,9 +7,10 @@ import { addToast, app, chatMode, contextUsed, currentTodos, liveFlags, latestSu
 import { touchedUntil } from "../keepWarm";
 import { keepWarm } from "../keepWarm.svelte";
 import { cacheState } from "../cache";
-import { coldToast, lastReply } from "../cacheCost";
+import { coldToast } from "../cacheCost";
 import { tellPhoneCache } from "../remoteHandlers";
-import { loadCacheRates, ratesForChat } from "../cacheRates.svelte";
+import { nextSendRates } from "../cacheRates.svelte";
+import { modelSeen } from "../modelSeen.svelte";
 import { lastLoggedTurn } from "../contextDial";
 import { liveFor, liveTokens } from "../liveContext";
 import { liveContextOf } from "../liveContext.svelte";
@@ -261,10 +262,11 @@ export function topBarLogic(props: () => TopBarLogicProps) {
     // timer firing on the boundary itself would read the cache as warm.
     // Item 699's price fix: the toast says what the next send now costs,
     // at the rates read when it fires (the composer's chip reads the same).
-    const model = lastReply(app.events)?.model ?? null;
-    if (model && app.connection?.engine === "claude-code") void loadCacheRates(model);
+    // Item 902: at the rates of the model the next send goes to (the pick).
+    const pick = () => ({ draftModel: app.draft.agentModel, seen: modelSeen.byAlias });
+    void nextSendRates(app.events, app.connection, pick());
     const id = setTimeout(
-      () => addToast(coldToast(app.events, ratesForChat(lastReply(app.events)?.model, app.connection))),
+      () => addToast(coldToast(app.events, nextSendRates(app.events, app.connection, pick()))),
       wait + 1,
     );
     return () => clearTimeout(id);

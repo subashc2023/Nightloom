@@ -16,6 +16,7 @@ import { onDestroy, tick, untrack, type Snippet } from "svelte";
 import { app, addToast, menuInterceptors, denialReason, draftAside, liveFlags, removeTurn, rewindTo, saveEdit, saveReplyEdit, sendEdit, loadPaneLog, tabOpening, continuedThisRun, continueWithPrompt, type Segment, asideReads } from "../state.svelte";
 import { scheduledFor } from "../scheduled.svelte";
 import { coldUsdFor } from "../cacheRates.svelte";
+import { modelSeen } from "../modelSeen.svelte";
 import { cardLog, continuableReply, continuedFromReply, nextChatMessage, type NextChat } from "../handoffButton";
 import { nextModelLabel, nextModelRows, setNextModel } from "../nextChatModel.svelte";
 import { cancelReview, reviewOf, runReview } from "../chatReview.svelte";
@@ -829,7 +830,7 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
       editing = editReduce(editing, { type: "begin", index: item.index, text, parts, chipsAt });
       editCacheLine = src.words
         ? src.words.editLine
-        : editLine(cacheState(evs, Date.now(), chatId ? touchedUntil(keepWarm.byChat[chatId]) : null, asideReads(chatId)), coldUsdFor(evs, app.connection));
+        : editLine(cacheState(evs, Date.now(), chatId ? touchedUntil(keepWarm.byChat[chatId]) : null, asideReads(chatId)), coldUsdFor(evs, app.connection, { draftModel: app.draft.agentModel, seen: modelSeen.byAlias }));
     }).then(() => {
       if (editorLive) {
         editorLive.focus();

@@ -3586,7 +3586,8 @@
   const targetModel = $derived(cache ? nextSendModel(app.events, aside?.model || app.draft.agentModel, modelSeen.byAlias) : null);
   /** Item 902: the next send goes to another model than built the cache. */
   const modelSwitch = $derived(
-    !!cache && !floating && onClaudeCode && modelSwitchPending(app.events, aside?.model || app.draft.agentModel, modelSeen.byAlias),
+    // An aside on its own model prices its own cache (item 786), not the chat's.
+    !!cache && !floating && onClaudeCode && !(aside && asideOwnModel) && modelSwitchPending(app.events, aside?.model || app.draft.agentModel, modelSeen.byAlias),
   );
   /** Item 902: the banner's "<model> has no cache of it". */
   const switchName = $derived(modelSwitch ? displayName(aside?.model || app.draft.agentModel) || "the new model" : null);

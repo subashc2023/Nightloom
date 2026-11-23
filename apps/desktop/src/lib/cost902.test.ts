@@ -71,4 +71,18 @@ describe("item 902 — the figures follow the model the next send goes to", () =
     // The composer passes warm && !switch.
     expect(cacheEstimate(events, FABLE52, true && !modelSwitchPending(events, "claude-fable-5-2", seen))?.line).toBe("next ≈ $3.90");
   });
+
+  it("his chat: the newest reply (2026-10-07) has no cache key — the pick still re-prices", () => {
+    const old = { ...(reply as object), cache_key: undefined } as SessionEvent;
+    const ev = [q, old];
+    expect(nextSendModel(ev, "claude-fable-5-2", seen)).toBe("claude-fable-5-2");
+    expect(modelSwitchPending(ev, "claude-fable-5-2", seen)).toBe(true);
+    expect(cacheEstimate(ev, rates(nextSendModel(ev, "claude-fable-5-2", seen)), false)?.line).toBe("next ≈ $3.90");
+    // The default pick, resolved or not, is the reply's model.
+    expect(nextSendModel(ev, "", seen)).toBe("claude-opus-5-5");
+    expect(nextSendModel(ev, "", {})).toBe("claude-opus-5-5");
+    expect(modelSwitchPending(ev, "", {})).toBe(false);
+    // An unresolved alias: no rates, so no figure.
+    expect(nextSendModel(ev, "haiku", seen)).toBeNull();
+  });
 });
