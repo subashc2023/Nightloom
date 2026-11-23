@@ -906,6 +906,21 @@ it stopped in appends nothing. `capture_backfill_status` (total, pending,
 today, cap) feeds the Settings line and the Capture button's tooltip;
 `nightloom capture --backfill [--cap N] [--chunk N]` is the CLI's run.
 
+**Test and scratch sessions (item 900, 2026-11-23).** A probe or harness an
+agent runs with `claude` from a shell inherits the desktop's entrypoint, so the
+entrypoint rule admits it. Each admitted source's working folder (`cwd`) and
+first permission mode (`perm`) are kept in `state.json` (a source admitted
+earlier has its head read once, `probed`), and every sync writes
+`<config>/outside/claude-code/tests.json` (mirrored id → `{rule, skip}`,
+`outside::test_mark`). Skipped by both capture passes, watermark unmoved: a
+working folder under `/tmp`, `/private/tmp`, `/var/folders`, a
+`Library/Caches` folder, a `runner-design/*-harness` folder, or a
+`local/nightloom-*` worktree. Read but tagged (`source` `Claude Code, outside
+Nightloom (test session)`, in turns of their own): one started in
+`bypassPermissions` or `dontAsk`, or one whose source is gone and whose folder
+label starts `tmp/`. They stay mirrored and searchable. `capture_backfill_status`
+adds `tests` and `tagged`; the Settings line says "N test sessions skipped".
+
 **One writer, never his files.** Only the desktop syncs — on launch, before a
 capture pass, and every ten minutes (`startMemoryClock`) — under a process
 mutex; the source logs are only opened to read.

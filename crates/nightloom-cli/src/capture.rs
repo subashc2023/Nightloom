@@ -99,8 +99,13 @@ pub async fn run(args: CaptureArgs) -> Result<()> {
         let today = chrono::Local::now().date_naive();
         let status = capture::backfill_status_in(&config, args.cap, today);
         println!(
-            "{DIM}older outside sessions: {} of {} unread; {} of {} calls spent today{RESET}",
-            status.pending, status.total, status.today, status.cap
+            "{DIM}older outside sessions: {} of {} unread; {} of {} calls spent today; {} test session{} skipped{RESET}",
+            status.pending,
+            status.total,
+            status.today,
+            status.cap,
+            status.tests,
+            if status.tests == 1 { "" } else { "s" }
         );
         if status.pending == 0 {
             println!("nothing to backfill.");
@@ -342,6 +347,13 @@ fn report(
             "{DIM}{} incognito chat{} seen and not read{RESET}",
             outcome.incognito,
             if outcome.incognito == 1 { "" } else { "s" }
+        );
+    }
+    if outcome.tests > 0 {
+        println!(
+            "{DIM}{} test or scratch session{} skipped (item 900){RESET}",
+            outcome.tests,
+            if outcome.tests == 1 { "" } else { "s" }
         );
     }
     if outcome.remaining > 0 {

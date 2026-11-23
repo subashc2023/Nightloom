@@ -209,6 +209,11 @@ pub struct BackfillStatus {
     /// Model calls made today, and the cap they count against.
     pub today: usize,
     pub cap: usize,
+    /// Mirrored sessions, of any age, capture skips as tests or scratch
+    /// (item 900) — not in `total`, and never read by either pass.
+    pub tests: usize,
+    /// Mirrored sessions read but tagged "test session" (item 900).
+    pub tagged: usize,
 }
 
 /// The backfill's status without opening a log: directory scans only.
@@ -223,15 +228,28 @@ pub fn backfill_status_in(config: &Path, cap: usize, today: NaiveDate) -> Backfi
         return status;
     };
     let since = sd.since.expect("found by it");
+    let marks = crate::outside::test_marks(config);
     if let Ok(logs) = store::log_files(&sd.dir) {
-        status.total = logs.iter().filter(|l| l.modified < since).count();
+        for l in &logs {
+            match marks.get(&log_id(&l.path)) {
+                Some(m) if m.skip => status.tests += 1,
+                Some(_) => {
+                    status.tagged += 1;
+                    status.total += usize::from(l.modified < since);
+                }
+                None => status.total += usize::from(l.modified < since),
+            }
+        }
     }
     let scope = Scope::Backfill(Backfill {
         cap,
         chunk: BACKFILL_CHUNK,
         today,
     });
-    status.pending = unread_in(&sd, &state, scope).len();
+    status.pending = with_test_dir(vec![sd])
+        .iter()
+        .map(|d| unread_in(d, &state, scope, &marks).0.len())
+        .sum();
     status
 }
 
@@ -338,6 +356,23 @@ pub fn session_dirs(config: &Path) -> Vec<SessionDir> {
     dirs
 }
 
+/// [`session_dirs`] as the capture pass walks them (item 900): the outside
+/// mirror twice — its sessions, then its borderline test sessions under
+/// [`crate::outside::OUTSIDE_TEST_NAME`], so their observations carry that
+/// tag as their `source`. Kept out of [`session_dirs`], which other readers
+/// (search, grounding) walk once per folder.
+fn with_test_dir(mut dirs: Vec<SessionDir>) -> Vec<SessionDir> {
+    if let Some(i) = dirs
+        .iter()
+        .position(|d| d.project.as_deref() == Some(crate::outside::OUTSIDE_NAME))
+    {
+        let mut twin = dirs[i].clone();
+        twin.project = Some(crate::outside::OUTSIDE_TEST_NAME.to_string());
+        dirs.insert(i + 1, twin);
+    }
+    dirs
+}
+
 /// One log with bytes past its watermark, as the directory scan saw it.
 struct Unread {
     path: PathBuf,
@@ -354,18 +389,32 @@ struct Unread {
 /// an empty list: no chat has been recorded there yet. If a watermark
 /// points past the end of its file, the log was replaced and is read from
 /// the top, the rule the dream's watermark follows.
-fn unread_in(sd: &SessionDir, state: &CaptureState, scope: Scope) -> Vec<Unread> {
+///
+/// In the outside mirror, a test or scratch session (item 900, `marks`) is
+/// never listed: the plain dir lists the unmarked ones, its test twin
+/// ([`with_test_dir`]) the tagged ones, and the skipped ones are counted —
+/// the second value — and left unread, watermark unmoved, so a rule
+/// changed later loses nothing.
+fn unread_in(
+    sd: &SessionDir,
+    state: &CaptureState,
+    scope: Scope,
+    marks: &BTreeMap<String, crate::outside::TestMark>,
+) -> (Vec<Unread>, usize) {
     let dir = sd.dir.as_path();
     // The backfill reads only the dir with a horizon (the outside mirror),
     // and only what lies before it; the live pass only what lies after.
     // Neither lists the other's logs, so the two never take one twice.
     let backfill = matches!(scope, Scope::Backfill(_));
     if !dir.is_dir() || (backfill && sd.since.is_none()) {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let Ok(logs) = store::log_files(dir) else {
-        return Vec::new();
+        return (Vec::new(), 0);
     };
+    let twin = sd.project.as_deref() == Some(crate::outside::OUTSIDE_TEST_NAME);
+    let outside = twin || sd.project.as_deref() == Some(crate::outside::OUTSIDE_NAME);
+    let mut tests = 0;
     let mut out: Vec<Unread> = logs
         .into_iter()
         .filter(|log| backfill || state.since.is_none_or(|t| log.modified >= t))
@@ -373,6 +422,19 @@ fn unread_in(sd: &SessionDir, state: &CaptureState, scope: Scope) -> Vec<Unread>
             None => true,
             Some(t) if backfill => log.modified < t,
             Some(t) => log.modified >= t,
+        })
+        .filter(|log| {
+            if !outside {
+                return true;
+            }
+            match marks.get(&log_id(&log.path)) {
+                Some(m) if m.skip => {
+                    tests += usize::from(!twin);
+                    false
+                }
+                Some(_) => twin,
+                None => !twin,
+            }
         })
         .filter_map(|log| {
             let key = log.path.to_string_lossy().into_owned();
@@ -391,7 +453,7 @@ fn unread_in(sd: &SessionDir, state: &CaptureState, scope: Scope) -> Vec<Unread>
         })
         .collect();
     out.sort_by_key(|u| std::cmp::Reverse(u.modified));
-    out
+    (out, tests)
 }
 
 /// How many logs have bytes past their watermark — the count beside the
@@ -400,9 +462,10 @@ fn unread_in(sd: &SessionDir, state: &CaptureState, scope: Scope) -> Vec<Unread>
 /// little new material); the outcome says how many when it happens.
 pub fn pending_count_in(config: &Path) -> usize {
     let state = state_in(config);
-    session_dirs(config)
+    let marks = crate::outside::test_marks(config);
+    with_test_dir(session_dirs(config))
         .iter()
-        .map(|d| unread_in(d, &state, Scope::Live).len())
+        .map(|d| unread_in(d, &state, Scope::Live, &marks).0.len())
         .sum()
 }
 
@@ -820,6 +883,10 @@ pub struct CaptureOutcome {
     /// — nothing was read, but nothing ever will be, and a log that stays
     /// "unread" forever is a pending count that never clears.
     pub incognito: usize,
+    /// Mirrored outside sessions in this run's scope stepped over as test
+    /// or scratch sessions (item 900): never shown to the model, watermark
+    /// unmoved. Counted whether or not they had anything unread.
+    pub tests: usize,
     /// Observations by source, in the order the dirs were walked: the
     /// project's name, or "unfiled".
     pub per_project: Vec<(String, usize)>,
@@ -994,10 +1061,16 @@ async fn run_with(
             (Some(left.min(b.chunk.max(1))), Some(b.today))
         }
     };
-    let dirs = session_dirs(config);
+    let dirs = with_test_dir(session_dirs(config));
+    let marks = crate::outside::test_marks(config);
+    let mut tests = 0;
     let unread: Vec<(&SessionDir, Vec<Unread>)> = dirs
         .iter()
-        .map(|d| (d, unread_in(d, &state, scope)))
+        .map(|d| {
+            let (u, t) = unread_in(d, &state, scope, &marks);
+            tests += t;
+            (d, u)
+        })
         .filter(|(_, u)| !u.is_empty())
         .collect();
     if unread.is_empty() {
@@ -1123,6 +1196,7 @@ async fn run_with(
         write_state(config, &pass.state)?;
     }
     let mut outcome = pass.outcome;
+    outcome.tests = tests;
     outcome.cost_usd = (pass.unpriced == 0 && pass.usd > 0.0).then_some(pass.usd);
     Ok(Some(outcome))
 }
@@ -1195,6 +1269,15 @@ async fn run_chat_with(
     if store::mode_of(&path).unread_by_others() {
         return Err("this chat is incognito — nothing it said is saved to memory".into());
     }
+    // A test or scratch session asked for by name (item 900) is read — he
+    // asked — but tagged, as a borderline one is on the automatic pass.
+    let source = if dir.project.as_deref() == Some(crate::outside::OUTSIDE_NAME)
+        && crate::outside::test_marks(config).contains_key(id)
+    {
+        Some(crate::outside::OUTSIDE_TEST_NAME.to_string())
+    } else {
+        dir.project.clone()
+    };
     let state = state_in(config);
     let key = path.to_string_lossy().into_owned();
     let len = fs::metadata(&path)
@@ -1236,7 +1319,7 @@ async fn run_chat_with(
         }
         let end = excerpt.end;
         let batch = Batch {
-            source: dir.project.clone(),
+            source: source.clone(),
             excerpts: vec![excerpt],
         };
         if !pass.turn(&batch).await? {
@@ -1784,6 +1867,126 @@ mod tests {
             Some(crate::outside::OUTSIDE_NAME)
         );
         assert_eq!(backlog.pending[0].obs.kind, ObservationKind::UserStated);
+    }
+
+    /// Test and scratch sessions (item 900): an outside session run in a
+    /// temporary folder is never shown to the model, by the live pass or
+    /// the backfill, and is counted; one started in a mode that never asks
+    /// is read in a turn of its own and its observations are tagged
+    /// "test session"; his own sessions are read as before.
+    #[tokio::test]
+    async fn test_and_scratch_sessions_are_skipped_or_tagged_in_both_passes() {
+        let (config, _unfiled) = fixture("tests900");
+        let claude = config.parent().unwrap().join("claude");
+        let folder = claude.join("projects").join("-Users-me-code-app");
+        fs::create_dir_all(&folder).unwrap();
+        let line = |cwd: &str, perm: &str, ty: &str, at: DateTime<Utc>, text: &str| {
+            let content = if ty == "user" {
+                serde_json::json!(text)
+            } else {
+                serde_json::json!([{"type":"text","text":text}])
+            };
+            serde_json::json!({
+                "type": ty, "entrypoint": "claude-desktop", "cwd": cwd,
+                "permissionMode": perm, "timestamp": at.to_rfc3339(),
+                "message": {"role": ty, "content": content, "model": "claude-opus-5-5"},
+            })
+            .to_string()
+                + "\n"
+        };
+        let session = |cwd: &str, perm: &str, word: &str, at: DateTime<Utc>| {
+            let mut body = String::new();
+            for q in 0..2 {
+                body += &line(cwd, perm, "user", at, &format!("{word}-Q{q}"));
+                body += &line(cwd, perm, "assistant", at, "ok");
+            }
+            body
+        };
+        let id = |i: usize| format!("00000000-0000-0000-0000-00000000090{i}");
+        let old = Utc::now() - chrono::Duration::days(4);
+        // Older than the horizon: one of his, one probe in /private/tmp.
+        fs::write(
+            folder.join(format!("{}.jsonl", id(0))),
+            session("/Users/me/code/app", "default", "OLD-HIS", old),
+        )
+        .unwrap();
+        fs::write(
+            folder.join(format!("{}.jsonl", id(1))),
+            session("/private/tmp/nl-probe", "default", "OLD-PROBE", old),
+        )
+        .unwrap();
+        crate::outside::sync(&config, &claude).unwrap();
+        let now = Utc::now() + chrono::Duration::seconds(5);
+        for (i, cwd, perm, word) in [
+            (2, "/Users/me/code/app", "auto", "NEW-HIS"),
+            (3, "/tmp/harness-run", "default", "NEW-PROBE"),
+            (4, "/Users/me/Library/Caches/x", "default", "NEW-CACHE"),
+            (5, "/Users/me/code/app", "dontAsk", "NEW-SCRIPTED"),
+        ] {
+            fs::write(
+                folder.join(format!("{}.jsonl", id(i))),
+                session(cwd, perm, word, now),
+            )
+            .unwrap();
+        }
+        let sync = crate::outside::sync(&config, &claude).unwrap();
+        assert_eq!((sync.tests, sync.tagged), (3, 1), "{sync:?}");
+        assert_eq!(pending_count_in(&config), 2, "his and the tagged one");
+
+        let (mut chat, seen) = chat_recording(vec![
+            says("user_stated | Works on the app."),
+            says("user_stated | Tries things out."),
+            says("user_stated | Keeps old notes."),
+        ]);
+        let cancel = CancellationToken::new();
+        let live = run(&mut chat, &config, false, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((live.logs_read, live.tests), (2, 2), "{live:?}");
+        let sent = all_text(&seen);
+        assert!(sent.contains("NEW-HIS-Q0") && sent.contains("NEW-SCRIPTED-Q0"));
+        for absent in ["NEW-PROBE", "NEW-CACHE", "OLD-PROBE", "OLD-HIS"] {
+            assert!(!sent.contains(absent), "{absent} reached the model");
+        }
+        let sources: Vec<_> = observe::backlog_in(&config)
+            .pending
+            .iter()
+            .map(|p| p.obs.source.clone().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                crate::outside::OUTSIDE_NAME,
+                crate::outside::OUTSIDE_TEST_NAME
+            ]
+        );
+
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+        let status = backfill_status_in(&config, 5, day);
+        assert_eq!(
+            (status.total, status.pending, status.tests, status.tagged),
+            (1, 1, 3, 1),
+            "{status:?}"
+        );
+        let back = run_backfill(
+            &mut chat,
+            &config,
+            Backfill {
+                cap: 5,
+                chunk: 5,
+                today: day,
+            },
+            &cancel,
+            &mut |_| {},
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!((back.logs_read, back.tests), (1, 1), "{back:?}");
+        let sent = all_text(&seen);
+        assert!(sent.contains("OLD-HIS-Q0") && !sent.contains("OLD-PROBE"));
+        assert_eq!(backfill_status_in(&config, 5, day).pending, 0);
     }
 
     /// The backfill (item 779): outside sessions last written before the

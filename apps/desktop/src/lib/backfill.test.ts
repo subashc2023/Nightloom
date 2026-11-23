@@ -24,6 +24,28 @@ describe("backfillSentence (item 779)", () => {
   });
 });
 
+describe("the test sessions skipped (item 900)", () => {
+  const t = (total: number, pending: number, tests: number) => ({ total, pending, today: 2, cap: 30, tests, tagged: 0 });
+
+  it("names how many test sessions capture skips, before the run state", () => {
+    expect(backfillSentence(t(290, 100, 300), true, false)).toBe(
+      "190 of 290 older sessions read, 100 left · 2 of 30 calls today · 300 test sessions skipped",
+    );
+    expect(backfillSentence(t(290, 100, 1), true, true)).toBe(
+      "190 of 290 older sessions read, 100 left · 2 of 30 calls today · 1 test session skipped · reading now",
+    );
+  });
+
+  it("says nothing of tests when none are skipped or an older backend sends no count", () => {
+    expect(backfillSentence(t(590, 0, 0), true, false)).toBe("All 590 older sessions read · 2 of 30 calls today");
+    expect(backfillSentence({ total: 5, pending: 0, today: 0, cap: 30 }, true, false)).not.toMatch(/test/);
+  });
+
+  it("still names them when no older session is left to read", () => {
+    expect(backfillSentence(t(0, 0, 12), true, false)).toMatch(/each capture\. 12 test sessions skipped\.$/);
+  });
+});
+
 describe("the backfill's prefs (item 779)", () => {
   it("default on, 30 a day; a stored choice is kept", () => {
     const d = parseDreamPrefs(null);

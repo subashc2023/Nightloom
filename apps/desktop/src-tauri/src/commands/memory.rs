@@ -267,6 +267,8 @@ pub(crate) struct CaptureReport {
     remaining: usize,
     /// Incognito chats seen and deliberately not read (2026-09-15).
     incognito: usize,
+    /// Outside test and scratch sessions stepped over (item 900).
+    tests: usize,
     per_project: Vec<CapturedReport>,
     interrupted: bool,
     cost_usd: Option<f64>,
@@ -441,6 +443,7 @@ pub(crate) async fn capture(
         refused: outcome.refused,
         deferred: outcome.deferred,
         incognito: outcome.incognito,
+        tests: outcome.tests,
         remaining: outcome.remaining,
         per_project: outcome
             .per_project

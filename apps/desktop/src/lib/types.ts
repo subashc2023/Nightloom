@@ -490,6 +490,11 @@ export interface BackfillStatus {
   /** Model calls the backfill made today, and the cap. */
   today: number;
   cap: number;
+  /** Mirrored sessions of any age capture skips as tests or scratch (item 900);
+   *  optional so an older backend's reply still reads. */
+  tests?: number;
+  /** Mirrored sessions read but tagged "test session" (item 900). */
+  tagged?: number;
 }
 
 // ---- the notification centre (nightshift backlog 069) ----

@@ -47,6 +47,18 @@
 //! the source logs are only ever opened to read, and a mirrored log found
 //! later to be Nightloom's is deleted from the mirror.
 //!
+//! **Test and scratch sessions (item 900).** Many sessions here were not
+//! him talking: a probe or harness an agent ran with `claude` from a shell
+//! inherits the desktop's entrypoint, so the rule above admits it, and its
+//! made-up prompts ("an errand list", "a flight to SEA") read as his facts
+//! once captured. Each admitted session's working folder (and the
+//! permission mode it started in) is kept in `state.json`, and every sync
+//! writes [`TESTS_FILE`]: the mirrored sessions the capture pass skips —
+//! working folder in a temporary folder, a cache folder, a test harness's
+//! folder or a Nightloom build worktree ([`test_mark`]) — and the borderline
+//! ones it reads but tags "test session". They stay mirrored and
+//! searchable; only capture (live and backfill) treats them differently.
+//!
 //! **One writer.** Only the desktop app syncs (on launch and on the
 //! bell's clock), under a process lock; the CLI's `capture` reads what is
 //! there.
@@ -117,6 +129,18 @@ struct Source {
     title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last: Option<DateTime<Utc>>,
+    /// The working folder, whole (item 900): `folder` is its last two
+    /// parts, for a person; the test rules need the rest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cwd: Option<String>,
+    /// The permission mode it started in (item 900): a script's are the
+    /// modes that never ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    perm: Option<String>,
+    /// A source admitted before item 900 had its head read once for the
+    /// two fields above; set so it is not read again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    probed: bool,
 }
 
 /// What one sync did.
@@ -132,6 +156,10 @@ pub struct SyncOutcome {
     pub excluded: BTreeMap<String, usize>,
     /// Source logs whose mirror exists.
     pub admitted: usize,
+    /// Of those, the test and scratch sessions capture skips (item 900).
+    pub tests: usize,
+    /// And the borderline ones it reads tagged "test session".
+    pub tagged: usize,
 }
 
 fn state_path(config: &Path) -> PathBuf {
@@ -275,6 +303,11 @@ pub fn sync(config: &Path, claude: &Path) -> Result<SyncOutcome, String> {
             let _ = fs::remove_file(&target);
             src = Source::default();
         }
+        if src.folder.is_some() && src.cwd.is_none() && !src.probed {
+            // Admitted before item 900: read the head once for the
+            // working folder and the permission mode.
+            probe(&path, &mut src);
+        }
         if len == src.offset {
             state.sources.insert(key, src);
             continue;
@@ -312,6 +345,12 @@ pub fn sync(config: &Path, claude: &Path) -> Result<SyncOutcome, String> {
                     break;
                 }
                 src.folder = Some(folder_label(cwd));
+                src.cwd = Some(cwd.to_string_lossy().into_owned());
+            }
+            if src.perm.is_none()
+                && let Some(m) = v.get("permissionMode").and_then(Value::as_str)
+            {
+                src.perm = Some(m.to_string());
             }
             let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
             if ty == "custom-title" {
@@ -424,15 +463,142 @@ pub fn sync(config: &Path, claude: &Path) -> Result<SyncOutcome, String> {
         src.offset = end;
         state.sources.insert(key, src);
     }
-    for s in state.sources.values() {
+    let mut marks = BTreeMap::new();
+    for (key, s) in &state.sources {
         match &s.excluded {
             Some(why) => *out.excluded.entry(why.clone()).or_default() += 1,
-            None if s.title.is_some() => out.admitted += 1,
+            None if s.title.is_some() => {
+                out.admitted += 1;
+                let id = Path::new(key)
+                    .file_stem()
+                    .map(|x| x.to_string_lossy().into_owned());
+                if let (Some(id), Some(m)) = (
+                    id,
+                    test_mark(s.cwd.as_deref(), s.folder.as_deref(), s.perm.as_deref()),
+                ) {
+                    if m.skip {
+                        out.tests += 1;
+                    } else {
+                        out.tagged += 1;
+                    }
+                    marks.insert(id, m);
+                }
+            }
             None => {}
         }
     }
     save_state(config, &state)?;
+    save_marks(config, &marks)?;
     Ok(out)
+}
+
+/// The mirrored sessions that are tests (item 900), by mirrored id: written
+/// by every sync, read by the capture pass.
+pub const TESTS_FILE: &str = "tests.json";
+
+/// Why a mirrored session is a test or scratch session, and whether the
+/// capture pass skips it (`skip`) or reads it tagged "test session".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestMark {
+    pub rule: String,
+    pub skip: bool,
+}
+
+/// The `source` a tagged session's observations carry (item 900).
+pub const OUTSIDE_TEST_NAME: &str = "Claude Code, outside Nightloom (test session)";
+
+/// The test rules (item 900), on what a session's header says. Skipped:
+/// a working folder in a temporary folder (`/tmp`, `/private/tmp`,
+/// `/var/folders` — where a probe's `claude` runs, and Claude Code's own
+/// per-session scratch `/private/tmp/claude-<uid>/…`), in a cache folder
+/// (`Library/Caches`), in a test harness's folder (`*-harness` under
+/// `runner-design`) or in a Nightloom build worktree (`local/nightloom-*`).
+/// Tagged: one started in a mode that never asks (`bypassPermissions`,
+/// `dontAsk` — how scripts run it), or one whose source is gone and whose
+/// folder's label is all that is left and starts in a `tmp` folder.
+pub fn test_mark(cwd: Option<&str>, folder: Option<&str>, perm: Option<&str>) -> Option<TestMark> {
+    let mark = |rule: &str, skip: bool| {
+        Some(TestMark {
+            rule: rule.to_string(),
+            skip,
+        })
+    };
+    if let Some(cwd) = cwd {
+        let parts: Vec<&str> = cwd.split('/').filter(|p| !p.is_empty()).collect();
+        let under = |root: &[&str]| parts.len() >= root.len() && parts[..root.len()] == *root;
+        if under(&["tmp"])
+            || under(&["private", "tmp"])
+            || under(&["var", "folders"])
+            || under(&["private", "var", "folders"])
+        {
+            return mark("a temporary folder", true);
+        }
+        let pair =
+            |a: &str, b: &dyn Fn(&str) -> bool| parts.windows(2).any(|w| w[0] == a && b(w[1]));
+        if pair("Library", &|b| b == "Caches") {
+            return mark("a cache folder (Library/Caches)", true);
+        }
+        if pair("runner-design", &|b| b.ends_with("-harness")) {
+            return mark("a test harness folder (runner-design/*-harness)", true);
+        }
+        if pair("local", &|b| b.starts_with("nightloom-")) {
+            return mark("a Nightloom build worktree (local/nightloom-*)", true);
+        }
+    } else if let Some(f) = folder
+        && (f.starts_with("tmp/") || f == "tmp")
+    {
+        return mark("a tmp folder (source gone; label only)", false);
+    }
+    if matches!(perm, Some("bypassPermissions" | "dontAsk")) {
+        return mark("started in a mode that never asks (as scripts run)", false);
+    }
+    None
+}
+
+/// The marks the last sync wrote; empty before the first.
+pub fn test_marks(config: &Path) -> BTreeMap<String, TestMark> {
+    fs::read(root(config).join(TESTS_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn save_marks(config: &Path, marks: &BTreeMap<String, TestMark>) -> Result<(), String> {
+    let path = root(config).join(TESTS_FILE);
+    let tmp = path.with_extension(format!("json.{}", std::process::id()));
+    let bytes = serde_json::to_vec(marks).map_err(|e| e.to_string())?;
+    fs::write(&tmp, bytes).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// The head of a source admitted before item 900 (at most 1 MB), for its
+/// working folder and permission mode. A gone or unreadable log leaves
+/// both unset and is not read again.
+fn probe(path: &Path, src: &mut Source) {
+    src.probed = true;
+    let Ok(f) = fs::File::open(path) else { return };
+    let mut buf = Vec::new();
+    if f.take(1024 * 1024).read_to_end(&mut buf).is_err() {
+        return;
+    }
+    for line in buf.split(|b| *b == b'\n') {
+        if src.cwd.is_some() && src.perm.is_some() {
+            break;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        if src.cwd.is_none()
+            && let Some(c) = v.get("cwd").and_then(Value::as_str)
+        {
+            src.cwd = Some(c.to_string());
+        }
+        if src.perm.is_none()
+            && let Some(m) = v.get("permissionMode").and_then(Value::as_str)
+        {
+            src.perm = Some(m.to_string());
+        }
+    }
 }
 
 fn flag(v: &Value, name: &str) -> bool {
@@ -909,6 +1075,98 @@ mod tests {
     /// server, which every Claude Code chat uses) finds the mirrored
     /// session in `scope: all`, labelled by its source, and `read_chat`
     /// opens it; the excluded run's words find nothing.
+    /// The test rules (item 900), each on the header field it reads.
+    #[test]
+    fn the_test_rules_skip_scratch_folders_and_tag_the_borderline() {
+        let skip = |cwd: &str| test_mark(Some(cwd), None, Some("default")).map(|m| m.skip);
+        for cwd in [
+            "/tmp/x",
+            "/private/tmp/claude-501/-Users-me/abc",
+            "/private/var/folders/9b/xyz",
+            "/Users/me/Library/Caches/nightloom-779-check",
+            "/Users/me/n/nightshift-code/notes/runner-design/847-harness/run",
+            "/Users/me/PersonalProjects/Nightloom/local/nightloom-900",
+        ] {
+            assert_eq!(skip(cwd), Some(true), "{cwd}");
+        }
+        for cwd in [
+            "/Users/me/code/app",
+            "/Users/me/tmp-notes",
+            "/Users/me/Library/Application Support/Claude/scratch-workspaces/a",
+            "/Users/me/.claude-bridge/workdir",
+            "/Users/me/local/other",
+        ] {
+            assert_eq!(skip(cwd), None, "{cwd}");
+        }
+        let tag = test_mark(Some("/Users/me/code/app"), None, Some("dontAsk")).unwrap();
+        assert!(!tag.skip);
+        assert!(!test_mark(None, Some("tmp/2037m-work"), None).unwrap().skip);
+        assert_eq!(test_mark(None, Some("code/app"), None), None);
+    }
+
+    /// The Check's count (item 900), never in CI: the real rules over a
+    /// file of real session headers (`NL900_HEADERS`: a JSON list of `{id,
+    /// cwd, folder, perm, older}` extracted read-only, metadata only).
+    /// Prints the count per rule, split older (backfill) and newer (live).
+    #[test]
+    #[ignore]
+    fn test_rules_over_real_headers() {
+        let path = std::env::var("NL900_HEADERS").expect("NL900_HEADERS");
+        let rows: Vec<Value> = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let mut by: BTreeMap<(String, bool, bool), usize> = BTreeMap::new();
+        let (mut older, mut newer) = (0, 0);
+        for r in &rows {
+            let s = |k: &str| r.get(k).and_then(Value::as_str);
+            let old = r.get("older").and_then(Value::as_bool).unwrap_or(false);
+            if old {
+                older += 1;
+            } else {
+                newer += 1;
+            }
+            let label = match test_mark(s("cwd"), s("folder"), s("perm")) {
+                Some(m) => (m.rule, m.skip, old),
+                None => ("(not a test)".to_string(), false, old),
+            };
+            *by.entry(label).or_default() += 1;
+        }
+        println!("sessions {} (older {older}, newer {newer})", rows.len());
+        for ((rule, skip, old), n) in by {
+            let what = if skip { "skip" } else { "read" };
+            let when = if old { "older" } else { "newer" };
+            println!("{n:>5}  {what}  {when}  {rule}");
+        }
+    }
+
+    /// A source admitted before item 900 has no working folder in the
+    /// state: the next sync reads its head once, and the marks follow.
+    #[test]
+    fn a_source_admitted_before_900_is_probed_once_for_its_folder() {
+        let base = scratch("probe900");
+        let (config, claude) = (base.join("config"), base.join("claude"));
+        let id = "00000000-0000-0000-0000-000000000900";
+        let log = put(
+            &claude,
+            "-tmp-probe",
+            id,
+            &cli_log("claude-desktop", "/private/tmp/probe", "PROBEWORD", "x"),
+        );
+        sync(&config, &claude).unwrap();
+        assert!(test_marks(&config).get(id).is_some_and(|m| m.skip));
+        // Forget the folder as a pre-900 state would.
+        let mut state = load_state(&config);
+        let key = log.to_string_lossy().into_owned();
+        let src = state.sources.get_mut(&key).unwrap();
+        (src.cwd, src.perm, src.probed) = (None, None, false);
+        save_state(&config, &state).unwrap();
+        fs::remove_file(root(&config).join(TESTS_FILE)).unwrap();
+        let out = sync(&config, &claude).unwrap();
+        assert_eq!(out.tests, 1, "{out:?}");
+        let state = load_state(&config);
+        let src = &state.sources[&key];
+        assert_eq!(src.cwd.as_deref(), Some("/private/tmp/probe"));
+        assert!(src.probed);
+    }
+
     #[tokio::test]
     async fn search_chats_finds_an_outside_session_labelled_by_its_source() {
         let root = scratch("search");
