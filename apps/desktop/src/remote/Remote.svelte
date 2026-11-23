@@ -102,7 +102,7 @@
   import { retryText } from "../lib/retryLine";
   import { parseRan } from "../lib/shellRun";
   import { parseHandoffMessage } from "../lib/handoffBubble";
-  import { KIND_WORD, chaptersOf, logEdits, placeOnRows, withEdits, type ShownChapter } from "../lib/chapters";
+  import { KIND_WORD, chaptersOf, currentChapter, logEdits, phoneContents, placeOnRows, withEdits, type ShownChapter } from "../lib/chapters";
   /** Item 515: a file card's badge on the phone, as the Mac's. */
   const fileBadgeOf = (name: string) => extOf(name).slice(0, 5).toUpperCase() || "FILE";
   import { sentExt, type SentFile } from "../lib/sentFiles";
@@ -370,6 +370,7 @@
     | "rules"
     | "feedback"
     | "dials"
+    | "chapters"
   >(null);
   /** Item 743: the rule form he left open in the rules sheet, by chat
    *  (`""` with no chat open) — kept while the page lives, so a dismissed
@@ -496,6 +497,36 @@
     );
     return placeOnRows(ranges, shown);
   });
+  // Item 799 (2026-11-23): the phone's contents list — the dividers above, in
+  // the order they are drawn; a tap scrolls to one (the Mac's Contents pill).
+  const chapterList = $derived(phoneContents(chapterRows, rows.length));
+  /** The entry the view was in when the list opened (the "you are here" bar). */
+  let chapterHere = $state<number | null>(null);
+  function chapterTops(): (number | null)[] {
+    const el = scroller;
+    if (!el) return chapterList.map(() => null);
+    const base = el.getBoundingClientRect().top - el.scrollTop;
+    return chapterList.map((c) => {
+      const d = el.querySelector<HTMLElement>(`[data-chapter="${CSS.escape(c.key)}"]`);
+      return d ? d.getBoundingClientRect().top - base : null;
+    });
+  }
+  function openChapters() {
+    chapterHere = scroller ? currentChapter(chapterTops(), scroller.scrollTop + 60) : null;
+    sheet = "chapters";
+  }
+  /** Scroll to a chapter's divider (`null`: the top of the chat), clear of the header. */
+  function jumpToChapter(key: string | null) {
+    closeSheet();
+    pinGen++; // a chat still pinning to its end lets go
+    void tick().then(() => {
+      const el = scroller;
+      if (!el) return;
+      const d = key === null ? null : el.querySelector<HTMLElement>(`[data-chapter="${CSS.escape(key)}"]`);
+      const top = d ? d.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - 12 : 0;
+      el.scrollTo({ top: Math.max(0, top), behavior: reducedMotion() ? "auto" : "smooth" });
+    });
+  }
   const currentChat = $derived.by(() => {
     if (!chatId) return null;
     const list = chatsBy[chatProject ?? activePid] ?? [];
@@ -3994,6 +4025,8 @@
             kind={currentChat?.kind}
             compact={opOk("compact")}
             context={hasFeature(remote, "context")}
+            chapters={chapterList.length}
+            onchapters={openChapters}
             onrail={openRail}
             onrename={beginRename}
             onmac={openOnMac}
@@ -4009,6 +4042,20 @@
             ondelete={() => (sheet = "delete")}
           />
           {#if error}<p class="sheet-note bad">{error}</p>{:else if actBlocked && canAct}<p class="sheet-note">{actBlocked}</p>{/if}
+        {:else if sheet === "chapters"}
+          <!-- Item 799 (2026-11-23): the chat's contents; renaming and removing stay the Mac's (blocker 2145). -->
+          <div class="sheet-title">Contents</div>
+          <div class="sheet-sub">{chapterList.length} {chapterList.length === 1 ? "chapter" : "chapters"} · tap one to go there</div>
+          <div class="menu chapter-menu">
+            <button data-chapter-go="start" onclick={() => jumpToChapter(null)}>
+              <span class="cm-kind">Start</span><span class="grow cm-name">{title}</span>
+            </button>
+            {#each chapterList as c, i (c.key)}
+              <button data-chapter-go={c.key} class:here={chapterHere === i} aria-current={chapterHere === i ? "location" : undefined} onclick={() => jumpToChapter(c.key)}>
+                <span class="cm-kind">{KIND_WORD[c.kind] ?? "Chapter"}</span><span class="grow cm-name">{c.shown}</span>
+              </button>
+            {/each}
+          </div>
         {:else if sheet === "rename"}
           <div class="sheet-title">Rename chat</div>
           <!-- svelte-ignore a11y_autofocus -->
@@ -5654,6 +5701,42 @@
   }
   .menu button + button {
     border-top: 1px solid var(--line);
+  }
+  /* Item 799: the contents list — the kind word as the divider's, the name cut at two lines. */
+  .chapter-menu button {
+    gap: 10px;
+    padding: 8px 16px;
+    position: relative;
+  }
+  .chapter-menu button.here::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 10px;
+    bottom: 10px;
+    width: 3px;
+    border-radius: 0 2px 2px 0;
+    background: var(--accent);
+  }
+  .chapter-menu .cm-kind {
+    flex: none;
+    width: 64px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink2);
+  }
+  .chapter-menu .cm-name {
+    min-width: 0;
+    font-size: 15px;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
   }
   .menu button:disabled {
     opacity: 0.4;

@@ -295,3 +295,16 @@ export function placeOnRows<C extends Chapter>(
   }
   return { before, tail };
 }
+
+/**
+ * The phone's contents list (item 799, 2026-11-23): its chapters in the
+ * order the transcript draws them (`placeOnRows`' places, row by row, then
+ * the tail), so a tap on the nth entry lands on the nth divider.
+ */
+export function phoneContents<C extends Chapter>(placed: { before: Map<number, C[]>; tail: C[] }, rowCount: number): C[] {
+  const out: C[] = [];
+  for (let i = 0; i < rowCount; i++) out.push(...(placed.before.get(i) ?? []));
+  for (const [i, list] of [...placed.before].sort((a, b) => a[0] - b[0])) if (i >= rowCount) out.push(...list);
+  out.push(...placed.tail);
+  return out;
+}

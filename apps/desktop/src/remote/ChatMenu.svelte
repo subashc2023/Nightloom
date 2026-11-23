@@ -9,7 +9,7 @@
    */
   import type { Snippet } from "svelte";
 
-  type Icon = "new" | "mac" | "pencil" | "sliders" | "play" | "swap" | "pulse" | "aside" | "council" | "compact" | "stop" | "trash" | "chev";
+  type Icon = "new" | "mac" | "pencil" | "sliders" | "play" | "swap" | "pulse" | "aside" | "council" | "compact" | "stop" | "trash" | "chev" | "note";
 
   interface Props {
     icon: Snippet<[Icon]>;
@@ -29,6 +29,9 @@
     kind: string | undefined;
     compact: boolean;
     context: boolean;
+    /** Item 799: how many chapters the chat has; a Contents row shows when it has any. */
+    chapters?: number;
+    onchapters?: () => void;
     onrail: () => void;
     onrename: () => void;
     onmac: () => void;
@@ -56,6 +59,9 @@
   <div class="cm-menu">
     {#if !p.readOnly}
       <button onclick={p.onrename}>{@render p.icon("pencil")} Rename</button>
+    {/if}
+    {#if (p.chapters ?? 0) > 0 && p.onchapters}
+      <button data-act="chapters" onclick={p.onchapters}>{@render p.icon("note")} <span class="cm-grow">Contents<small>{p.chapters} {p.chapters === 1 ? "chapter" : "chapters"} — jump to one</small></span></button>
     {/if}
     <button data-act="rail" onclick={p.onrail}>{@render p.icon("sliders")} Model and settings</button>
     <button onclick={p.onnew}>{@render p.icon("new")} {p.newLabel}</button>
