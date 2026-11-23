@@ -109,10 +109,16 @@ export interface ChipCosts {
 }
 
 /** The chip's figures from the newest reply's usage; null without rates. */
-export function chipCosts(usage: Usage | null | undefined, rates: ChipRates | null | undefined): ChipCosts | null {
+export function chipCosts(
+  usage: Usage | null | undefined,
+  rates: ChipRates | null | undefined,
+  /** Item 902: the next send goes to another model, which has no cache of
+   *  this chat — `rates` are that model's, and even the warm wrap-up writes. */
+  switched = false,
+): ChipCosts | null {
   if (!usage || !rates) return null;
   const c = nextSendCost(usage, rates);
-  return { context: contextOf(usage), cold: c.cold, perTurn: c.warm, warm: c.warm };
+  return { context: contextOf(usage), cold: c.cold, perTurn: c.warm, warm: switched ? c.cold : c.warm };
 }
 
 /** The cold chip's two buttons, as they read. */
@@ -121,8 +127,10 @@ export function coldButtons(c: ChipCosts | null): { handoff: string; keep: strin
   return { handoff: `Hand off (≈ ${usd(c.cold)})`, keep: `Keep (re-writes ${tokensShort(c.context)} ≈ ${usd(c.cold)})` };
 }
 
-export function coldTitle(context: number): string {
-  return `Cache cold — this chat is ${tokensShort(context)}`;
+export function coldTitle(context: number, newModel?: string | null): string {
+  // Item 902: a model switch pending — the new model has no cache at all.
+  const switched = newModel ? ` · ${newModel} has no cache of it` : "";
+  return `Cache cold — this chat is ${tokensShort(context)}${switched}`;
 }
 
 /** The chip's tooltip: what each choice costs and what it leaves — two
@@ -137,9 +145,10 @@ export function coldTip(c: ChipCosts | null, rates: ChipRates | null | undefined
 }
 
 /** The warm offer's line: `Cache cold in 4 min — this chat is 180k`. */
-export function warmTitle(remainingMs: number, context: number): string {
+export function warmTitle(remainingMs: number, context: number, newModel?: string | null): string {
   const min = Math.max(1, Math.ceil(remainingMs / 60_000));
-  return `Cache cold in ${min} min — this chat is ${tokensShort(context)}`;
+  const switched = newModel ? ` · ${newModel} has no cache of it` : "";
+  return `Cache cold in ${min} min — this chat is ${tokensShort(context)}${switched}`;
 }
 
 export function warmDetail(c: ChipCosts | null): string {
