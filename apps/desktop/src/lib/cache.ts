@@ -174,6 +174,12 @@ export function nextTickMs(remainingMs: number): number | null {
  * - an aside, stopped **or finished**, on a cold chat warmed nothing the
  *   chat can use: the chat's next send read 27,014 of ~69.6k, the same as
  *   with no aside (the aside writes its own copy, ending at its question).
+ *   ~~so an aside never warms a cold chat~~ (2026-11-23, CLI 2.1.330): the
+ *   cause was Claude Code's tether request shape, which marks only the
+ *   request's end. Asides now run with it off and mark the chat's last
+ *   message too, so an aside on the chat's model warms it (next send
+ *   97.3%), and the backend counts its write in `round_read`; this
+ *   "warmed only its own copy" case is left to asides on another model.
  *
  * `stoppedUnsure`: a turn that ended before its reply was recorded — the
  * log ends on his message with nothing after it — may or may not have

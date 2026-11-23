@@ -113,6 +113,12 @@ const STDERR_TAIL: usize = 4096;
 /// a user's own Claude Code hooks can tell a Nightloom turn from theirs.
 pub const NIGHTLOOM_MARKER_ENV: &str = "NIGHTLOOM";
 
+/// Claude Code's switch for its "tether" (server-held conversations,
+/// requests with a `thread` field), set `false` on a side request's
+/// process ([`AgentSpec::side_cache_mark`]). Item 806 found it on his
+/// account (server flag `tengu_curious_tower`) and this switch past it.
+pub const TETHER_OFF_ENV: &str = "CLAUDE_CODE_TETHER_LIVE";
+
 /// The last [`STDERR_TAIL`] bytes of `text`, cut on a character boundary:
 /// a byte offset that lands inside a multi-byte character would panic the
 /// reader task and lose the tail exactly when it is the only diagnosis
@@ -537,6 +543,19 @@ pub struct AgentSpec {
     /// refuses its call in words instead of deferring it. The gate itself
     /// rides the brief's directory and binary (`folder_gate_entry`).
     pub folder_side: bool,
+    /// A side request whose prefix is the chat's (an aside, a keep-warm
+    /// ping; aside-cache research 2026-11-23): its process runs with
+    /// [`TETHER_OFF_ENV`] off, so its request carries a cache breakpoint on
+    /// the chat's last message as well as its own end, and its write is
+    /// one the chat's next send can read. On his account Claude Code sends
+    /// tether-shaped requests (`thread`), which carry the end mark only:
+    /// a cold chat's aside wrote a copy ending at its own question, and
+    /// the chat's next send read 38.7% (run R1). Tether off, the same
+    /// aside left the next send reading 97.3% (R2), and a warm aside still
+    /// read 96.8% (R3). Measured on CLI 2.1.330, Haiku, a scratch chat
+    /// (`notes/runner-design/aside-cache-report-2026-11-23.md` in
+    /// nightshift-code); Opus 5.5 `auto` captured with the same two marks.
+    pub side_cache_mark: bool,
     /// An incognito chat (nightshift backlog 405): set by
     /// [`apply_incognito`](Self::apply_incognito), never directly. On, the
     /// CLI loads no setting file — so not his `~/.claude/CLAUDE.md`, his
@@ -947,6 +966,7 @@ impl AgentSpec {
             browser: false,
             playwright: None,
             folder_side: false,
+            side_cache_mark: false,
             incognito: false,
             denied_reads: Vec::new(),
             extra_args: Vec::new(),
@@ -1187,6 +1207,7 @@ impl AgentSpec {
             pw.side = true;
         }
         spec.folder_side = true;
+        spec.side_cache_mark = true;
         spec.own_browser_for_side();
         Some(spec)
     }
@@ -1382,6 +1403,10 @@ impl AgentSpec {
                 flat::CAPS_ENV,
                 flat::caps_value(std::env::var(flat::CAPS_ENV).ok().as_deref()),
             ));
+        }
+        // A side request marks the chat's own prefix (`side_cache_mark`).
+        if self.side_cache_mark {
+            env.push((TETHER_OFF_ENV, "false".into()));
         }
         // Nightloom's mark on its own `claude` processes (backlog 435): his
         // `~/.claude/hooks/notify.sh` exits quietly when it is set, since
@@ -4539,6 +4564,29 @@ mod tests {
             spec().aside_with(Some("haiku"), None).is_none(),
             "no session, no aside"
         );
+    }
+
+    #[test]
+    fn side_requests_mark_the_chats_prefix_and_turns_do_not() {
+        // Aside-cache research 2026-11-23: the tether switch rides an
+        // aside, its model/effort variant and a keep-warm ping; never the
+        // chat's own turn, and not the checkpoint fork (a working fork).
+        let mut s = asking(AskMode::Auto);
+        s.resume = Some("sess-9".into());
+        let off = |x: &AgentSpec| {
+            x.env_set()
+                .iter()
+                .any(|(k, v)| *k == TETHER_OFF_ENV && v == "false")
+        };
+        assert!(!off(&s), "the chat's own turn keeps the tether");
+        assert!(off(&s.aside().unwrap()));
+        assert!(off(&s.aside_with(Some("haiku"), Some("low")).unwrap()));
+        assert!(off(&s.keep_warm_ping().unwrap()));
+        assert!(!off(&s.checkpoint_fork().unwrap()));
+        let mut plain = spec();
+        plain.resume = Some("sess-9".into());
+        assert!(off(&plain.aside().unwrap()), "a chat without the Ask hook");
+        assert!(off(&plain.keep_warm_ping().unwrap()));
     }
 
     /// An aside is the chat's own command line — model, tools, servers,

@@ -303,10 +303,21 @@ pub(crate) async fn ask_aside(
     });
     // Item 677: the newest round's read — every round sends the chat's
     // prefix, so it is the share of the prefix the aside found warm.
-    let round_read = outcome
-        .last_round
-        .and_then(|u| u.cache_read_tokens)
-        .unwrap_or(0);
+    // ~~read only~~ (aside-cache research 2026-11-23): an aside on the
+    // chat's own model and effort marks the chat's prefix
+    // (`AgentSpec::side_cache_mark`), so what its round wrote is the chat's
+    // too: a cold chat's aside leaves the chat warm (its next send read
+    // 97.3%, run R2). On another model or effort its write is its own copy
+    // and only the read counts, as before.
+    let own_cache = agent
+        .spec()
+        .aside_with(model.as_deref(), effort.as_deref())
+        .is_some_and(|f| {
+            f.side_cache_mark && f.model == agent.spec().model && f.effort == agent.spec().effort
+        });
+    let round_read = outcome.last_round.map_or(0, |u| {
+        cached_for_chat(u.cache_read_tokens, u.cache_write_tokens, own_cache)
+    });
     // Item 786: a stopped aside's read counts too, when the CLI reported it
     // on its way out (measured on 2.1.326: the interrupt's `message_delta`
     // carries the round's prompt side; a stopped aside on a warm chat had
@@ -384,6 +395,19 @@ pub(crate) async fn ask_aside(
     })
 }
 
+/// The share of the chat's prefix an aside's round left in the cache
+/// (item 677; aside-cache research 2026-11-23): its read, plus its write
+/// when the aside marks the chat's own prefix on the chat's own model
+/// (`own`), since that write is then an entry the chat's next send reads.
+pub(crate) fn cached_for_chat(read: Option<u64>, write: Option<u64>, own: bool) -> u64 {
+    let read = read.unwrap_or(0);
+    if own {
+        read.saturating_add(write.unwrap_or(0))
+    } else {
+        read
+    }
+}
+
 /// Interrupt the aside, if any (review F13, 2026-09-16) — the × on the
 /// aside card. Reaches an aside still parked behind a running turn as well
 /// as one that is running, and never touches the turn: `ask_aside` races
@@ -394,4 +418,20 @@ pub(crate) async fn ask_aside(
 #[tauri::command]
 pub(crate) fn cancel_aside(state: State<'_, AppState>, seq: u64) {
     state.aside_cancel.cancel(seq);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cached_for_chat;
+
+    /// Aside-cache research 2026-11-23, run R2: a cold chat's aside read
+    /// 27,014 (system and tools) and wrote 40,771 (the chat's messages);
+    /// on the chat's own model both are the chat's cache now.
+    #[test]
+    fn an_own_model_asides_write_is_the_chats_cache() {
+        assert_eq!(cached_for_chat(Some(27_014), Some(40_771), true), 67_785);
+        assert_eq!(cached_for_chat(Some(27_014), Some(40_771), false), 27_014);
+        assert_eq!(cached_for_chat(None, Some(5), true), 5);
+        assert_eq!(cached_for_chat(None, None, false), 0);
+    }
 }
