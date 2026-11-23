@@ -87,7 +87,7 @@
         {/if}
       {/snippet}
       {#if r.steps.length === 0}<Loading label={task.doing || "Home is planning the run"} lines={2} />{/if}
-      <div class="r-chain" class:compact={!!openStep}>
+      <div class="r-chain" class:compact={!!openStep} data-pin>
         {#each r.steps as s, i (s.id)}
           {#if i}<i class="r-link" class:done={s.state !== "wait"} class:live={s.state === "live"}></i>{/if}
           <button class="r-node {s.state}" class:sel={ui.open === s.id} class:h9-brk={s.state === "live"} onclick={() => toggle(s.id)} aria-expanded={ui.open === s.id}>

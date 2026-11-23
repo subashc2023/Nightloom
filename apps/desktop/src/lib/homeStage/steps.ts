@@ -61,6 +61,16 @@ export function toolWords(name: string): [string, string] {
 
 const SAFE_KEYS = ["description", "query", "pattern", "url", "project", "file_path", "path", "name", "task", "doing", "what"];
 const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
+// Item 809: a reply's one-line summary in plain words — its Markdown marks (headings, bold, code ticks, bullets,
+// link targets) showed raw ("…the rest is handled. ## Needs you · …"). The step's detail keeps the text as written.
+export const plainLine = (s: string) =>
+  s
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(^|\n)\s*#{1,6}\s+/g, "$1")
+    .replace(/(^|\n)\s*(?:[-*+]|\d+\.)\s+/g, "$1")
+    .replace(/\*\*|__|`/g, "")
+    .trim()
+    .replace(/\s+/g, " ");
 
 /** One short value from a tool's input — never a secret-looking key, never the whole object. */
 export function toolNote(input: Record<string, unknown> | undefined): string {
@@ -90,7 +100,7 @@ export function stepsOf(events: readonly Ev[], turns = 3, isScan: (t: string) =>
           const note = toolNote(b.input);
           out.push({ key: `t${i}.${j}`, kind: "do", icon, title, out: note, detail: [["Tool", b.name.replace(/^mcp__/, "").replace(/__/g, " · ")], ...(note ? ([["About", note]] as [string, string][]) : [])], at: e.at ?? null });
         } else if (b.type === "text" && b.text?.trim()) {
-          out.push({ key: `s${i}.${j}`, kind: "say", icon: "chat", title: "Told you", out: cut(b.text.trim().replace(/\s+/g, " "), 120), detail: [["Said", cut(b.text.trim(), 600)]], at: e.at ?? null });
+          out.push({ key: `s${i}.${j}`, kind: "say", icon: "chat", title: "Told you", out: cut(plainLine(b.text), 120), detail: [["Said", cut(b.text.trim(), 600)]], at: e.at ?? null });
         }
       });
     }
