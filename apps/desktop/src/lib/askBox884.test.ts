@@ -41,15 +41,15 @@ describe("884: the stack rule (option A)", () => {
 });
 
 describe("884: Jarvis look (option A, Control row)", () => {
-  const J = ':where(:root:not([data-layout="classic"]))';
+  const JA = ':where(:root:not([data-layout="classic"])[data-askcard="buttons"])';
   it("the box's answers are buttons with a number key, side by side", () => {
     expect(appCss).toContain(`.nl-ask-o > li::before {\n  content: counter(nl-ask);`);
     expect(appCss).toMatch(/\.nl-ask-o \{\n  list-style: none;\n  display: flex;\n  flex-wrap: wrap;/);
     expect(appCss).toMatch(/\.nl-ask-o > li \{[^}]*border: 1px solid var\(--line2\);[^}]*background: var\(--well\);/);
   });
   it("a stacked box puts every answer full width", () => {
-    expect(appCss).toContain(`${J} .nl-ask[data-stack] .nl-ask-o {\n  flex-direction: column;`);
-    expect(appCss).toContain(`${J} .nl-ask[data-stack] .nl-ask-o > li {\n  display: flex;\n  width: 100%;`);
+    expect(appCss).toContain(`${JA} .nl-ask[data-stack] .nl-ask-o {\n  flex-direction: column;`);
+    expect(appCss).toContain(`${JA} .nl-ask[data-stack] .nl-ask-o > li {\n  display: flex;\n  width: 100%;`);
   });
   it("the box is the hand-off glass, with no amber left rule", () => {
     expect(appCss).toMatch(/\[data-answered\]\) \{\n  border: 1px solid color-mix\(in srgb, var\(--accent\) 38%, var\(--line2\)\);/);
@@ -62,7 +62,7 @@ describe("884: Jarvis look (option A, Control row)", () => {
   it("every rule is Jarvis-only", () => {
     const rules = appCss.replace(/\/\*[\s\S]*?\*\//g, "").split("}").map((r) => r.trim()).filter((r) => r.includes("{"));
     expect(rules.length).toBeGreaterThan(10);
-    for (const r of rules) expect(r.startsWith(J)).toBe(true);
+    for (const r of rules) expect(r.startsWith(':where(:root:not([data-layout="classic"])')).toBe(true);
   });
   it("851's answered state keeps its green pick", () => {
     expect(appCss).toMatch(/\.nl-ask\[data-answered\] \.nl-ask-o > li\[data-picked\] \{\n  color: var\(--ink\);\n  background: var\(--done-soft\);/);
@@ -73,5 +73,46 @@ describe("884: Jarvis look (option A, Control row)", () => {
     expect(answeredSrc).toContain("content: counter(aa-pick);");
     expect(answeredSrc).toContain('data-stack={askStacks(q.options.map((o) => o.label)) ? "1" : undefined}');
     expect(answeredSrc).toContain("const n = numberKey(e);");
+  });
+});
+
+describe("884b: both looks as a Settings choice", () => {
+  const JA = ':where(:root:not([data-layout="classic"])[data-askcard="buttons"])';
+  const JB = ':where(:root:not([data-layout="classic"]):not([data-askcard="buttons"]))';
+  it("Rows is the default and Buttons stamps data-askcard", async () => {
+    const m = await import("./askCardLook.svelte");
+    expect(m.parseAskCardLook(null)).toBe("rows");
+    expect(m.parseAskCardLook("junk")).toBe("rows");
+    expect(m.parseAskCardLook("buttons")).toBe("buttons");
+    // No DOM in these tests: a stand-in <html> and storage.
+    const store = new Map<string, string>();
+    const g = globalThis as Record<string, unknown>;
+    g.document = { documentElement: { dataset: {} as Record<string, string> } };
+    g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
+    m.setAskCardLook("buttons");
+    expect(document.documentElement.dataset.askcard).toBe("buttons");
+    expect(localStorage.getItem("nightloom.askCard")).toBe("buttons");
+    m.setAskCardLook("rows");
+    expect(document.documentElement.dataset.askcard).toBeUndefined();
+    expect(localStorage.getItem("nightloom.askCard")).toBeNull();
+    delete g.document;
+    delete g.localStorage;
+  });
+  it("the box carries both looks, each gated", () => {
+    expect(appCss).toContain(`${JB} .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o > li {\n  counter-increment: nl-ask;`);
+    expect(appCss).toMatch(/:not\(\[data-askcard="buttons"\]\)\) \.nl-ask:is\(\[data-state="open"\], \[data-state="closed"\]\) \.nl-ask-o > li::after \{\n  content: "Send ↵";/);
+    expect(appCss).toContain(`${JA} .nl-ask:is([data-state="open"], [data-state="closed"], [data-answered]) .nl-ask-o {\n  list-style: none;\n  display: flex;`);
+  });
+  it("the live card and the closed card carry both looks", () => {
+    expect(turnAskSrc).toContain(':global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .turn-ask :global(.aq-opts) {');
+    expect(answeredSrc).toContain(':global(:where(:root:not([data-layout="classic"]):not([data-askcard="buttons"]))) .aa-pick {');
+    expect(answeredSrc).toContain(':global(:where(:root:not([data-layout="classic"])[data-askcard="buttons"])) .aa-pick {');
+    expect(answeredSrc).toContain(".aa-chip.aa-chip-closed {");
+  });
+  it("Send ↵ sits at the foot, filled amber, and in Buttons only for Other", () => {
+    expect(turnAskSrc).not.toContain("{#snippet tail()}");
+    expect(turnAskSrc).toMatch(/<div class="ta-foot">[\s\S]*?class="ta-send" disabled=\{!ready \|\| sending\}[\s\S]*?"Send ↵"/);
+    expect(turnAskSrc).toContain('const showSend = $derived(classic() || askCardLook.value !== "buttons" || typed);');
+    expect(turnAskSrc).toMatch(/\.ta-send \{\n    min-height: 32px;[\s\S]*?background: var\(--accent\);\n    color: var\(--on-accent\);/);
   });
 });
