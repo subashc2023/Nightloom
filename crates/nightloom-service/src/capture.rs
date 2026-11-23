@@ -55,7 +55,7 @@ use std::fs;
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 use nightloom_core::{Segment, SegmentKind, Session, SessionEvent, SystemPrompt, Usage};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -134,6 +134,105 @@ pub struct CaptureState {
     /// behaviour before the field; `nightloom capture --since` sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<DateTime<Utc>>,
+    /// The backfill's day (item 779): model calls it made on its last local
+    /// day. Kept here, under the pass lock and written with the
+    /// watermarks, so a restart mid-day neither forgets what was spent nor
+    /// re-reads what was read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backfill: Option<BackfillDay>,
+}
+
+/// What the backfill spent on one local day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackfillDay {
+    pub day: NaiveDate,
+    pub calls: usize,
+}
+
+impl CaptureState {
+    /// Model calls the backfill made on `today` (0 on a new day).
+    pub fn backfill_calls_on(&self, today: NaiveDate) -> usize {
+        self.backfill
+            .filter(|b| b.day == today)
+            .map_or(0, |b| b.calls)
+    }
+}
+
+/// The backfill's default per-day cap, in model calls (item 779, blocker
+/// 2259): a call reads up to [`BATCH_BUDGET`] of transcript, so 30 a day
+/// drains his older outside sessions over weeks rather than in one flood
+/// into the vault, at a small slice of a 5-hour window on Haiku.
+pub const BACKFILL_DAILY_CAP: usize = 30;
+
+/// The most model calls one backfill run makes (item 779): the run holds
+/// the pass lock, and a short run means his own Capture or Dream waits a
+/// minute at most — the desktop also stops a running backfill for them.
+pub const BACKFILL_CHUNK: usize = 3;
+
+/// One backfill run's limits: the day's cap, this run's chunk, and which
+/// day it is (local), passed in so a test can turn the clock.
+#[derive(Debug, Clone, Copy)]
+pub struct Backfill {
+    pub cap: usize,
+    pub chunk: usize,
+    pub today: NaiveDate,
+}
+
+impl Backfill {
+    /// `cap` a day, the default chunk, today.
+    pub fn today(cap: usize) -> Self {
+        Self {
+            cap,
+            chunk: BACKFILL_CHUNK,
+            today: Local::now().date_naive(),
+        }
+    }
+}
+
+/// Which logs a run reads: the live ones (everything since each dir's
+/// horizon), or the backfill's — outside Claude Code sessions last written
+/// before the mirror's first sync, which the live pass never reads.
+#[derive(Debug, Clone, Copy)]
+enum Scope {
+    Live,
+    Backfill(Backfill),
+}
+
+/// The backfill's numbers for the Notes panel (item 779).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct BackfillStatus {
+    /// Older outside sessions (last written before the first sync) in the
+    /// mirror.
+    pub total: usize,
+    /// Of those, the ones with bytes past their watermark.
+    pub pending: usize,
+    /// Model calls made today, and the cap they count against.
+    pub today: usize,
+    pub cap: usize,
+}
+
+/// The backfill's status without opening a log: directory scans only.
+pub fn backfill_status_in(config: &Path, cap: usize, today: NaiveDate) -> BackfillStatus {
+    let state = state_in(config);
+    let mut status = BackfillStatus {
+        today: state.backfill_calls_on(today),
+        cap,
+        ..BackfillStatus::default()
+    };
+    let Some(sd) = session_dirs(config).into_iter().find(|d| d.since.is_some()) else {
+        return status;
+    };
+    let since = sd.since.expect("found by it");
+    if let Ok(logs) = store::log_files(&sd.dir) {
+        status.total = logs.iter().filter(|l| l.modified < since).count();
+    }
+    let scope = Scope::Backfill(Backfill {
+        cap,
+        chunk: BACKFILL_CHUNK,
+        today,
+    });
+    status.pending = unread_in(&sd, &state, scope).len();
+    status
 }
 
 fn schema_version() -> u32 {
@@ -255,9 +354,13 @@ struct Unread {
 /// an empty list: no chat has been recorded there yet. If a watermark
 /// points past the end of its file, the log was replaced and is read from
 /// the top, the rule the dream's watermark follows.
-fn unread_in(sd: &SessionDir, state: &CaptureState) -> Vec<Unread> {
+fn unread_in(sd: &SessionDir, state: &CaptureState, scope: Scope) -> Vec<Unread> {
     let dir = sd.dir.as_path();
-    if !dir.is_dir() {
+    // The backfill reads only the dir with a horizon (the outside mirror),
+    // and only what lies before it; the live pass only what lies after.
+    // Neither lists the other's logs, so the two never take one twice.
+    let backfill = matches!(scope, Scope::Backfill(_));
+    if !dir.is_dir() || (backfill && sd.since.is_none()) {
         return Vec::new();
     }
     let Ok(logs) = store::log_files(dir) else {
@@ -265,8 +368,12 @@ fn unread_in(sd: &SessionDir, state: &CaptureState) -> Vec<Unread> {
     };
     let mut out: Vec<Unread> = logs
         .into_iter()
-        .filter(|log| state.since.is_none_or(|t| log.modified >= t))
-        .filter(|log| sd.since.is_none_or(|t| log.modified >= t))
+        .filter(|log| backfill || state.since.is_none_or(|t| log.modified >= t))
+        .filter(|log| match sd.since {
+            None => true,
+            Some(t) if backfill => log.modified < t,
+            Some(t) => log.modified >= t,
+        })
         .filter_map(|log| {
             let key = log.path.to_string_lossy().into_owned();
             let seen = state.consumed.get(&key).copied();
@@ -295,7 +402,7 @@ pub fn pending_count_in(config: &Path) -> usize {
     let state = state_in(config);
     session_dirs(config)
         .iter()
-        .map(|d| unread_in(d, &state).len())
+        .map(|d| unread_in(d, &state, Scope::Live).len())
         .sum()
 }
 
@@ -734,6 +841,9 @@ pub struct CaptureOutcome {
     pub retried: usize,
     /// The dropped lines themselves, for a dry run or a report.
     pub refusals: Vec<Refused>,
+    /// Model calls made (a turn and, when a line was refused, its second
+    /// look) — what the backfill's daily cap counts.
+    pub calls: usize,
 }
 
 /// A captured line that was not written: the chat it named (8 characters,
@@ -774,7 +884,15 @@ pub async fn run(
     cancel: &CancellationToken,
     on_event: &mut (dyn FnMut(TurnEvent) + Send),
 ) -> Result<Option<CaptureOutcome>, String> {
-    run_with(Engine::Provider(chat), config, dry_run, cancel, on_event).await
+    run_with(
+        Engine::Provider(chat),
+        config,
+        dry_run,
+        Scope::Live,
+        cancel,
+        on_event,
+    )
+    .await
 }
 
 /// [`run`] on the Claude Code engine (2026-09-16): each turn one `claude
@@ -792,13 +910,71 @@ pub async fn run_on_agent(
     let scratch = config.join(AGENT_SCRATCH);
     fs::create_dir_all(&scratch)
         .map_err(|e| format!("could not create {}: {e}", scratch.display()))?;
-    run_with(Engine::Agent(pass), config, dry_run, cancel, on_event).await
+    run_with(
+        Engine::Agent(pass),
+        config,
+        dry_run,
+        Scope::Live,
+        cancel,
+        on_event,
+    )
+    .await
+}
+
+/// The backfill (item 779, his question on blocker 2025: "why leaving older
+/// history alone why not use?"): the same pass over the outside Claude Code
+/// sessions last written before the mirror's first sync — which the live
+/// pass never reads — newest first, at most `limits.chunk` model calls this
+/// run and `limits.cap` on `limits.today`. Resumable by the same
+/// watermarks: a log it read is never read again by either pass, and a log
+/// that later grows past the horizon is the live pass's from where this one
+/// stopped. `Ok(None)` when no older session is unread or the day's cap is
+/// spent ([`backfill_status_in`] says which).
+pub async fn run_backfill(
+    chat: &mut Chat,
+    config: &Path,
+    limits: Backfill,
+    cancel: &CancellationToken,
+    on_event: &mut (dyn FnMut(TurnEvent) + Send),
+) -> Result<Option<CaptureOutcome>, String> {
+    run_with(
+        Engine::Provider(chat),
+        config,
+        false,
+        Scope::Backfill(limits),
+        cancel,
+        on_event,
+    )
+    .await
+}
+
+/// [`run_backfill`] on the Claude Code engine.
+pub async fn run_backfill_on_agent(
+    pass: &PassSpec,
+    config: &Path,
+    limits: Backfill,
+    cancel: &CancellationToken,
+    on_event: &mut (dyn FnMut(TurnEvent) + Send),
+) -> Result<Option<CaptureOutcome>, String> {
+    let scratch = config.join(AGENT_SCRATCH);
+    fs::create_dir_all(&scratch)
+        .map_err(|e| format!("could not create {}: {e}", scratch.display()))?;
+    run_with(
+        Engine::Agent(pass),
+        config,
+        false,
+        Scope::Backfill(limits),
+        cancel,
+        on_event,
+    )
+    .await
 }
 
 async fn run_with(
     engine: Engine<'_>,
     config: &Path,
     dry_run: bool,
+    scope: Scope,
     cancel: &CancellationToken,
     on_event: &mut (dyn FnMut(TurnEvent) + Send),
 ) -> Result<Option<CaptureOutcome>, String> {
@@ -807,10 +983,21 @@ async fn run_with(
     // observation twice.
     let _lock = crate::pass_lock::take(config)?;
     let state = state_in(config);
+    // The backfill's budget: what is left of today's cap, at most a chunk.
+    let (limit, today) = match scope {
+        Scope::Live => (None, None),
+        Scope::Backfill(b) => {
+            let left = b.cap.saturating_sub(state.backfill_calls_on(b.today));
+            if left == 0 {
+                return Ok(None);
+            }
+            (Some(left.min(b.chunk.max(1))), Some(b.today))
+        }
+    };
     let dirs = session_dirs(config);
     let unread: Vec<(&SessionDir, Vec<Unread>)> = dirs
         .iter()
-        .map(|d| (d, unread_in(d, &state)))
+        .map(|d| (d, unread_in(d, &state, scope)))
         .filter(|(_, u)| !u.is_empty())
         .collect();
     if unread.is_empty() {
@@ -829,6 +1016,8 @@ async fn run_with(
         usd: 0.0,
         unpriced: 0,
         turns: 0,
+        limit,
+        today,
     };
 
     // Logs not reached this run, counted from the listing without opening
@@ -850,7 +1039,7 @@ async fn run_with(
         };
         let mut bytes = 0usize;
         for (i, log) in logs.iter().enumerate() {
-            if pass.turns >= TURN_CAP {
+            if pass.full() {
                 // What the batch already holds, this log and everything
                 // after it, and every later dir's logs.
                 pass.outcome.remaining += batch.excerpts.len();
@@ -880,7 +1069,13 @@ async fn run_with(
                 }
                 continue;
             }
-            let settled = log.first && (now - log.modified).num_seconds() >= SETTLED_SECS;
+            let quiet = (now - log.modified).num_seconds() >= SETTLED_SECS;
+            // An older session is finished as far as the backfill can tell
+            // (last written before the first sync; if it goes on, it is the
+            // live pass's from this watermark): a short one, or a one-turn
+            // tail left by a budget cut, would otherwise wait for turns
+            // that never come, and the backfill's count would never clear.
+            let settled = limit.is_some() || (log.first && quiet);
             // The budget cut the fold short (item 278): there is more after
             // it, so "too little new material" is the budget talking, not
             // the chat. Deferring here wedged a chat of long messages for
@@ -902,7 +1097,7 @@ async fn run_with(
             batch.excerpts.push(excerpt);
         }
         if !batch.excerpts.is_empty() {
-            if pass.turns >= TURN_CAP {
+            if pass.full() {
                 // The batch's own logs, then the later dirs': `logs` is
                 // fully walked, so `at` is its length.
                 pass.outcome.remaining += batch.excerpts.len();
@@ -917,7 +1112,13 @@ async fn run_with(
 
     // Empty excerpts consumed without a turn are recorded too, and the
     // run is stamped, even when every log deferred.
-    if !dry_run && !pass.outcome.interrupted {
+    if limit.is_some() {
+        // The backfill writes even when stopped: the calls it spent count
+        // against the day whether or not their turn completed, and only
+        // completed turns (and stepped-over logs) moved a watermark. It
+        // does not stamp `last_run`, which is the live pass's.
+        write_state(config, &pass.state)?;
+    } else if !dry_run && !pass.outcome.interrupted {
         pass.state.last_run = Some(now);
         write_state(config, &pass.state)?;
     }
@@ -1018,6 +1219,8 @@ async fn run_chat_with(
         usd: 0.0,
         unpriced: 0,
         turns: 0,
+        limit: None,
+        today: None,
     };
     while from < len {
         if pass.turns >= TURN_CAP {
@@ -1070,9 +1273,23 @@ struct Pass<'a> {
     usd: f64,
     unpriced: usize,
     turns: usize,
+    /// The backfill's model calls this run, at most (item 779); `None` is
+    /// the live pass, capped by [`TURN_CAP`] turns instead.
+    limit: Option<usize>,
+    /// The backfill's local day, whose count each call adds to.
+    today: Option<NaiveDate>,
 }
 
 impl Pass<'_> {
+    /// No more turns this run: the live pass's turn cap, or the backfill's
+    /// call budget (a hard cap: a second look is skipped past it).
+    fn full(&self) -> bool {
+        match self.limit {
+            Some(n) => self.outcome.calls >= n,
+            None => self.turns >= TURN_CAP,
+        }
+    }
+
     /// One provider turn over one batch. Returns whether it completed; on
     /// an interruption nothing from the batch is appended and no watermark
     /// moves.
@@ -1095,6 +1312,16 @@ impl Pass<'_> {
         let mut kept = Vec::new();
         let mut refused = Vec::new();
         self.screen(batch, parsed, &mut kept, &mut refused);
+        // The backfill's budget is a hard cap (item 779): with no call
+        // left, a refused line gets no second look and is dropped and
+        // logged as one that failed it would be.
+        if !refused.is_empty() && self.limit.is_some_and(|n| self.outcome.calls >= n) {
+            for r in &refused {
+                grounding::log_refusal(self.config, "capture", &r.chat, &r.line, &r.missing);
+            }
+            self.outcome.refused += refused.len();
+            self.outcome.refusals.append(&mut refused);
+        }
         if !refused.is_empty() {
             self.outcome.retried += refused.len();
             let named: Vec<(String, Vec<String>)> = refused
@@ -1160,6 +1387,12 @@ impl Pass<'_> {
     /// when the pass was interrupted (nothing from the batch is appended
     /// then and no watermark moves).
     async fn ask(&mut self, batch: &Batch, instruction: &str) -> Result<Option<String>, String> {
+        // Counted as it is made, billed or not: the cap is on spend.
+        self.outcome.calls += 1;
+        if let Some(day) = self.today {
+            let calls = self.state.backfill_calls_on(day) + 1;
+            self.state.backfill = Some(BackfillDay { day, calls });
+        }
         let mut reply = String::new();
         let on_event = &mut *self.on_event;
         let mut forward = |event: TurnEvent| {
@@ -1551,6 +1784,213 @@ mod tests {
             Some(crate::outside::OUTSIDE_NAME)
         );
         assert_eq!(backlog.pending[0].obs.kind, ObservationKind::UserStated);
+    }
+
+    /// The backfill (item 779): outside sessions last written before the
+    /// mirror's first sync — which the live pass never reads — are read
+    /// newest first, at most a chunk of calls a run and the cap a day; a
+    /// new day resumes where the last stopped, a restart loses nothing
+    /// (the count is on disk), and a session that grows past the horizon
+    /// is the live pass's from the backfill's watermark.
+    #[tokio::test]
+    async fn the_backfill_reads_older_outside_sessions_under_a_daily_cap_and_resumes() {
+        let (config, _unfiled) = fixture("backfill");
+        let claude = config.parent().unwrap().join("claude");
+        let folder = claude.join("projects").join("-Users-me-code-app");
+        fs::create_dir_all(&folder).unwrap();
+        let line = |ty: &str, at: DateTime<Utc>, content: serde_json::Value| {
+            serde_json::json!({
+                "type": ty, "entrypoint": "cli", "cwd": "/Users/me/code/app",
+                "timestamp": at.to_rfc3339(),
+                "message": {"role": ty, "content": content, "model": "claude-opus-5-5"},
+            })
+            .to_string()
+                + "\n"
+        };
+        // Five older sessions, each big enough to take a turn of its own
+        // (two would not fit one batch), the newest days ago.
+        let pad = "words of a long message ".repeat(600);
+        let session = |i: usize| format!("00000000-0000-0000-0000-00000000000{i}");
+        for i in 0..5 {
+            let at = Utc::now() - chrono::Duration::days(3 + i as i64);
+            let mut body = String::new();
+            for q in 0..2 {
+                body += &line("user", at, format!("OLD-{i}-Q{q} {pad}").into());
+                body += &line(
+                    "assistant",
+                    at,
+                    serde_json::json!([{"type":"text","text":"noted"}]),
+                );
+            }
+            fs::write(folder.join(format!("{}.jsonl", session(i))), body).unwrap();
+        }
+        crate::outside::sync(&config, &claude).unwrap();
+        let day1 = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+        let day2 = day1.succ_opt().unwrap();
+        assert_eq!(
+            pending_count_in(&config),
+            0,
+            "the live pass never lists them"
+        );
+        let status = backfill_status_in(&config, 2, day1);
+        assert_eq!((status.total, status.pending, status.today), (5, 5, 0));
+
+        let reply = || says("user_stated | Wants long messages kept.");
+        let (mut chat, seen) = chat_recording((0..10).map(|_| reply()).collect());
+        let cancel = CancellationToken::new();
+        let limits = |today, chunk| Backfill {
+            cap: 2,
+            chunk,
+            today,
+        };
+        // Day 1, chunk 1: one call; the next run takes the second; the
+        // third finds the cap spent and does nothing.
+        let first = run_backfill(&mut chat, &config, limits(day1, 1), &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("older sessions unread");
+        assert_eq!((first.calls, first.logs_read), (1, 1), "{first:?}");
+        assert!(all_text(&seen).contains("OLD-0-Q0"), "newest first");
+        let second = run_backfill(&mut chat, &config, limits(day1, 5), &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.calls, 1, "the cap leaves one call for this run");
+        assert!(
+            run_backfill(&mut chat, &config, limits(day1, 5), &cancel, &mut |_| {})
+                .await
+                .unwrap()
+                .is_none(),
+            "the day's cap is spent"
+        );
+        let status = backfill_status_in(&config, 2, day1);
+        assert_eq!((status.pending, status.today), (3, 2), "{status:?}");
+        assert!(!all_text(&seen).contains("OLD-2-Q1"));
+
+        // Day 2 (a restart reads the count from disk): two more.
+        let third = run_backfill(&mut chat, &config, limits(day2, 5), &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(third.calls, 2, "{third:?}");
+        assert_eq!(backfill_status_in(&config, 2, day2).pending, 1);
+        let backlog = observe::backlog_in(&config);
+        assert_eq!(backlog.pending.len(), 4);
+        assert!(
+            backlog
+                .pending
+                .iter()
+                .all(|p| p.obs.source.as_deref() == Some(crate::outside::OUTSIDE_NAME))
+        );
+        // No log was sent twice (the second question: the first is in the
+        // mirror's title too).
+        let sent = all_text(&seen);
+        for i in 0..4 {
+            assert_eq!(sent.matches(&format!("OLD-{i}-Q1")).count(), 1, "{i}");
+        }
+        assert!(!sent.contains("OLD-4-Q1"), "the fifth waits for day 3");
+
+        // The newest older session goes on today: it is now past the
+        // horizon, the live pass's, read from where the backfill stopped.
+        let now = Utc::now() + chrono::Duration::seconds(5);
+        let mut more = String::new();
+        for q in 0..2 {
+            more += &line("user", now, format!("NEW-Q{q}").into());
+            more += &line(
+                "assistant",
+                now,
+                serde_json::json!([{"type":"text","text":"ok"}]),
+            );
+        }
+        let path = folder.join(format!("{}.jsonl", session(0)));
+        let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        std::io::Write::write_all(&mut f, more.as_bytes()).unwrap();
+        drop(f);
+        crate::outside::sync(&config, &claude).unwrap();
+        assert_eq!(pending_count_in(&config), 1);
+        let before = seen.lock().unwrap().len();
+        let live = run(&mut chat, &config, false, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(live.logs_read, 1, "{live:?}");
+        let last = seen.lock().unwrap()[before..]
+            .iter()
+            .flat_map(|r| r.messages.iter().map(|m| m.text()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            last.contains("NEW-Q0") && !last.contains("OLD-0-Q0"),
+            "{last}"
+        );
+        assert_eq!(backfill_status_in(&config, 2, day2).total, 4);
+    }
+
+    /// The Check's run (item 779), never in CI: the backfill over a scratch
+    /// copy of real Claude Code session files, on the Claude Code engine
+    /// with Haiku, two simulated days under a small cap. Read-only on his
+    /// files: `NL779_CLAUDE` is a copy, `NL779_CONFIG` a scratch config.
+    /// `NL779_CAP` (default 6) a day; prints one JSON line per run.
+    #[tokio::test]
+    #[ignore]
+    async fn backfill_over_a_copy_of_real_sessions() {
+        let claude = PathBuf::from(std::env::var("NL779_CLAUDE").expect("NL779_CLAUDE"));
+        let config = PathBuf::from(std::env::var("NL779_CONFIG").expect("NL779_CONFIG"));
+        let cap: usize = std::env::var("NL779_CAP")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(6);
+        let sync = crate::outside::sync(&config, &claude).unwrap();
+        println!("sync: {sync:?}");
+        let mut pass = PassSpec::new("claude", Vec::new());
+        pass.model = Some("haiku".into());
+        let cancel = CancellationToken::new();
+        let day1 = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+        for day in [day1, day1.succ_opt().unwrap()] {
+            let before = backfill_status_in(&config, cap, day);
+            println!("status before {day}: {before:?}");
+            // Runs of the default chunk until the day's cap says no.
+            loop {
+                let started = std::time::Instant::now();
+                let limits = Backfill {
+                    cap,
+                    chunk: BACKFILL_CHUNK,
+                    today: day,
+                };
+                let Some(o) = run_backfill_on_agent(&pass, &config, limits, &cancel, &mut |_| {})
+                    .await
+                    .unwrap()
+                else {
+                    println!("{day}: no run (cap spent or nothing left)");
+                    break;
+                };
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "day": day.to_string(), "calls": o.calls, "logs_read": o.logs_read,
+                        "observations": o.observations, "refused": o.refused, "retried": o.retried,
+                        "deferred": o.deferred, "incognito": o.incognito,
+                        "input": o.usage.input_tokens, "output": o.usage.output_tokens,
+                        "cache_read": o.usage.cache_read_tokens, "cache_write": o.usage.cache_write_tokens,
+                        "secs": started.elapsed().as_secs_f64(),
+                    })
+                );
+            }
+            println!(
+                "status after {day}: {:?}",
+                backfill_status_in(&config, cap, day)
+            );
+        }
+        let backlog = observe::backlog_in(&config);
+        println!("inbox: {} observations", backlog.pending.len());
+        for p in backlog.pending.iter().take(12) {
+            println!(
+                "  {} | {:?} | {}",
+                p.obs.kind.as_str(),
+                p.obs.source,
+                p.obs.text
+            );
+        }
     }
 
     /// Two small logs pack into one turn; the reply's two good lines land

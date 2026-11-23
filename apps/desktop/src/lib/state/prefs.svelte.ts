@@ -1,6 +1,7 @@
 // Moved out of state.svelte.ts by item 641 (pure move; state.svelte.ts re-exports every name it exported).
 import { searchGrowth } from "../search.svelte";
 import { DEFAULT_USAGE_LIMITS, parseLimit } from "../autoPass";
+import { DEFAULT_BACKFILL_CAP, parseBackfillCap } from "../backfill";
 import { app } from "../state.svelte";
 
 /**
@@ -71,7 +72,19 @@ export interface DreamPrefs {
   limitFiveHour: number;
   /** … or the week above this percent (default 80). */
   limitWeek: number;
+  /** Read the older outside Claude Code sessions — the ones before the
+   *  mirror's first sync — a few calls at a time in the background (item
+   *  779, his "why leaving older history alone why not use?"). On by
+   *  default. */
+  backfill: boolean;
+  /** The backfill's model calls a day (default 30, blocker 2259). */
+  backfillCap: number;
 }
+
+// The backfill's cap default and parser live in `backfill.ts`, which
+// imports nothing stateful: this module and `state.svelte.ts` import each
+// other, and a constant declared here was read before it existed.
+export { DEFAULT_BACKFILL_CAP, parseBackfillCap } from "../backfill";
 
 /**
  * The preference's version. A stored value without it predates item 278,
@@ -94,6 +107,8 @@ export function parseDreamPrefs(raw: string | null): DreamPrefs {
         // the defaults; the version is not bumped, so his switch is kept.
         limitFiveHour: parseLimit(p.limitFiveHour, DEFAULT_USAGE_LIMITS.fiveHour),
         limitWeek: parseLimit(p.limitWeek, DEFAULT_USAGE_LIMITS.week),
+        backfill: typeof p.backfill === "boolean" ? p.backfill : true,
+        backfillCap: parseBackfillCap(p.backfillCap),
       };
     }
   } catch {
@@ -105,6 +120,8 @@ export function parseDreamPrefs(raw: string | null): DreamPrefs {
     model: "",
     limitFiveHour: DEFAULT_USAGE_LIMITS.fiveHour,
     limitWeek: DEFAULT_USAGE_LIMITS.week,
+    backfill: true,
+    backfillCap: DEFAULT_BACKFILL_CAP,
   };
 }
 

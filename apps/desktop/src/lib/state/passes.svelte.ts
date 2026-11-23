@@ -83,6 +83,9 @@ function passTarget(): api.PassArgs {
  */
 export async function runCapture(quiet = false): Promise<void> {
   if (app.capturing || app.dreaming) return;
+  // His pass (or an automatic one) goes first: a backfill run gives way.
+  await yieldBackfill();
+  if (app.capturing || app.dreaming) return;
   const target = passTarget();
   app.capturing = true;
   try {
@@ -133,6 +136,7 @@ export async function saveMemoryFromChat(id: string): Promise<void> {
     addToast("a dream or a capture is already running");
     return;
   }
+  await yieldBackfill();
   const target = passTarget();
   app.capturing = true;
   let found = 0;
@@ -174,6 +178,8 @@ export async function stopCapture(): Promise<void> {
  * since 2026-09-16 (`passTargetFor`).
  */
 export async function runDream(): Promise<void> {
+  if (app.dreaming || app.capturing) return;
+  await yieldBackfill();
   if (app.dreaming || app.capturing) return;
   const target = passTarget();
   app.dreaming = true;
@@ -450,14 +456,95 @@ export async function syncOutside(): Promise<void> {
 }
 
 /** On launch and every `MEMORY_CLOCK_MS`: the outside mirror, then the bell
- *  (whose refresh versions Claude Code's memory). */
+ *  (whose refresh versions Claude Code's memory), then a backfill run. */
 export function startMemoryClock(): void {
   if (memoryClock) return;
-  void syncOutside();
+  void syncOutside().then(() => maybeBackfill());
   memoryClock = setInterval(() => {
-    void syncOutside();
+    void syncOutside().then(() => maybeBackfill());
     void refreshCentre();
   }, MEMORY_CLOCK_MS);
+}
+
+/*
+ * The backfill (nightshift item 779, his question on blocker 2025): the
+ * outside Claude Code sessions last written before the mirror's first sync
+ * are read into the inbox too — a few model calls per memory-clock tick
+ * (the backend's chunk, 3), at most `backfillCap` a day, newest first, on
+ * the cheapest model (`haiku` on the Claude Code engine; an API provider
+ * keeps the dream's model). Never in the way: it starts only when no
+ * capture, dream or daily pass is running and usage is under the automatic
+ * passes' limits, says nothing, and any pass he or the app starts stops it
+ * first (`yieldBackfill`). Resumable: the watermarks and the day's count
+ * are on disk, so a quit mid-run re-reads at most the session it was in.
+ */
+let backfillRun: Promise<void> | null = null;
+
+/** Re-read the backfill's numbers (directory scans only). */
+export async function refreshBackfillStatus(): Promise<void> {
+  try {
+    app.backfill = await api.captureBackfillStatus(app.dreamPrefs.backfillCap);
+  } catch {
+    // A count is not worth a toast.
+  }
+}
+
+/** The connection a backfill run uses: the dream's, on Haiku when that is
+ *  the Claude Code engine. */
+export function backfillTarget(): api.PassArgs {
+  const t = passTarget();
+  return t.provider === DREAM_ENGINE ? { ...t, model: "haiku" } : t;
+}
+
+/** One backfill run, when it is on, there is something older to read, the
+ *  day's cap is not spent, nothing else runs and usage allows. */
+export async function maybeBackfill(): Promise<void> {
+  if (backfillRun) return;
+  // The numbers first, switch or no switch: Settings shows them.
+  await refreshBackfillStatus();
+  if (!app.dreamPrefs.backfill) return;
+  if (app.capturing || app.dreaming || app.centre.dailyRunning) return;
+  const b = app.backfill;
+  if (!b || b.pending === 0 || b.today >= b.cap) return;
+  const target = backfillTarget();
+  const onPlan = target.provider === DREAM_ENGINE;
+  const limits = { fiveHour: app.dreamPrefs.limitFiveHour, week: app.dreamPrefs.limitWeek };
+  // The pure gate, without the deferral bookkeeping the hand-off pass
+  // keeps: a held backfill is simply tried again at the next tick.
+  if (!usageGate(app.planUsage, limits, onPlan, Date.now()).run) return;
+  if (app.capturing || app.dreaming || app.centre.dailyRunning || backfillRun) return;
+  app.backfilling = true;
+  backfillRun = (async () => {
+    try {
+      await api.captureBackfill(target, app.dreamPrefs.backfillCap);
+    } catch {
+      // "already running" (his pass got the lock first) or a failed call:
+      // the next tick tries again; the backfill never toasts.
+    } finally {
+      app.backfilling = false;
+    }
+    await refreshBackfillStatus();
+    await refreshDreamStatus();
+  })();
+  try {
+    await backfillRun;
+  } finally {
+    backfillRun = null;
+  }
+}
+
+/** Stop a running backfill run and wait for it to end, so the pass about
+ *  to start gets the lock. The turn it stopped in appends nothing and is
+ *  read again by a later run. */
+export async function yieldBackfill(): Promise<void> {
+  const run = backfillRun;
+  if (!run) return;
+  try {
+    await api.cancelCapture();
+  } catch {
+    // Already ended.
+  }
+  await run.catch(() => {});
 }
 
 /** The bell's count: everything listed. */
@@ -560,6 +647,8 @@ export function setDailyPrefs(p: DailyPrefs): void {
  * round — the next day's hour, or the *Run now* button, is the retry.
  */
 export async function runDailyPass(): Promise<void> {
+  if (app.centre.dailyRunning || app.dreaming || app.capturing) return;
+  await yieldBackfill();
   if (app.centre.dailyRunning || app.dreaming || app.capturing) return;
   app.centre.dailyRunning = true;
   const started = Date.now();

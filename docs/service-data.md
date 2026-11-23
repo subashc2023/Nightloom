@@ -882,8 +882,29 @@ that grew costs its new bytes (at most 32 MB a sync), one that shrank is
 mirrored again from the top. Each mirrored log is stamped with its last
 message's time, which the listing and the ranking's recency read. `since` —
 the first sync's time — is the capture horizon for this directory alone
-(`SessionDir::since`): years of history are searchable, but only what was
-said after the mirror began is captured.
+(`SessionDir::since`): years of history are searchable, ~~but only what was
+said after the mirror began is captured~~ (2026-11-23, item 779: the older
+sessions are captured too, by the backfill below) and the live capture reads
+only what was said after the mirror began.
+
+**The backfill (item 779, 2026-11-23).** `capture::run_backfill` (and
+`run_backfill_on_agent`) is the capture pass over the mirrored sessions last
+written *before* the horizon — the ones the live pass never lists — newest
+first, at most `BACKFILL_CHUNK` (3) model calls a run and a daily cap
+(`BACKFILL_DAILY_CAP`, 30; Settings → Dreaming) counted in `capture.json`'s
+`backfill` (`{day, calls}`, the local day). It shares the live pass's
+watermarks, so neither reads a log the other read, and a session that grows
+past the horizon is the live pass's from where the backfill stopped. Every
+call counts, a refused line's second look included, and the cap is hard: with
+no call left a refused line gets no second look and is dropped and logged.
+Nothing older is deferred for being short — an older session is finished as
+far as the backfill can tell. The desktop runs one on each memory-clock tick when
+the switch is on, nothing else is running and usage is under the automatic
+passes' limits, on `haiku` when the passes use the Claude Code engine; any
+capture, dream or daily pass cancels it first (`yieldBackfill`), and the turn
+it stopped in appends nothing. `capture_backfill_status` (total, pending,
+today, cap) feeds the Settings line and the Capture button's tooltip;
+`nightloom capture --backfill [--cap N] [--chunk N]` is the CLI's run.
 
 **One writer, never his files.** Only the desktop syncs — on launch, before a
 capture pass, and every ten minutes (`startMemoryClock`) — under a process

@@ -54,6 +54,21 @@ pub struct CaptureArgs {
     /// app's passes skip the older chats too; `--since none` clears it.
     #[arg(long)]
     since: Option<String>,
+
+    /// Read the older Claude Code sessions outside Nightloom instead — the
+    /// ones last written before the mirror's first sync, which the live
+    /// pass leaves alone (item 779) — at most `--cap` model calls today
+    /// (counted with the app's own backfill) and `--chunk` this run.
+    #[arg(long)]
+    backfill: bool,
+
+    /// The backfill's model calls a day.
+    #[arg(long, default_value_t = capture::BACKFILL_DAILY_CAP)]
+    cap: usize,
+
+    /// The backfill's model calls this run (default: the whole day's).
+    #[arg(long, default_value_t = capture::BACKFILL_DAILY_CAP)]
+    chunk: usize,
 }
 
 pub async fn run(args: CaptureArgs) -> Result<()> {
@@ -77,7 +92,30 @@ pub async fn run(args: CaptureArgs) -> Result<()> {
             None => println!("{DIM}cutoff cleared: every chat is read{RESET}"),
         }
     }
-    let pending = capture::pending_count_in(&config);
+    if args.backfill && args.dry_run {
+        bail!("--backfill appends what it reads; it has no dry run");
+    }
+    if args.backfill {
+        let today = chrono::Local::now().date_naive();
+        let status = capture::backfill_status_in(&config, args.cap, today);
+        println!(
+            "{DIM}older outside sessions: {} of {} unread; {} of {} calls spent today{RESET}",
+            status.pending, status.total, status.today, status.cap
+        );
+        if status.pending == 0 {
+            println!("nothing to backfill.");
+            return Ok(());
+        }
+        if status.today >= status.cap {
+            println!("today's cap is spent — the backfill resumes tomorrow.");
+            return Ok(());
+        }
+    }
+    let pending = if args.backfill {
+        capture::backfill_status_in(&config, args.cap, chrono::Local::now().date_naive()).pending
+    } else {
+        capture::pending_count_in(&config)
+    };
     if pending == 0 {
         println!("nothing to capture — every chat is read up to its last line.");
         return Ok(());
@@ -122,10 +160,21 @@ pub async fn run(args: CaptureArgs) -> Result<()> {
     });
     let mut stdout = io::stdout();
     let mut in_thinking = false;
-    let result = capture::run(&mut chat, &config, args.dry_run, &cancel, &mut |event| {
+    let mut render = |event| {
         let _ = chat::render(&mut stdout, &mut in_thinking, event);
-    })
-    .await;
+    };
+    let result = if args.backfill {
+        capture::run_backfill(
+            &mut chat,
+            &config,
+            backfill_limits(&args),
+            &cancel,
+            &mut render,
+        )
+        .await
+    } else {
+        capture::run(&mut chat, &config, args.dry_run, &cancel, &mut render).await
+    };
     ctrl_c.abort();
     if in_thinking {
         print!("{RESET}");
@@ -174,16 +223,30 @@ async fn run_on_agent(
     });
     let mut stdout = io::stdout();
     let mut in_thinking = false;
-    let result = capture::run_on_agent(&pass, config, args.dry_run, &cancel, &mut |event| {
+    let mut render = |event| {
         let _ = chat::render(&mut stdout, &mut in_thinking, event);
-    })
-    .await;
+    };
+    let result = if args.backfill {
+        capture::run_backfill_on_agent(&pass, config, backfill_limits(args), &cancel, &mut render)
+            .await
+    } else {
+        capture::run_on_agent(&pass, config, args.dry_run, &cancel, &mut render).await
+    };
     ctrl_c.abort();
     if in_thinking {
         print!("{RESET}");
     }
     println!();
     report(args, result)
+}
+
+/// Today's backfill limits from the flags.
+fn backfill_limits(args: &CaptureArgs) -> capture::Backfill {
+    capture::Backfill {
+        cap: args.cap,
+        chunk: args.chunk,
+        today: chrono::Local::now().date_naive(),
+    }
 }
 
 fn report(
@@ -289,8 +352,11 @@ fn report(
         );
     }
     let mut spend = format!(
-        "{} in, {} out",
-        outcome.usage.input_tokens, outcome.usage.output_tokens
+        "{} model call{}, {} in, {} out",
+        outcome.calls,
+        if outcome.calls == 1 { "" } else { "s" },
+        outcome.usage.input_tokens,
+        outcome.usage.output_tokens
     );
     if let Some(usd) = outcome.cost_usd {
         spend.push_str(&format!(" — ${usd:.4}"));
