@@ -225,6 +225,26 @@ pub(crate) async fn capture_status() -> Result<usize, String> {
     blocking(move || Ok::<_, String>(nightloom_service::capture::pending_count_in(&config))).await
 }
 
+/// The backfill's numbers (item 779): older outside sessions in the mirror,
+/// how many are unread, and today's calls against `cap`. Directory scans
+/// only, like the count above.
+#[tauri::command]
+pub(crate) async fn capture_backfill_status(
+    cap: usize,
+) -> Result<nightloom_service::capture::BackfillStatus, String> {
+    let Some(config) = project::config_dir() else {
+        return Ok(Default::default());
+    };
+    blocking(move || {
+        Ok::<_, String>(nightloom_service::capture::backfill_status_in(
+            &config,
+            cap,
+            chrono::Local::now().date_naive(),
+        ))
+    })
+    .await
+}
+
 /// Milliseconds since the Mac last saw a key or the pointer — the HID
 /// system's idle time, no permission needed — or `None` when it cannot be
 /// read. The nightly pass waits for an idle Mac (nightshift item 278).
@@ -250,6 +270,8 @@ pub(crate) struct CaptureReport {
     per_project: Vec<CapturedReport>,
     interrupted: bool,
     cost_usd: Option<f64>,
+    /// Model calls made — what the backfill's daily cap counts (item 779).
+    calls: usize,
 }
 
 #[derive(Serialize)]
@@ -284,6 +306,9 @@ pub(crate) async fn capture(
     // "Save memory from this chat" (backlog 371): that one log, by id,
     // whatever the cutoff; absent, the whole pass.
     chat: Option<String>,
+    // The backfill (item 779): the older outside sessions instead, at most
+    // this many model calls today and `BACKFILL_CHUNK` this run.
+    backfill_cap: Option<usize>,
 ) -> Result<CaptureReport, String> {
     let Some(config) = project::config_dir() else {
         return Err("no user config directory — there are no session logs to read".into());
@@ -319,16 +344,28 @@ pub(crate) async fn capture(
                     )
                     .await?
                 }
-                None => {
-                    nightloom_service::capture::run_on_agent(
-                        &pass,
-                        &config,
-                        false,
-                        &cancel,
-                        &mut on_event,
-                    )
-                    .await?
-                }
+                None => match backfill_cap {
+                    Some(cap) => {
+                        nightloom_service::capture::run_backfill_on_agent(
+                            &pass,
+                            &config,
+                            nightloom_service::capture::Backfill::today(cap),
+                            &cancel,
+                            &mut on_event,
+                        )
+                        .await?
+                    }
+                    None => {
+                        nightloom_service::capture::run_on_agent(
+                            &pass,
+                            &config,
+                            false,
+                            &cancel,
+                            &mut on_event,
+                        )
+                        .await?
+                    }
+                },
             }
         }
         PassEngine::Provider(kind) => {
@@ -359,18 +396,36 @@ pub(crate) async fn capture(
                     )
                     .await?
                 }
-                None => {
-                    nightloom_service::capture::run(
-                        &mut chat,
-                        &config,
-                        false,
-                        &cancel,
-                        &mut on_event,
-                    )
-                    .await?
-                }
+                None => match backfill_cap {
+                    Some(cap) => {
+                        nightloom_service::capture::run_backfill(
+                            &mut chat,
+                            &config,
+                            nightloom_service::capture::Backfill::today(cap),
+                            &cancel,
+                            &mut on_event,
+                        )
+                        .await?
+                    }
+                    None => {
+                        nightloom_service::capture::run(
+                            &mut chat,
+                            &config,
+                            false,
+                            &cancel,
+                            &mut on_event,
+                        )
+                        .await?
+                    }
+                },
             }
         }
+    };
+    // Nothing older unread, or today's cap spent: an empty report, not an
+    // error — the background pass says nothing either way.
+    let outcome = match (outcome, backfill_cap) {
+        (None, Some(_)) => Some(Default::default()),
+        (o, _) => o,
     }
     .ok_or_else(|| {
         if chat_id.is_some() {
@@ -397,6 +452,7 @@ pub(crate) async fn capture(
             .collect(),
         interrupted: outcome.interrupted,
         cost_usd: outcome.cost_usd,
+        calls: outcome.calls,
     })
 }
 

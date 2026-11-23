@@ -104,6 +104,7 @@ import {
   type Notice,
 } from "./centre";
 import type {
+  BackfillStatus,
   AgentInfo,
   AgentInit,
   Attachment,
@@ -162,7 +163,7 @@ import { showNightshift, syncNightshiftProject, refreshNightshiftRow, loadNights
 import { showNote, showGraph, leaveNote, currentModelId, followToolMoves, reviewProposal, noteDraftKey, closeNote, openModelInstructions, CHAT_INSTRUCTIONS_FILE, openChatInstructions, saveNote, deleteNote, moveNoteTo, followNoteMove, onNoteMove, movedNoteName, newNoteFolder, deleteNoteFolder, mirrorDraft, stageProposal, acceptProposal, unstageProposal, dismissProposal } from "./state/notes.svelte";
 import { reflectTabs, frontOpenChat, tabOpening, showContentOf, newTab, closeTab, stepTab, splitActiveTab, dropNoteTabs, flushTabs, shownContent, openContent, dropContent, focusPane, moveTab, splitTab, registerTerminalHooks, flushNewProject, startContentDrag, endContentDrag, droppedContent } from "./state/tabs.svelte";
 import { history, chatScope, undo, redo, inTextField, editAttachments, sendInFork, contextUsed, undoLabel, redoLabel, syncUndoMenu, saveEdit, removeTurn, restoreTurn, removeBlock, restoreBlock, saveReplyEdit, editContextItems, renameSession, sessionCost, roundCost, cacheHitRate } from "./state/edits.svelte";
-import { refreshDreamStatus, refreshCaptureStatus, maybeAutoDream, maybeHandoffPass, refreshCentre, maybeDailyPass, startDailyClock, startMemoryClock, passTargetFor, runCapture, saveMemoryFromChat, stopCapture, runDream, stopDream, centreCount, dismissNotice, openNotice, revertDreamFile, revertApplied, openInstructions, setDailyPrefs, runDailyPass, type AutoPassKind } from "./state/passes.svelte";
+import { refreshDreamStatus, refreshCaptureStatus, maybeAutoDream, maybeHandoffPass, refreshCentre, maybeDailyPass, startDailyClock, startMemoryClock, maybeBackfill, refreshBackfillStatus, passTargetFor, runCapture, saveMemoryFromChat, stopCapture, runDream, stopDream, centreCount, dismissNotice, openNotice, revertDreamFile, revertApplied, openInstructions, setDailyPrefs, runDailyPass, type AutoPassKind } from "./state/passes.svelte";
 import { refreshPlanUsage, refreshPlanPace, readPlanAtReplyEnd, planUsageFromTurn, readTurnBudget, readCheckpoint, startBudgetPoll, ensureBudgetPoll, startPlanUsageClock, PLAN_USAGE_LIVE_EVERY_MS, TURN_BUDGET_EVERY_MS, setCheckpoint } from "./state/usage.svelte";
 import { refreshProjects, refreshNotes, refreshKnowledge, refreshProjectsFolder, useProject, openProjectFolder, showNewProject, importFromClaude, restoreTabs, refreshProposals, useProjectsFolder, useKnowledgeDir, offerPracticesClaudeMd, closeNewProject, discardNewProject, pickNewProjectFolder, resolveNewProjectPath, createNewProject, renameProject, forgetProject, revealFolder, tabsOwner } from "./state/projects.svelte";
 import { layersBeforeTurn, refreshLayerVersions, updateLayerNow, chooseLayerVersion, setAutoLayers, promptLayersOff, sameLayers, setPromptLayer, promptLayerEdits, sameEdits, setPromptLayerText, promoteLayerText, syncPromptLayers, retryConnect } from "./state/layers.svelte";
@@ -202,7 +203,7 @@ export { openChatSubagents, latestSubagents, subagentRunning, subagentsOfTurn, a
 export { refreshLayerVersions, updateLayerNow, chooseLayerVersion, setAutoLayers, promptLayersOff, sameLayers, setPromptLayer, promptLayerEdits, sameEdits, setPromptLayerText, promoteLayerText, syncPromptLayers, retryConnect };
 export { refreshProjects, refreshNotes, refreshProposals, refreshKnowledge, refreshProjectsFolder, useProjectsFolder, useKnowledgeDir, useProject, openProjectFolder, offerPracticesClaudeMd, showNewProject, closeNewProject, discardNewProject, pickNewProjectFolder, resolveNewProjectPath, createNewProject, importFromClaude, renameProject, forgetProject, revealFolder, tabsOwner, restoreTabs };
 export { refreshPlanUsage, refreshPlanPace, readPlanAtReplyEnd, planUsageFromTurn, PLAN_USAGE_LIVE_EVERY_MS, TURN_BUDGET_EVERY_MS, readTurnBudget, readCheckpoint, setCheckpoint };
-export { refreshDreamStatus, refreshCaptureStatus, passTargetFor, runCapture, saveMemoryFromChat, stopCapture, runDream, maybeHandoffPass, stopDream, refreshCentre, centreCount, dismissNotice, openNotice, revertDreamFile, revertApplied, openInstructions, setDailyPrefs, runDailyPass, maybeDailyPass };
+export { refreshDreamStatus, refreshCaptureStatus, maybeBackfill, refreshBackfillStatus, passTargetFor, runCapture, saveMemoryFromChat, stopCapture, runDream, maybeHandoffPass, stopDream, refreshCentre, centreCount, dismissNotice, openNotice, revertDreamFile, revertApplied, openInstructions, setDailyPrefs, runDailyPass, maybeDailyPass };
 export type { AutoPassKind };
 export { history, chatScope, undoLabel, redoLabel, undo, redo, inTextField, syncUndoMenu, saveEdit, removeTurn, restoreTurn, removeBlock, restoreBlock, saveReplyEdit, editContextItems, renameSession, contextUsed, sessionCost, roundCost, cacheHitRate };
 export { shownContent, reflectTabs, tabOpening, openContent, dropContent, focusPane, newTab, closeTab, stepTab, moveTab, splitTab, splitActiveTab, dropNoteTabs, registerTerminalHooks, flushNewProject, flushTabs, startContentDrag, endContentDrag, droppedContent };
@@ -811,6 +812,10 @@ export const app = $state({
   capturePending: 0,
   /** A capture is running; the button becomes its progress line. */
   capturing: false,
+  /** The backfill of older outside sessions (item 779): its numbers, and
+   *  whether a run is going in the background (no button changes for it). */
+  backfill: null as BackfillStatus | null,
+  backfilling: false,
   /** The colour palette, Settings → Appearance. */
   palette: loadPalette() as Palette,
   /** Sidebar width and collapse, pane widths on the Nightshift screens. */

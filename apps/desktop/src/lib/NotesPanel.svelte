@@ -1104,7 +1104,9 @@
         {:else}
           <button
             class="dream"
-            use:tip={"Read the chats since the last capture into the memory inbox"}
+            use:tip={app.backfill && app.backfill.pending > 0
+              ? `${app.backfill.pending} older Claude Code sessions left · ${app.backfill.today}/${app.backfill.cap} calls today — read the chats since the last capture into the memory inbox`
+              : "Read the chats since the last capture into the memory inbox"}
             disabled={app.dreaming}
             onclick={() => void runCapture()}>Capture · {app.capturePending}</button
           >

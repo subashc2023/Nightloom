@@ -62,7 +62,7 @@ beforeEach(() => {
   vi.setSystemTime(clock);
   dream.mockClear();
   refresh.mockReset();
-  app.dreamPrefs = { auto: true, provider: DREAM_ENGINE, model: "", limitFiveHour: 50, limitWeek: 80 };
+  app.dreamPrefs = { auto: true, provider: DREAM_ENGINE, model: "", limitFiveHour: 50, limitWeek: 80, backfill: false, backfillCap: 30 };
   app.dreaming = false;
   app.capturing = false;
   app.centre.dailyRunning = false;

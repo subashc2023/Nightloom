@@ -477,6 +477,19 @@ export interface CaptureReport {
   per_project: { project: string; observations: number }[];
   interrupted: boolean;
   cost_usd: number | null;
+  /** Model calls made — what the backfill's daily cap counts (item 779). */
+  calls?: number;
+}
+
+/** The backfill of older outside Claude Code sessions (item 779). */
+export interface BackfillStatus {
+  /** Older outside sessions in the mirror (last written before its first sync). */
+  total: number;
+  /** Of those, the ones not yet read. */
+  pending: number;
+  /** Model calls the backfill made today, and the cap. */
+  today: number;
+  cap: number;
 }
 
 // ---- the notification centre (nightshift backlog 069) ----

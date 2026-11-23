@@ -14,6 +14,7 @@ import type {
   Blocker,
   BlockerList,
   CaptureReport,
+  BackfillStatus,
   ChatKind,
   ChatMode,
   CompactResult,
@@ -2078,6 +2079,28 @@ export function capture(args: PassArgs, chat?: string): Promise<CaptureReport> {
     // the cutoff; absent, the whole pass.
     ...(chat ? { chat } : {}),
   });
+}
+
+/**
+ * One backfill run (item 779): the capture pass over the older outside
+ * Claude Code sessions, at most a few model calls this run and `cap` today.
+ * An empty report when nothing older is unread or the day's cap is spent.
+ */
+export function captureBackfill(args: PassArgs, cap: number): Promise<CaptureReport> {
+  return invoke("capture", {
+    provider: args.provider,
+    model: args.model,
+    baseUrl: args.baseUrl,
+    thinking: args.thinking,
+    binary: args.binary,
+    safeMode: args.safeMode,
+    backfillCap: cap,
+  });
+}
+
+/** The backfill's numbers: older sessions left, today's calls against `cap`. */
+export function captureBackfillStatus(cap: number): Promise<BackfillStatus> {
+  return invoke("capture_backfill_status", { cap });
 }
 
 /** Interrupt the in-flight capture; the chat it stopped in is re-read next time. */

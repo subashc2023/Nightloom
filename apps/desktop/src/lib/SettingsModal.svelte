@@ -80,6 +80,7 @@
     refreshProviders,
     refreshSearchBackends,
     saveDreamPrefs,
+    maybeBackfill,
     runDailyPass,
     setDailyPrefs,
     setPalette,
@@ -108,6 +109,8 @@
     return n.split("&")[1]?.trim() ?? "its own";
   }
   import { DEFAULT_USAGE_LIMITS, parseLimit } from "./autoPass";
+  import { parseBackfillCap } from "./state/prefs.svelte";
+  import { backfillSentence } from "./backfill";
   import {
     TRANSCRIPT_FONTS,
     TRANSCRIPT_SIZES,
@@ -953,6 +956,9 @@
   const dreamEngines = $derived(dreamEngineRows(app.providers, app.draft));
   const dreamModels = $derived(
     dreamModelPills(app.dreamPrefs.provider, app.dreamPrefs.model, app.providers, app.prefs),
+  );
+  const backfillLine = $derived(
+    backfillSentence(app.backfill, app.dreamPrefs.backfill, app.backfilling),
   );
   const dreamSummary = $derived(
     dreamSentence(dreamEngines, app.dreamPrefs.provider, app.dreamPrefs.model, app.draft),
@@ -4205,6 +4211,42 @@
         {#if app.autoPassNote}
           <p class="dim small auto-pass-note">{app.autoPassNote}</p>
         {/if}
+        <!-- The backfill (nightshift item 779): outside Claude Code
+             sessions from before the mirror began, read a few calls at a
+             time under a daily cap. The numbers come from the memory
+             clock's refresh; the switch refreshes them at once. -->
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            bind:checked={app.dreamPrefs.backfill}
+            onchange={() => {
+              saveDreamPrefs();
+              void maybeBackfill();
+            }}
+          />
+          <span>Also read older Claude Code sessions, a few at a time</span>
+        </label>
+        <div class="usage-limits">
+          <span>At most</span>
+          <label>
+            <input
+              type="number"
+              min="1"
+              max="500"
+              step="1"
+              aria-label="Backfill model calls a day"
+              value={app.dreamPrefs.backfillCap}
+              onchange={(e) => {
+                app.dreamPrefs.backfillCap = parseBackfillCap(e.currentTarget.valueAsNumber);
+                e.currentTarget.value = String(app.dreamPrefs.backfillCap);
+                saveDreamPrefs();
+                void maybeBackfill();
+              }}
+            />
+            model calls a day
+          </label>
+        </div>
+        <p class="note small backfill-line">{backfillLine}</p>
         <!-- The pass reads no chat context, so it does not need the chat's
              model — a cheap one does this job well, and an automatic pass is
              exactly where cost compounds. The Claude Code engine is a real

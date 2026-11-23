@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, passTargetFor } from "./state.svelte";
 import { defaultDraft } from "./catalog";
 
+// Item 779 added the backfill switch and cap; their defaults ride along.
 /** The usage limits every parsed preference carries (item 279). */
-const LIM = { limitFiveHour: 50, limitWeek: 80 };
+const LIM = { limitFiveHour: 50, limitWeek: 80, backfill: true, backfillCap: 30 };
 
 // Settings → Knowledge's dream row can name the Claude Code engine since
 // 2026-09-16 (nightshift backlog 070). What the preference stores and what
