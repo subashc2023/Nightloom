@@ -87,8 +87,11 @@ export function bag<T extends object>(id: string, init: T): T {
 
 /** Bring a node that just opened into view inside its own scrolling panel — never by scrolling the page. */
 export function revealNow(node: HTMLElement) {
+  // The nearest box that scrolls and has something to scroll (item 809): on a narrow stage a panel's own body is laid
+  // out at full height and the column around it scrolls instead (Run's `.r-main`), so a scroller with no overflow is
+  // passed over — an opened step's detail was left below the fold.
   let p = node.parentElement;
-  while (p && !/(auto|scroll)/.test(getComputedStyle(p).overflowY)) p = p.parentElement;
+  while (p && !(/(auto|scroll)/.test(getComputedStyle(p).overflowY) && p.scrollHeight > p.clientHeight + 1)) p = p.parentElement;
   if (!p || !p.clientHeight) return;
   const b = p.getBoundingClientRect();
   const row = node.previousElementSibling instanceof HTMLElement && node.previousElementSibling.classList.contains("isopen") ? node.previousElementSibling : null;
@@ -98,8 +101,11 @@ export function revealNow(node: HTMLElement) {
   };
   let a = box();
   if (a.bottom > b.bottom - 6) p.scrollTop += a.bottom - b.bottom + 10;
+  // A row pinned at the panel's top (Run's chain while a step is open, `data-pin`) covers what scrolls under it.
+  let pin = 0;
+  for (const e of p.querySelectorAll<HTMLElement>("[data-pin]")) if (getComputedStyle(e).position === "sticky") pin = Math.max(pin, e.getBoundingClientRect().height);
   a = box();
-  if (a.top < b.top + 2) p.scrollTop -= b.top - a.top + 6;
+  if (a.top < b.top + pin + 2) p.scrollTop -= b.top + pin - a.top + 6;
 }
 export function reveal(node: HTMLElement) {
   node = node.parentElement?.closest<HTMLElement>("[data-reveal]") ?? node;

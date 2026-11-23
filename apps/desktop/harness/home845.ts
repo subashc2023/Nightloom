@@ -260,12 +260,42 @@ async function run() {
   // What a script can read off the shot's page: the stage is there, and nothing on it is cut off or scrolls sideways.
   const stage = document.querySelector<HTMLElement>("[data-home-stage]");
   const bad: string[] = [];
+  const ell: string[] = [];
   for (const el of stage?.querySelectorAll<HTMLElement>("*") ?? []) {
     if (el instanceof SVGElement || el.closest(".h9-chat")) continue;
     const cs = getComputedStyle(el);
     const dx = el.scrollWidth - el.clientWidth;
-    if (dx > 1 && /(hidden|clip|auto|scroll)/.test(cs.overflowX) && !/h9-tabs|h9-doing|b-counts|b-count/.test(el.className)) bad.push(`${el.className.split(" ")[0]} +${dx}`);
+    if (dx > 1 && /(hidden|clip|auto|scroll)/.test(cs.overflowX) && !/h9-tabs|h9-doing|b-counts|b-count/.test(el.className)) {
+      // Item 809: a line cut with an ellipsis on purpose (one-line subtitles, row feet) is counted apart from a hard cut.
+      if (cs.textOverflow === "ellipsis") ell.push(`${el.className.split(" ")[0]} +${dx}`);
+      else bad.push(`${el.className.split(" ")[0]} +${dx}`);
+    }
   }
+  // Item 809: every box measured against the stage's own edges, as the phone harness does (845 batch 4) — a box an
+  // ancestor clips shows no sideways scroll of its own. Boxes inside a sideways scroller (tab row, day track) skip.
+  const out: string[] = [];
+  const sr = stage?.getBoundingClientRect();
+  if (stage && sr) {
+    const scrolls = (n: Element) => /(auto|scroll)/.test(getComputedStyle(n).overflowX);
+    for (const el of stage.querySelectorAll<Element>("*")) {
+      if (el.closest(".h9-chat")) continue;
+      const er = el.getBoundingClientRect();
+      if (er.width === 0 || er.height === 0) continue;
+      let a = el.parentElement;
+      let inScroller = false;
+      while (a && a !== stage) {
+        if (scrolls(a)) {
+          inScroller = true;
+          break;
+        }
+        a = a.parentElement;
+      }
+      if (inScroller) continue;
+      const over = Math.max(er.right - sr.right, sr.left - er.left);
+      if (over > 1) out.push(`${(el.getAttribute("class") ?? el.tagName).split(" ")[0]} +${Math.round(over)}`);
+    }
+  }
+  const sideways = document.documentElement.scrollWidth - innerWidth;
   // The ghost check (845 batch 1): how many views are in the body, and the page's animations, now and 1.5 s later.
   const ghost = () => `${document.querySelectorAll(".h9-view").length}[${document.getAnimations().map((a) => `${a.playState}@${Math.round(Number(a.currentTime ?? -1))}`).join(",")}]`;
   const g0 = ghost();
@@ -281,7 +311,7 @@ async function run() {
     moreAt = ` more="${m?.textContent ?? "MISSING"}"@${mr ? `${Math.round(mr.top)}+${Math.round(mr.height)}` : "-"}`;
   }
   const r = stage?.getBoundingClientRect();
-  document.title = `845 s=${s}${moreAt} stage=${r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} views=${g0}→${g1} welcome=${document.querySelector(".welcome") ? "yes" : "no"} composer=${document.querySelector(".composer") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""}${restart}${clicks}${alive} cq=${(() => { const v = document.querySelector<HTMLElement>(".h9-view"); const wd = document.querySelector<HTMLElement>(".h9-wide"); return `${v ? Math.round(v.getBoundingClientRect().width) : 0}/${wd ? getComputedStyle(wd).display : "-"}/vw${innerWidth}/dpr${devicePixelRatio}`; })()}`;
+  document.title = `845 s=${s}${moreAt} stage=${r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} views=${g0}→${g1} welcome=${document.querySelector(".welcome") ? "yes" : "no"} composer=${document.querySelector(".composer") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""} ell=${ell.length}${ell.length ? ` (${ell.slice(0, 4).join(", ")})` : ""} out=${out.length}${out.length ? ` (${out.slice(0, 4).join(", ")})` : ""} sideways=${sideways}${restart}${clicks}${alive} cq=${(() => { const v = document.querySelector<HTMLElement>(".h9-view"); const wd = document.querySelector<HTMLElement>(".h9-wide"); return `${v ? Math.round(v.getBoundingClientRect().width) : 0}/${wd ? getComputedStyle(wd).display : "-"}/vw${innerWidth}/dpr${devicePixelRatio}`; })()}`;
   if (q.get("cap") === "1") (window as unknown as { __capset: (m: string) => void }).__capset(document.title);
 }
 if (document.readyState === "loading") addEventListener("DOMContentLoaded", () => void run());
