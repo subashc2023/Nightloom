@@ -41,7 +41,8 @@
   const needs = $derived(needsNow().filter((r) => r.state !== "working").length + home.cards.length);
   const brief = $derived(briefOf(app.events as unknown as Ev[], isScanMessage, app.busy));
   // The views a task of Home's may be drawn in.
-  const TASK_VIEWS = ["timeline", "todo", "triage", "browse", "run", "research"];
+  // Item 898: "brief" too — a page Home wrote with update_task, drawn by the Brief view.
+  const TASK_VIEWS = ["timeline", "todo", "triage", "browse", "run", "research", "brief"];
   const shown = $derived(tasks.rows.filter((t) => TASK_VIEWS.includes(t.view)));
   const taskOf = (id: string): HomeTask | undefined => shown.find((t) => `task:${t.id}` === id);
   // The tabs live work adds: the morning brief once this chat holds a scan (its pulse while Home writes it), and one
@@ -235,14 +236,15 @@
     {:else if t.view === "triage"}<Triage task={t} />
     {:else if t.view === "browse"}<Browse task={t} />
     {:else if t.view === "run"}<Run task={t} />
-    {:else if t.view === "research"}<Research task={t} />{/if}
+    {:else if t.view === "research"}<Research task={t} />
+    {:else if t.view === "brief"}<Brief task={t} />{/if}
   {/snippet}
   <div class="h9-body" class:split={!!secondTask} bind:clientWidth={bodyW} bind:clientHeight={bodyH}>
     {#key focus.id}
       <div class="h9-view" class:chatview={focus.view === "chat"} in:viewIn|global={{ anchor: chips[focus.id] }} out:viewOut|global>
         {#if focus.view === "chat"}
           <div class="h9-chat">{@render children()}</div>
-        {:else if focus.view === "brief"}
+        {:else if focus.view === "brief" && !focusTask}
           <Brief />
         {:else if focusTask && TASK_VIEWS.includes(focusTask.view)}
           {@render taskView(focusTask)}

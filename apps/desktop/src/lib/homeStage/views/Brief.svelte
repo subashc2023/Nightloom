@@ -4,6 +4,8 @@
   // Every control here is kind A (view-only, no model call). "Read it to me" speaks the page with the Mac's own voice
   // (the web view's speech; it stops when he leaves the view, and the button is not drawn where there is no voice).
   // "Keep as a note" writes the page into Home's notes as a new file (never over one he has); once kept, it says so.
+  // Item 898: with `task`, the same page draws a page Home wrote with update_task (view "brief", data {title, body})
+  // instead of the morning scan.
   import { onDestroy } from "svelte";
   import { clock, dateLabel, factsWords, scanFacts } from "../../home";
   import { tip } from "../../tip";
@@ -12,13 +14,18 @@
   import Steps from "../Steps.svelte";
   import Loading from "../Loading.svelte";
   import { bag, reveal } from "../stageState.svelte";
-  import { briefNote, speakable } from "../brief";
-  import { stageHost } from "../host";
-  import { noteName } from "../taskData";
+  import { briefNote, sectionsOf, speakable, type Brief } from "../brief";
+  import { stageHost, type HomeTask } from "../host";
+  import { briefPageOf, noteName } from "../taskData";
   import MathText from "../../MathText.svelte";
 
-  const brief = $derived(stageHost.now.brief());
-  const ui = bag("brief", { open: {} as Record<string, boolean>, touched: false, saved: {} as Record<string, string> });
+  let { task }: { task?: HomeTask } = $props();
+  const page = $derived(task ? briefPageOf(task.data) : null);
+  const brief = $derived<Brief | null>(task && page ? { at: task.updated_at || null, asked: "", sections: sectionsOf(page.body), writing: task.state === "live" && !page.body } : stageHost.now.brief());
+  const title = $derived(task ? page?.title || task.name : "Today's page");
+  // The stage keys each view on its tab, so another task is another view.
+  // svelte-ignore state_referenced_locally
+  const ui = bag(task ? `task:${task.id}` : "brief", { open: {} as Record<string, boolean>, touched: false, saved: {} as Record<string, string> });
   const isOpen = (key: string, i: number) => (ui.touched ? !!ui.open[key] : i === 0);
   function toggle(key: string, i: number) {
     const now = !isOpen(key, i);
@@ -57,7 +64,7 @@
     saving = true;
     try {
       const taken = await stageHost.now.noteNames();
-      const name = noteName(`Morning brief — ${when ? dateLabel(brief.at!) : "today"}`, taken);
+      const name = noteName(task ? title : `Morning brief — ${when ? dateLabel(brief.at!) : "today"}`, taken);
       await stageHost.now.saveNote(name, briefNote(brief, when));
       ui.saved[brief.at ?? ""] = name;
     } catch (e) {
@@ -77,17 +84,17 @@
         {/each}
       </div>
     {/if}
-    <Panel title="Today's page" sub={when} live={!!brief?.writing}>
+    <Panel {title} sub={when} live={!!brief?.writing}>
       {#snippet tools()}
         {#if done}
           {#if voice}<Btn small kind={reading ? "ghost" : "send"} icon={reading ? "stop" : "play"} tip={reading ? "Stop reading" : "Read the page aloud\nThe Mac's own voice; nothing is sent"} onclick={readAloud}>{reading ? "Stop reading" : "Read it to me"}</Btn>{/if}
-          <Btn small icon="note" disabled={!!savedAs || saving} tip={savedAs ? `Kept in Home's notes as\n${savedAs}` : "Keep today's page\nA new note in Home's notes"} onclick={() => void keepNote()}>{savedAs ? "Kept in Notes" : saving ? "Keeping…" : "Keep as a note"}</Btn>
+          <Btn small icon="note" disabled={!!savedAs || saving} tip={savedAs ? `Kept in Home's notes as\n${savedAs}` : task ? "Keep this page\nA new note in Home's notes" : "Keep today's page\nA new note in Home's notes"} onclick={() => void keepNote()}>{savedAs ? "Kept in Notes" : saving ? "Keeping…" : "Keep as a note"}</Btn>
         {/if}
       {/snippet}
       {#if !brief}
         <span class="h9-dim b-none">No scan in this chat yet — the morning scan runs {stageHost.now.scanWords()?.toLowerCase() ?? "every day at 8:00 AM"}, and its page lands here.</span>
       {:else if brief.sections.length === 0}
-        <Loading label={brief.writing ? "Home is writing today's page" : "The scan ended without a page"} lines={4} />
+        <Loading label={brief.writing ? (task ? task.doing || "Home is writing this page" : "Home is writing today's page") : task ? "Home has not written this page yet" : "The scan ended without a page"} lines={4} />
       {:else}
         {#each brief.sections as s, i (s.key)}
           {@const open = isOpen(s.key, i)}
