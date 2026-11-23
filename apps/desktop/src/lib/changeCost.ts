@@ -246,5 +246,38 @@ export function nextSendModel(events: SessionEvent[], draftModel: string, seen: 
   const last = lastReply(events);
   const built = cacheBuiltWith(events);
   if (built && built.key.engine === "claude-code" && (built.key.model ?? "") !== draftModel.trim()) return modelIdFor(draftModel, seen);
+  // Item 902: a newest reply logged before cache keys (his 244k chat's was
+  // from 2026-10-07) has no pick to compare — the draft's resolved id
+  // against the reply's model; an unresolved pick (not the default) has no
+  // rates, so no figure rather than the old model's.
+  if (!built && last && keylessSwitch(last.model, draftModel, seen)) return modelIdFor(draftModel, seen);
   return last?.model ?? null;
+}
+
+function keylessSwitch(lastModel: string, draftModel: string, seen: SeenModels): boolean {
+  const to = modelIdFor(draftModel, seen);
+  if (to == null) return draftModel.trim() !== "";
+  return rateId(to) !== rateId(lastModel);
+}
+
+/** A model id as the rates table spells it: lower case, no `[1m]` tag. */
+function rateId(model: string): string {
+  return model.trim().toLowerCase().replace(/\[[^\]]*\]$/, "");
+}
+
+/** Item 902 (his bug, 2026-11-23: switched Opus → Fable 5.2 on a cold
+ *  244k chat and "none of the numbers updated"): the next send goes to a
+ *  model other than the one that built the cache. A cache entry is per
+ *  model, so that send writes the whole history at the new model's rates
+ *  even if the old model's cache is warm. True also when the draft's alias
+ *  is not resolved yet (no rates: no figure, never the old model's). */
+export function modelSwitchPending(events: SessionEvent[], draftModel: string, seen: SeenModels): boolean {
+  const last = lastReply(events);
+  const built = cacheBuiltWith(events);
+  if (!last) return false;
+  if (!built) return keylessSwitch(last.model, draftModel, seen);
+  if (built.key.engine !== "claude-code") return false;
+  if ((built.key.model ?? "") === draftModel.trim()) return false;
+  const to = modelIdFor(draftModel, seen);
+  return to == null || rateId(to) !== rateId(last.model);
 }

@@ -56,7 +56,7 @@
   import { cacheEstimate, lastReply, ratesFromPrice } from "./cacheCost";
   import { lossTipText } from "./shortTip";
   import { cacheRatesOf, loadCacheRates } from "./cacheRates.svelte";
-  import { layerChangeSinceCache, modelIdFor, nextSendModel, pendingChangeCost, switchDetail } from "./changeCost";
+  import { layerChangeSinceCache, modelIdFor, modelSwitchPending, nextSendModel, pendingChangeCost, switchDetail } from "./changeCost";
   import { handedOffOff, holdPress, isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
   import { holdKeepWarm, keepWarm, loadKeepWarm, setKeepWarm } from "./keepWarm.svelte";
   import KeepWarmHold from "./KeepWarmHold.svelte";
@@ -3468,7 +3468,8 @@
   // and says the change itself costs nothing extra.
   const nextEst = $derived.by(() => {
     if (!cache) return null;
-    const est = cacheEstimate(app.events, targetRates, cache.warm);
+    // Item 902: a pending model switch writes everything, warm or not.
+    const est = cacheEstimate(app.events, targetRates, cache.warm && !modelSwitch);
     if (!est || cache.warm || !coldPending) return est;
     return { ...est, line: `${est.line}, the change costs no extra` };
   });
@@ -3482,7 +3483,10 @@
   const wwChat = $derived(!aside && !floating && onClaudeCode ? app.activeSessionId : null);
   const wwUsage = $derived(wwChat ? (lastReply(app.events)?.usage ?? null) : null);
   const wwContext = $derived(contextOf(wwUsage));
-  const wwCosts = $derived(wwUsage ? chipCosts(wwUsage, cacheRatesOf(lastModel)) : null);
+  // Item 902: at the rates of the model the next send goes to (the
+  // composer's pick), never the last reply's — a switch re-prices both
+  // buttons, and a model without rates shows no figure.
+  const wwCosts = $derived.by(() => (wwUsage ? chipCosts(wwUsage, targetRates, modelSwitch) : null));
   const wwHandingOff = $derived(!!handedNext || (handoffHere && (handoff.stage === "wrapping" || handoff.stage === "wrapped")));
   const wwBusy = $derived(busy || queue.length > 0);
   /** The warm moment: `offer`, `do` or null; `now` ticks each minute while warm. */
@@ -3580,6 +3584,13 @@
    * memory, a layer's own text) is priced from the system block on.
    */
   const targetModel = $derived(cache ? nextSendModel(app.events, aside?.model || app.draft.agentModel, modelSeen.byAlias) : null);
+  /** Item 902: the next send goes to another model than built the cache. */
+  const modelSwitch = $derived(
+    // An aside on its own model prices its own cache (item 786), not the chat's.
+    !!cache && !floating && onClaudeCode && !(aside && asideOwnModel) && modelSwitchPending(app.events, aside?.model || app.draft.agentModel, modelSeen.byAlias),
+  );
+  /** Item 902: the banner's "<model> has no cache of it". */
+  const switchName = $derived(modelSwitch ? displayName(aside?.model || app.draft.agentModel) || "the new model" : null);
   $effect(() => {
     if (targetModel && onClaudeCode) void loadCacheRates(targetModel);
   });
@@ -3887,8 +3898,8 @@
     <!-- Item 768: the cache is about to lapse on a big idle chat; the wrap-up is cheapest now. -->
     <div class="handoff handoff-min warm-wrap" role="status" aria-label="Wrap up while the cache is warm">
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
-      <strong class="handoff-min-title">{warmTitle(cache.remainingMs, wwContext)}</strong>
-      <span class="mono handoff-fill" use:tip={coldTip(wwCosts, cacheRatesOf(lastModel))}>{warmDetail(wwCosts)}</span>
+      <strong class="handoff-min-title">{warmTitle(cache.remainingMs, wwContext, switchName)}</strong>
+      <span class="mono handoff-fill" use:tip={coldTip(wwCosts, targetRates)}>{warmDetail(wwCosts)}</span>
       <span class="spacer"></span>
       <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up now, while the cache is warm"} onclick={() => { markActed(wwChat, cache?.warmUntil ?? null); void sendWrapUpNow(); }}>Wrap up now</button>
       <button class="ns-btn ghost small" use:tip={"Not this hour; the cold chip offers it again"} onclick={() => markActed(wwChat, cache?.warmUntil ?? null)}>Not now</button>
@@ -3897,7 +3908,7 @@
     <!-- Item 768: back on a cold big chat — one chip, both prices, before he types. Never compacts. -->
     <div class="handoff handoff-min cold-return" role="status" aria-label="Cache cold — hand off or keep">
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
-      <strong class="handoff-min-title" use:tip={coldTip(wwCosts, cacheRatesOf(lastModel))}>{coldTitle(wwContext)}</strong>
+      <strong class="handoff-min-title" use:tip={coldTip(wwCosts, targetRates)}>{coldTitle(wwContext, switchName)}</strong>
       <span class="spacer"></span>
       <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up; the next chat starts small"} onclick={() => void sendWrapUpNow()}>{coldWords.handoff}</button>
       <button class="ns-btn ghost small" use:tip={"Go on here; hidden until the next reply"} onclick={() => keepCold(wwChat, cache?.warmUntil ?? null)}>{coldWords.keep}</button>
