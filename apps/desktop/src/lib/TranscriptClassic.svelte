@@ -699,6 +699,7 @@
           streaming
           since={T.shown.since}
           model={T.src.liveModel}
+          picked={T.src.livePick}
           approvals={T.approvalsNow}
           cliSession={T.cliSession}
           folds={T.liveFolds(T.shown.since)}

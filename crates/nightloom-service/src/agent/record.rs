@@ -333,6 +333,12 @@ impl<'a> Recorder<'a> {
                 self.sent_at = Utc::now();
             }
             TurnEvent::Usage { usage } => self.usage = fold_round(self.usage, *usage),
+            // Item 903: the CLI names the model it runs on at the turn's
+            // start; every round from here is that model's. Before this,
+            // only the finished turn learned it, so a pick's mid-turn
+            // rounds were logged under the previous reply's model (his
+            // Fable 5.2 turn, 2026-11-23, logged as Opus 5.5).
+            TurnEvent::AgentInit { model: Some(m), .. } => self.set_model(m.clone()),
             TurnEvent::Subagent {
                 parent_tool_use_id,
                 event,
@@ -621,6 +627,42 @@ mod tests {
             content: "contents".into(),
             is_error: false,
         }
+    }
+
+    /// Item 903: a turn on a newly picked model logs its mid-turn rounds
+    /// under the model the CLI's init line names, not the seed (the
+    /// previous reply's model).
+    #[test]
+    fn a_rounds_model_is_the_init_lines_not_the_previous_replys() {
+        let mut s = Session::new();
+        s.record_user("go on");
+        let mut r = Recorder::new(&mut s, "claude-opus-5-5");
+        r.push(&TurnEvent::AgentInit {
+            session_id: None,
+            model: Some("claude-fable-5-2".into()),
+            version: None,
+            permission_mode: None,
+            tools: vec![],
+            mcp_servers: vec![],
+            slash_commands: vec![],
+            skills: vec![],
+            agents: vec![],
+        });
+        r.push(&call("c1"));
+        r.push(&result("c1"));
+        r.push(&TurnEvent::TextDelta {
+            text: "done".into(),
+        });
+        assert!(r.finish(Some("end_turn")));
+        let models: Vec<&str> = s
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::AssistantMessage { model, .. } => Some(model.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(models, ["claude-fable-5-2", "claude-fable-5-2"]);
     }
 
     /// The shape a tool round has to land in: assistant (thinking, text,
