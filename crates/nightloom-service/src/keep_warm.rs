@@ -63,6 +63,7 @@
 //! says which chats are busy.
 
 use crate::agent::{AgentSpec, ClaudeCodeAgent};
+use crate::hold_policy::{self, Rule, Sleep};
 use nightloom_core::{CacheTtl, Session, SessionEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -110,12 +111,20 @@ pub const TEST_EVERY_ENV: &str = "NIGHTLOOM_KEEP_WARM_EVERY_S";
 /// 1` runs a tool call before it stops (081-report, M4).
 pub const PING_PROMPT: &str = "Keep-warm ping from Nightloom, not a message from the user: reply with the single word ok. Do not call any tool and do not continue any task.";
 
-/// The schedule's three numbers.
+/// The schedule's three numbers, and the hold rule (item 878).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Policy {
     pub every_ms: i64,
     pub cap_ms: i64,
     pub min_context: u64,
+    /// Item 878: which pings of the cap's run the rule allows; flat (all
+    /// of them) by default, a hold's and "until I'm back"'s always.
+    #[serde(skip)]
+    pub rule: Rule,
+    /// The rule's id, [`crate::hold_policy::sim::POLICIES`] (`flat-6`, …).
+    pub rule_id: &'static str,
+    /// His sleep, when the rule uses it.
+    pub sleep: Option<Sleep>,
 }
 
 impl Default for Policy {
@@ -124,6 +133,9 @@ impl Default for Policy {
             every_ms: PING_EVERY_MS,
             cap_ms: CAP_MS,
             min_context: MIN_CONTEXT,
+            rule: Rule::Flat,
+            rule_id: "flat-6",
+            sleep: None,
         }
     }
 }
@@ -161,12 +173,69 @@ impl Policy {
     }
 
     /// As [`Self::from_parts`], from `<config dir>/keep-warm-policy.json`
-    /// and the environment.
+    /// and the environment, under the active hold rule (item 878: his
+    /// pick, else stop at his sleep with up to 8 h awake). A `cap_hours`
+    /// in the policy file still wins over the rule's cap.
     pub fn load(config_dir: Option<&Path>) -> Self {
         let text = config_dir.and_then(|d| std::fs::read_to_string(d.join(POLICY_FILE)).ok());
-        Self::from_parts(
+        let mut p = Self::from_parts(
             text.as_deref(),
             std::env::var(TEST_EVERY_ENV).ok().as_deref(),
+        );
+        let capped = text
+            .as_deref()
+            .and_then(|t| serde_json::from_str::<PolicyFile>(t).ok())
+            .is_some_and(|f| f.cap_hours.is_some());
+        let (id, rule, cap) = hold_policy::active_rule(config_dir, p.every_ms);
+        p.rule = rule;
+        p.rule_id = id;
+        p.sleep = rule.sleep();
+        if !capped && let Some(c) = cap {
+            p.cap_ms = c;
+        }
+        p
+    }
+
+    /// The policy as `mode` runs it: "until I'm back" holds the whole
+    /// cap, his sleep or not (he said he is coming back).
+    pub fn for_mode(&self, mode: Mode) -> Self {
+        if mode == Mode::Once {
+            Self {
+                rule: Rule::Flat,
+                ..*self
+            }
+        } else {
+            *self
+        }
+    }
+
+    /// The last moment a ping may be due for `reply` under the rule, and
+    /// why past it nothing is: the cap's end for a flat run (item 541's
+    /// rule exactly), else half a ping after the rule's last ping.
+    pub fn limit(&self, reply: &Reply) -> (i64, Why) {
+        let cap_end = reply.sent_ms + self.cap_ms;
+        let base = u32::try_from((self.cap_ms / self.every_ms.max(1)).max(0)).unwrap_or(0);
+        let k = self.rule.pings(
+            hold_policy::At {
+                t0_ms: reply.sent_ms,
+                ctx: reply.context,
+                fable: false,
+            },
+            base,
+            self.every_ms,
+            &hold_policy::local_hw,
+        );
+        if k == base {
+            return (cap_end, Why::Cap);
+        }
+        let why = if k < base && self.rule.sleep().is_some() {
+            Why::Sleep
+        } else {
+            Why::Cap
+        };
+        (
+            reply.sent_ms + i64::from(k) * self.every_ms + self.every_ms / 2,
+            why,
         )
     }
 }
@@ -253,6 +322,9 @@ pub enum Why {
     /// next chat continues it); he can switch it back on.
     #[serde(rename = "handedoff")]
     HandedOff,
+    /// Item 878: the next ping would fall in his sleep; the run ended at
+    /// its start (a hold, or "until I'm back", runs through it).
+    Sleep,
 }
 
 /// What the schedule says at `now`.
@@ -291,10 +363,16 @@ pub fn step(
     if missed {
         return Step::Idle(Why::Missed);
     }
+    let policy = policy.for_mode(mode);
     let touched = touched_ms.unwrap_or(reply.sent_ms);
     let due = touched + policy.every_ms;
-    if due > reply.sent_ms + policy.cap_ms {
-        return Step::Idle(Why::Cap);
+    let (limit, why) = policy.limit(reply);
+    if due > limit {
+        return Step::Idle(why);
+    }
+    // Never a ping inside his sleep, even one an aside moved there.
+    if policy.rule.forbids(hold_policy::local_hw(due).0) {
+        return Step::Idle(Why::Sleep);
     }
     if now < due {
         return Step::Wait(due);
@@ -316,9 +394,37 @@ pub fn warm_until(reply: &Reply, touched_ms: Option<i64>, scheduled: bool, polic
     if !scheduled {
         return touched + TTL_MS;
     }
-    let room = reply.sent_ms + policy.cap_ms - touched;
-    let left = if room > 0 { room / policy.every_ms } else { 0 };
-    touched + left * policy.every_ms + TTL_MS
+    let (limit, _) = policy.limit(reply);
+    let mut t = touched;
+    while t + policy.every_ms <= limit
+        && !policy
+            .rule
+            .forbids(hold_policy::local_hw(t + policy.every_ms).0)
+    {
+        t += policy.every_ms;
+    }
+    t + TTL_MS
+}
+
+/// Item 878: whether the run for `reply` ends early for his sleep — the
+/// chip then says "you're usually asleep".
+pub fn cut_by_sleep(reply: &Reply, touched_ms: Option<i64>, policy: &Policy) -> bool {
+    if policy.rule.sleep().is_none() {
+        return false;
+    }
+    let touched = touched_ms.unwrap_or(reply.sent_ms);
+    let (limit, why) = policy.limit(reply);
+    let mut t = touched;
+    while t + policy.every_ms <= limit {
+        if policy
+            .rule
+            .forbids(hold_policy::local_hw(t + policy.every_ms).0)
+        {
+            return true;
+        }
+        t += policy.every_ms;
+    }
+    why == Why::Sleep
 }
 
 /// One ping's line in [`PINGS_FILE`].
@@ -481,6 +587,7 @@ impl Hold {
     pub fn apply(&self, policy: &Policy) -> Policy {
         Policy {
             cap_ms: policy.cap_ms.max(self.ms()),
+            rule: Rule::Flat,
             ..*policy
         }
     }
@@ -605,6 +712,12 @@ pub struct Status {
     /// When the hold runs out and the chat goes back to the default cap,
     /// unix ms (the newest reply's send plus the hold).
     pub hold_until_ms: Option<i64>,
+    /// Item 878: the run ends early because the next ping would fall in
+    /// his sleep (the chip says so).
+    pub sleep_cut: bool,
+    /// Item 878: his sleep as the rule in force uses it; `None` for a
+    /// rule without one (a hold, "until I'm back", a flat cap).
+    pub sleep: Option<Sleep>,
 }
 
 /// A ping to run: [`Registry::due`] hands these out, [`Registry::done`]
@@ -1165,6 +1278,7 @@ impl Registry {
         let read = e.last_read();
         let s = step(mode, e.reply.as_ref(), read, e.missed, false, &held, now);
         let scheduled = flying || matches!(s, Step::Ping | Step::Wait(_));
+        let held = held.for_mode(mode);
         Status {
             chat: chat.to_string(),
             mode,
@@ -1191,6 +1305,11 @@ impl Registry {
             cap_ms: held.cap_ms,
             hold_hours: e.hold.map(|h| h.hours),
             hold_until_ms: e.hold.map(|h| h.until_ms),
+            sleep_cut: mode != Mode::Off
+                && e.reply
+                    .as_ref()
+                    .is_some_and(|r| cut_by_sleep(r, read, &held)),
+            sleep: held.sleep,
         }
     }
 

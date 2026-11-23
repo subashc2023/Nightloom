@@ -985,6 +985,64 @@ export function keepWarmSetDefault(on: boolean): Promise<boolean> {
   return invoke("keep_warm_set_default", { on });
 }
 
+// Item 878: the hold rule — which one runs, his sleep, the scoreboard.
+export interface HoldScore {
+  avoided: number;
+  pings: number;
+  usd: number;
+  /** Net list $, reads at 0.5 (item 580): the headline. */
+  half: number;
+}
+export interface HoldLine {
+  id: string;
+  name: string;
+  selectable: boolean;
+  weeks: HoldScore[];
+  window: HoldScore;
+}
+export interface HoldOvertake {
+  id: string;
+  active: string;
+  challenger: string;
+  active_usd: number;
+  challenger_usd: number;
+  weeks: number;
+}
+export interface HoldBoard {
+  computed_ms: number;
+  moments: number;
+  weeks: { start_ms: number; end_ms: number; train: number; test: number }[];
+  table: HoldLine[];
+  active: string;
+  leader: string;
+  learned_sleep: import("./keepWarm").SleepWindow;
+  overtake: HoldOvertake | null;
+}
+export interface HoldView {
+  active: string;
+  active_name: string;
+  sleep: import("./keepWarm").SleepWindow;
+  sleep_manual: boolean;
+  learned_sleep: import("./keepWarm").SleepWindow | null;
+  cap_ms: number;
+  board: HoldBoard | null;
+  scoring: boolean;
+}
+export function keepWarmBoard(): Promise<HoldView> {
+  return invoke("keep_warm_board");
+}
+/** His click: switch the hold rule (never switched for him). */
+export function keepWarmSetRule(id: string): Promise<HoldView> {
+  return invoke("keep_warm_set_rule", { id });
+}
+/** His sleep by hand; both null goes back to the learned one. */
+export function keepWarmSetSleep(start: number | null, end: number | null): Promise<HoldView> {
+  return invoke("keep_warm_set_sleep", { start, end });
+}
+export function keepWarmRescore(): Promise<boolean> {
+  return invoke("keep_warm_rescore");
+}
+
 /** Where a chat lives (backlog 535): the project whose folder holds its
  *  log (`project: null` — the unfiled chats), or `found: false`. */
 export function chatHome(chat: string): Promise<{ found: boolean; project: string | null; name: string | null }> {

@@ -7,7 +7,14 @@
 
 export type KeepWarmMode = "off" | "on" | "once";
 /** `handedoff` (item 728): off because the chat was handed off, once. */
-export type KeepWarmWhy = "off" | "handedoff" | "noreply" | "small" | "notonehour" | "cap" | "cold" | "missed" | "busy";
+/** `sleep` (item 878): the next ping would fall in his sleep; the run ended at its start. */
+export type KeepWarmWhy = "off" | "handedoff" | "noreply" | "small" | "notonehour" | "cap" | "cold" | "missed" | "busy" | "sleep";
+
+/** His sleep, local whole hours (item 878); it may wrap midnight. */
+export interface SleepWindow {
+  start: number;
+  end: number;
+}
 
 export interface KeepWarmStatus {
   chat: string;
@@ -34,7 +41,29 @@ export interface KeepWarmStatus {
   hold_hours?: number | null;
   /** Item 643: when the hold runs out (the newest reply's send plus it), ms epoch. */
   hold_until_ms?: number | null;
+  /** Item 878: the run ends early because the next ping would fall in his sleep. */
+  sleep_cut?: boolean;
+  /** Item 878: his sleep as the rule in force uses it; null without one. */
+  sleep?: SleepWindow | null;
 }
+
+/** "2 AM", "12 PM" — a whole local hour, 12-hour. */
+export function hourWords(h: number): string {
+  const n = ((h % 24) + 24) % 24;
+  const t = n % 12 === 0 ? 12 : n % 12;
+  return `${t} ${n < 12 ? "AM" : "PM"}`;
+}
+
+/** "2–9 AM", "11 PM–6 AM" — his sleep window. */
+export function sleepWords(w: SleepWindow): string {
+  const a = hourWords(w.start);
+  const b = hourWords(w.end);
+  const same = a.slice(-2) === b.slice(-2);
+  return same ? `${a.slice(0, -3)}–${b}` : `${a}–${b}`;
+}
+
+/** Item 878: the words the chip adds when the run stops for his sleep. */
+export const ASLEEP = "you're usually asleep";
 
 /** The cap in force for the chat: its hold's, else the policy's (an
  *  older backend sends no `cap_ms`). */
@@ -91,6 +120,8 @@ export function idleWords(s: KeepWarmStatus): string | null {
       return "ended — the cache went cold while the Mac slept";
     case "missed":
       return "stopped — a ping had to rebuild the cache";
+    case "sleep":
+      return `stopped — ${ASLEEP}${s.sleep ? ` (${sleepWords(s.sleep)})` : ""}`;
     default:
       return null;
   }
@@ -101,7 +132,7 @@ export function idleWords(s: KeepWarmStatus): string | null {
 export function switchLabel(s: KeepWarmStatus | null | undefined, now: number): string {
   if (handedOffOff(s)) return `keep warm · ${HANDED_OFF}`;
   if (!s || s.mode === "off") return "keep warm";
-  if (isKeeping(s, now)) return `warm until ${clockTime(s.warm_until_ms as number)}`;
+  if (isKeeping(s, now)) return `warm until ${clockTime(s.warm_until_ms as number)}${s.sleep_cut ? ` · ${ASLEEP}` : ""}`;
   const idle = idleWords(s);
   return idle ? `keep warm · ${idle}` : "keep warm on";
 }
@@ -130,6 +161,7 @@ export function switchTitle(s: KeepWarmStatus | null | undefined, now: number, c
   const once = s.mode === "once" ? " until your next message" : "";
   const state = isKeeping(s, now)
     ? `Warm${once} until ${clockTime(s.warm_until_ms as number)}` +
+      (s.sleep_cut ? ` — ${ASLEEP}${s.sleep ? ` ${sleepWords(s.sleep)}` : ""}` : "") +
       (s.next_ping_ms != null ? `, next ping ${clockTime(s.next_ping_ms)}` : "")
     : `Keep warm on${once}, not running: ${idleWords(s) ?? "waiting"}`;
   const held = s.hold_hours != null ? ` · held ${s.hold_hours} h` : "";
@@ -184,10 +216,12 @@ export function holdRows(s: KeepWarmStatus | null | undefined): HoldRow[] {
   const every = s?.policy.every_ms ?? 55 * 60_000;
   const baseMs = s?.policy.cap_ms ?? 6 * 3_600_000;
   const baseH = Math.round(baseMs / 3_600_000);
+  // Item 878: the default stops at his sleep; a hold runs through it.
+  const asleep = s?.sleep ? `, none ${sleepWords(s.sleep)}` : "";
   const held = s?.hold_hours ?? null;
   const base = pingsUnder(baseMs, every);
   const rows: HoldRow[] = [
-    { hours: baseH, label: `${baseH} h (default)`, detail: `${base} pings at most`, on: held == null },
+    { hours: baseH, label: `${baseH} h (default)`, detail: `${base} pings at most${asleep}`, on: held == null },
   ];
   for (const h of HOLD_HOURS) {
     if (h * 3_600_000 <= baseMs) continue;
@@ -299,7 +333,8 @@ export function noticeRow(s: KeepWarmStatus | null | undefined, now: number): No
   if (!s) return null;
   if (isKeeping(s, now)) {
     const once = s.mode === "once" ? " or your next message" : "";
-    return { on: true, text: `Keeping warm until ~${clockTime(s.warm_until_ms as number)}${once}` };
+    const asleep = s.sleep_cut ? ` — ${ASLEEP} then` : "";
+    return { on: true, text: `Keeping warm until ~${clockTime(s.warm_until_ms as number)}${once}${asleep}` };
   }
   if (s.mode === "off" && s.warm_until_ms != null && s.warm_until_ms > now) {
     return { on: false, text: `Not keeping warm — warm until ~${clockTime(s.warm_until_ms)}; click to keep it` };

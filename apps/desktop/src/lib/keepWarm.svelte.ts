@@ -10,6 +10,7 @@ import type { KeepWarmMode, KeepWarmStatus } from "./keepWarm";
 import { app } from "./state.svelte";
 import { addToast } from "./state/toasts.svelte";
 import { missToastFor, type PlanEst } from "./cacheCost";
+import { nameIn, overtakeToast } from "./holdRule";
 
 /** One ping's read and spend (item 699, the backend's `keep-warm-ping`). */
 export interface PingHeard {
@@ -37,10 +38,12 @@ export function pingMissToast(p: PingHeard, chatName: string | null): string | n
   });
 }
 
-export const keepWarm = $state<{ byChat: Record<string, KeepWarmStatus>; defaultOn: boolean | null }>({
+export const keepWarm = $state<{ byChat: Record<string, KeepWarmStatus>; defaultOn: boolean | null; hold: api.HoldView | null }>({
   byChat: {},
   // His Settings default (item 608); null until read.
   defaultOn: null,
+  // Item 878: the hold rule, his sleep and the scoreboard; null until read.
+  hold: null,
 });
 
 let listening = false;
@@ -54,6 +57,16 @@ export function watchKeepWarm(): void {
   }).catch(() => {
     listening = false;
   });
+  // Item 878: the scoreboard found a rule beating the one in force — a
+  // notice, never a switch (he decides; Settings has the one click).
+  void listen<api.HoldOvertake>("keep-warm-overtake", (e) => {
+    const o = e.payload;
+    if (!o?.challenger) return;
+    void loadHold().then(() => addToast(overtakeToast(o, nameIn(keepWarm.hold))));
+  }).catch(() => {});
+  void listen("keep-warm-board", () => {
+    void loadHold();
+  }).catch(() => {});
   // Item 699: a ping that missed the cache says what it cost.
   void listen<PingHeard>("keep-warm-ping", (e) => {
     const p = e.payload;
@@ -132,4 +145,45 @@ export async function setKeepWarmDefault(on: boolean): Promise<string | null> {
   }
   await Promise.all(Object.keys(keepWarm.byChat).map((c) => loadKeepWarm(c)));
   return null;
+}
+
+/** Item 878: read the hold rule, his sleep and the scoreboard. */
+export async function loadHold(): Promise<void> {
+  try {
+    keepWarm.hold = await api.keepWarmBoard();
+  } catch {
+    // An older backend: Settings shows nothing of it.
+  }
+}
+
+/** Item 878: his click switches the rule. Resolves to the error's words when refused. */
+export async function setHoldRule(id: string): Promise<string | null> {
+  try {
+    keepWarm.hold = await api.keepWarmSetRule(id);
+  } catch (e) {
+    return String(e);
+  }
+  await Promise.all(Object.keys(keepWarm.byChat).map((c) => loadKeepWarm(c)));
+  return null;
+}
+
+/** Item 878: his sleep by hand, or (both null) back to the learned one. */
+export async function setHoldSleep(start: number | null, end: number | null): Promise<string | null> {
+  try {
+    keepWarm.hold = await api.keepWarmSetSleep(start, end);
+  } catch (e) {
+    return String(e);
+  }
+  await Promise.all(Object.keys(keepWarm.byChat).map((c) => loadKeepWarm(c)));
+  return null;
+}
+
+/** Item 878: re-run the scoreboard now; the board reloads when it is done. */
+export async function rescoreHold(): Promise<void> {
+  watchKeepWarm();
+  try {
+    if (await api.keepWarmRescore() && keepWarm.hold) keepWarm.hold = { ...keepWarm.hold, scoring: true };
+  } catch {
+    // An older backend.
+  }
 }
