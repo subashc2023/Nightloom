@@ -57,7 +57,7 @@
 {/snippet}
 
 <div class="h9-grid">
-  <div class="h9-col">
+  <div class="h9-col w-main">
     <Panel title="Home's browser" sub={live ? "live — the page Home sees" : b.site || "what Home reports"} live={task.state === "live"} flush>
       {#if task.why}<div class="h9-why" style="margin:6px 12px 0"><b>YOU ASKED</b><span>{task.why}</span></div>{/if}
       {#if live && session && BrowserView}
@@ -98,6 +98,12 @@
   /* A narrow stage (and the phone) does not draw the wide column; the hold, kind C, is drawn in the main one there. */
   .w-narrow { display: none; }
   :global(.h9-stage.narrow) .w-narrow { display: contents; }
+  /* Item 809: there the hold sits in the column's flow through a display: contents box, so the column's own rules
+     (keep, last-child) never reached it — at 860 × 720 with the reply strip up it shrank to its title and one line,
+     its Allow once / Not now / I'll do it myself out of sight. The hold keeps its full height; the browser gives up
+     the room and scrolls. Not on the phone, whose page scrolls as a whole (a 0 basis there would fold the browser). */
+  :global(.h9-stage.narrow:not(.phone)) .w-narrow > :global(.h9-panel) { flex: none; }
+  :global(.h9-stage.narrow:not(.phone)) .w-main > :global(.h9-panel:first-child) { flex: 1 1 0; min-height: 0; }
   .w-live { position: relative; flex: 1; min-height: 0; height: calc(100% - 4px); display: flex; flex-direction: column; }
   .w-chrome { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
   .w-url { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 10px; border-radius: 13px; background: var(--term); border: 1px solid var(--line2); font: 12px var(--mono); color: var(--ink2); }
