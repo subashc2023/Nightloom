@@ -270,6 +270,13 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
     if tools.len() == 1 && tools[0].def().name == "propose_instructions" {
         return DREAM_INSTRUCTIONS.to_string();
     }
+    // The door's server (item 767): the four chat tools and nothing else.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::door::tools::START)
+    {
+        return crate::door::tools::INSTRUCTIONS.to_string();
+    }
     let remembers = tools.iter().any(|t| t.def().name == "remember");
     let sends = tools
         .iter()
@@ -1176,6 +1183,13 @@ pub async fn serve(
         serve_tools(tools, reader, writer).await;
         return Ok(());
     }
+    // The door's server (item 767, `--outside`): for an agent that is not
+    // a Nightloom chat — the four chat tools, none of a chat's own.
+    if args.outside {
+        let tools = crate::door::tools::tools(config, args.outside_as.clone());
+        serve_tools(tools, reader, writer).await;
+        return Ok(());
+    }
     let mut tools = match &args.dream {
         Some(dream) => dream_tools(dream),
         None => tools_in_chat(
@@ -1369,6 +1383,12 @@ pub struct ServeArgs {
     /// turn's budget ledger is: with it, `set_budget` is served. Rewritten
     /// into the arguments before each turn (`agent::budget::with_budget_dir`).
     pub budget_dir: Option<PathBuf>,
+    /// The door's server (`--outside`, item 767): `chat_list`, `chat_show`,
+    /// `chat_start` and `chat_send` alone, for an agent outside Nightloom
+    /// (`crate::door::tools`). Every other field is ignored.
+    pub outside: bool,
+    /// Who the sidebar says started a chat this server starts (`--as <who>`).
+    pub outside_as: Option<String>,
 }
 
 impl ServeArgs {
@@ -1385,6 +1405,8 @@ impl ServeArgs {
             rename: None,
             notes: None,
             budget_dir: None,
+            outside: false,
+            outside_as: None,
         }
     }
 
@@ -1401,6 +1423,8 @@ impl ServeArgs {
             rename: None,
             notes: None,
             budget_dir: None,
+            outside: false,
+            outside_as: None,
         }
     }
 }
@@ -1632,6 +1656,12 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.remember = false;
         } else if arg == "--ask" {
             out.ask = true;
+        } else if arg == "--outside" {
+            out.outside = true;
+            out.remember = false;
+        } else if arg == "--as" {
+            let who = it.next().ok_or_else(|| "--as needs a name".to_string())?;
+            out.outside_as = Some(who.clone());
         } else if arg == "--root" {
             let dir = it
                 .next()
@@ -1676,7 +1706,7 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.remember = false;
         } else {
             return Err(format!(
-                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --incognito, --ask, --root <dir>, --preview <socket>, --preview-chat <id>, --notes <dir>, --budget-dir <dir> and --dream <json>"
+                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --incognito, --ask, --root <dir>, --preview <socket>, --preview-chat <id>, --notes <dir>, --budget-dir <dir>, --dream <json> and --outside [--as <who>]"
             ));
         }
     }

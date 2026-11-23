@@ -261,6 +261,11 @@
   import HomeJobs from "./HomeJobs.svelte";
   // Item 795: Quick Entry's shortcut recorder.
   import QuickEntrySetting from "./QuickEntrySetting.svelte";
+  // Item 767: Outside control's switch and its nav word.
+  import DoorSetting from "./DoorSetting.svelte";
+  import { doorWord } from "./door";
+  import { door, loadDoorCard } from "./door.svelte";
+  void loadDoorCard();
   // Item 848: the System → Quick Entry row says the shortcut.
   import { shortcutLabel } from "./quickEntry";
   import { quickEntry } from "./quickEntry.svelte";
@@ -1903,6 +1908,18 @@
         {away?.url ? "on" : "off"}
       </span>
     </button>
+    <!-- Item 767: what a script or another agent on this Mac may do. -->
+    <button
+      class="nav-item"
+      class:active={selected === "outside"}
+      onclick={() => select("outside")}
+    >
+      <span class="nav-label">Outside control</span>
+      <span class="st">
+        <span class="dot" class:ok={!!door.card?.writes}></span>
+        {doorWord(door.card)}
+      </span>
+    </button>
     <!-- Item 848: Quick Entry, Notifications and Sleep, each its own row. -->
     <div class="nav-title">System<Kbd keys={keyOf("System")} dim /></div>
     <button
@@ -2339,6 +2356,26 @@
        Notifications, Quick Entry and Sleep were three cards at the foot of
        Appearance → Palette, where he did not look. Each is its own pane now,
        under a System group of the nav (⌘9), the cards unchanged. -->
+  {:else if selected === "outside"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Outside control</h2>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
+      <!-- Item 767: the door (door.rs, nightloom_service::door). Read only
+           until he switches it on; read at every call, so no restart. -->
+      <section class="card">
+        <div class="ch"><span class="t">Outside control</span></div>
+        <p class="note small">
+          A terminal, a script or another agent on this Mac can list and read your chats (never an incognito one)
+          through Nightloom's command and its MCP tools. A chat started that way runs off screen, leaves the chat
+          you are in alone, and shows in the sidebar marked ↗ with who started it. It works only while Nightloom
+          is running.
+        </p>
+        <DoorSetting />
+      </section>
+    </div>
   {:else if selected === "quick-entry"}
     <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">

@@ -66,7 +66,8 @@ export function settingsGroups(providerKinds: string[], searchBackendNames: stri
     { title: "Web search", panes: searchBackendNames.map((n) => "search:" + n) },
     // Palette, then Animations (backlog 395): ⌘7 again steps between them.
     { title: "Appearance", panes: ["appearance", "animations"] },
-    { title: "Remote", panes: ["remote", "away"] },
+    // Item 767: Outside control — what a script or another agent may do.
+    { title: "Remote", panes: ["remote", "away", "outside"] },
     // Item 848: last, so no other group's ⌘-digit moves.
     { title: "System", panes: ["quick-entry", "notifications", "sleep"] },
   ];

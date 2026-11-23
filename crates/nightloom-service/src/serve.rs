@@ -1867,6 +1867,7 @@ impl Host for ServeHost {
                 kind: lowercase(s.kind),
                 mode: lowercase(s.mode),
                 last_message: s.last_message,
+                started_by: None,
             })
             .collect())
     }

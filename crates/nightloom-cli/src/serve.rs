@@ -65,6 +65,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     cfg.assets = args.assets;
     let host = ServeHost::new(cfg, Registry::load()) as Arc<dyn remote::Host>;
     let host_for_idle = host.clone();
+    let host_for_door = host.clone();
     // The away server on Fly (item 268 step 2, blocker 673): any address,
     // behind Fly's TLS, only when asked for by name; the tailnet rule
     // otherwise.
@@ -97,6 +98,11 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         ),
     };
     println!("phone setup: {setup}");
+    // Item 767: the door, for `nightloom chat …` and `mcp-serve --outside`.
+    match nightloom_service::door::server::open(&config, host_for_door) {
+        Ok(path) => println!("door: {}", path.display()),
+        Err(e) => println!("no door (nightloom chat cannot reach this server): {e}"),
+    }
     println!("Ctrl-C stops it; the desktop app can open once it has.");
     // Item 781: on the away server, exit by itself after a quiet spell
     // (Fly's proxy auto-stop is off; it would cut a running job).

@@ -720,6 +720,8 @@ export interface ChatRow {
   mode: string;
   /** When he last wrote in it (300 B8); absent from an older host. */
   last_message?: string | null;
+  /** Item 767: who started it from outside the app, when someone did. */
+  started_by?: string | null;
 }
 
 /** One row of `/api/projects` — `ProjectRow` in the service crate. */

@@ -60,6 +60,7 @@ mod connect_deadline;
 /// The cursor the page asks for kept on screen (nightshift item 828).
 mod cursor_keep;
 /// The composer's exact token count on the provider engine (backlog 155).
+mod door;
 mod draft_count;
 /// An AppKit exception in event dispatch is logged, not fatal (item 486).
 #[cfg(target_os = "macos")]
@@ -1371,6 +1372,13 @@ fn main() {
         }
         return;
     }
+    // `nightloom-desktop --chat list | show | start | send …` (nightshift
+    // item 767): the door from a terminal or a script, through this binary
+    // because the CLI is not on PATH (`nightloom_service::door::cli`). It
+    // talks to the running app over the home's socket; opens no window.
+    if argv.first().map(String::as_str) == Some(nightloom_service::door::cli::DESKTOP_FLAG) {
+        std::process::exit(nightloom_service::door::cli::run_blocking(&argv[1..]));
+    }
     // `nightloom-desktop --evidence-check <request.json> [--root <dir>]
     // [--out <dir>] [--fetched <dir>]` (nightshift item 798): an evidence
     // table's quote check for a night, which has no Nightloom chat to call
@@ -1871,6 +1879,9 @@ fn main() {
             home::home_feed,
             home::home_mark_seen,
             home::home_routes,
+            door::door_card,
+            door::door_set_writes,
+            door::door_started,
             home::home_route_start,
             home::home_route_dismiss,
             home::home_save_brief,
