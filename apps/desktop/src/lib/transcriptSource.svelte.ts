@@ -16,6 +16,8 @@ import { app, chatAgentSession, openChatKey, paneChat, resumeAfterLimit, type Se
 import { pauseLabel, resetLabel, resumeDelayMs, type LimitPause } from "./limit";
 import type { AsideNote } from "./asideTranscript";
 import { scrollKey } from "./scroll.svelte";
+import { modelIdFor } from "./changeCost";
+import { modelSeen } from "./modelSeen.svelte";
 import type { ApprovalRequest, Attachment, SessionEvent } from "./types";
 import type { TurnSize } from "./tokens";
 import type { ReplyUsageView } from "./replyUsage";
@@ -66,8 +68,13 @@ export interface TranscriptSource {
   reply: boolean;
   /** Claude Code's session, for a tool result's images. */
   cliSession: string | null;
-  /** The live reply's model line. */
+  /** The live reply's model line. Item 903: on Claude Code the model the
+   *  CLI's init line named for this turn (null until it does), never the
+   *  pick; the API engine's connection model is the one it sends to. */
   liveModel: string | null;
+  /** Item 903: the model picked for this turn, as a full id when known —
+   *  the header says so when the CLI runs another. */
+  livePick?: string | null;
   /** The chat's own actions (fork an edit, save, remove, restore, fork
    *  helpers, versions, attachments as tabs) — the open chat's alone. */
   chatActions: boolean;
@@ -166,7 +173,8 @@ export function chatSource(): TranscriptSource {
     channel: "chat",
     reply: true,
     cliSession: chatAgentSession(app.events) ?? app.agentInit?.session_id ?? null,
-    liveModel: app.connection?.model ?? null,
+    liveModel: app.connection?.engine === "claude-code" ? app.turnModel : (app.connection?.model ?? null),
+    livePick: app.connection?.engine === "claude-code" ? modelIdFor(app.draft.agentModel, modelSeen.byAlias) : null,
     chatActions: true,
     actions: {},
     queue: { key: openChatKey() },

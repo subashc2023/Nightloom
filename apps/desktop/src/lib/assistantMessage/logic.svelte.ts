@@ -52,6 +52,9 @@ export type AssistantMessageLogicProps = {
     /** The model answering a live turn (item 525), for the header while no
      *  footer says; null draws the header without one. */
     model?: string | null;
+    /** Item 903: the model picked for a live turn; when the CLI runs
+     *  another, the header says so ("Opus 5.5 — not Fable 5.2 as picked"). */
+    picked?: string | null;
     /** What this reply added to the context (backlog 090), null when the
      *  log cannot say; `limit` is the model's window for the share. */
     size?: TurnSize | null;
@@ -549,10 +552,20 @@ export function assistantMessageLogic(props: () => AssistantMessageLogicProps) {
   const who = $derived.by(() => {
     if (standIn) return { name: "Nightloom", model: "" };
     const m = footer?.model ?? model ?? "";
+    const w = whoOf(m);
+    // Item 903: a live turn on another model than picked says so at once.
+    const p = props().picked;
+    if (!footer && p && m && w.model && sameModelId(p, m) === false) {
+      const pw = whoOf(p);
+      return { ...w, model: `${w.model} — not ${pw.model || p} as picked` };
+    }
+    return w;
+  });
+  function whoOf(m: string): { name: string; model: string } {
     const x = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(m);
     if (x) return { name: "Claude", model: `${x[1][0].toUpperCase()}${x[1].slice(1)} ${x[2]}.${x[3]}` };
     return m.startsWith("claude") || !m ? { name: "Claude", model: m.replace(/^claude-?/, "") } : { name: m, model: "" };
-  });
+  }
   const replyClock = $derived.by(() => {
     const t = Math.max(0, Math.floor((now - (since ?? startedAt)) / 1000));
     return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
@@ -933,4 +946,11 @@ export function assistantMessageLogic(props: () => AssistantMessageLogicProps) {
       return working;
     },
   };
+}
+
+/** Item 903: two model ids name the same model (case and a `[1m]` tag
+ *  aside). */
+export function sameModelId(a: string, b: string): boolean {
+  const id = (m: string) => m.trim().toLowerCase().replace(/\[[^\]]*\]$/, "");
+  return id(a) === id(b);
 }

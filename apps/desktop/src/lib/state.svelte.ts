@@ -727,6 +727,12 @@ export const app = $state({
    */
   agentInit: null as AgentInit | null,
   /**
+   * Item 903: the model the open chat's running turn is on, as the CLI's
+   * init line names it — null from the send until that line arrives. The
+   * live reply's header reads this, never the pick.
+   */
+  turnModel: null as string | null,
+  /**
    * The subagents (nightshift backlog 152): a row per `Agent` call the CLI
    * spawned, newest turn last. ~~Kept for the chat while it is open —
    * cleared with `agentInit` on a chat switch~~ — since backlog 160
@@ -1508,6 +1514,7 @@ export async function newSession(mode?: ChatMode, kind?: ChatKind): Promise<void
       app.error = null;
       app.agentTurn = null;
       app.agentInit = null;
+      app.turnModel = null;
       // ~~`app.subagents = []`~~ — rows are per chat since backlog 160.
       app.suggestion = null;
       leaveNote();
@@ -1579,6 +1586,7 @@ async function openContinuation(from: string | null, prompted: boolean): Promise
   app.error = null;
   app.agentTurn = null;
   app.agentInit = null;
+  app.turnModel = null;
   // ~~`app.subagents = []`~~ — rows are per chat since backlog 160.
   app.suggestion = null;
   leaveHandoff(from);
@@ -1841,6 +1849,7 @@ export function detach(): boolean {
     app.budgetSession = null;
   }
   app.agentInit = null;
+  app.turnModel = null;
   // The clock keeps reading its ledger off screen.
   ensureBudgetPoll();
   return true;
@@ -1930,6 +1939,7 @@ export async function attach(id: string): Promise<void> {
     app.budgetSession = id;
     app.turnBudget = b.budget ?? null;
     app.agentInit = b.agentInit ?? null;
+    app.turnModel = b.agentInit?.model ?? null;
     ensureBudgetPoll();
     app.liveVersion++;
     app.error = null;
@@ -2365,6 +2375,7 @@ export async function send(
   app.live = { segments: [] };
   app.liveUsage = null;
   app.turnSeq += 1;
+  app.turnModel = null;
   app.busy = true;
   // This turn, for the background (backlog 159, A4): as the agent
   // engine's since A2 — he may open another chat while it runs, and it
@@ -2520,6 +2531,7 @@ async function sendAgent(
   };
   app.liveUsage = null;
   app.turnSeq += 1;
+  app.turnModel = null;
   app.busy = true;
   // Now the window's turn; `chatRuns` reads it from `fg` (535f).
   started();
@@ -3165,6 +3177,7 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
         host.bg.agentInit = ev;
       } else {
         app.agentInit = ev;
+        app.turnModel = ev.model ?? null;
         void windowFromInit(ev.model);
         // A new process or command of the turn on screen: what it could
         // not take before goes in now (backlog 374).
