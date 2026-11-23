@@ -79,7 +79,7 @@ import { hasLaunch } from "../sendMotion";
 // over a copy of the thread laid down just before the call.
 import { prepareDelete, prepareRewind } from "../messageMotion";
 // A Send near the foot lands at the bottom (item 313).
-import { followStep, restDistance, sendJumps } from "../sendScroll";
+import { followStep, holdsSelection, restDistance, sendJumps } from "../sendScroll";
 // The first-paint mark of the message's timing line (item 256).
 import { hasText, turnClock } from "../turnTiming";
 // The dot ground the pointer pushes (item 621).
@@ -1549,7 +1549,11 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
       const step = viewport ? followStep(pinned, presence.away, atBottom()) : "stay";
       if (step === "release") {
         pinned = false;
-      } else if (step === "follow" && viewport) {
+      } else if (step === "follow" && viewport && !holdsSelection(document.getSelection(), viewport)) {
+        // Item 906: not while he holds a selection in the transcript (a
+        // passage to ask aside about, reply to or copy) — it stays in view
+        // under his hand and the pill stays over it; still pinned, the
+        // follow resumes once the selection goes.
         scrollingSelf = true;
         viewport.scrollTop = viewport.scrollHeight;
         // The scroll event fires asynchronously; clear after it has.
@@ -2298,6 +2302,8 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
   /** Item 754: the pill's *Comment* — the chat's own transcript only (an
    *  aside card's thread and a pane have none), any engine, mid-turn too. */
   const PLAN_TURN = -1;
+  /** Item 906: the reply still streaming, which has no turn index yet. */
+  const LIVE_TURN = -2;
   // ~~A turn starting, or the engine changing, takes the pill down without
   // waiting for the next selection change.~~ Since backlog 215
   // (2026-09-25) the pill also carries *Reply*, which works on any engine
@@ -2341,7 +2347,10 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
     const turnEl = prose.closest<HTMLElement>("[data-turn]");
     // Item 754: a plan card waiting at the foot (not inside a turn) is a
     // passage too, for Reply and Comment.
-    if (!turnEl) return prose.closest("[data-plan-text]") ? { turn: PLAN_TURN, prose, role: "assistant" } : null;
+    if (!turnEl && prose.closest("[data-plan-text]")) return { turn: PLAN_TURN, prose, role: "assistant" };
+    // Item 906: the reply still streaming (`data-nav-live`, outside every
+    // turn) is a passage too — its words already drawn are finished text.
+    if (!turnEl) return prose.closest("[data-nav-live]") && prose.classList.contains("markdown") ? { turn: LIVE_TURN, prose, role: "assistant" } : null;
     const turn = Number(turnEl.dataset.turn);
     if (!Number.isFinite(turn)) return null;
     return { turn, prose, role: prose.classList.contains("user-text") ? "user" : "assistant" };
@@ -2356,13 +2365,26 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
     const b = proseEnd(sel.focusNode);
     if (!samePassage(a, b) || !a) return null;
     const item = items.find((it) => it.index === a.turn);
-    if (a.turn !== PLAN_TURN && (!item || item.superseded || item.removed || item.kind === "compaction")) return null;
+    if (a.turn !== PLAN_TURN && a.turn !== LIVE_TURN && (!item || item.superseded || item.removed || item.kind === "compaction")) return null;
     // Not `sel.toString()`: a rendered equation reads as its layout, and
     // the model would get that (his report, 2026-09-17); `selectionText`
     // quotes each equation as its `$…$` source instead.
     const text = selectionText(sel.getRangeAt(0));
     if (!text) return null;
-    return { quote: { text, role: a.role, ordinal: ordinals[a.turn] ?? 1 }, range: sel.getRangeAt(0), turn: a.turn, prose: a.prose };
+    // The streaming reply is the next one drawn (item 906): it follows his
+    // message, so it starts a reply of its own.
+    const ordinal = a.turn === LIVE_TURN ? liveOrdinal() : (ordinals[a.turn] ?? 1);
+    return { quote: { text, role: a.role, ordinal }, range: sel.getRangeAt(0), turn: a.turn, prose: a.prose };
+  }
+
+  /** Item 906: the streaming reply's place among the replies — one past
+   *  the last reply in the log. */
+  function liveOrdinal(): number {
+    let n = 0;
+    items.forEach((it) => {
+      if (it.kind !== "user") n = Math.max(n, ordinals[it.index] ?? 0);
+    });
+    return n + 1;
   }
 
   /** The prose blocks of a turn, in document order — a reply has one
