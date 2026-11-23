@@ -56,6 +56,21 @@ export function followStep(pinned: boolean, away: boolean, atBottom: boolean): "
 }
 
 /**
+ * Item 906: whether he holds a selection in `root` (an end of a
+ * non-collapsed selection inside it) — a passage he is highlighting or has
+ * highlighted, for the pill's Ask aside, Reply and Comment, or to copy.
+ * While he does, a pinned view does not follow a streaming reply down: each
+ * delta's jump to the foot moved the text under his drag and carried the
+ * highlighted passage up out of the view, which takes the pill down
+ * (`placePill` offers none over text scrolled off). He stays pinned, so
+ * the follow resumes at the next delta once the selection goes.
+ */
+export function holdsSelection(sel: Selection | null, root: Element | null): boolean {
+  if (!sel || !root || sel.isCollapsed || sel.rangeCount === 0) return false;
+  return root.contains(sel.anchorNode) || root.contains(sel.focusNode);
+}
+
+/**
  * An aside's follow-up Send (item 468): the card's body takes the same
  * rule as the transcript — a follow-up asked from within one body height
  * of the foot lands at the bottom and follows the answer; from further up
