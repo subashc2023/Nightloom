@@ -1,6 +1,7 @@
 // Item 856 (2026-11-19): the behaviour of Sidebar, once. `Sidebar.svelte` (Jarvis) and
 // `SidebarClassic.svelte` mount this and keep only their markup and CSS; `logic.test.ts` beside it fails when
 // one look binds to something the other does not. Moved verbatim from Sidebar.svelte's script.
+import { refreshDoorStarted } from "../door.svelte";
 import { refreshRoutes } from "../home.svelte";
 import { saveMemoryFromChat, app, addToast, deleteSession, endContentDrag, droppedContent, moveChatToThread, moveSession, newChatInThread, enableNightshift, chatSelected, newSession, openSession, refreshNightshift, renameSession, toggleSidebar, contextUsed, connectionWindowFor, liveChats, backFromNightshift } from "../state.svelte";
 import { renamedTo } from "../renameField";
@@ -854,7 +855,9 @@ export function sidebarLogic(props: () => SidebarLogicProps) {
   $effect(() => {
     void app.project?.id;
     void refreshRoutes();
-    const t = setInterval(() => void refreshRoutes(), 60_000);
+    // Item 767: and which were started from outside the app.
+    void refreshDoorStarted();
+    const t = setInterval(() => (void refreshRoutes(), void refreshDoorStarted()), 60_000);
     return () => clearInterval(t);
   });
 

@@ -93,6 +93,25 @@ pub struct ChatRow {
     /// Absent from an older host, and for a chat with no message yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message: Option<chrono::DateTime<chrono::Utc>>,
+    /// Who started it from outside the app (item 767, [`crate::door`]),
+    /// when someone did: the list marks the row. Filled by the listener,
+    /// not by the host's `chats`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
+}
+
+/// The rows with the door's "started by" on each chat that has one.
+fn with_started_by(mut rows: Vec<ChatRow>) -> Vec<ChatRow> {
+    let Some(config) = crate::project::config_dir() else {
+        return rows;
+    };
+    let by = crate::door::started(&config);
+    if !by.is_empty() {
+        for row in &mut rows {
+            row.started_by = by.get(&row.id).map(|s| s.by.clone());
+        }
+    }
+    rows
 }
 
 /// One row of the phone's project list (item 246): the drawer groups the
@@ -432,6 +451,13 @@ pub trait Host: Send + Sync + 'static {
     /// job says now. Answers the chat's id. `Err` is why the run waits.
     async fn job_prepare(&self, _prep: crate::jobs::Prep) -> Result<String, String> {
         Err(NOT_AVAILABLE.into())
+    }
+    /// Before a message from outside the app (item 767, [`crate::door`]):
+    /// as [`Host::job_prepare`], for a chat in any project — the Mac builds
+    /// the agent of a chat whose project is not the open one rather than
+    /// refuse it. The default is the job's own.
+    async fn outside_prepare(&self, prep: crate::jobs::Prep) -> Result<String, String> {
+        self.job_prepare(prep).await
     }
     /// A job's run: `text` into its chat, wherever the host's screen is.
     /// The default is a send that names the chat's project.
@@ -1146,7 +1172,7 @@ async fn capture(State(shared): State<Arc<Shared>>) -> Response {
 
 async fn chats(State(shared): State<Arc<Shared>>) -> Response {
     match shared.host.chats(None).await {
-        Ok(rows) => Json(rows).into_response(),
+        Ok(rows) => Json(with_started_by(rows)).into_response(),
         Err(e) => bad(e),
     }
 }
@@ -1154,7 +1180,7 @@ async fn chats(State(shared): State<Arc<Shared>>) -> Response {
 /// Another project's chats (item 246), for the phone's drawer.
 async fn project_chats(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
     match shared.host.chats(Some(&id)).await {
-        Ok(rows) => Json(rows).into_response(),
+        Ok(rows) => Json(with_started_by(rows)).into_response(),
         Err(e) => bad(e),
     }
 }
@@ -2113,6 +2139,7 @@ mod tests {
                 kind: "build".into(),
                 mode: "normal".into(),
                 last_message: None,
+                started_by: None,
             }])
         }
         async fn transcript(

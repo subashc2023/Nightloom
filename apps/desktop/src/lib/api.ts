@@ -2504,6 +2504,18 @@ export function homeFeed(limit?: number): Promise<HomeFeed> {
 export function homeMarkSeen(): Promise<string> {
   return invoke("home_mark_seen");
 }
+/** Item 767: Settings → Outside control's card. */
+export function doorCard(): Promise<import("./door").DoorCard> {
+  return invoke("door_card");
+}
+/** Item 767: the switch — read only (false) or start and message (true). */
+export function doorSetWrites(writes: boolean): Promise<import("./door").DoorCard> {
+  return invoke("door_set_writes", { writes });
+}
+/** Item 767: chat id → who started it from outside (the sidebars' mark). */
+export function doorStarted(): Promise<Record<string, string>> {
+  return invoke("door_started");
+}
 /** Item 763 H5: Home's Start cards and the chats it started (the read is also a look of the routes' clock). */
 export function homeRoutes(): Promise<RoutesReply> {
   return invoke("home_routes");

@@ -139,6 +139,22 @@ chat whose memory switch is off), `--dream <json>` (below), and `--ask`
 position's permission-prompt tool, withheld from the model's own list —
 [service-agent.md](service-agent.md) "The Ask position").
 
+**The door's server (2026-11-23, nightshift item 767).** `mcp-serve
+--outside [--as <who>]` (and `nightloom-desktop --mcp-serve --outside`) is a
+separate server for an agent that is *not* a Nightloom chat — a Claude
+desktop session, a terminal Claude Code: it serves `chat_list`,
+`chat_show`, `chat_start` and `chat_send` and nothing else
+(`nightloom_service::door::tools`, with its own `initialize` instructions).
+The default server's tool list is untouched, so no Nightloom chat's tool
+list, and so no chat's prompt cache, changes. The tools are clients of the
+same socket as `nightloom chat` (`door::client::ask`): reads always, writes
+only while Settings → Outside control is on and the app (or `nightloom
+serve`) holds the home; a refused write is a tool error naming the switch.
+With `wait_seconds` (at most 600) `chat_start`, `chat_send` and `chat_show` wait for the reply and say "call
+chat_show again" past that; `--as` is the name the sidebar's ↗ mark shows
+(kept in `<home>/door/started.json`). See [cli.md](cli.md), *Subcommands*,
+`chat`, for the rules both share.
+
 The wire is the one the client above speaks: newline-delimited JSON-RPC 2.0 on
 stdio, `initialize` (capabilities `tools`, an `instructions` string saying which
 tool to reach for), `tools/list` (each `ToolDef` as `name` / `description` /

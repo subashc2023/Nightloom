@@ -591,6 +591,7 @@ impl Host for DesktopHost {
                 kind: lowercase(s.kind),
                 mode: lowercase(s.mode),
                 last_message: s.last_message,
+                started_by: None,
             })
             .collect())
     }
@@ -776,6 +777,11 @@ impl Host for DesktopHost {
     /// The job's chat and the agent its run will use (item 746, `jobs.rs`).
     async fn job_prepare(&self, prep: nightloom_service::jobs::Prep) -> Result<String, String> {
         crate::jobs::prepare(&self.state_of(), prep).await
+    }
+
+    /// Item 767: a message from outside, for a chat in any project.
+    async fn outside_prepare(&self, prep: nightloom_service::jobs::Prep) -> Result<String, String> {
+        crate::jobs::prepare_outside(&self.state_of(), prep).await
     }
 
     /// The run: the window's off-screen send into the job's chat
@@ -1691,6 +1697,22 @@ impl Remote {
             mac_base: Mutex::new(saved.mac_base.clone()),
             awake: Mutex::new(None),
         });
+        // Item 767: the door — `nightloom chat …` and `mcp-serve --outside`
+        // reach this app through a socket in the home. A dev build on his
+        // real home opens none (item 447's rule): it would take the
+        // installed app's.
+        if may_restore_listener(
+            cfg!(debug_assertions),
+            nightloom_service::project::named_home(),
+        ) && let Some(config) = nightloom_service::project::config_dir()
+        {
+            let host: Arc<dyn Host> = app.state::<Remote>().host.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = nightloom_service::door::server::open(&config, host) {
+                    eprintln!("door: not open: {e}");
+                }
+            });
+        }
         if saved.on
             && !may_restore_listener(
                 cfg!(debug_assertions),

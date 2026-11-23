@@ -36,6 +36,14 @@ pub struct McpServeArgs {
     /// position names with `--permission-prompt-tool` (2026-09-16).
     #[arg(long)]
     ask: bool,
+    /// The door's server (nightshift item 767): `chat_list`, `chat_show`,
+    /// `chat_start` and `chat_send` alone, for an agent outside Nightloom
+    /// — a Claude desktop session, a terminal Claude Code.
+    #[arg(long)]
+    outside: bool,
+    /// With `--outside`: who the sidebar says started a chat.
+    #[arg(long = "as")]
+    outside_as: Option<String>,
 }
 
 pub async fn run(args: McpServeArgs) -> Result<()> {
@@ -64,6 +72,8 @@ pub async fn run(args: McpServeArgs) -> Result<()> {
             rename: None,
             notes: None,
             budget_dir: None,
+            outside: args.outside,
+            outside_as: args.outside_as,
         },
     };
     mcp_server::serve_stdio(config, serve_args)

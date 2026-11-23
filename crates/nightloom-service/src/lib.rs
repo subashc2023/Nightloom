@@ -29,6 +29,7 @@ pub mod context_ops;
 pub mod council;
 pub mod credentials;
 pub mod credits;
+pub mod door;
 pub mod dream;
 pub mod evidence;
 pub mod feedback;

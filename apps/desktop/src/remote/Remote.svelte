@@ -3921,7 +3921,7 @@
           {#each recents.filter((r) => matches(r.chat)) as r (r.pid + "/" + r.chat.id)}
             {@const here = r.chat.id === chatId && (chatProject ?? activePid) === r.pid}
             <button class="chat-row" class:here onclick={() => openChat(r.chat.id, r.pid || null)}>
-              <span class="chat-label">{#if byHome.has(r.chat.id)}<span class="by-home" role="img" aria-label={BY_HOME_TIP} title={BY_HOME_TIP} data-by-home>⌂</span>{" "}{/if}{r.chat.label}</span>
+              <span class="chat-label">{#if r.chat.started_by}<span class="by-home" role="img" aria-label={`Started from outside Nightloom by ${r.chat.started_by}`} title={`Started from outside Nightloom by ${r.chat.started_by}`} data-by-door>↗</span>{" "}{/if}{#if byHome.has(r.chat.id)}<span class="by-home" role="img" aria-label={BY_HOME_TIP} title={BY_HOME_TIP} data-by-home>⌂</span>{" "}{/if}{r.chat.label}</span>
               <span class="chat-meta">
                 <!-- Item 556: ~~only the desktop's open chat~~ — every chat whose turn runs. -->
                 {#if r.pid === activePid && r.chat.id === remote.active_chat}<span class="live-dot" class:run={remote.busy}></span>{:else if runningIds.has(r.chat.id)}<span class="live-dot run"></span>{/if}

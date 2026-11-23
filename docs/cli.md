@@ -172,6 +172,26 @@ spawn without the desktop app built. The logic is
 Ask position"); the desktop binary carries the same hook as
 `--permission-hook <dir>`.
 
+**`chat`** (2026-11-23, nightshift item 767; in `main.rs`, parsed by
+`nightloom_service::door::cli`) is the door from a terminal or a script:
+`nightloom chat list [project]`, `show <chat> [--last N] [--wait]`,
+`start <project> <text|->` and `send <chat> <text|->`, with `--wait`,
+`--timeout <seconds>` (default 1800), `--json`, `--title`, `--read-only` and
+`--as <who>`. It is a thin client of the socket the holder of the home
+listens on (`<home>/door.sock`, mode 0600 — the desktop app, or `nightloom
+serve`). Reads work with nothing holding the home: the client reads the logs
+on disk itself. Writes (`start`, `send`) are refused unless Settings → Remote
+→ **Outside control** is on (`<home>/door/access.json`, read at every call,
+default off) and a holder is running (blocker 2250: with the app quit a write
+is refused rather than run here, so it never makes the app wait to open).
+The one switch gates this command too, not only the MCP tools (blocker
+2251). Exit codes: 0 replied, 1 failed or refused (a typo too), 2 the chat
+needs him (a permission, a question, a plan, or the usage limit), 3 still
+running at the timeout. An incognito chat is never listed, shown or sent to;
+a send into a running chat is refused, never interrupts. The desktop binary
+carries the same command as `nightloom-desktop --chat …`, because the CLI
+is usually not on PATH; Settings shows that form with a Copy button.
+
 ## `agent.rs` — the `--agent claude-code` REPL
 
 It maps the flags the chat REPL already takes onto an `AgentSpec` (`--model`,

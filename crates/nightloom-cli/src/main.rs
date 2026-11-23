@@ -74,6 +74,14 @@ enum Command {
     /// by hand (see `mcp_serve.rs`).
     #[command(hide = true)]
     McpServe(mcp_serve::McpServeArgs),
+    /// Start, message and read Nightloom chats from outside the app
+    /// (nightshift item 767): `chat list | show | start | send`; `chat
+    /// help` says the rest. Parsed by `nightloom_service::door::cli`.
+    #[command(disable_help_flag = true)]
+    Chat {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// The Claude Code `PreToolUse` hook behind the desktop's Ask position
     /// (nightshift backlog 084): reads the CLI's JSON on stdin, answers
     /// from the ask directory, prints one line. Hidden, and here for the
@@ -103,6 +111,12 @@ async fn main() -> Result<()> {
         Some(Command::Capture(args)) => capture::run(args).await,
         Some(Command::CouncilTrial(args)) => council_trial::run(args).await,
         Some(Command::McpServe(args)) => mcp_serve::run(args).await,
+        Some(Command::Chat { args }) => {
+            let config = nightloom_service::project::config_dir()
+                .ok_or_else(|| anyhow::anyhow!("no Nightloom home — set HOME or NIGHTLOOM_HOME"))?;
+            let out = nightloom_service::door::cli::run(&config, &args).await;
+            std::process::exit(nightloom_service::door::cli::finish(out));
+        }
         Some(Command::Serve(args)) => serve::run(args).await,
         Some(Command::JobsKnock(args)) => serve::knock(args),
         Some(Command::PermissionHook { dir, side }) => {

@@ -65,6 +65,18 @@ fn make_chat(
 }
 
 pub(crate) async fn prepare(state: &AppState, prep: Prep) -> Result<String, String> {
+    prepare_as(state, prep, false).await
+}
+
+/// [`prepare`] for a message from outside the app (item 767, the door):
+/// the chat may be in any project, so the agent of one whose project is
+/// not the open one is built here — as Home's is (763 H4) — instead of
+/// the run being refused until he opens that project.
+pub(crate) async fn prepare_outside(state: &AppState, prep: Prep) -> Result<String, String> {
+    prepare_as(state, prep, true).await
+}
+
+async fn prepare_as(state: &AppState, prep: Prep, any_project: bool) -> Result<String, String> {
     let mut home = None;
     let (dir, workspace) = match prep.project.as_deref() {
         Some(p) => {
@@ -73,7 +85,7 @@ pub(crate) async fn prepare(state: &AppState, prep: Prep) -> Result<String, Stri
                 .registry
                 .find(p)
                 .ok_or_else(|| "its project is gone from the Mac".to_string())?;
-            if project.source.as_deref() == Some(nightloom_service::home::SOURCE) {
+            if any_project || project.source.as_deref() == Some(nightloom_service::home::SOURCE) {
                 home = Some(project.clone());
             }
             (project.session_dir(), Some(project.workspace_dir()))

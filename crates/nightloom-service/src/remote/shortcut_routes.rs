@@ -233,6 +233,7 @@ mod tests {
             kind: "build".into(),
             mode: "normal".into(),
             last_message: None,
+            started_by: None,
         }
     }
 

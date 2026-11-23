@@ -1,3 +1,4 @@
+import { refreshDoorStarted } from "./door.svelte";
 import { noteContextLive, noteStepMark } from "./liveContext.svelte";
 import { passingEvent } from "./bashOutput.svelte";
 import { isShellCall as isShellForPassing } from "./agentCommands";
@@ -1424,6 +1425,8 @@ export async function refreshSessions(): Promise<void> {
     // A chat made by Send later is named by its scheduled message until
     // that message goes (backlog 532): tabs, title bar and list alike.
     app.sessions = nameScheduledRows(await api.listSessions(), scheduled);
+    // Item 767: a chat started from outside shows marked with its row.
+    void refreshDoorStarted();
   } catch {
     // sidebar refresh is best-effort
   }
