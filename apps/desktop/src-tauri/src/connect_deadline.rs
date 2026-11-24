@@ -268,6 +268,10 @@ where
                 remember(&cache, &binary, &p);
             }
         });
+        // Item 941: said as done, so a wait after it is never read as the
+        // probe's — the 3:41 PM connect sat 20 s on the chat's lock under
+        // this stage's old label while the probe had answered at once.
+        stage.set("past the Claude Code binary's identity (answered from the probe's cache)");
         return Ok(probed);
     }
     stage.set("the Claude Code binary's `--version` probe");

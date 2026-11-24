@@ -837,9 +837,14 @@
           <span class="ns-chip mono">not connected</span>
         </div>
         <div class="limit-text">{app.connectError}</div>
-        <div class="limit-actions">
-          <button class="ns-btn accent small" use:tip={"Connect again with the rail's settings"} onclick={() => void retryConnect()}>Retry</button>
-        </div>
+        {#if app.retryAfterTurn}
+          <!-- Item 941: Retry during a turn is owed, and said so. -->
+          <div class="limit-text">Connects the moment this turn ends.</div>
+        {:else}
+          <div class="limit-actions">
+            <button class="ns-btn accent small" use:tip={app.busy ? "Connect again when this turn ends" : "Connect again with the rail's settings"} onclick={() => void retryConnect()}>Retry</button>
+          </div>
+        {/if}
       </div>
     {/if}
     <!-- A turn paused by the usage limit (nightshift backlog 164): not

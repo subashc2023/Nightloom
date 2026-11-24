@@ -307,6 +307,17 @@ export async function syncPromptLayers(): Promise<void> {
   // in flight, so a running turn keeps the model it started with.
   if (restoreChatChoice()) chatChoice.reconnect = true;
   if (app.busy || app.connecting) return;
+  // Item 941: a Retry pressed during the turn connects now that it ended,
+  // whatever the same chat's last failed connect recorded.
+  if (app.retryAfterTurn) {
+    app.retryAfterTurn = false;
+    lastFailedSync = null;
+    lastAutoRetry = null;
+    connectRetry.reset();
+    app.connectError = null;
+    await applyDraft();
+    return;
+  }
   if (chatChoice.reconnect) {
     chatChoice.reconnect = false;
     // Only when the draft moved on from what the last connect sent (item
@@ -393,6 +404,14 @@ export const connectRetry = makeConnectRetry({
  * chat; a turn or a connect in flight defers it as any rail change is.
  */
 export async function retryConnect(): Promise<void> {
+  // Item 941: ~~deferred silently~~ — during a turn `applyDraft` defers, and
+  // nothing connected after (the same chat's failure guards held it), so
+  // Retry did nothing. Now it is owed: the card says it connects when the
+  // turn ends, and `syncPromptLayers` runs it then.
+  if (app.busy) {
+    app.retryAfterTurn = true;
+    return;
+  }
   if (app.connecting) return;
   app.connectError = null;
   lastFailedSync = null;
