@@ -436,6 +436,56 @@ export function isUnattended(chat: string | null): boolean {
 
 // ---- readings ----
 
+/** Make `chat` the one `handoff` shows: the shown chat's stage goes under
+ *  its id and `chat`'s comes back (backlog 137, review E's FE9 — a switch
+ *  used to reset the stage, so a chat wrapped up and left for a moment was
+ *  asked to wrap up again, and its found start prompt was gone). */
+function project(chat: string | null): void {
+  if (handoff.chat !== null) {
+    stages.set(handoff.chat, {
+      stage: handoff.stage,
+      dismissedAt: handoff.dismissedAt,
+      queuedId: handoff.queuedId,
+      startPrompt: handoff.startPrompt,
+    });
+  }
+  const back = chat === null ? undefined : stages.get(chat);
+  handoff.chat = chat;
+  handoff.stage = back?.stage ?? "idle";
+  handoff.dismissedAt = back?.dismissedAt ?? 0;
+  handoff.queuedId = back?.queuedId ?? 0;
+  handoff.startPrompt = back?.startPrompt ?? null;
+  handoff.noStartPromptChat = null;
+}
+
+/**
+ * Item 914 (his bug, 2026-11-23: "past 300k but there's no handoff thing"):
+ * the open chat, shown with no turn running, takes the card back. The
+ * stage lived only where a reading had put it — a turn's end or a mid-turn
+ * usage event — so a turn ending in another chat took the projection away
+ * (`handoff.chat` became that chat, and this chat's card went with it), and
+ * a relaunch forgot it; coming back to the chat, or asking it an aside,
+ * read nothing, and the card stayed gone until this chat's next turn ended.
+ * (The aside itself touches no hand-off state.) Now the composer calls this
+ * whenever the open chat is not the one shown: its kept stage comes back as
+ * it was, and a chat with none (a relaunch) is read from its log — never as
+ * away, so nothing is queued, and never lowered: a reading on open cannot
+ * put a card away or forget a *Stay here*; only a reading after a turn, a
+ * rewind, the card's buttons or a sent hand-off do.
+ */
+export function noteShown(chat: string | null, used: number | null, limit: number | null): void {
+  if (!chat || handoff.chat === chat || used == null || !limit) return;
+  const kept = stages.get(chat);
+  if (kept && (kept.stage !== "idle" || kept.dismissedAt > 0)) {
+    project(chat);
+    handoff.used = used;
+    handoff.limit = limit;
+    handoff.fill = Math.min(used / limit, 1);
+    return;
+  }
+  noteFill(chat, used, limit, false, null, false);
+}
+
 /**
  * One reading of the fill for a chat — a usage event mid-turn, or the
  * turn's end — with whether he is away at that moment. Moves the stage
@@ -456,27 +506,7 @@ export function noteFill(
   /** Item 702: a rewind's reading — compared at the mark exactly. */
   exact = false,
 ): void {
-  if (handoff.chat !== chat) {
-    // Another chat's reading: this one's stage goes under its id and the
-    // other's comes back (backlog 137, review E's FE9 — a switch used to
-    // reset the stage, so a chat wrapped up and left for a moment was
-    // asked to wrap up again, and its found start prompt was gone).
-    if (handoff.chat !== null) {
-      stages.set(handoff.chat, {
-        stage: handoff.stage,
-        dismissedAt: handoff.dismissedAt,
-        queuedId: handoff.queuedId,
-        startPrompt: handoff.startPrompt,
-      });
-    }
-    const back = chat === null ? undefined : stages.get(chat);
-    handoff.chat = chat;
-    handoff.stage = back?.stage ?? "idle";
-    handoff.dismissedAt = back?.dismissedAt ?? 0;
-    handoff.queuedId = back?.queuedId ?? 0;
-    handoff.startPrompt = back?.startPrompt ?? null;
-    handoff.noStartPromptChat = null;
-  }
+  if (handoff.chat !== chat) project(chat);
   handoff.used = used ?? 0;
   handoff.limit = limit ?? 0;
   const fill = used != null && limit ? Math.min(used / limit, 1) : 0;

@@ -92,6 +92,7 @@
     wrapUpToSend,
     noteActivity,
     noteFill,
+    noteShown,
     queueHold,
     reconsider,
     setMessage,
@@ -1162,6 +1163,19 @@
     const chat = app.activeSessionId;
     // Untracked: the reading writes the stage it also reads.
     untrack(() => noteFill(chat, used, limit, awayNow()));
+  });
+  /*
+   * Item 914: the open chat, idle, takes its card back from whichever chat
+   * the last reading was about (another chat's turn end, or none since a
+   * relaunch). Read from the log; never queues, never lowers the stage.
+   */
+  $effect(() => {
+    if (aside || app.busy || app.connection?.engine !== "claude-code" || !app.activeSessionId) return;
+    if (handoff.chat === app.activeSessionId) return;
+    const chat = app.activeSessionId;
+    const used = contextUsed();
+    const limit = app.connection?.contextLimit ?? null;
+    untrack(() => noteShown(chat, used, limit));
   });
 
   /*
