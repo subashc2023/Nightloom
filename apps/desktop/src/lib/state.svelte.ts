@@ -187,6 +187,7 @@ import { withNote } from "./asideNotes";
 import { loadNoteDrafts, noteDraftsWriter, type DraftBase } from "./noteDraftStore";
 import { saveDelay } from "./drafts.svelte";
 import { restoreAsideNotes, takeAsideNote } from "./asideNotes.svelte";
+import { resolveAsideApproval } from "./asideAsk.svelte";
 export { TOAST_MS, ACTION_TOAST_MS, IMPORTANT_TOAST_MS, addToast, dismissToast, runToastAction, holdToast, releaseToast, copyToast };
 export { rewindTo, setAsideRewound, keepRewound, restoreRewound, keepRewindFiles, undoRestore };
 export { menuInterceptors, runMenuCommand, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits };
@@ -2881,7 +2882,8 @@ export async function resolveApproval(
   said?: "replied",
 ): Promise<boolean> {
   const i = app.pendingApprovals.findIndex((r) => r.id === id);
-  if (i < 0) return false;
+  // Item 919: an aside's card answers the aside alone.
+  if (i < 0) return resolveAsideApproval(id, decision, reason);
   const [req] = app.pendingApprovals.splice(i, 1);
   // An approved plan moves the chat off the Plan position (backlog 085):
   // the backend's agent takes the pick as it resumes, and the rail's

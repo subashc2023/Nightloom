@@ -1663,6 +1663,7 @@ fn main() {
             commands::usage::provider_credits,
             commands::aside::ask_aside,
             commands::aside::cancel_aside,
+            commands::aside::answer_aside_ask,
             note_edit::edit_note_by_prompt,
             note_edit::cancel_note_edit,
             inbox_sort::inbox_sort_list,

@@ -1448,6 +1448,118 @@ fn decide_playwright(dir: &Path, input: &HookInput, side: bool) -> HookReply {
     HookReply::defer()
 }
 
+/// The hook's flag in an aside that shows cards (nightshift item 919): a
+/// call the chat's hook would defer waits in the hook for his answer on
+/// the aside's card instead. An aside is a fork with no session file
+/// (`--no-session-persistence`), so there is nothing to `--resume`, and
+/// the defer-and-resume round trip the chat uses cannot carry it.
+pub const WAIT_ARG: &str = "--side-wait";
+
+/// The call an aside's hook is waiting on, in the aside's own directory:
+/// the window reads it and draws the card (`{id, name, input}`, a
+/// [`DeferredCall`]). Removed when the answer is read or the wait ends.
+pub const PENDING_FILE: &str = "aside-pending.json";
+
+/// How long an aside's hook waits for his answer, in seconds — also the
+/// `timeout` its hook entry carries, so the CLI does not cancel the hook
+/// first.
+pub const WAIT_TIMEOUT_SECS: u64 = 3600;
+
+/// What the model reads when nobody answered the aside's card in time, or
+/// the aside ended under it.
+pub const ASIDE_UNANSWERED: &str = "The user did not answer this call's approval card in the aside, so it was not run. Carry on without it, or say what it would have done.";
+
+/// An aside's question or plan call (item 919): its card cannot carry the
+/// answers back.
+pub const ASIDE_QUESTION_DENIED: &str = "An aside cannot ask the user a question or present a plan: put the question or the plan in your answer, and the user will reply in the aside.";
+
+/// [`decide_under`] for an aside that shows cards (item 919): the chat's
+/// answer for every call, except that where the chat's hook would defer,
+/// this writes [`PENDING_FILE`] and waits — polling every `poll` — until
+/// his answer for this call lands in `dir` (the aside's directory), then
+/// decides again, which reads and removes it. The three gates whose cards
+/// carry more than Allow/Deny (a folder, a secret he types, taking the
+/// page) keep their side refusal. `alive` false (the CLI that ran the
+/// hook is gone) or `give_up` passed ends the wait with a refusal.
+pub fn decide_waiting(
+    dir: &Path,
+    home: Option<&Path>,
+    stdin_json: &str,
+    poll: std::time::Duration,
+    give_up: std::time::Duration,
+    alive: &dyn Fn() -> bool,
+) -> HookReply {
+    let Ok(input) = serde_json::from_str::<HookInput>(stdin_json) else {
+        return HookReply::new("ask");
+    };
+    let own_card = [
+        crate::tools::add_folder::NAME,
+        crate::secret::TOOL_NAME,
+        crate::home::drive::TOOL,
+    ]
+    .iter()
+    .any(|t| input.tool_name == crate::mcp_server::mcp_name(t));
+    if own_card {
+        return decide_under(dir, home, stdin_json, true);
+    }
+    // The model's question and the plan tools carry their answer back in
+    // the call's input, which an Allow/Deny card cannot: refused in words,
+    // as the prompt tool refused them before 919.
+    if matches!(
+        input.tool_name.as_str(),
+        QUESTION_TOOL | EXIT_PLAN_TOOL | "EnterPlanMode"
+    ) {
+        return HookReply::deny(ASIDE_QUESTION_DENIED.into());
+    }
+    let first = decide_under(dir, home, stdin_json, false);
+    if first.decision() != "defer" {
+        return first;
+    }
+    let pending = DeferredCall {
+        id: input.tool_use_id.clone(),
+        name: input.tool_name.clone(),
+        input: input.tool_input.clone(),
+    };
+    let pending_path = dir.join(PENDING_FILE);
+    let written = std::fs::create_dir_all(dir).is_ok()
+        && serde_json::to_vec(&pending)
+            .ok()
+            .is_some_and(|b| write_atomic(&pending_path, &b).is_ok());
+    if !written {
+        return HookReply::deny(ASIDE_UNANSWERED.into());
+    }
+    let started = std::time::Instant::now();
+    let answered = loop {
+        if AskDir::new(dir).has_decision_for(&input.tool_use_id) {
+            break true;
+        }
+        if started.elapsed() >= give_up || !alive() {
+            break false;
+        }
+        std::thread::sleep(poll);
+    };
+    // Only this call's: a newer call's file is never ours to remove.
+    if aside_pending(dir).is_some_and(|p| p.id == input.tool_use_id) {
+        let _ = std::fs::remove_file(&pending_path);
+    }
+    if !answered {
+        return HookReply::deny(ASIDE_UNANSWERED.into());
+    }
+    let second = decide_under(dir, home, stdin_json, false);
+    if second.decision() == "defer" {
+        HookReply::deny(ASIDE_UNANSWERED.into())
+    } else {
+        second
+    }
+}
+
+/// The call an aside's hook waits on, if any (item 919): the window's read.
+pub fn aside_pending(dir: &Path) -> Option<DeferredCall> {
+    std::fs::read(dir.join(PENDING_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+}
+
 /// The process entry: `<binary> --permission-hook <dir>`. Reads stdin to
 /// EOF, prints one JSON line, exits 0. Never exits non-zero on purpose —
 /// exit 2 is the CLI's "block", and a hook that failed to read is not a
@@ -1468,7 +1580,24 @@ pub fn run_hook(args: &[String]) -> std::io::Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
     let home = crate::project::config_dir();
-    let reply = if args.iter().skip(1).any(|a| a == READ_ONLY_ARG) {
+    let reply = if args.iter().skip(1).any(|a| a == WAIT_ARG) {
+        // An aside's card (item 919): wait here while the CLI that ran
+        // this hook lives — orphaned, the parent id changes.
+        #[cfg(unix)]
+        let parent = unsafe { libc::getppid() };
+        #[cfg(unix)]
+        let alive = move || unsafe { libc::getppid() } == parent;
+        #[cfg(not(unix))]
+        let alive = || true;
+        decide_waiting(
+            &dir,
+            home.as_deref(),
+            &input,
+            std::time::Duration::from_millis(250),
+            std::time::Duration::from_secs(WAIT_TIMEOUT_SECS),
+            &alive,
+        )
+    } else if args.iter().skip(1).any(|a| a == READ_ONLY_ARG) {
         decide_read_only(&dir, home.as_deref(), &input, side)
     } else {
         decide_under(&dir, home.as_deref(), &input, side)

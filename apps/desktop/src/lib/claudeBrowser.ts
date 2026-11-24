@@ -9,6 +9,17 @@
 import type { BrowserInput, BrowserStatus } from "./api";
 
 /** The browser's fixed viewport (the contract's `width`/`height`). */
+/** What separates the chat's id from the aside's name in an aside's own
+ *  browser key (item 919) — `aside_session` in the service's
+ *  `claude_browser.rs` builds the same. */
+export const ASIDE_MARK = "~aside~";
+
+/** The browser key of an aside's own browser (item 919): a tab of its own
+ *  in the pane, never the chat's page. */
+export function asideBrowserSession(chat: string, uid: string): string {
+  return `${chat}${ASIDE_MARK}${uid.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64) || "aside"}`;
+}
+
 export const PAGE_W = 1280;
 export const PAGE_H = 800;
 /** Pointer moves sent at most this often (~30 a second). */

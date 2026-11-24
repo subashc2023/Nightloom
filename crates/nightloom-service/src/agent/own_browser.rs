@@ -283,6 +283,7 @@ pub fn add_to(
         dir: PathBuf::new(),
         side: false,
         no_card: false,
+        wait: false,
     });
     true
 }
@@ -299,6 +300,11 @@ pub struct PlaywrightGate {
     pub side: bool,
     /// An ephemeral chat: no card, no directory — every call refused.
     pub no_card: bool,
+    /// An aside that shows cards (nightshift item 919): `dir` is the
+    /// aside's own directory and a call that would ask waits in the hook
+    /// for his answer on the aside's card ([`super::ask::WAIT_ARG`]),
+    /// instead of the side refusal.
+    pub wait: bool,
 }
 
 /// The hook's extra argument for a side process.
@@ -340,13 +346,19 @@ impl PlaywrightGate {
             .map(|w| super::ask::shell_quote(w))
             .collect();
         words.push(super::ask::shell_quote(&self.dir.to_string_lossy()));
-        if self.side {
+        if self.wait {
+            words.push(super::ask::shell_quote(super::ask::WAIT_ARG));
+        } else if self.side {
             words.push(super::ask::shell_quote(SIDE_ARG));
         }
         words.push(FAIL_CLOSED.to_string());
+        let mut hook = serde_json::json!({ "type": "command", "command": words.join(" ") });
+        if self.wait {
+            hook["timeout"] = super::ask::WAIT_TIMEOUT_SECS.into();
+        }
         serde_json::json!({
             "matcher": MATCHER,
-            "hooks": [{ "type": "command", "command": words.join(" ") }]
+            "hooks": [hook]
         })
     }
 }
@@ -649,6 +661,7 @@ mod tests {
             dir: PathBuf::new(),
             side: false,
             no_card: false,
+            wait: false,
         };
         let e = g.hook_entry();
         assert_eq!(e["matcher"], MATCHER);
@@ -693,6 +706,7 @@ mod tests {
             dir: "/logs/ask/c1".into(),
             side: false,
             no_card: false,
+            wait: false,
         };
         let cmd = g.hook_entry()["hooks"][0]["command"]
             .as_str()

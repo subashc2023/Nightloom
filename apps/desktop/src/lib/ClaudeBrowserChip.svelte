@@ -12,7 +12,8 @@
   import { app } from "./state.svelte";
   import { browserTabOpen, browsers, chipShown, dismissChip, openBrowserTab, phase, readStatus, startBrowsers } from "./claudeBrowser.svelte";
 
-  let { chat }: { chat: string } = $props();
+  // Item 919: an aside's composer passes its own browser's key and name.
+  let { chat, name }: { chat: string; name?: string } = $props();
 
   $effect(() => {
     void startBrowsers();
@@ -46,7 +47,7 @@
       <span class="label"><b>Claude's browser</b> <span class="held">{status?.held_by === "user" ? "You have it" : "Claude has it"}</span></span>
       <span class="where mono" use:tip={status?.title ? `${status.title}\n${status.url}` : (status?.url ?? "")}>{host || "blank page"}</span>
       <span class="acts">
-        <button class="ns-btn small" use:tip={"Watch it live in a tab beside this chat, and click or type in it yourself"} onclick={() => void openBrowserTab(chat)}
+        <button class="ns-btn small" use:tip={"Watch it live in a tab beside this chat, and click or type in it yourself"} onclick={() => void openBrowserTab(chat, name)}
           >{open ? "Show" : "Open"}</button
         >
         <button class="ns-btn small" use:tip={"Hide this offer; the browser keeps running"} onclick={() => dismissChip(chat)}>Dismiss</button>

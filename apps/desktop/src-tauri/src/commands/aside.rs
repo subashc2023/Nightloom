@@ -153,6 +153,7 @@ pub(crate) async fn ask_aside(
     files: Option<Vec<nightloom_service::attach::FileInput>>,
     model: Option<String>,
     effort: Option<String>,
+    aside: Option<String>,
 ) -> Result<AsideResult, String> {
     // Its own token, by `seq` (backlog 176): the entry goes when this ends.
     let registered = state.aside_cancel.begin(seq);
@@ -228,8 +229,14 @@ pub(crate) async fn ask_aside(
     use nightloom_service::aside_changes::{Collector, Snapshot};
     let workspace = agent.spec().workspace.clone();
     let mut collector = Collector::new();
+    // Item 919: the model's words before a call, for the aside's card.
+    let reasons = std::sync::Arc::new(std::sync::Mutex::new(
+        nightloom_service::agent::own_browser::ReasonTracker::default(),
+    ));
+    let tracked = reasons.clone();
     let mut on_event = |e: TurnEvent| {
         collector.on_event(&e);
+        tracked.lock().unwrap().push(&e);
         if let TurnEvent::TextDelta { text } = &e {
             answer.push_str(text);
             let _ = app.emit(
@@ -266,16 +273,31 @@ pub(crate) async fn ask_aside(
         .await
         .ok()
         .flatten();
+    // Item 919: the aside's own place — its browser tab, its cards.
+    let seat = aside
+        .as_deref()
+        .and_then(|key| seat_for(&app, agent.spec(), target.id(), key));
+    let _seated = seat.as_ref().map(|s| Seated::register(seq, s.dir.clone()));
+    let watch = seat
+        .as_ref()
+        .map(|s| watch_pending(app.clone(), seq, s.dir.clone(), reasons.clone()));
     let outcome = agent
-        .ask_aside(
+        .ask_aside_at(
             input,
             model.as_deref(),
             effort.as_deref(),
+            seat.as_ref(),
             Some(timing.clone()),
             &cancel,
             &mut on_event,
         )
         .await;
+    if let Some(w) = watch {
+        w.abort();
+    }
+    if let Some(s) = &seat {
+        release_pending(&app, seq, &s.dir);
+    }
     // Item 775: the look after, only when it ran a shell command.
     let after = match (&before, collector.ran_shell()) {
         (Some(_), true) => {
@@ -434,4 +456,164 @@ mod tests {
         assert_eq!(cached_for_chat(None, Some(5), true), 5);
         assert_eq!(cached_for_chat(None, None, false), 0);
     }
+}
+
+/// The asides that are seated now (item 919), by the card's `seq`: where
+/// [`answer_aside_ask`] writes his answer. Gone when the aside ends.
+static SEATED: std::sync::LazyLock<std::sync::Mutex<HashMap<u64, PathBuf>>> =
+    std::sync::LazyLock::new(Default::default);
+
+pub(crate) struct Seated(u64);
+
+impl Seated {
+    fn register(seq: u64, dir: PathBuf) -> Self {
+        SEATED.lock().unwrap().insert(seq, dir);
+        Self(seq)
+    }
+}
+
+impl Drop for Seated {
+    fn drop(&mut self) {
+        SEATED.lock().unwrap().remove(&self.0);
+    }
+}
+
+/// The aside's seat (item 919): its own directory under the chat's ask
+/// directory, given the chat's standing answers, and the app's browser for
+/// it — its own tab in the pane, keyed by
+/// [`nightloom_service::claude_browser::aside_session`]. `None` when the
+/// chat has no ask directory yet (nothing would read the seat).
+fn seat_for(
+    app: &AppHandle,
+    spec: &nightloom_service::agent::AgentSpec,
+    chat: Option<&str>,
+    key: &str,
+) -> Option<nightloom_service::agent::AsideSeat> {
+    use nightloom_service::agent::AsideSeat;
+    let chat_dir = spec
+        .ask
+        .as_ref()
+        .map(|a| a.dir.clone())
+        .filter(|d| !d.as_os_str().is_empty())
+        .or_else(|| {
+            spec.playwright
+                .as_ref()
+                .map(|p| p.dir.clone())
+                .filter(|d| !d.as_os_str().is_empty())
+        })?;
+    let mut seat = AsideSeat::prepare(&chat_dir, key, None).ok()?;
+    #[cfg(unix)]
+    if let (Some(chat), Some(host)) = (
+        chat.map(str::to_string).or_else(|| {
+            chat_dir
+                .file_name()
+                .map(|c| c.to_string_lossy().into_owned())
+        }),
+        app.try_state::<crate::claude_browser::Host>(),
+    ) && spec.playwright.as_ref().is_some_and(|p| !p.no_card)
+    {
+        let session = nightloom_service::claude_browser::aside_session(&chat, key);
+        seat.endpoint = host.browsers.endpoint(&session, &seat.dir).ok();
+    }
+    #[cfg(not(unix))]
+    let _ = (app, chat);
+    Some(seat)
+}
+
+/// A call an aside's hook waits on (item 919), as the window's card reads
+/// it: `call` is `null` once it is answered or gone.
+#[derive(Serialize, Clone)]
+pub(crate) struct AsideAsk {
+    seq: u64,
+    call: Option<nightloom_service::agent::ask::DeferredCall>,
+    reason: Option<String>,
+}
+
+/// Watch the aside's directory for the call its hook waits on, and tell
+/// the window each time it changes: the card shows in the aside.
+fn watch_pending(
+    app: AppHandle,
+    seq: u64,
+    dir: PathBuf,
+    reasons: std::sync::Arc<std::sync::Mutex<nightloom_service::agent::own_browser::ReasonTracker>>,
+) -> tauri::async_runtime::JoinHandle<()> {
+    tauri::async_runtime::spawn(async move {
+        let mut last: Option<String> = None;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let call = nightloom_service::agent::ask::aside_pending(&dir);
+            let id = call.as_ref().map(|c| c.id.clone());
+            if id != last {
+                let reason = call.as_ref().and_then(|_| reasons.lock().unwrap().reason());
+                let _ = app.emit("aside-ask", AsideAsk { seq, call, reason });
+                last = id;
+            }
+        }
+    })
+}
+
+/// The aside ended (item 919): a hook still waiting is answered with a
+/// refusal so it ends, and the card goes.
+fn release_pending(app: &AppHandle, seq: u64, dir: &Path) {
+    use nightloom_service::agent::ask::{self, Answer, AskDir};
+    if let Some(call) = ask::aside_pending(dir) {
+        let _ = AskDir::new(dir).write(
+            &call,
+            &Answer::Deny {
+                reason: ask::ASIDE_UNANSWERED.into(),
+            },
+        );
+        let _ = std::fs::remove_file(dir.join(ask::PENDING_FILE));
+    }
+    let _ = app.emit(
+        "aside-ask",
+        AsideAsk {
+            seq,
+            call: None,
+            reason: None,
+        },
+    );
+}
+
+/// His answer on an aside's card (item 919): `allow` or `deny`, for the
+/// call `id` the aside `seq` waits on. Written to the aside's own
+/// directory only, so nothing is approved in the chat.
+#[tauri::command]
+pub(crate) fn answer_aside_ask(
+    seq: u64,
+    id: String,
+    decision: String,
+    reason: Option<String>,
+) -> Result<(), String> {
+    use nightloom_service::agent::ask::{self, Answer, AskDir};
+    let dir = SEATED
+        .lock()
+        .unwrap()
+        .get(&seq)
+        .cloned()
+        .ok_or_else(|| "this aside is no longer asking".to_string())?;
+    let call = ask::aside_pending(&dir)
+        .filter(|c| c.id == id)
+        .ok_or_else(|| "this card was already answered".to_string())?;
+    let answer = if decision == "allow" {
+        Answer::Allow {
+            updated_input: None,
+            plan_then: None,
+            grant: None,
+        }
+    } else {
+        let fallback = if nightloom_service::agent::own_browser::is_playwright(&call.name) {
+            nightloom_service::agent::own_browser::DECLINED
+        } else {
+            "the user declined this call"
+        };
+        Answer::Deny {
+            reason: reason
+                .filter(|r| !r.trim().is_empty())
+                .unwrap_or_else(|| fallback.into()),
+        }
+    };
+    AskDir::new(&dir)
+        .write(&call, &answer)
+        .map_err(|e| e.to_string())
 }

@@ -415,7 +415,14 @@ export function askAside(text: string, seq: number, opts: AsideSendOptions = {})
   if (opts.files?.length) extra.files = opts.files;
   if (opts.model != null) extra.model = opts.model;
   if (opts.effort != null) extra.effort = opts.effort;
+  if (opts.aside) extra.aside = opts.aside;
   return invoke("ask_aside", { text, seq, ...extra });
+}
+
+/** His answer on an aside's approval card (item 919): written to that
+ *  aside's own place, never the chat's. */
+export function answerAsideAsk(seq: number, id: string, decision: "allow" | "deny", reason?: string): Promise<void> {
+  return invoke("answer_aside_ask", { seq, id, decision, reason: reason ?? null });
 }
 
 /**

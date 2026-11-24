@@ -1277,6 +1277,10 @@ export interface ApprovalRequest {
   kind?: "connector" | "remember" | "home_write";
   /** Set aside earlier in this reply and back for its answer (743, 783). */
   back?: boolean;
+  /** An aside's card (item 919): the aside's `seq` its hook waits on. The
+   *  answer goes to the aside alone — Allow or Deny, never "for this
+   *  chat" — and nothing is approved in the chat. */
+  aside?: number;
 }
 
 /** An unanswered card's `approval-nudge` (item 783): the reminder is due,
@@ -1648,6 +1652,9 @@ export interface AsideSendOptions {
   files?: FileInput[];
   model?: string | null;
   effort?: string | null;
+  /** The thread's stable name (item 919): the aside sits on its own place
+   *  — its own browser tab, its own approval cards. */
+  aside?: string;
 }
 
 /** A piece of an aside's answer as it streams (nightshift backlog 128),
