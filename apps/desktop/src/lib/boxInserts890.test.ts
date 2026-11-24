@@ -129,7 +129,7 @@ describe("890: each insert's text and caret", () => {
 describe("890: wiring", () => {
   it("the composer's one / list carries the inserts; IME keys never pick", () => {
     expect(src).toMatch(/insertMatches\(insTok\)/);
-    expect(src).toMatch(/\[\.\.\.mine, \.\.\.ours, \.\.\.theirs\]/);
+    expect(src).toMatch(/\[\.\.\.mine, \.\.\.ours, \.\.\.cmd, \.\.\.theirs\]/);
     expect(src).toMatch(/const imeKey = composing \|\| e\.isComposing \|\| e\.keyCode === 229/);
     expect(src).toMatch(/m\.kind \+ "\\u0000" \+ m\.name/);
     expect(src).toMatch(/ta\.insertBlock\(ed\)/);
