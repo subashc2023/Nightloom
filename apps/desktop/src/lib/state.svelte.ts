@@ -179,7 +179,7 @@ import { loadLastProject, loadLastProjectName, saveLastProject, loadDreamPrefs, 
 import { nextModel } from "./nextChatModel.svelte";
 import { runMenuCommand, menuInterceptors, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits } from "./state/menu.svelte";
 import { rewindTo, setAsideRewound, keepRewound, restoreRewound, keepRewindFiles, undoRestore } from "./state/rewind.svelte";
-import { addToast, TOAST_MS, ACTION_TOAST_MS, dismissToast, runToastAction } from "./state/toasts.svelte";
+import { addToast, TOAST_MS, ACTION_TOAST_MS, IMPORTANT_TOAST_MS, dismissToast, runToastAction, holdToast, releaseToast, copyToast } from "./state/toasts.svelte";
 import { turnMissToast } from "./cacheCost";
 import { inViewLane } from "./viewLane";
 import { pickDocuments } from "./pick";
@@ -187,7 +187,7 @@ import { withNote } from "./asideNotes";
 import { loadNoteDrafts, noteDraftsWriter, type DraftBase } from "./noteDraftStore";
 import { saveDelay } from "./drafts.svelte";
 import { restoreAsideNotes, takeAsideNote } from "./asideNotes.svelte";
-export { TOAST_MS, ACTION_TOAST_MS, addToast, dismissToast, runToastAction };
+export { TOAST_MS, ACTION_TOAST_MS, IMPORTANT_TOAST_MS, addToast, dismissToast, runToastAction, holdToast, releaseToast, copyToast };
 export { rewindTo, setAsideRewound, keepRewound, restoreRewound, keepRewindFiles, undoRestore };
 export { menuInterceptors, runMenuCommand, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits };
 export { saveLastProject, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY };
@@ -884,7 +884,7 @@ export const app = $state({
   },
   /** `action` (backlog 066) is the toast's one button — "Undo" on a
    *  removal or a rewind — and such a toast stays 8 s rather than 5. */
-  toasts: [] as { id: number; text: string; action?: { label: string; run: () => void } }[],
+  toasts: [] as { id: number; text: string; action?: { label: string; run: () => void }; copied?: boolean }[],
   /** Bumped whenever the undo stack changes, so the menu titles and the
    *  palette rows that read it re-derive (nightshift backlog 064). The
    *  stack itself is `history`, which is not reactive. */

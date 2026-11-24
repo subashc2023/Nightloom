@@ -23,6 +23,9 @@
     reflectTabs,
     runMenuCommand,
     runToastAction,
+    holdToast,
+    releaseToast,
+    copyToast,
     dismissToast,
     answerAsideDiscard,
     setPaneWidth,
@@ -1098,8 +1101,11 @@
             <!-- A toast with an action (backlog 066: "Removed from
                  context · Undo"). Every toast takes the pointer for its
                  X (backlog 410, his ask: dismiss any of them at once). -->
-            <div class="toast" class:actionable={!!t.action}>
-              <span class="toast-text">{t.text}{#if t.action}<span class="toast-sep">{" · "}</span><button
+            <!-- Item 923: hovering holds its timer; a click on the words copies them. -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div class="toast" class:actionable={!!t.action} onmouseenter={() => holdToast(t.id)} onmouseleave={() => releaseToast(t.id)}>
+              <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+              <span class="toast-text" use:tip={"Click to copy"} onclick={(e) => { if (!(e.target as HTMLElement).closest("button")) void copyToast(t.id); }}>{t.text}{#if t.copied}<span class="toast-sep">{" · copied"}</span>{/if}{#if t.action}<span class="toast-sep">{" · "}</span><button
                   class="toast-action"
                   onclick={() => runToastAction(t.id)}>{t.action.label}</button>{/if}</span>
               <button class="toast-x" aria-label="Dismiss" onclick={() => dismissToast(t.id)}>
@@ -1529,6 +1535,7 @@
   .toast-text {
     flex: 1;
     min-width: 0;
+    cursor: copy;
   }
   /* The X (backlog 410): the dim text's colour, the ink on hover. */
   .toast-x {
