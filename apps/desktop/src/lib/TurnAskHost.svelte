@@ -6,9 +6,11 @@
    */
   import TurnAsk from "./TurnAsk.svelte";
   import { app } from "./state.svelte";
-  import { answerAsk, hereAsk, hereTarget } from "./needsBoard.svelte";
+  import { answerAsk, hereAsk, hereTarget, queuedAnswerOf } from "./needsBoard.svelte";
 
-  const pending = $derived(hereAsk());
+  // Item 922: an answer queued while the chat runs keeps its card (the pick shown, "queued") until the row goes.
+  const queued = $derived(queuedAnswerOf(app.activeSessionId));
+  const pending = $derived(hereAsk() ?? (queued ? { ask: queued.ask, index: queued.index } : null));
   let sending = $state(false);
   const note = $derived(
     app.project ? "Your answer is sent as your next message, and filed as an answered blocker where this project keeps them." : "Your answer is sent as your next message.",
@@ -21,6 +23,7 @@
       ask={pending.ask}
       idBase={`ta-${app.activeSessionId}-${pending.index}`}
       {sending}
+      queued={queued?.answer ?? null}
       {note}
       onsend={async (answer) => {
         const ask = pending.ask;

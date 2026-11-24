@@ -10,7 +10,8 @@
  * the view opens and every few minutes for the badge.
  */
 import { untrack } from "svelte";
-import { app, sendInChat, chatRuns } from "./state.svelte";
+import { app, sendInChat, chatRuns, injectIntoTurn } from "./state.svelte";
+import { enqueueMessage, readDraft } from "./drafts.svelte";
 import { addToast } from "./state/toasts.svelte";
 import { allRunning } from "./running.svelte";
 import * as api from "./api";
@@ -181,24 +182,50 @@ export async function refreshBoard(force = false): Promise<void> {
   }
 }
 
-/** Send `text` as his next message in `chat`; false (and a toast) when it could not go. */
-function sendTo(t: { chat: string; project: string | null; projectName: string | null }, text: string): boolean {
+/**
+ * Item 922: an answer given while its chat runs (a turn, or a subagent's work the reply continues after) is
+ * queued as the composer's Queue queues a message, and the card keeps it: by chat, the held row's id, his
+ * words, and the question it answered (the card is drawn from it while the chat runs and `hereAsk` is null).
+ */
+export interface QueuedAnswer {
+  id: number;
+  answer: string;
+  ask: Ask;
+  index: number;
+}
+export const queuedAnswers = $state<Record<string, QueuedAnswer>>({});
+
+/** The queued answer of chat `chat` while its row is still held; a row gone (sent, or removed from the
+ *  queue strip) reads as none, so a removed answer shows the card unanswered again. */
+export function queuedAnswerOf(chat: string | null): QueuedAnswer | null {
+  const q = chat ? queuedAnswers[chat] : undefined;
+  return q && readDraft(chat as string).queue.some((r) => r.id === q.id) ? q : null;
+}
+
+/** Send `text` as his next message in `chat`: sent, or queued when the chat runs (it goes when the running
+ *  work allows, as a Queue click does); false (and a toast) when it could not go. */
+function sendTo(t: { chat: string; project: string | null; projectName: string | null }, text: string): { queued: number | null } | false {
   if (chatRuns(t.chat)) {
-    addToast("That chat is running again — open it to answer there.");
-    return false;
+    const row = enqueueMessage(t.chat, text, []);
+    // Into the running turn at its next step when it is the chat on screen (the composer's own rule); a row
+    // the turn does not take goes as the next message, off screen too (takeQueuedFor).
+    if (t.chat === app.activeSessionId && app.busy && !app.parked) void injectIntoTurn(t.chat, row);
+    addToast("Queued — your answer goes when the running work allows.");
+    return { queued: row.id };
   }
   let refused = false;
   sendInChat(t.chat, { id: t.project, name: t.projectName }, text, [], (why) => {
     refused = true;
     addToast(`Not sent: ${why}`);
   });
-  return !refused;
+  return refused ? false : { queued: null };
 }
 
 /**
  * Answer a turn-end question: his answer goes out as his next message in
- * that chat, and is filed as an answered blocker in his words where the
- * project keeps blockers. True when sent.
+ * that chat (queued when the chat runs, item 922), and is filed as an
+ * answered blocker in his words where the project keeps blockers. True
+ * when sent or queued.
  */
 export async function answerAsk(
   t: { chat: string; name: string; project: string | null; projectName: string | null } | null,
@@ -206,14 +233,20 @@ export async function answerAsk(
   answer: string,
 ): Promise<boolean> {
   const text = answer.trim();
-  if (!t || !text || !sendTo(t, text)) return false;
+  if (!t || !text) return false;
+  const how = sendTo(t, text);
+  if (!how) return false;
+  if (how.queued !== null) {
+    const index = (t.chat === app.activeSessionId ? pendingAsk(app.events)?.index : undefined) ?? -1;
+    queuedAnswers[t.chat] = { id: how.queued, answer: text, ask, index };
+  }
   dropEnded(t.chat);
   if (t.project) {
     try {
       const filed = await api.askFileAnswer(t.project, { question: ask.question, answer: text, options: ask.options, chat: t.name, when: answeredWhen() });
       if (filed) addToast(`Your answer is filed as blocker ${filed.id}, answered.`);
     } catch (e) {
-      addToast(`Your answer was sent; the blocker was not filed — ${String(e)}`);
+      addToast(`Your answer was ${how.queued !== null ? "queued" : "sent"}; the blocker was not filed — ${String(e)}`);
     }
   }
   return true;

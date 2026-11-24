@@ -22,7 +22,7 @@
   import { flyAnswer } from "./askMotion";
   import { answerText, isAnswered } from "./askQuestions";
   import type { Ask } from "./askTag";
-  import { askStacks } from "./askSettled";
+  import { askStacks, pickedOption } from "./askSettled";
   import { askCardLook } from "./askCardLook.svelte";
   import { classic } from "./layout.svelte";
   import type { AskQuestion } from "./types";
@@ -33,6 +33,7 @@
     onsend,
     sending = false,
     note = "",
+    queued = null,
   }: {
     ask: Ask;
     /** Unique per card (chat + reply): element ids, and the key his unsent words are kept under. */
@@ -42,6 +43,9 @@
     sending?: boolean;
     /** A line under the card: where the answer is filed. */
     note?: string;
+    /** Item 922: his answer is held in the chat's queue (the chat is running): the card shows the pick as
+     *  chosen and "queued", and takes no second answer until the row is sent or removed. */
+    queued?: string | null;
   } = $props();
 
   // (Read once, at mount: a function, so the prop is not captured as a stale value.)
@@ -57,6 +61,19 @@
   const questions = $derived<AskQuestion[]>([
     { question: ask.question, header: "needs you", options: ask.options.map((label) => ({ label })), multiSelect: false },
   ]);
+  // A queued answer is shown as picked (a redrawn card starts from it); words that are none of the options
+  // fill Other.
+  $effect(() => {
+    if (queued === null) return;
+    const i = pickedOption(ask.options, queued);
+    if (i >= 0) {
+      picks[0] = [ask.options[i]];
+      others[0] = "";
+    } else {
+      picks[0] = [];
+      others[0] = queued;
+    }
+  });
   const ready = $derived(isAnswered(picks[0], others[0]));
   // Item 884 (option A, the stack rule): any answer past 40 characters stacks every answer full width.
   const stack = $derived(askStacks(ask.options));
@@ -94,7 +111,7 @@
   }
 </script>
 
-<div class="turn-ask lk-shell" class:sending data-turn-ask={idBase} data-stack={stack ? "1" : undefined} aria-busy={sending} bind:this={shell}>
+<div class="turn-ask lk-shell" class:sending={sending || queued !== null} data-queued={queued !== null ? "1" : undefined} data-turn-ask={idBase} data-stack={stack ? "1" : undefined} aria-busy={sending || queued !== null} bind:this={shell}>
   <AskLock />
   <AskQuestions
     {questions}
@@ -107,7 +124,9 @@
     onnote={(i, label, value) => (notes[i] = { ...(notes[i] ?? {}), [label]: value })}
     {onquick}
   />
-  {#if note || showSend}
+  {#if queued !== null}
+    <div class="ta-foot"><div class="ta-note">Queued — it goes when the running work allows. Remove it from the queue under the message box to answer differently.</div></div>
+  {:else if note || showSend}
     <div class="ta-foot">
       {#if note}<div class="ta-note">{note}</div>{/if}
       {#if showSend}<button type="button" class="ta-send" disabled={!ready || sending} onclick={onquick}>{sending ? "Sending…" : "Send ↵"}</button>{/if}
