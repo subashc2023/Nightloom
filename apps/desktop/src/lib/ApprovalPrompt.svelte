@@ -105,7 +105,8 @@
       return;
     }
     const route = routeNote(decision, note, fallback);
-    if (route.enqueue) {
+    // Item 919: an aside's card has no note (it would join the chat's queue).
+    if (route.enqueue && req.aside === undefined) {
       // The composer's own key, so the held message shows in its queue
       // with a take-back, like one typed there.
       enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread), route.enqueue, []);
@@ -611,7 +612,7 @@
         </div>
       {/if}
 
-      {@render noteField()}
+      {#if req.aside === undefined}{@render noteField()}{/if}
       {#if outside}
         <div class="arg outside">
           <div class="key">outside the folders this chat can see</div>
@@ -649,7 +650,7 @@
         >
         {#if req.kind === "connector"}
           <button class="ns-btn" data-act="always" use:tip={ALWAYS_READ_TIP} onclick={() => decide("always")}>Allow always</button>
-        {:else if !addsFolder && req.kind !== "remember" && req.kind !== "home_write"}
+        {:else if req.aside === undefined && !addsFolder && req.kind !== "remember" && req.kind !== "home_write"}
           <button
             class="ns-btn"
             use:tip={`every later ${req.name} in this chat runs unasked`}
@@ -658,7 +659,7 @@
         {/if}
         <button class="ns-btn danger" bind:this={denyButton} onclick={() => decide("deny")}>Deny</button>
         <!-- Item 743: the phone card's "Not now — carry on", same words, the `later` reply the window takes. -->
-        <button class="ns-btn" data-act="later" use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>
+        {#if req.aside === undefined}<button class="ns-btn" data-act="later" use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>{/if}
         <span class="keys">⏎ allow · esc deny · the note goes with either</span>
       </div>
     {/if}

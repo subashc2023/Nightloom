@@ -67,6 +67,7 @@ async fn main() {
         dir: ask_dir.clone(),
         side: false,
         no_card: false,
+        wait: false,
     };
     println!(
         "{}",

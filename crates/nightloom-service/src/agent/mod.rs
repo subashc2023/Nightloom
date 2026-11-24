@@ -28,6 +28,8 @@
 //!
 //! [`Provider`]: nightloom_core::Provider
 
+#[cfg(test)]
+mod aside_parity;
 pub mod ask;
 mod bash_tail;
 pub mod brief;
@@ -556,6 +558,13 @@ pub struct AgentSpec {
     /// (`notes/runner-design/aside-cache-report-2026-11-23.md` in
     /// nightshift-code); Opus 5.5 `auto` captured with the same two marks.
     pub side_cache_mark: bool,
+    /// An aside seated on its own directory (nightshift item 919,
+    /// [`AgentSpec::seat_aside`]): the Ask position's hook is registered
+    /// for it after all, on the chat's matcher, waiting in the hook for
+    /// his answer on the aside's card ([`ask::WAIT_ARG`]) where the chat's
+    /// would defer. Only `--settings` changes — no flag, tool or mode — so
+    /// the aside still reads the chat's cached prefix.
+    pub aside_cards: bool,
     /// An incognito chat (nightshift backlog 405): set by
     /// [`apply_incognito`](Self::apply_incognito), never directly. On, the
     /// CLI loads no setting file — so not his `~/.claude/CLAUDE.md`, his
@@ -789,6 +798,59 @@ pub struct AskSpec {
     pub subagents_auto: bool,
 }
 
+/// Where an aside sits (nightshift item 919; [`AgentSpec::seat_aside`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AsideSeat {
+    /// The aside's own ask directory: `<chat's ask dir>/asides/<key>`.
+    pub dir: PathBuf,
+    /// The app's browser for the aside, its own tab in the pane.
+    pub endpoint: Option<PathBuf>,
+}
+
+impl AsideSeat {
+    /// The aside's directory under the chat's, `key` (the thread's stable
+    /// name) kept to letters, digits, `-` and `_`.
+    pub fn dir_for(chat_dir: &std::path::Path, key: &str) -> PathBuf {
+        let clean: String = key
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .take(64)
+            .collect();
+        chat_dir
+            .join("asides")
+            .join(if clean.is_empty() { "aside" } else { &clean })
+    }
+
+    /// Make the aside's directory and give it the chat's standing answers
+    /// as they are now — the tools "Allow for this chat" granted, his
+    /// per-chat rules, the chat's Playwright switch — so an aside asks
+    /// about nothing the chat would not. One way only: what he answers in
+    /// the aside stays in the aside's directory. A stale one-shot decision
+    /// is cleared. Best-effort: a file that cannot be copied leaves the
+    /// aside asking more, never less.
+    pub fn prepare(
+        chat_dir: &std::path::Path,
+        key: &str,
+        endpoint: Option<PathBuf>,
+    ) -> std::io::Result<Self> {
+        let dir = Self::dir_for(chat_dir, key);
+        std::fs::create_dir_all(&dir)?;
+        for name in [ask::RULES_FILE, crate::approval_rules::FILE] {
+            match std::fs::read(chat_dir.join(name)) {
+                Ok(b) => {
+                    let _ = std::fs::write(dir.join(name), b);
+                }
+                Err(_) => {
+                    let _ = std::fs::remove_file(dir.join(name));
+                }
+            }
+        }
+        let _ = std::fs::remove_file(dir.join(ask::DECISION_FILE));
+        let _ = std::fs::remove_file(dir.join(ask::PENDING_FILE));
+        Ok(Self { dir, endpoint })
+    }
+}
+
 /// The permission mode the hook is registered under (backlog 085).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskMode {
@@ -981,6 +1043,7 @@ impl AgentSpec {
             playwright: None,
             folder_side: false,
             side_cache_mark: false,
+            aside_cards: false,
             incognito: false,
             denied_reads: Vec::new(),
             extra_args: Vec::new(),
@@ -1256,6 +1319,39 @@ impl AgentSpec {
             spec.effort = (!e.is_empty()).then(|| e.to_string());
         }
         Some(spec)
+    }
+
+    /// Seat an aside's spec on its own place (nightshift item 919, his
+    /// bug 2026-11-23): `seat.dir` is the aside's own ask directory, where
+    /// its cards' answers, its Playwright replies and its browser's hold
+    /// live — never the chat's, so approving in the aside approves nothing
+    /// in the chat — and `seat.endpoint` the app's browser for the aside,
+    /// a tab of its own in the browser pane (`None` keeps the headless
+    /// browser of its server's own). Only an aside the window asked is
+    /// seated: a keep-warm ping, which nobody watches, never is.
+    ///
+    /// What changes is the hook registration and the MCP server's browser
+    /// argument, nothing the model is shown: the tools, the flags and the
+    /// permission mode stay the aside's, so it reads the chat's cache as
+    /// before (pinned by the parity test in `aside_parity`).
+    pub fn seat_aside(&mut self, seat: &AsideSeat) {
+        if let Some(ask) = &mut self.ask
+            && ask.mode == AskMode::Aside
+        {
+            ask.dir = seat.dir.clone();
+            self.aside_cards = true;
+        }
+        if let Some(pw) = &mut self.playwright {
+            pw.dir = seat.dir.clone();
+            pw.wait = !pw.no_card;
+        }
+        if let Some(endpoint) = &seat.endpoint
+            && self.playwright.is_some()
+            && let Some(cfg) = &self.mcp_config
+            && let Some(cfg) = own_browser::with_endpoint(cfg, Some(endpoint))
+        {
+            self.mcp_config = Some(cfg);
+        }
     }
 
     /// A keep-warm ping's spec (nightshift backlog 582; [`crate::keep_warm`]):
@@ -1582,13 +1678,27 @@ impl AgentSpec {
             // Under the Chat policy the Ask hook pauses only what the
             // policy leaves (backlog 147): a call both hooks match would
             // show a prompt whose answer cannot matter.
-            let matcher = if self.chat_policy {
-                ask_matcher_under_chat_policy(ask.mode.matcher(), self.browser)
-            } else if self.born_chat {
-                ask_matcher_in_born_chat(ask.mode.matcher(), self.browser)
+            // A seated aside of an asking chat (item 919) matches what the
+            // chat's own hook does, and waits for the aside's card.
+            let seated =
+                ask.mode == AskMode::Aside && self.aside_cards && !ask.dir.as_os_str().is_empty();
+            let base = if seated {
+                AskMode::Ask.matcher()
             } else {
-                ask.mode.matcher().to_string()
+                ask.mode.matcher()
             };
+            let matcher = if self.chat_policy {
+                ask_matcher_under_chat_policy(base, self.browser)
+            } else if self.born_chat {
+                ask_matcher_in_born_chat(base, self.browser)
+            } else {
+                base.to_string()
+            };
+            if seated && !matcher.is_empty() {
+                let mut entry = ask::hook_entry(&ask.hook, &ask.dir, &matcher, &[ask::WAIT_ARG]);
+                entry["hooks"][0]["timeout"] = ask::WAIT_TIMEOUT_SECS.into();
+                settings.insert("hooks".into(), serde_json::json!({ "PreToolUse": [entry] }));
+            }
             if !matches!(ask.mode, AskMode::Aside | AskMode::PlanAside)
                 && !matcher.is_empty()
                 && let Ok(serde_json::Value::Object(hook)) = serde_json::from_str::<serde_json::Value>(
@@ -2508,7 +2618,28 @@ impl ClaudeCodeAgent {
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Option<Result<AgentOutcome, AgentError>> {
-        let spec = self.spec.aside_with(model, effort)?;
+        self.ask_aside_at(input, model, effort, None, timing, cancel, on_event)
+            .await
+    }
+
+    /// [`Self::ask_aside`] seated on the aside's own place (nightshift item
+    /// 919, [`AgentSpec::seat_aside`]): its own browser tab and its own
+    /// approval cards. `None` is the unseated aside, as before.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn ask_aside_at(
+        &self,
+        input: TurnInput,
+        model: Option<&str>,
+        effort: Option<&str>,
+        seat: Option<&AsideSeat>,
+        timing: Option<std::sync::Arc<crate::turn_timing::TurnTiming>>,
+        cancel: &CancellationToken,
+        on_event: &mut (dyn FnMut(TurnEvent) + Send),
+    ) -> Option<Result<AgentOutcome, AgentError>> {
+        let mut spec = self.spec.aside_with(model, effort)?;
+        if let Some(seat) = seat {
+            spec.seat_aside(seat);
+        }
         // Item 766 (merge round T review, 2026-11-17): the aside's card is
         // a live view like the window's — its deltas are held and scrubbed
         // as the turn's are, and its final text too. Before, the caller
@@ -5696,6 +5827,7 @@ mod tests {
             dir: PathBuf::from("/logs/ask/chat-3"),
             side: false,
             no_card: false,
+            wait: false,
         });
         s
     }

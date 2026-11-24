@@ -103,8 +103,11 @@ export type TabContent =
   /** Claude's browser for a chat (nightshift item 508): the live picture
    *  of the Playwright browser the app keeps for `session` between its
    *  messages, with his own clicks and keys passed to it
-   *  (`ClaudeBrowserView.svelte`). One tab per chat. */
-  | { kind: "browser"; session: string };
+   *  (`ClaudeBrowserView.svelte`). One tab per chat. An aside's own
+   *  browser (item 919) is a tab of its own, its `session` the chat's id
+   *  and the aside's (`asideBrowserSession`), `name` the aside's name for
+   *  the strip. */
+  | { kind: "browser"; session: string; name?: string };
 
 export type TabKind = TabContent["kind"];
 
@@ -212,8 +215,9 @@ export function parseContentDrag(json: string | null | undefined): TabContent | 
         return typeof t.title === "string" ? { kind: "thread", slug: t.slug, title: t.title } : { kind: "thread", slug: t.slug };
       }
       case "browser": {
-        const b = c as { session?: unknown };
-        return typeof b.session === "string" ? { kind: "browser", session: b.session } : null;
+        const b = c as { session?: unknown; name?: unknown };
+        if (typeof b.session !== "string") return null;
+        return typeof b.name === "string" ? { kind: "browser", session: b.session, name: b.name } : { kind: "browser", session: b.session };
       }
       case "web": {
         const w = c as { url?: unknown; title?: unknown };
@@ -796,6 +800,9 @@ export function tabTitle(
     case "thread":
       return `◇ ${content.title?.trim() || content.slug}`;
     case "browser": {
+      // Item 919: an aside's own browser goes by the aside's name.
+      const mark = content.session.indexOf("~aside~");
+      if (mark >= 0) return `Claude's browser · ${content.name?.trim() || "aside"}`;
       const s = sessions.find((x) => x.id === content.session);
       return `Claude's browser · ${chatLabel(s, content.session.slice(0, 8))}`;
     }

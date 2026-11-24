@@ -516,7 +516,7 @@ export function stoppedRead(t: AsideTurn, res: Pick<AsideResult, "is_error" | "s
  * A chip without bytes (one read back from the store, names only) is not
  * sent. Pure; exported for the suite.
  */
-export function asideWire(thread: Pick<Aside, "model" | "effort"> | null, chips: readonly Attachment[]): AsideSendOptions {
+export function asideWire(thread: Pick<Aside, "model" | "effort" | "uid"> | null, chips: readonly Attachment[]): AsideSendOptions {
   const out: AsideSendOptions = {};
   const live = chips.filter((c) => c.data && !c.pending);
   const images = live.filter((c) => c.kind === "image").map(({ media_type, data }) => ({ media_type, data }));
@@ -535,6 +535,8 @@ export function asideWire(thread: Pick<Aside, "model" | "effort"> | null, chips:
   if (files.length) out.files = files;
   if (thread?.model != null && thread.model !== "") out.model = thread.model;
   if (thread?.effort != null) out.effort = thread.effort;
+  // Item 919: its own browser tab and approval cards.
+  if (thread?.uid) out.aside = thread.uid;
   return out;
 }
 

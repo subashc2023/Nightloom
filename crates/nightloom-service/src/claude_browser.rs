@@ -65,6 +65,24 @@ const READY_WAIT: Duration = Duration::from_secs(60);
 /// How often the idle check runs.
 const IDLE_TICK: Duration = Duration::from_secs(30);
 
+/// The browser key of an aside's own browser (nightshift item 919): the
+/// chat's id, then `~aside~` and the thread's stable name, so the pane
+/// shows it as a tab of its own beside the chat's, and nothing the aside
+/// does lands on the chat's page. The window builds the same key
+/// (`asideBrowserSession` in `claudeBrowser.ts`).
+pub fn aside_session(chat: &str, key: &str) -> String {
+    let clean: String = key
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(64)
+        .collect();
+    let clean = if clean.is_empty() { "aside" } else { &clean };
+    format!("{chat}{ASIDE_MARK}{clean}")
+}
+
+/// What separates the chat's id from the aside's name in [`aside_session`].
+pub const ASIDE_MARK: &str = "~aside~";
+
 /// One chat's browser as the window sees it (the 508 contract's
 /// `BrowserStatus`).
 #[derive(Debug, Clone, PartialEq, Serialize)]

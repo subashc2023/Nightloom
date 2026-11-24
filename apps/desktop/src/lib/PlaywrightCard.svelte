@@ -33,7 +33,8 @@
     if (done) return;
     done = true;
     const route = routeNote(decision, note, PLAYWRIGHT_DECLINED);
-    if (route.enqueue) {
+    // Item 919: an aside's card has no note (it would join the chat's queue).
+    if (route.enqueue && req.aside === undefined) {
       enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread), route.enqueue, []);
     }
     void resolveApproval(req.id, req.name, decision, route.reason).then(() => {
@@ -76,7 +77,7 @@
     <pre class="val"><b>{action.tool}</b>{#if action.target}&nbsp; {action.target}{/if}</pre>
   </div>
 
-  <div class="note-row">
+  {#if req.aside === undefined}<div class="note-row">
     <input
       class="note"
       type="text"
@@ -85,10 +86,11 @@
       placeholder="Note for the model — optional"
       aria-label="note for the model, optional"
     />
-  </div>
+  </div>{/if}
 
   <div class="actions">
-    {#each PLAYWRIGHT_BUTTONS as b (b.decision)}
+    <!-- Item 919: an aside's card answers the aside alone: no "for this chat", no "Not now". -->
+    {#each PLAYWRIGHT_BUTTONS.filter((b) => req.aside === undefined || b.decision !== "always") as b (b.decision)}
       <button
         class="ns-btn"
         class:accent={b.decision === "allow"}
@@ -99,7 +101,7 @@
       >
     {/each}
     <!-- Item 743: the phone card's "Not now — carry on", same words, the `later` reply the window takes. -->
-    <button class="ns-btn" data-act="later" disabled={done} use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>
+    {#if req.aside === undefined}<button class="ns-btn" data-act="later" disabled={done} use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>{/if}
     <span class="keys">⏎ allow once · esc deny</span>
   </div>
 </div>

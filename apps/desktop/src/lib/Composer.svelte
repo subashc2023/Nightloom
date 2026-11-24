@@ -204,6 +204,7 @@
   import { hasNoTurns } from "./waitingChat";
   import PreviewChip from "./PreviewChip.svelte";
   import ClaudeBrowserChip from "./ClaudeBrowserChip.svelte";
+  import { asideBrowserSession } from "./claudeBrowser";
   import TurnCapChip from "./TurnCapChip.svelte";
   // Item 542: under the Classic layout, 1d4ca17's browser strip.
   import ClaudeBrowserChipClassic from "./ClaudeBrowserChipClassic.svelte";
@@ -255,7 +256,7 @@
     stopAside,
     type Aside,
   } from "./state.svelte";
-  import { asideDraftKey } from "./asides";
+  import { asideDraftKey, asideLabel } from "./asides";
   import { composerShows } from "./asideControls";
   import { pickText } from "./pick";
   import { scheduleAsideSave } from "./asides.svelte";
@@ -3715,6 +3716,9 @@
     <BrowserChip chat={app.activeSessionId} />
     <!-- The message's usage cap (item 538): only while it runs under one. -->
     <TurnCapChip plain={classic()} />
+  {:else if aside && app.activeSessionId}
+    <!-- Item 919: the aside's own browser, a tab of its own in the pane. -->
+    <BrowserChip chat={asideBrowserSession(app.activeSessionId, aside.uid ?? String(aside.id))} name={asideLabel(aside)} />
   {/if}
   <!-- Item 548: under Filament IV the scheduled message is drawn in the
        transcript as his message (ScheduledBubble); Classic keeps the row. -->

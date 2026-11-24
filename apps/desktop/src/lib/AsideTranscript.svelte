@@ -29,6 +29,8 @@
   import { classic } from "./layout.svelte";
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
   import { noteWaiting } from "./asideNotes.svelte";
+  // Item 919: the chat's approval card, in the aside, for the aside alone.
+  import { asideApprovals, startAsideAsks } from "./asideAsk.svelte";
 
   /**
    * An aside's thread, drawn by the chat's own transcript (item 674,
@@ -248,7 +250,7 @@
     // Every arrival stamps `heardAt` (item 404); the text for a turn with
     // no segments.
     liveVersion: () => [asking?.heardAt, asking?.partial.length, asking?.segments?.length],
-    approvals: [],
+    approvals: asideApprovals(asking?.seq),
     locked: asking !== null,
     busy: asking !== null,
     scrollKey,
@@ -298,6 +300,9 @@
     waitNote,
   });
   const View = $derived(classic() ? TranscriptClassic : Transcript);
+  $effect(() => {
+    void startAsideAsks();
+  });
 </script>
 
 <View {source} {lead}>

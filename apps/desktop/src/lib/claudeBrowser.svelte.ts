@@ -170,8 +170,8 @@ export async function setHold(session: string, held: boolean): Promise<void> {
 }
 
 /** The tab's content for `session`'s browser. */
-export function browserContent(session: string): tabs.TabContent {
-  return { kind: "browser", session };
+export function browserContent(session: string, name?: string): tabs.TabContent {
+  return name ? { kind: "browser", session, name } : { kind: "browser", session };
 }
 
 /**
@@ -179,8 +179,8 @@ export function browserContent(session: string): tabs.TabContent {
  * forward; else a new tab beside the chat in the focused pane — never over
  * it, and only on his click (the chip offers; it never pulls him away).
  */
-export async function openBrowserTab(session: string): Promise<void> {
-  const content = browserContent(session);
+export async function openBrowserTab(session: string, name?: string): Promise<void> {
+  const content = browserContent(session, name);
   const found = tabs.findAnywhere(app.tabs, content);
   if (found) {
     await activateTab(found.id);
