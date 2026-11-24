@@ -7,6 +7,7 @@
   import { probeWatch } from "./lib/errorWatch.svelte";
   import {
     activateTab,
+    turnsRunning,
     browseFree,
     app,
     asideOf,
@@ -66,6 +67,8 @@
   import { closeOrphans, initWebTabs, routeLink } from "./lib/webtabs.svelte";
   import RunningTasks from "./lib/RunningTasks.svelte";
   import NeedsYou from "./lib/NeedsYou.svelte";
+  import { RunningHold } from "./lib/runningHold";
+  import * as api from "./lib/api";
   import { allRunning, cancelQuit, listenForQuit, pushQuitLines, quitAnyway, quitAsk } from "./lib/running.svelte";
   import { quitBlockers } from "./lib/running";
   import { isMac } from "./lib/platform";
@@ -175,6 +178,13 @@
   // re-sent whenever a run starts or ends anywhere.
   $effect(() => {
     pushQuitLines(allRunning());
+  });
+
+  // Item 930: the Mac stays awake while anything runs — a named hold on power.rs's child (912's
+  // `power_hold`), let go 30 s after the last run ends.
+  const runningHold = new RunningHold((name, on) => api.powerHold(name, on));
+  $effect(() => {
+    runningHold.note(allRunning().length > 0 || turnsRunning());
   });
 
   // A web tab's page dies with its tab (backlog 172): any tab change —
