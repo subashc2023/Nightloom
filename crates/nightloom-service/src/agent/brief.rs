@@ -1184,6 +1184,76 @@ pub fn stated_estimate(input: &Value) -> Option<u64> {
     None
 }
 
+/// What a `web-fetch` launch with no stated size is planned at (921): the
+/// built-in page reader starts near 60k and reads a page or two.
+pub const WEB_FETCH_DEFAULT_TOKENS: u64 = 60_000;
+
+/// The one helper type whose size the hook fills in (921). Not widened:
+/// every other type still states its own, so sizing stays the habit.
+pub const WEB_FETCH_TYPE: &str = "web-fetch";
+
+/// Whether an agent called `name` is defined by the project (`.claude/agents`
+/// in the working folder or any folder above it), the user
+/// (`~/.claude/agents`) or a plugin (`agents/` anywhere under
+/// `~/.claude/plugins`): a defined one is that agent, not the built-in, and
+/// stays under the rule. A file counts by its stem or by a `name:` line of
+/// its front matter.
+fn agent_is_defined(name: &str, cwd: Option<&Path>, home: Option<&Path>) -> bool {
+    fn names(dir: &Path, name: &str) -> bool {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        rd.flatten().any(|e| {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("md") {
+                return false;
+            }
+            if p.file_stem().and_then(|x| x.to_str()) == Some(name) {
+                return true;
+            }
+            std::fs::read_to_string(&p).is_ok_and(|t| {
+                t.lines()
+                    .skip(1)
+                    .take_while(|l| l.trim() != "---")
+                    .any(|l| {
+                        l.strip_prefix("name:")
+                            .is_some_and(|v| v.trim().trim_matches(['"', '\'']) == name)
+                    })
+            })
+        })
+    }
+    fn under_plugins(dir: &Path, name: &str, depth: u8) -> bool {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        rd.flatten().any(|e| {
+            let p = e.path();
+            if !p.is_dir() {
+                return false;
+            }
+            if p.file_name().and_then(|x| x.to_str()) == Some("agents") && names(&p, name) {
+                return true;
+            }
+            depth > 0 && under_plugins(&p, name, depth - 1)
+        })
+    }
+    cwd.is_some_and(|c| {
+        c.ancestors()
+            .any(|a| names(&a.join(".claude/agents"), name))
+    }) || home.is_some_and(|h| {
+        names(&h.join(".claude/agents"), name) || under_plugins(&h.join(".claude/plugins"), name, 7)
+    })
+}
+
+/// The size the hook fills in for a launch that states none (921): the
+/// built-in `web-fetch` reader only, and only when no agent of that name
+/// is defined.
+fn default_estimate(input: &Value, cwd: Option<&Path>, home: Option<&Path>) -> Option<u64> {
+    (input.get("subagent_type").and_then(Value::as_str) == Some(WEB_FETCH_TYPE)
+        && !agent_is_defined(WEB_FETCH_TYPE, cwd, home))
+    .then_some(WEB_FETCH_DEFAULT_TOKENS)
+}
+
 /// The refusal for a launch that states no size.
 pub fn estimate_missing_reason() -> String {
     format!(
@@ -2721,6 +2791,10 @@ struct HookInput {
     /// own by this, so its first call gets the usage line too.
     #[serde(default)]
     session_id: Option<String>,
+    /// The chat's working folder: where a project's own agents are defined
+    /// (921).
+    #[serde(default)]
+    cwd: Option<PathBuf>,
 }
 
 /// The hook's whole decision, pure: the CLI's stdin line and the chat's
@@ -3180,9 +3254,16 @@ fn decide_holding_unheld(
         .get("prompt")
         .and_then(Value::as_str)
         .is_some_and(|p| p.trim_start().starts_with(BRIEF_OPEN) && p.contains(BRIEF_CLOSE));
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let stated = stated_estimate(&input.tool_input);
+    // 921: a page reader with no stated size gets the default, written
+    // into the prompt below (the helper never sees it, 707).
+    let fill = (task && !briefed && stated.is_none())
+        .then(|| default_estimate(&input.tool_input, input.cwd.as_deref(), home.as_deref()))
+        .flatten();
     if task
         && !briefed
-        && let Err(reason) = estimate_verdict(stated_estimate(&input.tool_input), subagent)
+        && let Err(reason) = estimate_verdict(stated.or(fill), subagent)
     {
         return HookReply::deny(reason);
     }
@@ -3321,6 +3402,13 @@ fn decide_holding_unheld(
     let share = (mode == Some(super::budget::BudgetMode::FinishWithin))
         .then(|| super::budget::share_line(points));
     let mut changed = false;
+    if let Some(tokens) = fill
+        && let Some(Value::String(prompt)) = fields.get("prompt")
+    {
+        let line = format!("{ESTIMATE_LABEL} ~{}k\n{prompt}", tokens / 1000);
+        fields.insert("prompt".into(), Value::String(line));
+        changed = true;
+    }
     if let Some(Value::String(prompt)) = fields.get("prompt")
         && !prompt.trim_start().starts_with(BRIEF_OPEN)
     {
@@ -5887,6 +5975,93 @@ mod tests {
         // The description (his row's label) is the call's, untouched.
         assert_eq!(up["description"], "Estimated context: ~130k");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 921: the built-in page reader launches with no stated size (the
+    /// default is written into its prompt); every other type is refused as
+    /// before, and a `web-fetch` that a project, the user or a plugin
+    /// defines is that agent, so it too must state its size.
+    #[test]
+    fn a_page_reader_gets_a_default_size_and_nothing_else_does() {
+        use serde_json::json;
+        let web = json!({"subagent_type": "web-fetch"});
+        let home = sized_dir("921-home");
+        let cwd = sized_dir("921-cwd");
+        let (c, h) = (Some(cwd.as_path()), Some(home.as_path()));
+        assert_eq!(super::default_estimate(&web, c, h), Some(60_000));
+        assert_eq!(
+            super::default_estimate(&json!({"subagent_type": "Explore"}), c, h),
+            None
+        );
+        assert_eq!(super::default_estimate(&json!({}), c, h), None);
+        // Defined by the project (a parent folder counts), the user, a plugin.
+        let agents = cwd.join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("web-fetch.md"), "x").unwrap();
+        let deep = cwd.join("a/b");
+        std::fs::create_dir_all(&deep).unwrap();
+        assert_eq!(super::default_estimate(&web, Some(&deep), h), None);
+        std::fs::remove_dir_all(&agents).unwrap();
+        assert_eq!(super::default_estimate(&web, c, h), Some(60_000));
+        let ua = home.join(".claude/agents");
+        std::fs::create_dir_all(&ua).unwrap();
+        std::fs::write(ua.join("reader.md"), "---\nname: web-fetch\n---\nbody").unwrap();
+        assert_eq!(super::default_estimate(&web, c, h), None);
+        std::fs::remove_dir_all(&ua).unwrap();
+        let pa = home.join(".claude/plugins/cache/p/1.0/agents");
+        std::fs::create_dir_all(&pa).unwrap();
+        std::fs::write(pa.join("web-fetch.md"), "x").unwrap();
+        assert_eq!(super::default_estimate(&web, c, h), None);
+
+        // Through the hook: general-purpose still refused; a project's own
+        // web-fetch still refused; the built-in goes through with the line.
+        let dir = sized_dir("921");
+        let call = |input: serde_json::Value, cwd: &std::path::Path| {
+            serde_json::json!({"tool_name": "Agent", "cwd": cwd, "tool_input": input}).to_string()
+        };
+        let r = super::decide_with(
+            &dir,
+            &call(
+                json!({"prompt": "Read a page.", "subagent_type": "general-purpose"}),
+                &cwd,
+            ),
+            None,
+        );
+        assert_eq!(r.decision(), "deny", "other types still state a size");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("web-fetch.md"), "x").unwrap();
+        let r = super::decide_with(
+            &dir,
+            &call(
+                json!({"prompt": "Read a page.", "subagent_type": "web-fetch"}),
+                &cwd,
+            ),
+            None,
+        );
+        assert_eq!(
+            r.decision(),
+            "deny",
+            "a defined web-fetch is not the built-in"
+        );
+        std::fs::remove_dir_all(&agents).unwrap();
+        // The real home may define one on some machine: only then skip.
+        let real = std::env::var_os("HOME").map(PathBuf::from);
+        if super::default_estimate(&web, Some(&cwd), real.as_deref()).is_some() {
+            let r = super::decide_with(
+                &dir,
+                &call(
+                    json!({"prompt": "Read a page.", "subagent_type": "web-fetch"}),
+                    &cwd,
+                ),
+                None,
+            );
+            assert_eq!(r.decision(), "allow");
+            let up = r.updated_input().unwrap();
+            assert_eq!(up["prompt"], "Estimated context: ~60k\nRead a page.");
+        }
+        for d in [&dir, &home, &cwd] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     /// 707: a helper's first call past 285k carries one notice; later calls
