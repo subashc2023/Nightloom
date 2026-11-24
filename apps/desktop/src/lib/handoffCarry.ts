@@ -216,6 +216,40 @@ export function whenText(at: string): string {
   return `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}, ${h % 12 === 0 ? 12 : h % 12}:${m < 10 ? "0" : ""}${m} ${h < 12 ? "AM" : "PM"}`;
 }
 
+/** Item 914: one line on the next-chat card saying where its prompt came from. */
+export function originLine(fromWrapUp: boolean): string {
+  return fromWrapUp ? "Written by the wrap-up." : "Found in an ordinary reply, not the wrap-up — the notice still offers Wrap up now.";
+}
+
+/**
+ * Item 914: whether the chat's last live reply answers a wrap-up — his last
+ * message before it is one Nightloom sent (`isWrapUpText`) — and holds the
+ * next chat's prompt (`hasPrompt`). The log is the one source: the stage
+ * reads it at a turn's end and when a chat is shown, so a wrap-up sent while
+ * the notice was about another chat, or before a relaunch, still counts.
+ */
+export function lastReplyAnswersWrapUp(
+  events: readonly SessionEvent[],
+  live: readonly boolean[],
+  hasPrompt: (reply: string) => boolean,
+): boolean {
+  let i = events.length - 1;
+  while (i >= 0 && !(live[i] !== false && events[i].event === "assistant_message")) {
+    if (live[i] !== false && events[i].event === "user_message") return false;
+    i--;
+  }
+  if (i < 0) return false;
+  const reply = events[i] as Extract<SessionEvent, { event: "assistant_message" }>;
+  const text = reply.blocks.map((b) => (b.type === "text" ? b.text : "")).join("\n");
+  if (!hasPrompt(text)) return false;
+  for (let j = i - 1; j >= 0; j--) {
+    const e = events[j];
+    if (live[j] === false || e.event !== "user_message") continue;
+    return isWrapUpText(e.text);
+  }
+  return false;
+}
+
 /** A message Nightloom sent for him, not his words: a wrap-up. */
 export function isWrapUpText(text: string): boolean {
   return (
@@ -531,6 +565,9 @@ export interface Carry {
   quoted: number;
   artifacts: Artifacts;
   cost: WrapCost | null;
+  /** Item 914: the reply answers a wrap-up Nightloom sent (`isWrapUpText`
+   *  on his last message before it) — not a prompt written unasked. */
+  fromWrapUp: boolean;
   /** The fixed sections missing from the HANDOFF.md text this turn wrote;
    *  null when the turn wrote no HANDOFF.md (nothing to check). */
   missing: string[] | null;
@@ -560,6 +597,7 @@ export function buildCarry(inp: CarryInput): Carry {
       break;
     }
   }
+  const fromWrapUp = ask >= 0 && events[ask].event === "user_message" && isWrapUpText((inp.edited?.[ask] ?? (events[ask] as { text: string }).text) || "");
   // What the hand-off says: the turn's replies and what its calls wrote.
   const said: string[] = [];
   const handoffFile: string[] = [];
@@ -636,6 +674,7 @@ export function buildCarry(inp: CarryInput): Carry {
     quoted: his.length - unquoted.length,
     artifacts: artifactsOf(events, live, reply),
     cost,
+    fromWrapUp,
     missing,
   };
 }

@@ -109,6 +109,7 @@
     noteCodeProject,
     neverHandsOff,
   } from "./handoff.svelte";
+  import { armAwayCheck } from "./state/resumes.svelte";
   import { cardSize, dragCard, fold, noteStay, setCardSize, steppedMark, typedMark, unfold, type CardSize } from "./handoffFold.svelte";
   // Item 705 (option A, Console): the themed selects, and the next chat's model.
   import HudSelect from "./HudSelect.svelte";
@@ -1105,6 +1106,13 @@
   const wrapUpQueued = $derived(handoff.queuedId !== 0 && queue.some((q) => q.id === handoff.queuedId));
   // Item 705 (option A, Console): the notice is up, and at which of its three sizes.
   const handoffCardUp = $derived(!handedNext && handoffHere && handoff.stage === "due" && !busy);
+  // Item 912: while the card is up, a check every minute whether he has
+  // left the Mac — the turn's end was the only moment it was asked.
+  $effect(() => {
+    if (aside) return;
+    void handoffCardUp;
+    untrack(() => armAwayCheck());
+  });
   const handoffSize = $derived(cardSize(app.activeSessionId, "due"));
   const nextLabel = $derived(nextModelLabel(app.activeSessionId));
   /** The − / + of the mark's stepper: by 5, to the nearest 5. */
@@ -1175,7 +1183,8 @@
     const chat = app.activeSessionId;
     const used = contextUsed();
     const limit = app.connection?.contextLimit ?? null;
-    untrack(() => noteShown(chat, used, limit));
+    const events = app.events;
+    untrack(() => noteShown(chat, used, limit, events));
   });
 
   /*

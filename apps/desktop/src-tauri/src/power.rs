@@ -63,6 +63,9 @@ struct Inner {
     /// switch is on.
     count: usize,
     child: Option<Child>,
+    /// Holds the window asked for by name (item 912: the away hand-off,
+    /// from its wrap-up to the next chat's first reply), one count each.
+    named: std::collections::HashSet<String>,
 }
 
 /// One assertion for the whole app, reference-counted across whatever runs
@@ -78,6 +81,7 @@ impl Default for Holder {
                 prefs: Prefs::default(),
                 count: 0,
                 child: None,
+                named: std::collections::HashSet::new(),
             }),
         }
     }
@@ -101,6 +105,26 @@ impl Holder {
         g.count = g.count.saturating_sub(1);
         if g.count == 0 {
             Self::stop(&mut g);
+        }
+    }
+
+    /// Item 912: hold (`on`) or let go a hold the window names — one count
+    /// for as long as it is held, whatever runs meanwhile; asking twice is
+    /// one hold, and letting go of one not held is nothing.
+    pub fn hold_named(&self, name: &str, on: bool) {
+        let mut g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        if on {
+            if g.named.insert(name.to_string()) {
+                g.count += 1;
+                if g.count == 1 {
+                    Self::apply(&mut g);
+                }
+            }
+        } else if g.named.remove(name) {
+            g.count = g.count.saturating_sub(1);
+            if g.count == 0 {
+                Self::stop(&mut g);
+            }
         }
     }
 
@@ -286,6 +310,26 @@ mod tests {
         drop(b);
         assert_eq!(h.held(), 0);
         assert!(h.child_pid().is_none(), "the last guard kills it");
+    }
+
+    #[test]
+    fn a_named_hold_is_one_count_until_let_go_and_shares_the_child() {
+        let h = Holder::default();
+        h.hold_named("handoff", true);
+        h.hold_named("handoff", true);
+        assert_eq!(h.held(), 1, "asked twice is one hold");
+        if caffeinate_present() {
+            assert!(h.child_pid().is_some(), "the hold spawns the child");
+        }
+        let turn = h.acquire();
+        assert_eq!(h.held(), 2);
+        h.hold_named("handoff", false);
+        h.hold_named("handoff", false);
+        h.hold_named("never-held", false);
+        assert_eq!(h.held(), 1, "the turn's guard still holds");
+        drop(turn);
+        assert_eq!(h.held(), 0);
+        assert!(h.child_pid().is_none(), "the last one out kills it");
     }
 
     #[test]

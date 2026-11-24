@@ -120,10 +120,71 @@ describe("914 — the card stays until its buttons or a hand-off remove it", () 
   });
 
   it("the chat's composer (not an aside's) calls it whenever the open chat is not the one shown and no turn runs", () => {
-    const i = composerSrc.indexOf("noteShown(chat, used, limit)");
+    const i = composerSrc.indexOf("noteShown(chat, used, limit, events)");
     expect(i).toBeGreaterThan(0);
     const effect = composerSrc.slice(composerSrc.lastIndexOf("$effect(", i), i);
     expect(effect).toContain("if (aside || app.busy");
     expect(effect).toContain("handoff.chat === app.activeSessionId");
+  });
+});
+
+// Item 914, his screenshot of 11:46 PM (the wrap-up's result card and the
+// notice both up) and his question of 11:47 PM ("can i be sure the handoff
+// was still correct if it didn't go through the proper wrap up route?").
+import { buildCarry, isWrapUpText, originLine } from "./handoffCarry";
+import { wrapUpToSend } from "./handoff.svelte";
+import type { SessionEvent } from "./types";
+
+const usage = { input_tokens: 10, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0 };
+const user = (text: string): SessionEvent => ({ event: "user_message", text, at: "2026-11-23T23:40:00Z" }) as never;
+const reply = (text: string): SessionEvent =>
+  ({ event: "assistant_message", blocks: [{ type: "text", text }], usage, at: "2026-11-23T23:41:00Z" }) as never;
+const PROMPT_REPLY = "HANDOFF.md is written.\n\n<handoff>\nGoal: finish wave B.\nRead HANDOFF.md.\n</handoff>\n";
+
+describe("914 — one source for the stage: the log says whether the wrap-up is done", () => {
+  beforeEach(reset);
+
+  it("a wrap-up answered while the notice was about another chat: done — the notice steps aside, the reply's card is the one surface", () => {
+    noteAgentTurnEnd("a", PAST, LIMIT, [], true);
+    noteAgentTurnEnd("b", 20_000, LIMIT, [], false); // the projection went to b; beginWrapUp would have missed a
+    const log = [user("do the thing"), reply("done"), user(wrapUpToSend("a")), reply(PROMPT_REPLY)];
+    expect(isWrapUpText(wrapUpToSend("a"))).toBe(true);
+    noteAgentTurnEnd("a", PAST + 20_000, LIMIT, log, true);
+    expect([handoff.chat, handoff.stage]).toEqual(["a", "wrapped"]);
+    expect(handoff.startPrompt).toBe("Goal: finish wave B.\nRead HANDOFF.md.");
+    const carry = buildCarry({ events: log, live: log.map(() => true), reply: 3, prompt: handoff.startPrompt! });
+    expect(carry.fromWrapUp).toBe(true);
+    expect(originLine(true)).toBe("Written by the wrap-up.");
+  });
+
+  it("a prompt found in an ordinary reply leaves the notice offering Wrap up now, and the card says so", () => {
+    const log = [user("what next?"), reply(PROMPT_REPLY)];
+    noteAgentTurnEnd("a", PAST, LIMIT, log, true);
+    expect(handoff.stage).toBe("due");
+    const carry = buildCarry({ events: log, live: log.map(() => true), reply: 1, prompt: "Goal: finish wave B.\nRead HANDOFF.md." });
+    expect(carry.fromWrapUp).toBe(false);
+    expect(originLine(false)).toMatch(/not the wrap-up/);
+  });
+
+  it("after a relaunch, showing a chat whose wrap-up is answered shows the result, not the notice", () => {
+    const log = [user(wrapUpToSend("fresh")), reply(PROMPT_REPLY)];
+    noteShown("fresh", PAST, LIMIT, log);
+    expect([handoff.chat, handoff.stage]).toEqual(["fresh", "wrapped"]);
+  });
+
+  it("an aside after the wrap-up changes neither the stage nor its prompt", async () => {
+    const log = [user(wrapUpToSend("a")), reply(PROMPT_REPLY)];
+    noteAgentTurnEnd("a", PAST, LIMIT, log, true);
+    expect(handoff.stage).toBe("wrapped");
+    await askAside("one more thing?");
+    expect([handoff.chat, handoff.stage, handoff.startPrompt]).toEqual(["a", "wrapped", "Goal: finish wave B.\nRead HANDOFF.md."]);
+  });
+
+  it("Wrap up now from a notice the projection had left still goes as the wrap-up (beginWrapUp takes the chat)", async () => {
+    const { beginWrapUp } = await import("./handoff.svelte");
+    noteAgentTurnEnd("a", PAST, LIMIT, [], true);
+    noteAgentTurnEnd("b", 20_000, LIMIT, [], false);
+    beginWrapUp("a");
+    expect([handoff.chat, handoff.stage]).toEqual(["a", "wrapping"]);
   });
 });
