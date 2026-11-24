@@ -92,7 +92,7 @@ import type { SessionEvent } from "./types";
 import { dropQueued, enqueueMessage } from "./drafts.svelte";
 import { windowFocused } from "./notify";
 import { extractHandoff, HANDOFF_ASK } from "./handoffTag";
-import { wrapUpWithSections } from "./handoffCarry";
+import { lastReplyAnswersWrapUp, wrapUpWithSections } from "./handoffCarry";
 
 export type HandoffStage = "idle" | "due" | "wrapping" | "wrapped";
 
@@ -395,6 +395,57 @@ export function awayNow(chatActive = true, now = Date.now()): boolean {
   return isAway(now, lastActivity, windowFocused(), chatActive, idle);
 }
 
+/** Item 912 (his words: "if i like dont touch my mac for like 10min"): no
+ *  input on the Mac for `IDLE_AWAY_MS` by the shell's fresh reading, and
+ *  nothing typed in the composer for `AWAY_MS` — the window in front or not.
+ *  Stricter than `awayNow`, which counts the window merely not in front: a
+ *  card waiting in an idle chat is wrapped up only when he has left the Mac. */
+export function idleAway(now = Date.now()): boolean {
+  const idle = systemIdle && now - systemIdle.at <= 60_000 ? systemIdle.ms : 0;
+  return idle >= IDLE_AWAY_MS && now - lastActivity >= AWAY_MS;
+}
+
+// ---- 912: a card that waits while he is away ----
+
+/** The chats Nightloom has wrapped up by itself while the card waited
+ *  (912), this launch: never twice, until he sends in the chat again. */
+const awaySent = new Set<string>();
+
+/**
+ * The chats whose hand-off card waits with no turn to read it again (912):
+ * due, no *Stay here*, nothing queued for it, not already wrapped up by
+ * Nightloom, mark not "never" (545). The shown chat first, then the kept
+ * ones. Who of these is wrapped up, and when, is `resumes.svelte.ts`'s.
+ */
+export function waitingCards(): string[] {
+  const waits = (chat: string, s: Pick<HandoffState, "stage" | "dismissedAt" | "queuedId">) =>
+    s.stage === "due" && s.dismissedAt === 0 && s.queuedId === 0 && !awaySent.has(chat) && !neverHandsOff(chat);
+  const out: string[] = [];
+  if (handoff.chat && waits(handoff.chat, handoff)) out.push(handoff.chat);
+  for (const [chat, s] of stages) if (chat !== handoff.chat && waits(chat, s)) out.push(chat);
+  return out;
+}
+
+/** 912: the wrap-up is going into `chat` now, sent by Nightloom: never again
+ *  this launch, and the shown chat moves to `wrapping` as the card's own
+ *  *Wrap up now* does, so its reply's start prompt is read at its end. */
+export function noteAwayWrapUp(chat: string): void {
+  awaySent.add(chat);
+  if (handoff.chat === chat) beginWrapUp(chat);
+}
+
+/** 912: the wrap-up could not start (refused before anything was sent): the
+ *  card waits again, and the next check may try. */
+export function undoAwayWrapUp(chat: string): void {
+  awaySent.delete(chat);
+  if (handoff.chat === chat && handoff.stage === "wrapping") handoff.stage = "due";
+}
+
+/** The suite's reset. */
+export function clearAwaySent(): void {
+  awaySent.clear();
+}
+
 // ---- unattended chats (544) ----
 
 const UNATTENDED_KEY = "nightloom.unattended";
@@ -426,6 +477,8 @@ export function markUnattended(chat: string | null): void {
 }
 /** He sent a message in `chat`: he is driving it again. */
 export function markAttended(chat: string | null): void {
+  // 912: he is driving it again; a later absence may wrap it up afresh.
+  if (chat) awaySent.delete(chat);
   if (!chat || !unattended[chat]) return;
   delete unattended[chat];
   saveUnattended();
@@ -435,6 +488,82 @@ export function isUnattended(chat: string | null): boolean {
 }
 
 // ---- readings ----
+
+/** Make `chat` the one `handoff` shows: the shown chat's stage goes under
+ *  its id and `chat`'s comes back (backlog 137, review E's FE9 — a switch
+ *  used to reset the stage, so a chat wrapped up and left for a moment was
+ *  asked to wrap up again, and its found start prompt was gone). */
+function project(chat: string | null): void {
+  if (handoff.chat !== null) {
+    stages.set(handoff.chat, {
+      stage: handoff.stage,
+      dismissedAt: handoff.dismissedAt,
+      queuedId: handoff.queuedId,
+      startPrompt: handoff.startPrompt,
+    });
+  }
+  const back = chat === null ? undefined : stages.get(chat);
+  handoff.chat = chat;
+  handoff.stage = back?.stage ?? "idle";
+  handoff.dismissedAt = back?.dismissedAt ?? 0;
+  handoff.queuedId = back?.queuedId ?? 0;
+  handoff.startPrompt = back?.startPrompt ?? null;
+  handoff.noStartPromptChat = null;
+}
+
+/**
+ * Item 914 (his bug, 2026-11-23: "past 300k but there's no handoff thing"):
+ * the open chat, shown with no turn running, takes the card back. The
+ * stage lived only where a reading had put it — a turn's end or a mid-turn
+ * usage event — so a turn ending in another chat took the projection away
+ * (`handoff.chat` became that chat, and this chat's card went with it), and
+ * a relaunch forgot it; coming back to the chat, or asking it an aside,
+ * read nothing, and the card stayed gone until this chat's next turn ended.
+ * (The aside itself touches no hand-off state.) Now the composer calls this
+ * whenever the open chat is not the one shown: its kept stage comes back as
+ * it was, and a chat with none (a relaunch) is read from its log — never as
+ * away, so nothing is queued, and never lowered: a reading on open cannot
+ * put a card away or forget a *Stay here*; only a reading after a turn, a
+ * rewind, the card's buttons or a sent hand-off do.
+ */
+export function noteShown(
+  chat: string | null,
+  used: number | null,
+  limit: number | null,
+  /** The chat's log as shown: a wrap-up answered in it reads as done. */
+  events: SessionEvent[] | null = null,
+): void {
+  if (!chat || handoff.chat === chat || used == null || !limit) return;
+  const kept = stages.get(chat);
+  if (kept && (kept.stage !== "idle" || kept.dismissedAt > 0)) {
+    project(chat);
+    handoff.used = used;
+    handoff.limit = limit;
+    handoff.fill = Math.min(used / limit, 1);
+  } else noteFill(chat, used, limit, false, null, false);
+  if (events) wrappedByLog(events);
+}
+
+/**
+ * Item 914 (his screenshot, 11:46 PM: the wrap-up's "Next chat's prompt"
+ * card and the notice both up; his question, 11:47 PM: "can i be sure the
+ * handoff was still correct if it didn't go through the proper wrap up
+ * route?"): the log, not where `beginWrapUp` happened to run, says whether
+ * the wrap-up is done. A due notice whose chat's last reply answers a
+ * wrap-up Nightloom sent and holds the next chat's prompt is `wrapped` —
+ * the reply's card is then the one hand-off surface. A prompt found in an
+ * ordinary reply leaves the notice up, offering *Wrap up now*. `true` when
+ * it moved the stage.
+ */
+function wrappedByLog(events: SessionEvent[]): boolean {
+  if (handoff.stage !== "due") return false;
+  if (!lastReplyAnswersWrapUp(events, [], (t) => extractStartPrompt(t) !== null)) return false;
+  handoff.stage = "wrapped";
+  handoff.startPrompt = extractStartPrompt(lastReplyText(events));
+  // The wrap-up it answered went, whichever way it was sent.
+  handoff.queuedId = 0;
+  return true;
+}
 
 /**
  * One reading of the fill for a chat — a usage event mid-turn, or the
@@ -456,27 +585,7 @@ export function noteFill(
   /** Item 702: a rewind's reading — compared at the mark exactly. */
   exact = false,
 ): void {
-  if (handoff.chat !== chat) {
-    // Another chat's reading: this one's stage goes under its id and the
-    // other's comes back (backlog 137, review E's FE9 — a switch used to
-    // reset the stage, so a chat wrapped up and left for a moment was
-    // asked to wrap up again, and its found start prompt was gone).
-    if (handoff.chat !== null) {
-      stages.set(handoff.chat, {
-        stage: handoff.stage,
-        dismissedAt: handoff.dismissedAt,
-        queuedId: handoff.queuedId,
-        startPrompt: handoff.startPrompt,
-      });
-    }
-    const back = chat === null ? undefined : stages.get(chat);
-    handoff.chat = chat;
-    handoff.stage = back?.stage ?? "idle";
-    handoff.dismissedAt = back?.dismissedAt ?? 0;
-    handoff.queuedId = back?.queuedId ?? 0;
-    handoff.startPrompt = back?.startPrompt ?? null;
-    handoff.noStartPromptChat = null;
-  }
+  if (handoff.chat !== chat) project(chat);
   handoff.used = used ?? 0;
   handoff.limit = limit ?? 0;
   const fill = used != null && limit ? Math.min(used / limit, 1) : 0;
@@ -490,11 +599,14 @@ export function noteFill(
     handoff.dismissedAt = 0;
     if (before === "due") dropAutoQueued();
   }
-  const after = nextStage(before, fill, at, handoff.dismissedAt, exact);
+  let after = nextStage(before, fill, at, handoff.dismissedAt, exact);
   handoff.stage = after;
   if (before === "wrapping" && after === "wrapped") {
     handoff.startPrompt = events ? extractStartPrompt(lastReplyText(events)) : null;
   }
+  // Item 914: a wrap-up answered in the log is done, even one `beginWrapUp`
+  // never saw (sent while the notice was about another chat, or queued).
+  if (events && wrappedByLog(events)) after = "wrapped";
   // 545: a chat whose mark is "never" is not wrapped up by Nightloom.
   if (!chat || neverHandsOff(chat)) return;
   const crossing = autoQueues(before, after, away, handoff.dismissedAt);
@@ -543,6 +655,9 @@ export function withWrapUp(_chat: string | null, text: string): string {
 
 /** The wrap-up is going as this message: `due` → `wrapping`, once. */
 export function beginWrapUp(chat: string | null): void {
+  // Item 914: the chat the wrap-up goes into is the one shown from here —
+  // the notice may still have been about another chat's last reading.
+  if (chat !== null && handoff.chat !== chat) project(chat);
   if (handoff.chat !== chat || handoff.stage !== "due") return;
   handoff.stage = "wrapping";
   handoff.queuedId = 0;

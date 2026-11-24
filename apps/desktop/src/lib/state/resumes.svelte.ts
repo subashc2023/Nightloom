@@ -3,7 +3,7 @@ import { takeThreadHandoff } from "../threadHandoff.svelte";
 import { noteHandoffOpened } from "../handoffLog";
 import { hasHiddenChars } from "../shellRun";
 import * as api from "../api";
-import { carryReadOrder, firstMessage, awayNow, extractStartPrompt, handoff, markUnattended, neverHandsOff, noteChatProject, noteSystemIdle, noteThread, leaveHandoff, threadFor } from "../handoff.svelte";
+import { carryReadOrder, clearAwaySent, firstMessage, awayNow, extractStartPrompt, handoff, idleAway, isUnattended, markUnattended, neverHandsOff, noteAwayWrapUp, noteChatProject, noteSystemIdle, noteThread, leaveHandoff, projectFor, threadFor, undoAwayWrapUp, waitingCards, wrapUpToSend } from "../handoff.svelte";
 import { setDraftText } from "../drafts.svelte";
 import { chatName, notifyTurnEnd } from "../notify";
 import { limitPauseFrom, resumeDelayMs, resumeMessage } from "../limit";
@@ -59,6 +59,13 @@ export function clearResumes(): void {
   handedOff.clear();
   if (limitTimer !== null) clearTimeout(limitTimer);
   limitTimer = null;
+  // 912's state too.
+  if (awayTimer !== null) clearTimeout(awayTimer);
+  awayTimer = null;
+  awayArmed = false;
+  for (const c of chains.values()) clearTimeout(c.cap);
+  chains.clear();
+  clearAwaySent();
 }
 let limitTimer: ReturnType<typeof setTimeout> | null = null;
 /** When each chat's last entry was sent (`limitResumeTime`'s loop guard). */
@@ -137,7 +144,12 @@ export function noteTurnLimit(
   reply: string | null = null,
 ): void {
   const key = chat ?? NO_CHAT;
+  // 912: after this turn's readings (on screen the gauge's comes next), a
+  // card now waiting is checked from here on.
+  queueMicrotask(armAwayCheck);
   const p = limitPauseFrom(res, chat);
+  // 912: a turn ended in a chain Nightloom started while he was away.
+  const link = chat ? chainOf(chat) : null;
   if (!p) {
     // 543b: the reply asked to be continued later (`<continue-later>`) —
     // the chat stopped short of the limit with work left, or wants a time.
@@ -145,8 +157,25 @@ export function noteTurnLimit(
     // 544: a reply that holds the next chat's prompt is a hand-off — the
     // work goes on in the linked chat, by itself when he is away.
     const prompt = chat && !res.is_error && reply ? extractStartPrompt(reply) : null;
-    if (chat && prompt) void handOffUnattended(chat, prompt, home);
+    if (chat && prompt) {
+      const handing = handOffUnattended(chat, prompt, home);
+      // 912: the wrap-up's reply named the next chat — the hold runs on to
+      // that chat's first reply; not handed off (he came back), it ends.
+      if (link?.role === "from") void handing.then((next) => (next ? chainNext(link.from, next) : endChain(link.from, "not handed off")));
+      // 544's own hand-off (its wrap-up queued at a turn's end) holds from
+      // here: the wrap-up's turn held the Mac itself.
+      else if (!link)
+        void handing.then((next) => {
+          if (next) {
+            holdChain(chat);
+            chainNext(chat, next);
+          }
+        });
+    }
     const ask = chat && !res.is_error && reply && !prompt ? extractContinue(reply) : null;
+    // 912: the next chat's first reply ended, or the wrap-up ended with no
+    // prompt and no ask — the chain is over, the Mac may sleep.
+    if (link && !(link.role === "from" && (prompt || ask))) endChain(link.from, link.role === "next" ? "first reply ended" : "no prompt");
     if (chat && ask) {
       resumes[key] = askedResume(chat, home, ask, app.planUsage, Date.now());
       resumeLog(`asked ${key.slice(0, 8)} at=${new Date(resumes[key].at as number).toISOString()} (${ask.at})`);
@@ -165,6 +194,9 @@ export function noteTurnLimit(
     }
     return;
   }
+  // 912: a limit inside the chain keeps the hold; the entry below resumes
+  // the chat at the reset and the chain carries on from there.
+  if (link) resumeLog(`away chain ${link.from.slice(0, 8)} waits for the reset (${link.role})`);
   const at = chat ? limitResumeTime(p, Date.now(), resumeWent.get(key) ?? null) : null;
   resumes[key] = { chat: key, project: home, at, why: "limit", text: resumeMessage(p), pause: p };
   resumeLog(`paused ${key.slice(0, 8)} project=${home.id ?? "unfiled"} at=${at === null ? "his click" : new Date(at).toISOString()}`);
@@ -200,27 +232,30 @@ const handedOff = new Set<string>();
  * hand-off all go the same way. With him present the card waits for his
  * click, as before. A chat whose mark is "never" (545) is left alone.
  */
-async function handOffUnattended(chat: string, prompt: string, home: { id: string | null; name: string | null }): Promise<void> {
-  if (app.connection?.engine !== "claude-code" || hasHiddenChars(prompt) || neverHandsOff(chat)) return;
+async function handOffUnattended(chat: string, prompt: string, home: { id: string | null; name: string | null }): Promise<string | null> {
+  if (app.connection?.engine !== "claude-code" || hasHiddenChars(prompt) || neverHandsOff(chat)) return null;
   const once = `${chat}|${prompt}`;
-  if (handedOff.has(once)) return;
+  if (handedOff.has(once)) return null;
   await readIdle();
   const onScreen = chat === app.activeSessionId && (app.project?.id ?? null) === home.id;
-  if (!awayNow(onScreen)) return;
-  if (handedOff.has(once) || chatRuns(chat)) return;
+  if (!awayNow(onScreen)) return null;
+  if (handedOff.has(once) || chatRuns(chat)) return null;
   handedOff.add(once);
   const text = firstMessage("", prompt);
   resumeLog(`handoff ${chat.slice(0, 8)} ${onScreen ? "on screen" : "off screen"} project=${home.id ?? "unfiled"}`);
   if (onScreen) {
     if (app.busy) {
       handedOff.delete(once);
-      return;
+      return null;
     }
     let index = app.events.length - 1;
     while (index > 0 && app.events[index].event !== "assistant_message") index--;
     await continueWithPrompt(chat, index, prompt, { route: "unattended" });
-    if (app.activeSessionId !== chat) markUnattended(app.activeSessionId);
-    return;
+    if (app.activeSessionId !== chat) {
+      markUnattended(app.activeSessionId);
+      return app.activeSessionId;
+    }
+    return null;
   }
   let next: string;
   try {
@@ -228,7 +263,7 @@ async function handOffUnattended(chat: string, prompt: string, home: { id: strin
   } catch (e) {
     handedOff.delete(once);
     resumeLog(`handoff ${chat.slice(0, 8)} not continued: ${String(e)}`);
-    return;
+    return null;
   }
   // Item 757: logged for scoring.
   noteHandoffOpened({ route: "unattended", from: chat, index: null, to: next, sent: text });
@@ -245,8 +280,130 @@ async function handOffUnattended(chat: string, prompt: string, home: { id: strin
   sendInChat(next, home, text, [], (why) => {
     setDraftText(next, text);
     addToast(`The hand-off's new chat could not start (${why}) — its prompt is in that chat's box`);
+    // 912: nothing runs in it, so nothing holds the Mac for it.
+    endChain(chat, `next chat refused: ${why}`);
   });
   void refreshSessions();
+  return next;
+}
+
+// ---- 912: the card that waits while he is away ----
+
+/** How often a waiting card checks whether he has left (912). */
+export const AWAY_CHECK_MS = 60_000;
+/** The longest one chain holds the Mac awake, whatever happens (912). */
+export const CHAIN_CAP_MS = 6 * 60 * 60_000;
+let awayTimer: ReturnType<typeof setTimeout> | null = null;
+/** Whether the backend's `handoff-away` wake is armed. */
+let awayArmed = false;
+
+/** The chains Nightloom started while he was away (912), by the chat that
+ *  wrapped up: `next` once the next chat is started. While any runs, the
+ *  Mac is held awake (`power.rs`'s child, by his switches). */
+const chains = new Map<string, { next: string | null; cap: ReturnType<typeof setTimeout> }>();
+
+function chainOf(chat: string): { from: string; role: "from" | "next" } | null {
+  if (chains.has(chat)) return { from: chat, role: "from" };
+  for (const [from, c] of chains) if (c.next === chat) return { from, role: "next" };
+  return null;
+}
+
+function holdChain(from: string): void {
+  if (chains.has(from)) return;
+  const cap = setTimeout(() => endChain(from, "cap"), CHAIN_CAP_MS);
+  chains.set(from, { next: null, cap });
+  if (chains.size === 1) void api.powerHold("handoff", true).catch(() => {});
+  resumeLog(`away chain ${from.slice(0, 8)} holds the Mac awake`);
+}
+
+function chainNext(from: string, next: string): void {
+  const c = chains.get(from);
+  if (c) c.next = next;
+}
+
+function endChain(from: string, why: string): void {
+  const c = chains.get(from);
+  if (!c) return;
+  clearTimeout(c.cap);
+  chains.delete(from);
+  if (chains.size === 0) void api.powerHold("handoff", false).catch(() => {});
+  resumeLog(`away chain ${from.slice(0, 8)} ends: ${why}`);
+}
+
+/** The suite's look at the chains: `from → next`. */
+export function awayChains(): Record<string, string | null> {
+  return Object.fromEntries([...chains].map(([k, v]) => [k, v.next]));
+}
+
+/** The cards this check may wrap up (912): the open chat's, and an
+ *  unattended chat's (544: Nightloom sent its last message). A chat he
+ *  was driving and left in the background is not wrapped up for him. */
+function awayCandidates(): string[] {
+  return waitingCards().filter((c) => c === app.activeSessionId || isUnattended(c));
+}
+
+/**
+ * Item 912 (his bug, 3:25 PM: the card waited 1.5 h while he was away and
+ * nothing happened): the away rule was read only when a turn ended, so a
+ * card up in an idle chat waited forever. While a card waits, this checks
+ * every `AWAY_CHECK_MS` — the backend's `handoff-away` wake, which a hidden
+ * window cannot slow (535), and the page's own timer — with the Mac's idle
+ * time read fresh. Once he has left the Mac (`idleAway`), the wrap-up goes
+ * into that chat as the card's *Wrap up now* would send it, and the rest is
+ * 544's chain: the reply's start prompt starts the next chat with no click.
+ * From the wrap-up until the next chat's first reply ends, the Mac is held
+ * awake. Never twice for one card; nothing for a *Stay here*, a "never"
+ * mark (545), a chat that runs a turn, or another chat he was driving.
+ */
+export async function checkAwayHandoffs(): Promise<void> {
+  if (app.connection?.engine !== "claude-code" || awayCandidates().length === 0) return armAwayCheck();
+  await readIdle();
+  if (!idleAway()) return armAwayCheck();
+  for (const chat of awayCandidates()) {
+    const onScreen = chat === app.activeSessionId;
+    if (chatRuns(chat) || (onScreen && app.busy)) continue;
+    const text = wrapUpToSend(chat);
+    if (!text.trim()) continue;
+    // Off screen, only where this launch knows it lives — `homeFor` would
+    // guess the open project for a chat it has never seen.
+    const home = onScreen ? homeFor(chat) : knownHome(chat);
+    if (!home) {
+      resumeLog(`away wrap-up ${chat.slice(0, 8)} skipped: its project is not known`);
+      continue;
+    }
+    noteAwayWrapUp(chat);
+    markUnattended(chat);
+    holdChain(chat);
+    resumeLog(`away wrap-up ${chat.slice(0, 8)} ${onScreen ? "on screen" : "off screen"} project=${home.id ?? "unfiled"}`);
+    sendInChat(chat, home, text, [], (why) => {
+      undoAwayWrapUp(chat);
+      endChain(chat, `wrap-up refused: ${why}`);
+      resumeLog(`away wrap-up ${chat.slice(0, 8)} refused: ${why}`);
+    });
+  }
+  armAwayCheck();
+}
+
+/** Where an off-screen chat lives, if this launch knows (912). */
+function knownHome(chat: string): { id: string | null; name: string | null } | null {
+  const rec = app.background[chat];
+  if (rec) return { id: rec.project ?? null, name: rec.projectName ?? null };
+  const known = chatHome.get(chat);
+  if (known) return { id: known.project, name: known.name };
+  const project = projectFor(chat);
+  return project === undefined ? null : { id: project, name: null };
+}
+
+/** Arm the next away check while a card waits, or clear it (912). */
+export function armAwayCheck(): void {
+  if (awayTimer !== null) clearTimeout(awayTimer);
+  awayTimer = null;
+  const waiting = app.connection?.engine === "claude-code" && awayCandidates().length > 0;
+  const at = waiting ? Date.now() + AWAY_CHECK_MS : null;
+  // Cleared once, not at every turn's end with no card waiting.
+  if (at !== null || awayArmed) void api.armWake("handoff-away", at).catch(() => {});
+  awayArmed = at !== null;
+  if (at !== null) awayTimer = setTimeout(() => void checkAwayHandoffs(), AWAY_CHECK_MS);
 }
 
 /** The backend's `limit` wake fired (`scheduleRuntime.ts` listens), or the

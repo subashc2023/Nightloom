@@ -121,6 +121,8 @@ export const COMPOSER_ASIDE_GATES: { match: string; behaviour: string; why: stri
   { match: "probeCodeProject(chat, root)", behaviour: "handoff", why: "chat-only: ASIDE_HIDDEN.handoff" },
   { match: 'if (handoff.stage === "due") untrack(() => probeCodeProject', behaviour: "handoff", why: "chat-only: ASIDE_HIDDEN.handoff" },
   { match: "const used = contextUsed();", behaviour: "handoff", why: "chat-only: the context fill is the chat's" },
+  { match: "if (handoff.chat === app.activeSessionId) return;", behaviour: "handoff", why: "chat-only: the open chat takes its card back (item 914)" },
+  { match: "void handoffCardUp;", behaviour: "handoff", why: "chat-only: the away check while the card waits (item 912)" },
   { match: "const fams = familyRows(AGENT_PILLS, newestIds, modelSeen.byAlias, cliNow, \"\")", behaviour: "handoff", why: "chat-only: ASIDE_HIDDEN.handoff — the next chat's model rows (item 705)" },
   { match: "return asideDrain();", behaviour: "queue", why: "the aside's own drain: same behaviour" },
   { match: "stopSendFor(key)", behaviour: "queue", why: "chat-only: Send now interrupts a chat turn (item 536)" },

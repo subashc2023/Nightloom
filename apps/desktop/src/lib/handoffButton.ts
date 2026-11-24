@@ -16,7 +16,7 @@
  */
 
 import { extractStartPrompt } from "./handoff.svelte";
-import { artifactsSummary, artifactsText, capWords, composeFirstMessage, costText, emptyArtifacts, SECTIONS, WORDS_CAP_TOKENS, type Carry } from "./handoffCarry";
+import { artifactsSummary, artifactsText, capWords, composeFirstMessage, costText, emptyArtifacts, originLine, SECTIONS, WORDS_CAP_TOKENS, type Carry } from "./handoffCarry";
 import { keptGet, keptSet } from "./keptFolds.svelte";
 import { viewGet, viewSet } from "./viewState";
 import { hasHiddenChars } from "./shellRun";
@@ -266,6 +266,7 @@ function carrySig(next: NextChat): string {
     c.words.map((m) => m.id).join(","),
     artifactsSummary(c.artifacts),
     costText(c.cost),
+    c.fromWrapUp ? "w" : "r",
     c.missing === null ? "-" : c.missing.join(","),
   ].join("|");
 }
@@ -314,7 +315,10 @@ function carryBlock(next: NextChat, read: () => NextChat | null | undefined): HT
     );
   }
   const cost = costText(carry.cost);
-  if (cost) box.append(el("div", "handoff-line handoff-cost", `${cost}.`));
+  // Item 914: where the prompt came from — the wrap-up's own reply, or one
+  // written unasked, which the notice still offers to wrap up properly.
+  box.append(el("div", carry.fromWrapUp ? "handoff-line handoff-origin" : "handoff-line handoff-origin handoff-warn", originLine(carry.fromWrapUp)));
+  if (cost && carry.fromWrapUp) box.append(el("div", "handoff-line handoff-cost", `${cost}.`));
   return box;
 }
 

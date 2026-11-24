@@ -30,6 +30,7 @@ import { tick } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import { app, chatRuns, limitWakeDue, refreshPlanUsage, resumeAfterLimit, resumes, sendInChat } from "./state.svelte";
 import { enqueueMessage } from "./drafts.svelte";
+import { checkAwayHandoffs } from "./state/resumes.svelte";
 import * as api from "./api";
 import { deliverTo, isLimited, type ChatProject, type Delivery, type Scheduled, type TickDeps } from "./schedule";
 import {
@@ -188,10 +189,13 @@ function listenForWakes(): void {
       log(`tick wake-due entries=${Object.keys(scheduled).length}`);
       void runScheduleTick();
     } else if (e.payload === "limit") limitWakeDue();
+    // Item 912: a hand-off card waits — has he left the Mac?
+    else if (e.payload === "handoff-away") void checkAwayHandoffs();
   }).catch(() => {});
   void listen("system-woke", () => {
     void runScheduleTick();
     limitWakeDue();
+    void checkAwayHandoffs();
   }).catch(() => {});
 }
 

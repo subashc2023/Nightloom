@@ -344,6 +344,14 @@ pub(crate) fn set_power_prefs(power: State<'_, power::Holder>, prefs: power::Pre
     power.set_prefs(prefs);
 }
 
+/// Item 912: the window holds the Mac awake by name between turns — the
+/// away hand-off from its wrap-up until the next chat's first reply ends —
+/// with the same child and switches as a turn's hold.
+#[tauri::command]
+pub(crate) fn power_hold(power: State<'_, power::Holder>, name: String, on: bool) {
+    power.hold_named(&name, on);
+}
+
 /// Scale the whole window (nightshift backlog 108): `WebviewWindow::set_zoom`,
 /// which on macOS is `WKWebView.pageZoom` (11+) — the same page zoom
 /// Chrome's ⌘+ does, every CSS pixel scaled. The factor is the frontend's

@@ -1967,6 +1967,12 @@ export function setPowerPrefs(prefs: { keepAwake: boolean; keepDisplayAwake: boo
   return invoke("set_power_prefs", { prefs });
 }
 
+/** Item 912: hold the Mac awake by `name` (on) or let it go — `power.rs`'s
+ *  child, by the same switches as a turn's hold. */
+export function powerHold(name: string, on: boolean): Promise<null> {
+  return invoke("power_hold", { name, on });
+}
+
 /** Whole-app zoom (nightshift backlog 108): the webview's page zoom, 1 is
  *  Actual Size. `zoom.ts` keeps the factor; Rust only sets it. */
 export function setZoom(factor: number): Promise<null> {

@@ -1867,6 +1867,7 @@ fn main() {
             commands::system::notify,
             commands::system::notify_usage_refreshed,
             commands::system::set_power_prefs,
+            commands::system::power_hold,
             commands::system::set_zoom,
             webview_fit::refit_webview,
             cursor_keep::keep_cursor,
