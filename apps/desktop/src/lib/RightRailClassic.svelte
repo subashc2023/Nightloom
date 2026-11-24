@@ -12,6 +12,7 @@
   import { tip } from "./tip";
   import { railFold, toggleRailFold } from "./railFold.svelte";
   import { liveLegend, liveTip } from "./liveContext";
+  import { handOffBlock, handOffNow } from "./manualHandoff.svelte";
   import { rightRailLogic, type RightRailLogicProps } from "./rightRail/logic.svelte";
 
   // Item 856: the behaviour lives once, in `rightRail/logic.svelte.ts`; this file is the look.
@@ -111,6 +112,17 @@
           >
             <i class="n"></i><span>Hand-off line</span><b>{T.handoffLine}</b>
           </div>
+        {/if}
+        {#if !T.aside && app.activeSessionId}
+          <!-- Item 915: the hand-off whenever he wants, at any fill. Not for asides: an aside has no hand-off. -->
+          {@const block = handOffBlock()}
+          <button
+            class="hand"
+            type="button"
+            disabled={!!block}
+            use:tip={block ?? "Send the wrap-up now, at any fill.\nThe next chat starts small."}
+            onclick={() => void handOffNow()}>Hand off now</button
+          >
         {/if}
         {#if T.cache}
           <div
@@ -522,6 +534,21 @@
     gap: 6px;
     align-items: center;
     padding: 2px 0;
+  }
+  .hand {
+    margin: 4px 0 2px;
+    font: inherit;
+    font-size: 11.5px;
+    color: var(--ink);
+    background: transparent;
+    border: 1px solid var(--line, currentColor);
+    border-radius: 6px;
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+  .hand:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .dk b {
     font: 11px var(--mono);

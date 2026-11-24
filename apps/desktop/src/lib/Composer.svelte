@@ -89,7 +89,6 @@
     hasOwnMessage,
     hasOwnThreshold,
     message,
-    wrapUpToSend,
     noteActivity,
     noteFill,
     queueHold,
@@ -244,7 +243,7 @@
   import { FocusThroughLock, boxLocked } from "./boxLock";
   import { boxMounted, chatBoxMounted, composerSummon, isSummonTarget } from "./composerSummon.svelte";
   import { registerPasteHandler, type PasteRequest } from "./pasteToCompose";
-  import { requestWrapUp } from "./wrapAsides.svelte";
+  import { handOffBlock, handOffNow, isHandoffCommand } from "./manualHandoff.svelte";
   // Backlog 283: the same composer in an aside.
   import {
     asideAsking,
@@ -925,19 +924,30 @@
     if (insSig === null && insDismissed !== null) untrack(() => (insDismissed = null));
   });
   const insMatches = $derived(insSig !== null && insSig === insDismissed ? [] : insertMatches(insTok));
-  const slashOpen = $derived((wholeSlash || savedMatches.length > 0 || insMatches.length > 0) && !slashDismissed);
+  /*
+   * Item 915: `/handoff` — the main chat's own command (not an aside's: an
+   * aside has no hand-off), listed on either engine, before the CLI's names.
+   * Sent alone it runs the hand-off-now path instead of going as text.
+   */
+  const ownMatches = $derived(
+    !aside && /^\/[A-Za-z0-9_-]*$/.test(text) && "handoff".startsWith(text.slice(1).toLowerCase())
+      ? [{ name: "handoff", kind: "send the hand-off message now" }]
+      : [],
+  );
+  const slashOpen = $derived((wholeSlash || savedMatches.length > 0 || insMatches.length > 0 || ownMatches.length > 0) && !slashDismissed);
   const slashMatches = $derived.by(() => {
     if (!slashOpen) return [];
-    const none = { prompt: null as MessagePrompt | null, insert: null as BoxInsert | null };
+    const none = { prompt: null as MessagePrompt | null, insert: null as BoxInsert | null, own: false };
     const mine = savedMatches.map((p) => ({ name: p.name, kind: "saved prompt", ...none, prompt: p as MessagePrompt | null }));
     const ours = insMatches.map((i) => ({ name: i.name, kind: insertLabel(i, insTok), ...none, insert: i as BoxInsert | null }));
-    if (!wholeSlash) return [...mine, ...ours];
+    const cmd = ownMatches.map((c) => ({ ...c, ...none, own: true }));
+    if (!wholeSlash) return [...mine, ...ours, ...cmd];
     const q = text.slice(1).toLowerCase();
-    const taken = new Set(mine.map((m) => m.name.toLowerCase()));
+    const taken = new Set([...mine, ...cmd].map((m) => m.name.toLowerCase()));
     const theirs = slashNames
       .filter((s) => s.name.toLowerCase().startsWith(q) && !taken.has(s.name.toLowerCase()))
       .map((s) => ({ ...s, ...none }));
-    return [...mine, ...ours, ...theirs].slice(0, 12);
+    return [...mine, ...ours, ...cmd, ...theirs].slice(0, 12);
   });
   /** Put an insert in place of its token, one undo step; a table goes in
    *  through the grid editor (the box a table is drawn in), its first cell
@@ -1111,23 +1121,11 @@
     setChatThreshold(String(steppedMark(handoffThresholdPct, dir)));
   }
 
-  /** **Wrap up now**: the message as it stands, as a turn of its own. */
+  /** **Wrap up now**: the message as it stands, as a turn of its own.
+   *  Item 915: the path is `manualHandoff.svelte.ts`'s, shared with the
+   *  right panel's *Hand off now* and `/handoff`; only the send is ours. */
   async function sendWrapUpNow(): Promise<void> {
-    if (app.busy || !app.connection || !wrapUpText.trim()) return;
-    noteActivity();
-    const chat = app.activeSessionId;
-    // Item 285: with open asides, their picker first; each ticked aside's
-    // summary rides in (log.md for a bound chat, the message otherwise).
-    // ~~`wrapUpText`~~ — item 747: with the fixed sections and his goal, as the notice shows.
-    const text = wrapUpToSend(chat, wrapUpText);
-    await requestWrapUp(chat, async (extra) => {
-      if (app.busy || !app.connection || app.activeSessionId !== chat) {
-        addToast("The wrap-up did not go — the chat was busy or no longer open; press Wrap up now again");
-        return;
-      }
-      beginWrapUp(chat);
-      await dispatch(extra ? `${text}\n\n${extra}` : text, [], true);
-    });
+    await handOffNow((t) => dispatch(t, [], true));
   }
 
   /** The per-chat mark on the notice: raising it above the fill puts the notice away. */
@@ -2724,6 +2722,17 @@
     const t = text.trim();
     const empty = !t && attachments.length === 0 && comments.length === 0;
     if (empty || !app.connection) return;
+    // Item 915: `/handoff` alone is the hand-off-now path, not text to send.
+    if (!aside && isHandoffCommand(text) && attachments.length === 0 && comments.length === 0) {
+      const block = handOffBlock();
+      if (block) {
+        addToast(block);
+        return;
+      }
+      setDraftText(key, "");
+      await sendWrapUpNow();
+      return;
+    }
     // Item 694: a plain turn does not take the held passage; Send drops it.
     dropHeld(key);
     // A send is presence, for the hand-off's away rule.
