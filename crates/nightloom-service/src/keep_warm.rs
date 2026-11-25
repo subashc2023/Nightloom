@@ -287,6 +287,19 @@ pub fn reply_of(session: &Session) -> Option<Reply> {
     })
 }
 
+/// The model the chat's newest live reply ran on, as the log names it
+/// (item 972): a chat offered to keep-warm without an agent of its own is
+/// pinged on this model, so the ping reads the cache the reply wrote.
+pub fn reply_model(session: &Session) -> Option<String> {
+    let live = session.live_events();
+    live.iter().rev().find_map(|(_, e)| match e {
+        SessionEvent::AssistantMessage { model, .. } if !model.trim().is_empty() => {
+            Some(model.clone())
+        }
+        _ => None,
+    })
+}
+
 /// Whether an aside sent at `sent_ms` that read `cache_read` tokens from
 /// cache (its newest round's read: every round sends the chat's prefix)
 /// refreshed `reply`'s cache (item 677): sent after the reply, and a read
@@ -1102,6 +1115,24 @@ impl Registry {
         true
     }
 
+    /// Item 972: at launch, every restored tab's chat is offered from its
+    /// last reply, not only the one shown (`keep_warm_status` was the one
+    /// caller, so a chat in a background tab was never pinged again after a
+    /// restart). Each goes through [`Self::offer`], so the switch (default
+    /// on), a run already held and `step`'s guards (1-hour cache, 50k
+    /// context, cap, awake Mac) decide exactly as for a shown chat. Returns
+    /// the chats that took the offer.
+    pub fn offer_restored(
+        &self,
+        chats: Vec<(String, std::path::PathBuf, AgentSpec, Reply)>,
+    ) -> Vec<String> {
+        chats
+            .into_iter()
+            .filter(|(chat, dir, spec, reply)| self.offer(chat, dir, spec, *reply))
+            .map(|(chat, ..)| chat)
+            .collect()
+    }
+
     /// Whether the chat would take [`Self::offer`]'s facts: on, nothing held.
     pub fn wants_facts(&self, chat: &str, dir: &Path) -> bool {
         let default = self.default_mode();
@@ -1749,6 +1780,61 @@ mod tests {
         assert!(!reg.offer("o", &off, &spec(), reply(100_000)));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&off);
+    }
+
+    /// Item 972: three restored tabs, one of them shown — all three are
+    /// offered at launch and each is pinged by the same gates; a chat that is
+    /// off, or one whose last reply is under 50k or the 5-minute cache, is
+    /// taken in but never pinged.
+    #[test]
+    fn every_restored_tabs_chat_is_offered_at_launch_and_the_gates_decide() {
+        let reg = Registry::default();
+        let p = Policy::default();
+        let dirs: Vec<_> = ["a", "b", "c"]
+            .iter()
+            .map(|t| scratch(&format!("restored-{t}")))
+            .collect();
+        let shown = reply(100_000);
+        let mut small = reply(10_000);
+        small.sent_ms = 0;
+        let mut five = reply(100_000);
+        five.one_hour = false;
+        // The shown chat reaches the registry as before (keep_warm_status).
+        assert!(reg.offer("a", &dirs[0], &spec(), shown));
+        // Launch: all three restored tabs, the shown one included.
+        let took = reg.offer_restored(vec![
+            ("a".into(), dirs[0].clone(), spec(), shown),
+            ("b".into(), dirs[1].clone(), spec(), small),
+            ("c".into(), dirs[2].clone(), spec(), five),
+        ]);
+        assert_eq!(
+            took,
+            vec!["b".to_string(), "c".to_string()],
+            "a was already held"
+        );
+        for (c, d) in ["a", "b", "c"].iter().zip(&dirs) {
+            assert!(!reg.wants_facts(c, d), "{c} is held");
+        }
+        let due: Vec<_> = reg
+            .due(&p, 55 * MIN, |_| false)
+            .into_iter()
+            .map(|j| j.chat)
+            .collect();
+        assert_eq!(
+            due,
+            vec!["a".to_string()],
+            "only the 1-hour, 50k-context chat is pinged"
+        );
+        // A chat switched off is not taken.
+        let off = scratch("restored-off");
+        reg.set_mode("o", &off, Mode::Off, None, 0);
+        assert!(
+            reg.offer_restored(vec![("o".into(), off.clone(), spec(), shown)])
+                .is_empty()
+        );
+        for d in dirs.iter().chain([&off]) {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     /// Pings every 55 min from 55 min up to `until`, each a hit; the

@@ -18,6 +18,7 @@ use nightloom_core::Session;
 use nightloom_service::agent::AgentSpec;
 use nightloom_service::cache_miss;
 use nightloom_service::keep_warm::{self, Mode, Policy, Registry, Status};
+use nightloom_service::store;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -390,6 +391,102 @@ pub async fn keep_warm_status(
         None => state.log_dir().await.join("ask").join(&chat),
     };
     Ok(holder.0.status(&chat, Some(&dir), &policy(), now_ms()))
+}
+
+/// What a restored chat's log gives keep-warm (item 972), owned so no lock
+/// is held while the agent is looked for.
+struct RestoredFacts {
+    full: String,
+    dir: std::path::PathBuf,
+    reply: keep_warm::Reply,
+    resume: String,
+    model: Option<String>,
+}
+
+fn restored_facts(session: &Session) -> Option<RestoredFacts> {
+    let full = session.id.clone();
+    let dir = session
+        .log_path()
+        .and_then(|p| p.parent())
+        .map(|d| d.join("ask").join(&full))?;
+    Some(RestoredFacts {
+        reply: keep_warm::reply_of(session)?,
+        resume: crate::resume_of(session)?,
+        model: keep_warm::reply_model(session),
+        full,
+        dir,
+    })
+}
+
+/// Item 972: at launch the window offers every restored tab's chat to
+/// keep-warm from its last reply, not only the shown one (which
+/// `keep_warm_status` takes): a chat in a background tab had no run after a
+/// restart and was never pinged. Each chat's log is read from the open
+/// project's folder (nothing is held or locked); its agent is its own idle
+/// one, else the rail's newest spec when that runs in the project's folder,
+/// on the model the chat's last reply ran on; the same gates as a shown chat
+/// decide (`Registry::offer`, then `step`). Returns how many chats are still
+/// waiting for the rail to connect — the window asks again shortly.
+#[tauri::command]
+pub async fn keep_warm_offer_restored(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    holder: State<'_, Holder>,
+    chats: Vec<String>,
+) -> Result<usize, String> {
+    let project = state.active().await;
+    let workspace = project.as_ref().map(|p| p.workspace_dir());
+    let log_dir = state.log_dir().await;
+    let focus = state.chats.focus();
+    let mut waiting = 0;
+    let mut offers = Vec::new();
+    for chat in chats.iter().filter(|c| chat_id_ok(c)) {
+        let facts = match state.chats.find(chat) {
+            // Held (shown, or running): read only if its log is free.
+            Some((_, log)) => log.try_lock().ok().and_then(|s| restored_facts(&s)),
+            None => {
+                let (dir, id) = (log_dir.clone(), chat.clone());
+                crate::blocking(move || {
+                    let path = store::find_by_prefix(&dir, &id).map_err(|e| e.to_string())?;
+                    Session::load(path).map_err(|e| e.to_string())
+                })
+                .await
+                .ok()
+                .and_then(|s| restored_facts(&s))
+            }
+        };
+        let Some(f) = facts else { continue };
+        if state.agents.busy(&f.full) || !holder.0.wants_facts(&f.full, &f.dir) {
+            continue;
+        }
+        let own = state
+            .agents
+            .spec_of(&f.full, focus.as_deref() == Some(f.full.as_str()));
+        let spec = own.or_else(|| {
+            state
+                .agents
+                .rail_spec(workspace.as_deref())
+                .map(|mut spec| {
+                    // The ping runs on the model that wrote the reply's cache.
+                    if f.model.is_some() {
+                        spec.model = f.model.clone();
+                    }
+                    spec
+                })
+        });
+        let Some(mut spec) = spec else {
+            waiting += 1;
+            continue;
+        };
+        spec.resume = Some(f.resume);
+        offers.push((f.full, f.dir, spec, f.reply));
+    }
+    let took = holder.0.offer_restored(offers);
+    let (policy, now) = (policy(), now_ms());
+    for chat in &took {
+        emit(&app, &holder.0.status(chat, None, &policy, now));
+    }
+    Ok(waiting)
 }
 
 /// His Settings default, "Keep chats' caches warm automatically" (item

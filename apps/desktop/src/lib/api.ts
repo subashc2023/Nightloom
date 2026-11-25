@@ -979,6 +979,11 @@ export function keepWarmStatus(chat: string): Promise<import("./keepWarm").KeepW
   return invoke("keep_warm_status", { chat });
 }
 
+/** Item 972: offer every restored tab's chat to keep-warm from its last reply; resolves to how many are still waiting for the rail to connect. */
+export function keepWarmOfferRestored(chats: string[]): Promise<number> {
+  return invoke("keep_warm_offer_restored", { chats });
+}
+
 export function keepWarmStop(chat: string): Promise<boolean> {
   return invoke("keep_warm_stop", { chat });
 }
