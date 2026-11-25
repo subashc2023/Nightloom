@@ -23,6 +23,7 @@ import * as api from "./api";
 import { nameLine } from "./chatLabel";
 import { extractAsk } from "./askTag";
 import { isStuck } from "./stuck";
+import { allowBannerBody, bannerAllows } from "./bannerAnswer";
 
 /** A chat's turn ended (item 753): what the Needs-you view keeps of it. */
 export interface TurnEnded {
@@ -314,8 +315,47 @@ export async function notifyNeedsYou(chat: string, req: ApprovalRequest, prefs?:
     if (held.size > HELD_MAX) held.delete(held.keys().next().value as string);
     return;
   }
+  await postNeedsYou(chat, req);
+}
+
+/**
+ * The banners posted for waiting calls (item 973), by the call's id: what a
+ * press on one names when it says what it did. At most `HELD_MAX`.
+ */
+const posted = new Map<string, { chat: string; name: string }>();
+
+/** The chat and the call a posted banner named, if it was posted here. */
+export function postedBanner(id: string): { chat: string; name: string } | null {
+  return posted.get(id) ?? null;
+}
+
+/**
+ * The banner's two lines and whether it offers Allow (item 973). A plain
+ * tool call gets Deny always, and Allow only when the banner shows the
+ * whole call (`bannerAllows`); a question, a plan or the guard no buttons.
+ */
+export function needsYouBanner(chat: string, req: ApprovalRequest): { title: string; body: string; buttons: boolean; allow: boolean } {
+  const title = needsYouTitle(chat, req);
+  if (pushWhatForCall(req) !== "approval" || req.aside !== undefined) return { title, body: needsYouBody(req), buttons: false, allow: false };
+  const shown = bannerAllows(req);
+  return shown !== null
+    ? { title, body: allowBannerBody(shown), buttons: true, allow: true }
+    : { title, body: needsYouBody(req), buttons: true, allow: false };
+}
+
+/** Post one waiting call's banner: with its buttons through
+ *  `notify_approval`, else the plain one. Errors as above. */
+async function postNeedsYou(chat: string, req: ApprovalRequest): Promise<void> {
   try {
-    await api.notify(needsYouTitle(chat, req), needsYouBody(req));
+    const b = needsYouBanner(chat, req);
+    if (b.buttons) {
+      posted.delete(req.id);
+      posted.set(req.id, { chat, name: req.name });
+      if (posted.size > HELD_MAX) posted.delete(posted.keys().next().value as string);
+      await api.notifyApproval(req.id, b.title, b.body, b.allow);
+    } else {
+      await api.notify(b.title, b.body);
+    }
   } catch {
     // See above.
   }
@@ -339,11 +379,7 @@ export async function postHeldNeedsYou(stillWaiting: (id: string) => boolean, pr
   if (!p.needsYou) return;
   for (const { chat, req } of calls) {
     if (!stillWaiting(req.id)) continue;
-    try {
-      await api.notify(needsYouTitle(chat, req), needsYouBody(req));
-    } catch {
-      // See above.
-    }
+    await postNeedsYou(chat, req);
   }
 }
 

@@ -1982,6 +1982,13 @@ export function notifyUsageRefreshed(title: string, body: string): Promise<null>
   return invoke("notify_usage_refreshed", { title, body });
 }
 
+/** The needs-you banner with its buttons (item 973): Deny always, Allow
+ *  when `allow`; a press comes back as `approval-banner-answered` naming
+ *  `id`. Off macOS a plain banner. */
+export function notifyApproval(id: string, title: string, body: string, allow: boolean): Promise<null> {
+  return invoke("notify_approval", { id, title, body, allow });
+}
+
 /** The keep-awake switches (nightshift backlog 101), for the holder in
  *  `power.rs`; `sleep.ts` keeps them and sends them at start-up and on
  *  each change. */
