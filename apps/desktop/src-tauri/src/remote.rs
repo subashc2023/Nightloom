@@ -946,8 +946,11 @@ impl Host for DesktopHost {
         &self,
         max_age: std::time::Duration,
     ) -> Result<nightloom_service::plan_usage::PlanUsage, String> {
+        // Max age: the caller's (954) — Home's guard asks for 2 minutes.
         crate::blocking(move || {
-            Ok::<_, String>(nightloom_service::plan_usage::read_fresh_shared(max_age))
+            Ok::<_, String>(nightloom_service::plan_usage::current(
+                nightloom_service::plan_usage::MaxAge::Within(max_age),
+            ))
         })
         .await
     }
@@ -1402,8 +1405,15 @@ impl DesktopHost {
     /// ledger's summary, read off disk, and (item 824) the plan's pace for
     /// the phone's dials — the Mac's own `plan_pace`.
     pub async fn usage(&self) -> Result<serde_json::Value, String> {
-        let plan =
-            crate::blocking(|| Ok::<_, String>(nightloom_service::plan_usage::read())).await?;
+        // Max age: on hand (954) — the phone's line and Home's page show
+        // the reading's age; a job's "limited" wait and spend read it here
+        // too, and Home's guard refreshes on its own (`usage_fresh`).
+        let plan = crate::blocking(|| {
+            Ok::<_, String>(nightloom_service::plan_usage::current(
+                nightloom_service::plan_usage::MaxAge::OnHand,
+            ))
+        })
+        .await?;
         let ledger =
             crate::blocking(|| Ok::<_, String>(nightloom_service::usage::summary())).await?;
         let pace = crate::blocking(|| Ok::<_, String>(nightloom_service::pace::read())).await?;

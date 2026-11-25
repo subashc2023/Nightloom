@@ -66,7 +66,10 @@ pub(crate) async fn home_info(
 pub(crate) async fn home_today() -> Result<home::guard::Today, String> {
     crate::blocking(|| {
         let config = project::config_dir().ok_or("no Nightloom home")?;
-        let plan = nightloom_service::plan_usage::read();
+        // Max age: on hand (954) — Home's row shows the figure and why it is
+        // paused; the guard that decides refreshes first (951).
+        let plan =
+            nightloom_service::plan_usage::current(nightloom_service::plan_usage::MaxAge::OnHand);
         let now = chrono::Utc::now();
         let pace = home::guard::pace_in(&config, now);
         Ok::<_, String>(home::guard::today(

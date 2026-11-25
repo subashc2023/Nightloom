@@ -330,7 +330,7 @@ pub fn fresh_enough(
 /// reply ended (his answer on blocker 1270, 2026-10-08). The process-wide
 /// once-a-minute gap still holds: within it, the last run's sample is used.
 pub fn read_fresh_after(max_age: std::time::Duration, after_ms: Option<i64>) -> PlanUsage {
-    let first = read();
+    let first = read_files();
     if fresh_enough(&first, max_age, after_ms) {
         return first;
     }
@@ -346,7 +346,7 @@ pub fn read_fresh_after(max_age: std::time::Duration, after_ms: Option<i64>) -> 
             }
         }
     };
-    with_sample(sample, read(), chrono::Utc::now().timestamp_millis())
+    with_sample(sample, read_files(), chrono::Utc::now().timestamp_millis())
 }
 
 /// The run's figure over the files' when it is newer, with the reset
@@ -430,7 +430,16 @@ fn read_stamp(path: &Path) -> Option<Sample> {
 /// s: it uses the stamp however old, else the files. So a burst of hooks
 /// after a quiet minute costs one `/usage`, and none of them stalls.
 pub fn read_fresh_shared(max_age: std::time::Duration) -> PlanUsage {
-    let first = read();
+    fresh_shared(max_age, false)
+}
+
+/// [`read_fresh_shared`]; with `wait`, a process that finds another's run
+/// under way waits for it (up to its 90 s) rather than taking the stamp
+/// however old — a stop decision (item 955) must not stand on that.
+fn fresh_shared(max_age: std::time::Duration, wait: bool) -> PlanUsage {
+    // The newest on hand, the stamp included (954): a stamp younger than
+    // `max_age` is as good as a fresh file and needs no run.
+    let first = read_without_refresh();
     let fresh_enough = first
         .age_seconds
         .map(|a| a <= max_age.as_secs_f64())
@@ -438,6 +447,7 @@ pub fn read_fresh_shared(max_age: std::time::Duration) -> PlanUsage {
     if fresh_enough {
         return first;
     }
+    let first = read_files();
     let now_ms = chrono::Utc::now().timestamp_millis();
     let stamp = stamp_path();
     let gap_ms = REFRESH_MIN_GAP.as_millis() as i64;
@@ -455,6 +465,10 @@ pub fn read_fresh_shared(max_age: std::time::Duration) -> PlanUsage {
         return read_fresh(max_age);
     };
     if lock.try_lock().is_err() {
+        if wait && lock.lock().is_ok() {
+            // Its run is done: the stamp it wrote, and the files it rewrote.
+            return with_sample(read_stamp(&stamp), read_files(), now_ms);
+        }
         // Someone else is running it: what there is, now.
         return with_sample(read_stamp(&stamp), first, now_ms);
     }
@@ -483,7 +497,7 @@ pub fn read_fresh_shared(max_age: std::time::Duration) -> PlanUsage {
         let _ = std::fs::write(&stamp, format_stamp(s));
     }
     drop(lock);
-    with_sample(sample, read(), now_ms)
+    with_sample(sample, read_files(), now_ms)
 }
 
 /// The best reading there is without running `/usage`: the files, or the
@@ -492,7 +506,7 @@ pub fn read_fresh_shared(max_age: std::time::Duration) -> PlanUsage {
 /// for, whose resume would otherwise sit on it before the model continues.
 pub fn read_without_refresh() -> PlanUsage {
     let now_ms = chrono::Utc::now().timestamp_millis();
-    with_sample(read_stamp(&stamp_path()), read(), now_ms)
+    with_sample(read_stamp(&stamp_path()), read_files(), now_ms)
 }
 
 /// How often [`refresh_soon`] may start a run of its own.
@@ -538,8 +552,66 @@ fn home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// The live reading. A machine with no home directory reads as `none`.
-pub fn read() -> PlanUsage {
+// ---- the one reader (item 954) ---------------------------------------------
+
+/// How old a reading the caller will act on (item 954). Every reader of
+/// the plan's figure outside this module goes through [`current`] with one
+/// of these, written at the call site, so what each place decides on — and
+/// how stale it may be — is read in one line beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaxAge {
+    /// What is on hand: the files or the last `/usage` run's stamp,
+    /// whichever is newer; never a `/usage` run. For a display (which
+    /// shows the reading's age) and for a call that must not wait ~12 s.
+    OnHand,
+    /// Refreshed through the shared `/usage` (at most once a minute across
+    /// every process, [`read_fresh_shared`]) when the newest on hand is
+    /// older than this. A process that finds another's run under way takes
+    /// what there is rather than wait.
+    Within(std::time::Duration),
+    /// [`MaxAge::Within`], but a run under way elsewhere is waited for
+    /// (item 955): for a stop decision whose reading on hand is too old to
+    /// stand on.
+    Wait(std::time::Duration),
+}
+
+/// The plan's reading — the only one any decision or display outside this
+/// module calls (item 954). The newest of the CLI's cache, the Claude
+/// app's sample and the last `/usage` run's stamp; refreshed first when
+/// `max_age` asks and the newest is older. The reading carries its own
+/// `sampled_at_ms`, `age_seconds` and `source`, so a caller can say how
+/// old the figure it shows or acts on is. A chat's own wire reading
+/// (`rate_limit_event`) is the hook's to weigh against this
+/// (`agent::brief::freshest`): it is per chat, not process-wide.
+pub fn current(max_age: MaxAge) -> PlanUsage {
+    match max_age {
+        MaxAge::OnHand => read_without_refresh(),
+        MaxAge::Within(d) => fresh_shared(d, false),
+        MaxAge::Wait(d) => fresh_shared(d, true),
+    }
+}
+
+/// An RFC 3339 reset time as unix seconds, parsed once here (954) rather
+/// than at every reader; `None` for a missing or malformed one.
+fn unix_of(t: Option<&str>) -> Option<i64> {
+    t.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.timestamp())
+}
+
+impl PlanUsage {
+    /// When the five-hour window rolls over, unix seconds.
+    pub fn five_hour_resets_unix(&self) -> Option<i64> {
+        unix_of(self.five_hour_resets_at.as_deref())
+    }
+    /// When the seven-day window rolls over, unix seconds.
+    pub fn seven_day_resets_unix(&self) -> Option<i64> {
+        unix_of(self.seven_day_resets_at.as_deref())
+    }
+}
+
+/// The files alone. A machine with no home directory reads as `none`.
+/// Private since item 954: callers outside take [`current`].
+fn read_files() -> PlanUsage {
     let now_ms = chrono::Utc::now().timestamp_millis();
     match home() {
         Some(h) => read_from(&h.join(DESKTOP_SAMPLE), &h.join(CLI_CACHE), now_ms),
@@ -681,6 +753,19 @@ mod scoped_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// Item 954: reset times are parsed once, on the reading, to the second.
+    #[test]
+    fn reset_times_parse_once_to_unix_seconds() {
+        let u = super::PlanUsage {
+            five_hour_resets_at: Some("2026-11-25T09:59:59.974583+00:00".into()),
+            seven_day_resets_at: Some("not a time".into()),
+            ..super::PlanUsage::default()
+        };
+        assert_eq!(u.five_hour_resets_unix(), Some(1_795_600_799));
+        assert_eq!(u.seven_day_resets_unix(), None);
+        assert_eq!(super::PlanUsage::default().five_hour_resets_unix(), None);
+    }
     /// Item 722: the window's background refresh starts at most one run
     /// per [`super::SOON_MIN_GAP`], however often a draft asks.
     #[test]

@@ -547,9 +547,9 @@ fn is_walk_agents_md(seg: &Segment) -> bool {
 /// (blocker 583).
 pub const PACING_NOTE: &str = "<pacing>\n\
      Each message has a usage budget, a share of the plan's five-hour window set per chat; \
-     past the plan's stop line Nightloom refuses every tool call. The usage line ('Usage: this \
-     message …') says where you stand: it comes with each user message, your first call, each \
-     subagent launch, every 5 points spent, and every call past half the budget. An earlier \
+     past the plan's stop line Nightloom refuses every tool call. The usage line ('Usage (2 \
+     min ago): this message …') says where you stand: it comes with each user message, your first call, each subagent launch, every 5 \
+     points spent, and every call past half the budget. An earlier \
      message's line is stale: quote only this message's, and say how old any other figure \
      is. Size the plan to the budget from the start: a small budget means fewer subagents and \
      narrower searches. Past about 70% of it, start no new work: finish what is half-done and \
@@ -590,7 +590,8 @@ pub fn pacing_text(budget: bool, stop_line: bool) -> Option<String> {
         ),
     };
     Some(format!(
-        "<pacing>\n{opening} The usage line ('Usage: this message …') says where you stand: \
+        "<pacing>\n{opening} The usage line ('Usage (2 min ago): this message …') says where \
+         you stand: \
          {when} An earlier message's line is stale: quote only this message's, and say how old \
          any other figure is. {sizing} The weekly figure is information, not a limit; the \
          user's instructions in this chat say how much it matters.\n</pacing>"

@@ -348,9 +348,15 @@ pub(crate) async fn set_turn_cap(
 
 #[tauri::command]
 pub(crate) async fn plan_usage() -> Result<nightloom_service::plan_usage::PlanUsage, String> {
-    tokio::task::spawn_blocking(|| observed(nightloom_service::plan_usage::read()))
-        .await
-        .map_err(|e| format!("reading the plan usage failed: {e}"))
+    // Max age: on hand (954) — the chip shows the reading's age; its own
+    // five-minute poll (`plan_usage_refresh`) is what refreshes it.
+    tokio::task::spawn_blocking(|| {
+        observed(nightloom_service::plan_usage::current(
+            nightloom_service::plan_usage::MaxAge::OnHand,
+        ))
+    })
+    .await
+    .map_err(|e| format!("reading the plan usage failed: {e}"))
 }
 
 /// The plan's per-model weeklies (item 569: /usage's "Weekly Fable"), from

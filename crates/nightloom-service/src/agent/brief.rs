@@ -139,7 +139,7 @@ pub fn reset_spawns(dir: &Path) {
 /// pair — at `slow_at` percent of the five-hour window the per-turn cap
 /// drops to `slow_to`; at `stop_at` every spawn is refused with the reset
 /// time in the reason. The percent is the freshest of the desktop's
-/// gauge (`plan_usage::read`: the Claude app's sample and the CLI's cache
+/// gauge (`plan_usage::current`: the Claude app's sample and the CLI's cache
 /// file, which `claude -p "/usage"` refreshes for zero tokens — 166's
 /// reading) and the last `rate_limit_event` this chat's turns carried
 /// ([`USAGE_FILE`], written by the translator as each arrives).
@@ -527,18 +527,34 @@ fn read_usage_file(dir: &Path) -> Option<WindowReading> {
     })
 }
 
+/// The oldest five-hour reading a stop decision stands on (item 955; was
+/// a whole window, 5 h). Past it the hook refreshes first
+/// ([`decide_usage`]); a reading still older after that is no reading.
+pub const STOP_MAX_AGE_MS: i64 = 10 * 60 * 1000;
+
 /// A reading still worth acting on: its window has not reset since, and
-/// it is not older than a window (a stale 92% would refuse spawns into a
-/// fresh window forever). Pure over its inputs.
+/// it is not older than [`STOP_MAX_AGE_MS`] (a 30-minute-old 79% must not
+/// pass a call the window's real 85% would stop — 955; and a stale 92%
+/// would refuse spawns into a fresh window). Pure over its inputs.
 pub fn current(reading: Option<WindowReading>, now_ms: i64) -> Option<WindowReading> {
-    const WINDOW_MS: i64 = 5 * 60 * 60 * 1000;
+    within(reading, now_ms, STOP_MAX_AGE_MS)
+}
+
+/// [`current`] at a whole window's age: what his message's line shows and
+/// the ledger's start is pinned from (nothing is decided there), with the
+/// reading's age beside it.
+fn shown(reading: Option<WindowReading>, now_ms: i64) -> Option<WindowReading> {
+    within(reading, now_ms, 5 * 60 * 60 * 1000)
+}
+
+fn within(reading: Option<WindowReading>, now_ms: i64, max_ms: i64) -> Option<WindowReading> {
     let r = reading?;
     if let Some(reset) = r.resets_at
         && reset * 1000 <= now_ms
     {
         return None;
     }
-    (now_ms - r.sampled_at_ms <= WINDOW_MS).then_some(r)
+    (now_ms - r.sampled_at_ms <= max_ms).then_some(r)
 }
 
 /// The freshest of the two readings, or none. Pure over its inputs.
@@ -556,19 +572,18 @@ pub fn freshest(
     }
 }
 
-/// The gauge's files alone as a reading — no refresh, no latency. What a
-/// turn's start is measured from ([`begin_turn`]).
+/// The gauge's reading on hand — no refresh, no latency. What a turn's
+/// start is measured from ([`begin_turn`]).
 fn gauge_on_hand() -> Option<WindowReading> {
-    reading_of(crate::plan_usage::read())
+    // Max age: on hand (954); `reading_on_hand` keeps it only within 2 min.
+    reading_of(crate::plan_usage::current(
+        crate::plan_usage::MaxAge::OnHand,
+    ))
 }
 
 fn reading_of(u: crate::plan_usage::PlanUsage) -> Option<WindowReading> {
     let pct = u.five_hour?;
-    let resets_at = u
-        .five_hour_resets_at
-        .as_deref()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.timestamp());
+    let resets_at = u.five_hour_resets_unix();
     Some(WindowReading {
         five_hour_pct: pct,
         resets_at,
@@ -664,7 +679,11 @@ pub fn week_band(w: u8) -> u8 {
 /// line to an idle main thread), as the hook reads it: younger than a
 /// five-hour window and its week not reset since. No refresh.
 pub fn week_on_hand(now_ms: i64) -> Option<u8> {
-    week_of(&crate::plan_usage::read(), now_ms)
+    // Max age: on hand (954), then `week_of`'s five hours.
+    week_of(
+        &crate::plan_usage::current(crate::plan_usage::MaxAge::OnHand),
+        now_ms,
+    )
 }
 
 /// Whether the line is due on this call, pure: `Some(band)` to show it and
@@ -736,6 +755,42 @@ pub fn usage_line(
     (!parts.is_empty()).then(|| format!("Usage: {}", parts.join(" · ")))
 }
 
+/// The line with its reading's age (item 955): `Usage (2 min ago): …`, so
+/// the model never takes an old figure for a current one. The age is the
+/// five-hour reading's — the wire's or the gauge's, whichever the line
+/// quotes; a line with no five-hour part (a hidden helper's, or a week
+/// alone) is left as it is.
+pub fn usage_line_aged(
+    line: Option<String>,
+    reading: Option<WindowReading>,
+    now_ms: i64,
+) -> Option<String> {
+    let line = line?;
+    // A reading with no sample time (a ledger figure from before 955) has
+    // no age to say.
+    let Some(r) = reading.filter(|r| r.sampled_at_ms > 0) else {
+        return Some(line);
+    };
+    match line.strip_prefix("Usage: ") {
+        Some(rest) => Some(format!(
+            "Usage ({}): {rest}",
+            age_words(now_ms - r.sampled_at_ms)
+        )),
+        None => Some(line),
+    }
+}
+
+/// `<1 min ago`, `7 min ago`, `1 h 5 min ago`.
+pub fn age_words(age_ms: i64) -> String {
+    let min = age_ms.max(0) / 60_000;
+    match min {
+        0 => "<1 min ago".into(),
+        1..=59 => format!("{min} min ago"),
+        _ if min % 60 == 0 => format!("{} h ago", min / 60),
+        _ => format!("{} h {} min ago", min / 60, min % 60),
+    }
+}
+
 /// The weekly figure appended to a usage refusal (blocker 583: shown, not
 /// capped), or the reason unchanged when there is none.
 pub fn with_week(reason: String, week: Option<u8>) -> String {
@@ -755,11 +810,8 @@ fn week_of(u: &crate::plan_usage::PlanUsage, now_ms: i64) -> Option<u8> {
     if now_ms - at > FRESH_MS {
         return None;
     }
-    if let Some(reset) = u
-        .seven_day_resets_at
-        .as_deref()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        && reset.timestamp_millis() <= now_ms
+    if let Some(reset) = u.seven_day_resets_unix()
+        && reset * 1000 <= now_ms
     {
         return None;
     }
@@ -2869,7 +2921,8 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     // reading is older than the refresh's two minutes; a fresher one wins
     // in `freshest` anyway (review of 44ab834).
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let wire_fresh = read_usage_file(dir).is_some_and(|r| now_ms - r.sampled_at_ms <= 120_000);
+    let wire = read_usage_file(dir);
+    let wire_fresh = wire.is_some_and(|r| now_ms - r.sampled_at_ms <= 120_000);
     // One read of the gauge for both figures: the five-hour reading and
     // the weekly one the usage line and the refusals show (backlog 249).
     // Fresh through print-mode `/usage` when the files are over ~two
@@ -2891,17 +2944,50 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     // first request. The line shows the reading there is; the window asks
     // for a fresh one as he starts typing (`plan_usage::refresh_soon`),
     // and the first reply brings the wire's own.
-    let usage = match usage_source(wire_fresh, || {
+    let source = usage_source(wire_fresh, || {
         is_prompt_event(stdin_json) || is_resumed_call(dir, stdin_json)
-    }) {
-        UsageSource::Files => crate::plan_usage::read(),
-        UsageSource::NoRefresh => crate::plan_usage::read_without_refresh(),
-        UsageSource::Refresh => {
-            crate::plan_usage::read_fresh_shared(std::time::Duration::from_secs(120))
-        }
-    };
+    });
+    let usage = decide_usage(
+        source,
+        wire,
+        is_prompt_event(stdin_json),
+        now_ms,
+        &crate::plan_usage::current,
+    );
     let week = week_of(&usage, now_ms);
     decide_with_week(dir, stdin_json, reading_of(usage), week)
+}
+
+/// The plan's reading [`decide`] acts on, with the reader passed in so the
+/// suite can drive it. Max age (954): on hand when the chat's wire reading
+/// is fresh (it wins) or the call must not wait; else two minutes, through
+/// the shared `/usage`. Then item 955: unless this is his message (nothing
+/// is decided there), a best reading — wire or gauge — older than
+/// [`STOP_MAX_AGE_MS`] is refreshed, waiting on a run already under way,
+/// rather than passed or stopped on; a 30-minute-old 79% must not pass a
+/// call when the window is really at 85%.
+fn decide_usage(
+    source: UsageSource,
+    wire: Option<WindowReading>,
+    prompt: bool,
+    now_ms: i64,
+    read: &dyn Fn(crate::plan_usage::MaxAge) -> crate::plan_usage::PlanUsage,
+) -> crate::plan_usage::PlanUsage {
+    use crate::plan_usage::MaxAge;
+    let usage = read(match source {
+        UsageSource::Files | UsageSource::NoRefresh => MaxAge::OnHand,
+        UsageSource::Refresh => MaxAge::Within(std::time::Duration::from_secs(120)),
+    });
+    if prompt {
+        return usage;
+    }
+    let best = freshest(wire, reading_of(usage.clone()));
+    if best.is_some_and(|r| now_ms - r.sampled_at_ms <= STOP_MAX_AGE_MS) {
+        return usage;
+    }
+    read(MaxAge::Wait(std::time::Duration::from_millis(
+        STOP_MAX_AGE_MS as u64,
+    )))
 }
 
 /// Where [`decide`] takes the plan's reading from.
@@ -3027,6 +3113,9 @@ fn decide_holding_unheld(
         current(read_usage_file(dir), now_ms),
         current(gauge, now_ms),
     );
+    // His message's line (955): the reading there is, up to a window old,
+    // its age shown — nothing is decided on it.
+    let prompt_reading = freshest(shown(read_usage_file(dir), now_ms), shown(gauge, now_ms));
     // Pass 2: the message's budget, on every call of every process in
     // the turn — the main thread's, a subagent's, a council seat's. The
     // ledger takes the reading either way (the live meter reads it).
@@ -3067,8 +3156,13 @@ fn decide_holding_unheld(
         }
     }
     if input.hook_event_name == PROMPT_EVENT {
+        let reading = prompt_reading;
         note_prompt(dir, reading, week, who, context);
-        let line = usage_line(read_turn_budget(dir).as_ref(), reading, week, context);
+        let line = usage_line_aged(
+            usage_line(read_turn_budget(dir).as_ref(), reading, week, context),
+            reading,
+            now_ms,
+        );
         // A helper still warm beside his message (693): "go on", "another
         // 25%" — the main agent can continue it rather than start afresh.
         let earlier = (!subagent)
@@ -3131,7 +3225,11 @@ fn decide_holding_unheld(
         let usage = if hide {
             usage_line(None, None, None, context)
         } else {
-            usage_line(read_turn_budget(dir).as_ref(), reading, week, context)
+            usage_line_aged(
+                usage_line(read_turn_budget(dir).as_ref(), reading, week, context),
+                reading,
+                now_ms,
+            )
         };
         // A helper past the retire mark is told to hand back on every call
         // (553); its one notice at 285k (707) leads the line below.
@@ -5141,6 +5239,128 @@ mod tests {
             sampled_at_ms: now - 1000,
         };
         assert_eq!(super::current(Some(fresh), now), Some(fresh));
+        // Item 955: ten minutes, not a window, for a decision.
+        let half_hour = super::WindowReading {
+            sampled_at_ms: now - 30 * 60 * 1000,
+            ..fresh
+        };
+        assert_eq!(super::current(Some(half_hour), now), None);
+        assert_eq!(super::shown(Some(half_hour), now), Some(half_hour));
+        let nine = super::WindowReading {
+            sampled_at_ms: now - 9 * 60 * 1000,
+            ..fresh
+        };
+        assert_eq!(super::current(Some(nine), now), Some(nine));
+    }
+
+    /// Item 955: a 30-minute-old 79% is refreshed before the stop decision
+    /// — waiting on a run under way — and the fresh 86% stops the spawn;
+    /// it is never passed on the old figure. A fresh reading, a fresh wire
+    /// reading, and his message (nothing decided) read once.
+    #[test]
+    fn a_stale_reading_is_refreshed_before_the_stop_decision_not_passed() {
+        use crate::plan_usage::{MaxAge, PlanUsage};
+        use std::cell::RefCell;
+        let now = chrono::Utc::now().timestamp_millis();
+        let at = |pct: u8, age_min: i64| PlanUsage {
+            five_hour: Some(pct),
+            seven_day: Some(90),
+            sampled_at_ms: Some(now - age_min * 60_000),
+            age_seconds: Some((age_min * 60) as f64),
+            stale: age_min > 20,
+            source: "cli-cache".into(),
+            ..PlanUsage::default()
+        };
+        let asked: RefCell<Vec<MaxAge>> = RefCell::new(Vec::new());
+        let reader = |old: PlanUsage, fresh: PlanUsage| {
+            let asked = &asked;
+            move |m: MaxAge| {
+                asked.borrow_mut().push(m);
+                if matches!(m, MaxAge::Wait(_)) {
+                    fresh.clone()
+                } else {
+                    old.clone()
+                }
+            }
+        };
+        let ten = MaxAge::Wait(std::time::Duration::from_secs(600));
+        let two = MaxAge::Within(std::time::Duration::from_secs(120));
+        // A call: the 79% from 30 minutes ago (the shared refresh found a
+        // run under way) is not stood on; the wait brings 86%.
+        let read = reader(at(79, 30), at(86, 0));
+        let u = super::decide_usage(super::UsageSource::Refresh, None, false, now, &read);
+        assert_eq!(u.five_hour, Some(86));
+        assert_eq!(*asked.borrow(), vec![two, ten]);
+        let limits = super::SubagentLimits {
+            stop_at: 85,
+            ..super::SubagentLimits::default()
+        };
+        assert!(super::window_verdict(&limits, super::reading_of(u)).is_err());
+        // Without the refresh the old figure would have passed.
+        assert!(super::window_verdict(&limits, super::reading_of(at(79, 30))).is_ok());
+        // A resumed call (no `/usage` for a young reading) still refreshes
+        // a 30-minute-old one.
+        asked.borrow_mut().clear();
+        let u = super::decide_usage(super::UsageSource::NoRefresh, None, false, now, &read);
+        assert_eq!(u.five_hour, Some(86));
+        assert_eq!(*asked.borrow(), vec![MaxAge::OnHand, ten]);
+        // A reading 3 minutes old stands; so does a fresh wire reading.
+        asked.borrow_mut().clear();
+        let read = reader(at(79, 3), at(86, 0));
+        let u = super::decide_usage(super::UsageSource::Refresh, None, false, now, &read);
+        assert_eq!(u.five_hour, Some(79));
+        assert_eq!(*asked.borrow(), vec![two]);
+        asked.borrow_mut().clear();
+        let read = reader(at(79, 30), at(86, 0));
+        let wire = Some(super::WindowReading {
+            five_hour_pct: 80,
+            resets_at: None,
+            sampled_at_ms: now - 30_000,
+        });
+        super::decide_usage(super::UsageSource::Files, wire, false, now, &read);
+        assert_eq!(*asked.borrow(), vec![MaxAge::OnHand]);
+        // His message decides nothing: no wait on it.
+        asked.borrow_mut().clear();
+        let u = super::decide_usage(super::UsageSource::NoRefresh, None, true, now, &read);
+        assert_eq!(u.five_hour, Some(79));
+        assert_eq!(*asked.borrow(), vec![MaxAge::OnHand]);
+    }
+
+    /// Item 955: the line says how old its figure is.
+    #[test]
+    fn the_usage_line_says_how_old_its_reading_is() {
+        let now = 10_000_000_000i64;
+        let r = |age_ms: i64| {
+            Some(super::WindowReading {
+                five_hour_pct: 52,
+                resets_at: None,
+                sampled_at_ms: now - age_ms,
+            })
+        };
+        let line = || super::usage_line(None, r(0), Some(74), None);
+        assert_eq!(
+            super::usage_line_aged(line(), r(2 * 60_000 + 5_000), now).as_deref(),
+            Some("Usage (2 min ago): 5-hour 52% · week 74%")
+        );
+        assert_eq!(
+            super::usage_line_aged(line(), r(20_000), now).as_deref(),
+            Some("Usage (<1 min ago): 5-hour 52% · week 74%")
+        );
+        assert_eq!(
+            super::usage_line_aged(line(), r(65 * 60_000), now).as_deref(),
+            Some("Usage (1 h 5 min ago): 5-hour 52% · week 74%")
+        );
+        assert_eq!(super::age_words(2 * 3_600_000), "2 h ago");
+        // No reading, or one with no sample time: the line as it is.
+        assert_eq!(
+            super::usage_line_aged(Some("Usage: week 74%".into()), None, now).as_deref(),
+            Some("Usage: week 74%")
+        );
+        assert_eq!(
+            super::usage_line_aged(line(), r(now), now).as_deref(),
+            Some("Usage: 5-hour 52% · week 74%")
+        );
+        assert_eq!(super::usage_line_aged(None, r(0), now), None);
     }
 
     #[test]
@@ -5422,7 +5642,7 @@ mod tests {
         assert_eq!(r.decision(), "pass");
         assert!(
             r.additional_context()
-                .is_some_and(|c| c.starts_with("Usage: this message 2%"))
+                .is_some_and(|c| c.starts_with("Usage (<1 min ago): this message 2%"))
         );
         // Band 0 again: nothing to say.
         let r = super::decide_with_week(&dir, &read, reading(43, now + 1), Some(74));
@@ -5433,7 +5653,7 @@ mod tests {
         assert_eq!(
             r.additional_context(),
             Some(
-                "Usage: this message 7% of its 35% budget · 5-hour 47% (stop line 85%) · week 74% · context 95k"
+                "Usage (<1 min ago): this message 7% of its 35% budget · 5-hour 47% (stop line 85%) · week 74% · context 95k"
             )
         );
         let wire = serde_json::to_value(&r).unwrap();
@@ -5455,14 +5675,14 @@ mod tests {
         assert_eq!(
             r.additional_context(),
             Some(
-                "Usage: this message 8% of its 35% budget · 5-hour 48% (stop line 85%) · week 74%"
+                "Usage (<1 min ago): this message 8% of its 35% budget · 5-hour 48% (stop line 85%) · week 74%"
             )
         );
         // A spawn: allowed with the brief-less input untouched, and the line.
         let r = super::decide_with_week(&dir, CALL, reading(48, now + 5), Some(74));
         assert!(
             r.additional_context()
-                .is_some_and(|c| c.starts_with("Usage: this message 8%"))
+                .is_some_and(|c| c.starts_with("Usage (<1 min ago): this message 8%"))
         );
         // Backlog 293 addition: a spawn in a chat with an earlier subagent
         // lists it under the line; a plain call does not.
@@ -5479,7 +5699,7 @@ mod tests {
         spawn["transcript_path"] = serde_json::json!(t);
         let r = super::decide_with_week(&dir, &spawn.to_string(), reading(48, now + 5), Some(74));
         let c = r.additional_context().unwrap_or_default().to_string();
-        assert!(c.starts_with("Usage: this message 8%"), "{c}");
+        assert!(c.starts_with("Usage (<1 min ago): this message 8%"), "{c}");
         assert!(
             c.contains("\n- e1: context 42k · last ran 0 min ago · 5 min cache, warm"),
             "{c}"
@@ -5525,7 +5745,7 @@ mod tests {
         assert_eq!(
             r.additional_context(),
             Some(
-                "Usage: this message 2% of its 35% budget · 5-hour 42% (stop line 85%) · week 74% · context 95k"
+                "Usage (<1 min ago): this message 2% of its 35% budget · 5-hour 42% (stop line 85%) · week 74% · context 95k"
             )
         );
         let wire = serde_json::to_value(&r).unwrap();
@@ -5553,7 +5773,7 @@ mod tests {
         let r = super::decide_with_week(&dir, &read, reading(47, now + 3), Some(74));
         assert!(
             r.additional_context()
-                .is_some_and(|c| c.starts_with("Usage: this message 7%")),
+                .is_some_and(|c| c.starts_with("Usage (<1 min ago): this message 7%")),
             "{:?}",
             r.additional_context()
         );
@@ -5563,7 +5783,7 @@ mod tests {
         let r = super::decide_with_week(&dir, &prompt, reading(78, now + 5), Some(74));
         let c = r.additional_context().unwrap_or_default();
         assert!(
-            c.starts_with("Usage: this message 0% of its 35% budget · 5-hour 78%"),
+            c.starts_with("Usage (<1 min ago): this message 0% of its 35% budget · 5-hour 78%"),
             "{c}"
         );
         let r = super::decide_with_week(&dir, &read, reading(78, now + 6), Some(74));

@@ -13,7 +13,7 @@
 //! scope rules (`main.rs` `scope_dir`, `check_fixed_name`); a note deleted
 //! from the phone is copied to `<home>/trash/notes/<when>/<scope>/<name>`
 //! first (blocker 685); search is the Mac's `search_everywhere` over the
-//! service's own pieces; usage is `plan_usage::read` + `usage::summary`;
+//! service's own pieces; usage is `plan_usage::current` + `usage::summary`;
 //! projects go through `project.rs`'s registry functions, and forgetting
 //! one never deletes a file.
 
@@ -248,7 +248,9 @@ fn turn_started(session: &Session) -> Option<i64> {
 /// carries [`PLAN_ON_THE_MAC`] as `plan_note` — a sentence, not an error.
 pub async fn usage() -> Result<UsageReply, String> {
     blocking(|| {
-        let plan = crate::plan_usage::read();
+        // Max age: on hand (954) — the away server has no `/usage` to run;
+        // the phone greys a stale line.
+        let plan = crate::plan_usage::current(crate::plan_usage::MaxAge::OnHand);
         let mut ledger =
             serde_json::to_value(crate::usage::summary()).map_err(|e| e.to_string())?;
         let note = plan_note(&plan);

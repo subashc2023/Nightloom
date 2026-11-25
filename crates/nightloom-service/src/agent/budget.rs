@@ -616,7 +616,9 @@ pub fn take_usage_line(
         let (band, week_band) = idle_usage_due(b, pct, week)?;
         let mut shown = b.clone();
         shown.latest_pct = pct.or(b.latest_pct);
-        let line = brief::usage_line(Some(&shown), r, week, None)?;
+        // With its reading's age (955).
+        let line =
+            brief::usage_line_aged(brief::usage_line(Some(&shown), r, week, None), r, now_ms)?;
         let text = format!(
             "[Nightloom, not from Swaraag: {line}. Sent while you wait on your helpers. {} If \
              Swaraag's message named a usage line (a percent of the 5-hour window unless he \
@@ -2110,7 +2112,7 @@ mod tests {
         let u = take_usage_line(&dir, now, true, true, Some(92), None).unwrap();
         assert!(
             u.text
-                .starts_with("[Nightloom, not from Swaraag: Usage: this message 6%")
+                .starts_with("[Nightloom, not from Swaraag: Usage (<1 min ago): this message 6%")
                 && u.text.contains("5-hour 46%")
                 && u.text.contains("week 92%"),
             "{}",
