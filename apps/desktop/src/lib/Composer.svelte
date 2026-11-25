@@ -47,7 +47,9 @@
     nextTickMs,
     remainingText,
     restoreCacheSettings,
+    ASIDE_COLD_TIP,
     asideSinceCold,
+    coldEitherWay,
     chipFace,
     ownModelCache,
     stoppedUnsure,
@@ -3477,7 +3479,7 @@
       ? null
       : aside && asideOwnModel
         ? ownModelCache(aside.turns, now)
-        : cacheState(app.events, now, touchedUntil(kw), asideReads(kwChat)),
+        : cacheState(app.events, now, touchedUntil(kw), asideReads(kwChat, lastReply(app.events)?.model)),
   );
   /** Item 786: the chat's own turn stopped before its reply was logged —
    *  a cold reading is unknown until the next send. */
@@ -3504,7 +3506,8 @@
     // Item 902: a pending model switch writes everything, warm or not.
     const est = cacheEstimate(app.events, targetRates, cache.warm && !modelSwitch);
     if (!est || cache.warm || !coldPending) return est;
-    return { ...est, line: `${est.line}, the change costs no extra` };
+    // Item 933: cold already, so nothing is lost — `cold either way ≈ $X`.
+    return { ...est, line: coldEitherWay(est.line) };
   });
   /** Item 596: the same state drawn on the box's frame (`cacheLook.css`). */
   const frame = $derived(cacheFrame(cache));
@@ -3569,7 +3572,7 @@
   const coldWords = $derived(coldButtons(wwCosts));
   $effect(() => {
     if (floating) return;
-    const warmUntil = cacheState(app.events, Date.now(), touchedUntil(kw), asideReads(kwChat))?.warmUntil ?? null;
+    const warmUntil = cacheState(app.events, Date.now(), touchedUntil(kw), asideReads(kwChat, lastReply(app.events)?.model))?.warmUntil ?? null;
     if (warmUntil == null) return;
     now = Date.now();
     let id: ReturnType<typeof setTimeout> | null = null;
@@ -3698,7 +3701,8 @@
     // Item 786: what a stop or an aside left, in the chip's two lines.
     if (face === "unknown") return `Unknown until the next send (a stopped turn)\n${nextEst?.title ?? "Cold, the next send writes it again"}`;
     if (!cache.warm && aside && asideOwnModel) return `Own model · no cache from the chat\n${nextEst?.title ?? "The next answer writes it"}`;
-    if (!cache.warm && !aside && asideSinceCold(cache, asideReads(kwChat))) return `Cold · an aside since warmed only its own copy\n${nextEst?.title ?? "The next send writes it again"}`;
+    // Item 933: every aside's reads (no chat model) — one on another model kept its own copy.
+    if (!cache.warm && !aside && asideSinceCold(cache, asideReads(kwChat))) return `${ASIDE_COLD_TIP}\n${nextEst?.title ?? "The next send writes it again"}`;
     if (!cache.warm) return nextEst?.title ?? "Cache cold · the next send writes it again";
     const left = remainingText(cache.remainingMs);
     const refreshed = !aside && cache.asideShare != null ? " (an aside refreshed it)" : "";

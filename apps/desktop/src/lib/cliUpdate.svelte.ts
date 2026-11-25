@@ -23,6 +23,7 @@ import { touchedUntil } from "./keepWarm";
 import { keepWarm } from "./keepWarm.svelte";
 import * as api from "./api";
 import { cacheState } from "./cache";
+import { lastReply } from "./cacheCost";
 import { CURATED } from "./catalog";
 import { chatName } from "./notify";
 import { addToast, app, asideReads, liveFlags, refreshCentre, turnsRunning } from "./state.svelte";
@@ -112,7 +113,7 @@ async function openChatCaches(now: number): Promise<OpenChatCache[]> {
     }
     const s = app.sessions.find((x) => x.id === id);
     // A chat being kept warm (backlog 582) is warm to its last ping's hour.
-    const cache = cacheState(events ?? [], now, touchedUntil(keepWarm.byChat[id]), asideReads(id));
+    const cache = cacheState(events ?? [], now, touchedUntil(keepWarm.byChat[id]), asideReads(id, lastReply(events ?? [])?.model));
     out.push({
       session: id,
       title: chatName(s?.title, s?.first_user),

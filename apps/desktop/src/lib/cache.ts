@@ -1,5 +1,6 @@
 import type { CacheKey, CacheTtl, ChatKind, SessionEvent } from "./types";
 import { declaredKind, liveFlags } from "./state.svelte";
+import { displayName } from "./modelSeen";
 
 /**
  * The prompt-cache timer (nightshift backlog 063, 2026-09-15): when the
@@ -199,8 +200,55 @@ export function stoppedUnsure(events: SessionEvent[], busy: boolean): boolean {
   return false;
 }
 
+/**
+ * Item 933 (his "though the cache shows warm there it says the cache will
+ * be lost"): the aside reads that touch the chat's cache — only answers on
+ * the chat's own model. An aside on another model reads and writes its
+ * own copy (786; `cached_for_chat` counts its read only), so from its
+ * second answer on it reads that copy whole, and counted here it would
+ * paint a cold chat warm. Model by what answered (`turn.model`, the CLI's
+ * resolved id, as the chat's reply logs it), else the thread's pick; with
+ * neither, or no chat model known, the read stays (as before 933).
+ */
+export interface AsideTurnRead {
+  error?: string | null;
+  readAt?: number;
+  roundRead?: number;
+  model?: string | null;
+}
+
+export function chatAsideReads(
+  asides: readonly { model?: string | null; turns: readonly AsideTurnRead[] }[],
+  chatModel: string | null | undefined,
+): AsideRead[] {
+  const chat = chatModel?.trim() ? displayName(chatModel) : null;
+  const out: AsideRead[] = [];
+  for (const a of asides)
+    for (const t of a.turns) {
+      if (t.error || t.readAt == null || t.roundRead == null) continue;
+      const m = t.model?.trim() || a.model?.trim() || "";
+      if (chat && m && displayName(m) !== chat) continue;
+      out.push({ at: t.readAt, read: t.roundRead });
+    }
+  return out;
+}
+
 /** Item 786: an aside asked after the chat's cache had gone cold — it did
- *  not warm the chat (measured above); the chip's tooltip says so. */
+ *  not warm the chat (measured above); the chip's tooltip says so.
+ *  Item 933: pass every aside's reads (`asideReads` with no chat model) —
+ *  the ones on another model are what left it cold. */
+/** Item 933: the cold chip's first tooltip line after such an aside (his
+ *  "i thought … the aside warm the main agent's cache"); the second is the
+ *  next send's price. */
+export const ASIDE_COLD_TIP = "Cold · an aside keeps its own cache; it did not warm this chat";
+
+/** Item 933: a pending change on a cold cache loses nothing — the chip's
+ *  `next ≈ $2.15` reads `cold either way ≈ $2.15` (no "lost", no warm
+ *  price beside it). A line without the price gains the clause. */
+export function coldEitherWay(line: string): string {
+  return line.startsWith("next ≈ ") ? `cold either way ≈ ${line.slice("next ≈ ".length)}` : `${line} · cold either way`;
+}
+
 export function asideSinceCold(state: CacheState | null, asides: readonly AsideRead[]): boolean {
   if (!state || state.warm) return false;
   return asides.some((r) => r.at >= state.warmUntil);

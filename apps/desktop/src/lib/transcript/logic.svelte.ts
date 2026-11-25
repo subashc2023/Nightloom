@@ -40,6 +40,7 @@ import { isMac } from "../platform";
 import { turnSizes } from "../tokens";
 import { loadReplyUsage, replyUsageOf } from "../replyUsage.svelte";
 import { cacheState } from "../cache";
+import { lastReply } from "../cacheCost";
 import { holdWhileDrawing, leaveScroll, moveScroll, recallScroll, rememberScroll, NEW_SCROLL_KEY } from "../scroll.svelte";
 import { BUFFER_SCREENS, FILL_SCREENS, FIRST_ITEMS, firstWindow, grown, wantsMore, windowFor, windowWants } from "../transcriptWindow.svelte";
 import { presence, watchPresence } from "../away.svelte";
@@ -830,7 +831,7 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
       editing = editReduce(editing, { type: "begin", index: item.index, text, parts, chipsAt });
       editCacheLine = src.words
         ? src.words.editLine
-        : editLine(cacheState(evs, Date.now(), chatId ? touchedUntil(keepWarm.byChat[chatId]) : null, asideReads(chatId)), coldUsdFor(evs, app.connection, { draftModel: app.draft.agentModel, seen: modelSeen.byAlias }));
+        : editLine(cacheState(evs, Date.now(), chatId ? touchedUntil(keepWarm.byChat[chatId]) : null, asideReads(chatId, lastReply(evs)?.model)), coldUsdFor(evs, app.connection, { draftModel: app.draft.agentModel, seen: modelSeen.byAlias }));
     }).then(() => {
       if (editorLive) {
         editorLive.focus();

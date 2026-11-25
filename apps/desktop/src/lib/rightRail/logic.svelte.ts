@@ -10,7 +10,7 @@ import { mark as handoffMark } from "../handoff.svelte";
 import { touchedUntil } from "../keepWarm";
 import { keepWarm } from "../keepWarm.svelte";
 import { cacheState, chipFace, nextTickMs, ownModelCache, remainingText, stoppedUnsure } from "../cache";
-import { cacheEstimate, ratesFromPrice } from "../cacheCost";
+import { cacheEstimate, lastReply, ratesFromPrice } from "../cacheCost";
 import { cacheRatesOf, loadCacheRates } from "../cacheRates.svelte";
 import { nextSendModel, pendingChangeCost } from "../changeCost";
 import { modelSeen } from "../modelSeen.svelte";
@@ -127,7 +127,7 @@ export function rightRailLogic(props: () => RightRailLogicProps) {
       ? null
       : aside && railOwnModel
         ? ownModelCache(aside.turns, now)
-        : cacheState(app.events, now, railChat ? touchedUntil(keepWarm.byChat[railChat]) : null, asideReads(railChat)),
+        : cacheState(app.events, now, railChat ? touchedUntil(keepWarm.byChat[railChat]) : null, asideReads(railChat, lastReply(app.events)?.model)),
   );
   /** Item 786: cold after a stop that logged no reply reads "unknown". */
   const railFace = $derived(chipFace(cache, !aside && !!cache && !cache.warm && stoppedUnsure(app.events, app.busy)));

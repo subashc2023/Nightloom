@@ -137,7 +137,7 @@ describe("changePrice — each change kind", () => {
     const c = changePrice(base({ changes, target: OPUS, warm: false }));
     expect(c.cold).toBe(true);
     expect(c.with).toBe(c.without);
-    expect(priceLine(c)).toBe("no extra, cache cold · next ≈ $2.00");
+    expect(priceLine(c)).toBe("cold either way ≈ $2.00");
   });
 
   it("no rates for the new model: the tokens, never a guessed price", () => {

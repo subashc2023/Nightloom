@@ -159,10 +159,11 @@ export function changePrice(p: PriceIn): ChangePrice {
 }
 
 /** The bar's price, numbers first: `next ≈ $2.10 (vs $0.02 warm)`;
- *  without rates the tokens: `re-writes 180k`; cold: `cold, no extra ·
- *  next ≈ $2.10`. */
+ *  without rates the tokens: `re-writes 180k`; cold (item 933): `cold
+ *  either way ≈ $2.10`. */
 export function priceLine(c: ChangePrice): string {
-  if (c.cold) return c.with != null ? `no extra, cache cold · next ≈ ${usd(c.with)}` : "no extra, cache cold";
+  // Item 933: cold, nothing is lost — no "lost", no warm price beside it.
+  if (c.cold) return c.with != null ? `cold either way ≈ ${usd(c.with)}` : "cache cold either way";
   if (c.with == null) return `re-writes ${tokensShort(c.rewrite)} · no price for the new model`;
   const vs = c.without != null ? ` (vs ${usd(c.without)} warm)` : "";
   return `next ≈ ${usd(c.with)}${vs}`;

@@ -6,7 +6,7 @@ import { bumpDraft, nextAttachmentId, readDraft, setDraftAttachments, setDraftTe
 import { keepsBox, offerRewound } from "../rewindDraft.svelte";
 import { asideFollowUp, asideQuestion, type AsideQuote } from "../asideQuote";
 import { type AsideAnchor, MAX_OPEN_ASIDES, foldTheOldest } from "../asideCard";
-import type { AsideRead } from "../cache";
+import { chatAsideReads, type AsideRead } from "../cache";
 import { asideDraftKey, ensureAsideUid, loadAsides, nextAsideId } from "../asides";
 import { loadCouncilPrefs, type CouncilPrefs } from "../council";
 import * as tabs from "../tabs";
@@ -228,13 +228,10 @@ export function asideTabThread(content: TabContent): number | undefined {
  * prefix before its first word (`cache.ts` `stoppedUnsure`'s note). A
  * failed turn, a stop before any read, and one answered before 677 give none.
  */
-export function asideReads(session: string | null | undefined): AsideRead[] {
+export function asideReads(session: string | null | undefined, chatModel?: string | null): AsideRead[] {
   if (!session) return [];
-  const out: AsideRead[] = [];
-  for (const a of asidesOf(session))
-    for (const t of a.turns)
-      if (!t.error && t.readAt != null && t.roundRead != null) out.push({ at: t.readAt, read: t.roundRead });
-  return out;
+  // Item 933: with the chat's model, only the asides on it (`chatAsideReads`).
+  return chatAsideReads(asidesOf(session), chatModel);
 }
 
 /** A chat's aside threads, oldest first: the open chat's cards, or a

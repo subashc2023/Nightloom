@@ -7,7 +7,7 @@ import { addToast, app, chatMode, contextUsed, currentTodos, liveFlags, latestSu
 import { touchedUntil } from "../keepWarm";
 import { keepWarm } from "../keepWarm.svelte";
 import { cacheState } from "../cache";
-import { coldToast } from "../cacheCost";
+import { coldToast, lastReply } from "../cacheCost";
 import { tellPhoneCache } from "../remoteHandlers";
 import { nextSendRates } from "../cacheRates.svelte";
 import { modelSeen } from "../modelSeen.svelte";
@@ -252,7 +252,7 @@ export function topBarLogic(props: () => TopBarLogicProps) {
   $effect(() => {
     // Item 605: the chat's bar alone toasts its cache going cold.
     if (aside) return;
-    const warmUntil = cacheState(app.events, Date.now(), app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null, asideReads(app.activeSessionId))?.warmUntil ?? null;
+    const warmUntil = cacheState(app.events, Date.now(), app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null, asideReads(app.activeSessionId, lastReply(app.events)?.model))?.warmUntil ?? null;
     // Item 786: the phone's header times the same cache (pings and asides too).
     tellPhoneCache(app.activeSessionId, warmUntil);
     if (warmUntil == null) return;
