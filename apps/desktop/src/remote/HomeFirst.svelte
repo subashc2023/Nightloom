@@ -59,6 +59,7 @@
     loadHomeKept,
     markScanRead,
     needRows,
+    heldWords,
     runningLine,
     saveHomeKept,
     scanText,
@@ -161,7 +162,9 @@
     const h = feed?.home ?? { project: null, chat: null };
     return { project: h.project, chat: h.chat ?? homeChat };
   });
-  const needs = $derived(needRows(pushRows, jobs, held, { chat: remote.active_chat, label: openLabel, pending: remote.pending.length }));
+  // Item 945: Nightshift's held blockers are not Needs-you rows — one folded line under the list, not counted.
+  const needs = $derived(needRows(pushRows, jobs, [], { chat: remote.active_chat, label: openLabel, pending: remote.pending.length }));
+  const heldRows = $derived(needRows([], [], held, { chat: null, label: null, pending: 0 }));
   const done = $derived(doneRows(feed?.rows ?? [], feed?.seen_at ?? null));
   const header = $derived(headerWords(needs.length + cards.length, today));
   const headParts = $derived(header.split(" · "));
@@ -584,6 +587,30 @@
           {/if}
         </div>
       {/each}
+      {#if heldRows.length}
+        <button class="h-else" onclick={() => fold("held")} aria-expanded={!folded("held")} data-home-head="held">
+          <span class="h-chev" class:shut={folded("held")} aria-hidden="true">›</span>
+          <span class="h-else-t">{heldWords(heldRows.length)}</span>
+          <span class="h-else-n">not counted above</span>
+        </button>
+        {#if !folded("held")}
+          {#each heldRows as row (row.key)}
+            {#if row.blocker}
+              {@const b = row.blocker}
+              {@const k = `${b.project}:${b.id}`}
+              <div class="h-row need" data-need="blocker">
+                <div class="h-row-top"><span class="h-kind blocker">Blocker</span><span class="h-row-title">{row.title}</span></div>
+                <p class="h-line">{row.line}</p>
+                {#if openBlocker === k && blockerViews[k]}
+                  <BlockerAnswer {ns} project={b.project} blocker={blockerViews[k]!} live={false} onanswered={() => { openBlocker = null; void load(); }} />
+                {:else}
+                  <div class="h-acts"><button class="h-btn primary" onclick={() => showBlocker(b)}>Answer</button></div>
+                {/if}
+              </div>
+            {/if}
+          {/each}
+        {/if}
+      {/if}
     {/if}
   </div>
 
@@ -823,6 +850,25 @@
     font-size: 12px;
     font-weight: 400;
     white-space: nowrap;
+  }
+  /* Item 945: Nightshift's held blockers — one quiet line under Needs you. */
+  .h-else {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 2px 4px;
+    border: 0;
+    background: none;
+    color: var(--dim);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+  }
+  .h-else-n {
+    margin-left: auto;
+    font-size: 11px;
+    opacity: 0.75;
   }
   .h-empty {
     margin: 2px 0 6px 18px;

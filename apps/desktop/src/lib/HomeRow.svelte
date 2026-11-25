@@ -7,7 +7,7 @@
   import { untrack } from "svelte";
   import { tip } from "./tip";
   import { app, canLeaveProject } from "./state.svelte";
-  import { needsNow } from "./needsBoard.svelte";
+  import { homeNeedsNow } from "./needsBoard.svelte";
   import { waitingCount } from "./needsYou";
   import { homeCount, homeTip, isHome, todayFigure } from "./home";
   import * as api from "./api";
@@ -19,7 +19,8 @@
   const project = $derived(homeProject());
   const here = $derived(isHome(app.project));
   // 763 H5's review: Start cards wait on him too.
-  const n = $derived(waitingCount(needsNow()) + home.cards.length);
+  // Item 945: Home's own rows — Nightshift's blockers are not counted here.
+  const n = $derived(waitingCount(homeNeedsNow().rows) + home.cards.length);
   const count = $derived(homeCount(n));
   $effect(() => {
     if (project) untrack(() => void refreshHome());

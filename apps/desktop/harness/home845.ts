@@ -15,7 +15,7 @@ import { railFold } from "../src/lib/railFold.svelte";
 import { setLayout } from "../src/lib/layout.svelte";
 import { stage as kept, keep, readKept, STAGE_KEY } from "../src/lib/homeStage/stageState.svelte";
 import { installErrorWatch } from "../src/lib/errorWatch.svelte";
-import { needs as board } from "../src/lib/needsBoard.svelte";
+import { needs as board, refreshBoard } from "../src/lib/needsBoard.svelte";
 // Item 874: as main.ts — the Reload view bar if the runtime stops drawing.
 installErrorWatch();
 
@@ -23,6 +23,10 @@ const q = new URLSearchParams((window as unknown as { __h9q?: string }).__h9q ??
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
 const s = q.get("s") ?? "new";
+// Items 944–946: real944=1 draws Home on data put on the page as window.__real (his own feed, blockers, shipped items
+// and kept turns, read from copies — never committed); empty944=1 is a Home with nothing in it yet (a first run).
+const real = q.get("real944") === "1" ? ((window as unknown as { __real?: { feed: unknown[]; seen_at: string | null; blockers: unknown[]; items: unknown[]; ended: unknown[] } }).__real ?? null) : null;
+const empty = q.get("empty944") === "1";
 
 const home = { id: "home", name: "Home", root: "/Users/you/.nightloom/home", notes_dir: "/Users/you/.nightloom/home/notes", chats: 12, notes: 5, exists: true, source: "nightloom:home" };
 const projects = [home, { id: "nl", name: "Nightloom", root: "/Users/you/code/nightloom", notes_dir: "/Users/you/code/nightloom/.agents/notes", chats: 48, notes: 21, exists: true }];
@@ -77,22 +81,26 @@ const notes: string[] = [];
     case "providers": return [{ kind: "anthropic", available: true, default_model: "claude-opus-5-5", key_source: "stored" }];
     case "schedule_probe": return { due_ms: [], limit_ms: null };
     case "home_info": return { project_id: "home", chat_id: s === "new" ? null : "h-today", folder: home.root, brief: "", scan_words: "Every day at 8:00 AM", scan_job_id: null };
-    case "home_feed": return { rows: feed, seen_at: ago(120) };
-    case "home_reach": case "home_reach_check": return reach;
+    case "home_feed": return real ? { rows: real.feed, seen_at: real.seen_at } : empty ? { rows: [], seen_at: null } : { rows: feed, seen_at: ago(120) };
+    case "home_mark_seen": return new Date().toISOString();
+    case "nightshift_projects": return real ? [{ id: "ns", name: "Nightshift (value generalization)", nightshift: true, exists: true }] : [];
+    case "nightshift_blockers": return { blockers: real?.blockers ?? [] };
+    case "nightshift_items": return { items: real?.items ?? [] };
+    case "home_reach": case "home_reach_check": return empty ? { checked_at: ago(1), error: null, locals: [], accounts: [] } : reach;
     // Held for the shot: the row stays "checking" while the shot is taken.
     case "home_reach_check_one": await wait(20_000); return reach;
     case "list_notes": return notes.map((name) => ({ name, bytes: 1, modified: ago(0), summary: "", kind: "markdown" }));
     case "save_note": notes.push(String((a as { name?: string })?.name ?? "")); return { name: (a as { name?: string })?.name, bytes: 1, modified: ago(0), summary: "", kind: "markdown" };
     case "claude_browser_status": return null;
-    case "home_sources": return macSources;
+    case "home_sources": return empty ? [] : macSources;
     case "home_routes": return { cards: [], held: [], started: [] };
     // Item 874: lists the app reads after a send; a null froze the harness page (Palette reads their length).
     case "list_proposals":
       return [];
-    case "named_files": case "for_you_files": case "search_backends": case "centre_proposals": case "centre_dream_commits": case "turn_usage": case "list_threads": case "nightshift_projects": case "tidy_memory": case "tidy_threads":
+    case "named_files": case "for_you_files": case "search_backends": case "centre_proposals": case "centre_dream_commits": case "turn_usage": case "list_threads": case "tidy_memory": case "tidy_threads":
       return [];
     // stale847=1 (item 894): Home's tasks cannot be read.
-    case "home_tasks": if (q.get("stale847") === "1") throw new Error("the service is not answering"); return homeTasks;
+    case "home_tasks": if (q.get("stale847") === "1") throw new Error("the service is not answering"); return real || empty ? [] : homeTasks;
     case "home_task_event": told.push(String((a as { line?: string })?.line ?? "")); return null;
     case "home_task_close": return null;
     case "home_stage_focus": return null;
@@ -187,6 +195,11 @@ async function run() {
     await openSession("h-today");
     await wait(900);
     restart = ` restart=${saved.length}B told=${told.length} notes=${notes.length}`;
+  }
+  if (real) {
+    board.ended = real.ended as typeof board.ended;
+    await refreshBoard(true);
+    await wait(300);
   }
   // needs=1 (item 874): two Needs-you cards as his 12:19 PM shot had them — a question with a long text in another
   // project, and a finished turn — for the click test of Answer / Open chat / Mark seen and the card's full text.

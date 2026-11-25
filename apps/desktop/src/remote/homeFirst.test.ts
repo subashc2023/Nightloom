@@ -189,3 +189,20 @@ describe("Tell Home", () => {
     expect(homeDraftKey({ project: "home", chat: null })).toBe(draftKey(null, "home"));
   });
 });
+
+// Item 945: Nightshift's held blockers are one folded line under Needs you, not rows of it.
+import { heldWords as heldWords945, isFolded as isFolded945, emptyHomeKept as emptyKept945, toggleFold as toggleFold945, readHomeKept as readKept945 } from "./homeFirst";
+describe("held blockers on the phone's Home (item 945)", () => {
+  it("is folded until he opens it, and the fold is kept", () => {
+    const k = emptyKept945();
+    expect(isFolded945(k, "held", null)).toBe(true);
+    expect(isFolded945(k, "needs", null)).toBe(false);
+    const open = toggleFold945(k, "held", null);
+    expect(isFolded945(open, "held", null)).toBe(false);
+    expect(isFolded945(readKept945(JSON.parse(JSON.stringify(open))), "held", null)).toBe(false);
+  });
+  it("says how many in plain words", () => {
+    expect(heldWords945(1)).toBe("Nightshift · 1 held blocker");
+    expect(heldWords945(3)).toBe("Nightshift · 3 held blockers");
+  });
+});

@@ -17,7 +17,7 @@ import { allRunning } from "./running.svelte";
 import * as api from "./api";
 import { chatName, turnEndListeners, windowFocused, type TurnEnded } from "./notify";
 import { answeredWhen, extractAsk, pendingAsk, type Ask } from "./askTag";
-import { followUpTitle, needRows, parseEnded, trimEnded, type EndedTurn, type NeedRow, type OpenBlocker, type ShippedItem } from "./needsYou";
+import { followUpTitle, homeNeeds, needRows, parseEnded, seenNow, trimEnded, type HomeNeeds, type EndedTurn, type NeedRow, type OpenBlocker, type ShippedItem } from "./needsYou";
 
 export const ENDED_KEY = "nightloom.needsYou.ended";
 export const DRAFTS_KEY = "nightloom.needsYou.drafts";
@@ -116,18 +116,30 @@ export function hereAsk(): { ask: Ask; index: number } | null {
 
 // He opened a chat: its finished turn is looked at; a kept question the log
 // shows answered (he wrote after it, here or on the phone) is dropped.
+// Item 945: "looked at" needs the window in front, and coming back to the
+// window counts — a reply that landed while Nightloom was behind another app,
+// read when he came back and left for another chat, used to stay listed.
+function lookedAt(): void {
+  const id = app.activeSessionId;
+  if (!id || app.view !== "chat") return;
+  const answered = app.events.length > 0 && !chatRuns(id) && pendingAsk(app.events) === null;
+  const kept = needs.ended.find((x) => x.chat === id);
+  if (seenNow(kept, { onScreen: true, focused: windowFocused(), answered })) dropEnded(id);
+}
 $effect.root(() => {
   $effect(() => {
-    const id = app.activeSessionId;
-    const events = app.events;
-    if (!id || app.view !== "chat") return;
-    const answered = events.length > 0 && !chatRuns(id) && pendingAsk(events) === null;
-    untrack(() => {
-      const kept = needs.ended.find((x) => x.chat === id);
-      if (kept && (!kept.ask || answered)) dropEnded(id);
-    });
+    void app.activeSessionId;
+    void app.events;
+    void app.view;
+    untrack(lookedAt);
   });
 });
+if (typeof window !== "undefined") {
+  window.addEventListener("focus", lookedAt);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") lookedAt();
+  });
+}
 
 /** Every row of the view, now. */
 export function needsNow(): NeedRow[] {
@@ -141,6 +153,11 @@ export function needsNow(): NeedRow[] {
     shipped: needs.shipped,
     running: chatRuns,
   });
+}
+
+/** Item 945: Home's own list — what waits on him in his chats; Nightshift's rows counted, not listed. */
+export function homeNeedsNow(): HomeNeeds {
+  return homeNeeds(needsNow());
 }
 
 /** Re-read the open blockers and the shipped items of every Nightshift

@@ -5,6 +5,10 @@
  * (scroll and folds). Pure apart from `loadHomeKept`/`saveHomeKept`, so
  * all of it is under `homeFirst.test.ts`.
  *
+ * Item 945: Nightshift's held blockers are not Needs-you rows (he answers
+ * those where he runs Nightshift): they are one folded line under the
+ * list, not counted in the header, each still answerable when opened.
+ *
  * Order (design §7, the default until he picks a layout — blocker 2084):
  * header, Needs you, today's scan, Done since you looked, Running, the
  * Tell Home box and the Jobs row, Home on this Mac.
@@ -202,7 +206,8 @@ export function jobsWords(jobs: Job[], clock: (ms: number) => string): string {
 export const HOME_KEPT_KEY = "nightloom.remote.home";
 
 /** The sections he can fold. */
-export type HomeSection = "needs" | "scan" | "done" | "running" | "sources";
+/** `held` (item 945): Nightshift's held blockers under Needs you — one line, folded unless he opens it. */
+export type HomeSection = "needs" | "scan" | "done" | "running" | "sources" | "held";
 
 export interface HomeKept {
   /** His scroll, in CSS pixels from the top. */
@@ -220,7 +225,7 @@ export function emptyHomeKept(): HomeKept {
   return { scroll: 0, folds: {}, scanRead: null, scanFoldFor: null };
 }
 
-const SECTIONS: HomeSection[] = ["needs", "scan", "done", "running", "sources"];
+const SECTIONS: HomeSection[] = ["needs", "scan", "done", "running", "sources", "held"];
 
 /** A kept place read back, field by field. */
 export function readHomeKept(v: unknown): HomeKept {
@@ -245,7 +250,12 @@ export function isFolded(k: HomeKept, section: HomeSection, scanDate: string | n
     if (k.folds.scan !== undefined && k.scanFoldFor === scanDate) return k.folds.scan;
     return scanDate !== null && k.scanRead === scanDate;
   }
-  return k.folds[section] ?? false;
+  return k.folds[section] ?? section === "held";
+}
+
+/** Item 945: the folded line's words — "Nightshift · 3 held blockers". */
+export function heldWords(n: number): string {
+  return `Nightshift · ${n === 1 ? "1 held blocker" : `${n} held blockers`}`;
 }
 
 /** His tap on a section's head. */

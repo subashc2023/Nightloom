@@ -14,7 +14,7 @@
   import { classic } from "../layout.svelte";
   import { home, refreshHome, refreshReach, refreshSources, refreshRoutes } from "../home.svelte";
   import { isScanMessage } from "../home";
-  import { needsNow } from "../needsBoard.svelte";
+  import { homeNeedsNow } from "../needsBoard.svelte";
   import Btn from "./Btn.svelte";
   import Watch from "./views/Watch.svelte";
   import Brief from "./views/Brief.svelte";
@@ -38,7 +38,8 @@
 
   let { blank, children }: { blank: boolean; children: Snippet } = $props();
 
-  const needs = $derived(needsNow().filter((r) => r.state !== "working").length + home.cards.length);
+  // Item 945: Home's own rows (Nightshift's blockers and shipped items are not counted on the tab).
+  const needs = $derived(homeNeedsNow().rows.length + home.cards.length);
   const brief = $derived(briefOf(app.events as unknown as Ev[], isScanMessage, app.busy));
   // The views a task of Home's may be drawn in.
   // Item 898: "brief" too — a page Home wrote with update_task, drawn by the Brief view.

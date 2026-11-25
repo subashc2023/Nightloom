@@ -5,16 +5,17 @@
   //               "Check all": asks Claude Code what Home reaches now — no model request (A). Each row's own
   //               Check now asks about that source alone: a connector through `claude mcp get`, a Mac source by
   //               re-reading its macOS permission (never a dialog) — A.
-  //   Needs you — the app's own needs-you rows (item 753), every project. "Answer" opens the Needs-you view (A; the
+  //   Needs you — the app's own needs-you rows (item 753) that wait on him in his chats, every project; Nightshift's
+  //               blockers and shipped items are one quiet line (item 945). "Answer" opens the Needs-you view (A; the
   //               answer itself is that view's card, kind C).
   //   Handled   — Home's feed since he last looked. "Mark all seen" moves the seen time (A).
   import Icon from "../../Icon.svelte";
   import { app, openRun } from "../../state.svelte";
   import { home, homeDone, markHomeSeen, checkReach, refreshSources, checkingOne, checkSource } from "../../home.svelte";
   import { clock, dateLabel, feedTag, reachName, reachStatusWords, type FeedRow } from "../../home";
-  import { needsNow, needs as board, replyTo, setDraft, dropEnded } from "../../needsBoard.svelte";
+  import { homeNeedsNow, needs as board, replyTo, setDraft, dropEnded } from "../../needsBoard.svelte";
   import { withNote } from "../../askQuestions";
-  import type { NeedRow } from "../../needsYou";
+  import { nightshiftWords, type NeedRow } from "../../needsYou";
   import Panel from "../Panel.svelte";
   import Steps from "../Steps.svelte";
   import Btn from "../Btn.svelte";
@@ -48,7 +49,10 @@
 
   const sources = $derived(sourceRows(home.reach, home.sources, reachName, reachStatusWords, clock));
   const groups = $derived(sourceGroups(sources));
-  const needs = $derived(needsNow().filter((r) => r.state !== "working"));
+  // Item 945: Home lists what waits on him in his chats; Nightshift's blockers and shipped items are one quiet line.
+  const mine = $derived(homeNeedsNow());
+  const needs = $derived(mine.rows);
+  const elsewhere = $derived(nightshiftWords(mine));
   const since = $derived(homeDone());
   const handled = $derived<FeedRow[]>((since.length ? since : home.rows.slice(-12)).slice().reverse());
   // Item 896: two identical rows in one millisecond must not share a key.
@@ -151,6 +155,9 @@
             </div>
           {/each}
           {#if needs.length === 0}<Loading label="Nothing needs you — Home is watching" lines={2} />{/if}
+          <!-- Item 945: Nightshift's open blockers and shipped items are not listed here (he answers those where he
+               runs Nightshift); one quiet line says how many, and opens the Needs-you view, which lists every one. -->
+          {#if elsewhere}<button class="w-else" use:tip={"Not listed on Home\nOpens the Needs-you view"} onclick={() => (app.showNeeds = true)}><span class="w-else-t">Nightshift · {elsewhere}</span><span class="w-else-go">in Needs you →</span></button>{/if}
         </div>
       </Panel>
       <Panel title="Handled" sub={since.length ? `${since.length} since you looked` : "latest"}>
@@ -214,6 +221,10 @@
   .w-chk { flex: none; opacity: 0.55; transition: opacity 120ms; }
   .w-src:hover .w-chk, .w-src.isopen .w-chk, .w-chk:focus-within { opacity: 1; }
   .w-needs { display: flex; flex-direction: column; gap: 8px; }
+  .w-else { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 6px 4px 2px; border: 0; background: none; color: var(--dim); font: 11.5px var(--sans); text-align: left; cursor: pointer; }
+  .w-else-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .w-else-go { flex: none; margin-left: auto; font: 10.5px var(--mono); letter-spacing: 0.04em; opacity: 0.75; }
+  .w-else:hover, .w-else:focus-visible { color: var(--ink2); }
   .w-answer { display: flex; flex-direction: column; gap: 6px; cursor: default; }
   .w-answer :global(.nd-reply) { flex-wrap: wrap; }
   .w-answer :global(.nd-reply input) { flex: 1 1 140px; }
