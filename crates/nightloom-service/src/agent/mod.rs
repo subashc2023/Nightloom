@@ -7432,7 +7432,10 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":
     }
 
     /// Item 897: a Dock-launched app's PATH gains Homebrew; the inherited
-    /// order is kept and nothing is repeated.
+    /// order is kept and nothing is repeated. Unix only (item 979): its PATHs
+    /// are written with `:`, which Windows's `split_paths` does not split on
+    /// (`;` there), so CI's Windows job read "/usr/bin:/bin" as one entry.
+    #[cfg(unix)]
     #[test]
     fn a_launchd_path_is_widened_with_homebrew_in_order_without_duplicates() {
         let home = std::path::Path::new("/Users/someone");

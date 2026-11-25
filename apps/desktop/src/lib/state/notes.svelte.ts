@@ -8,7 +8,7 @@ import { refreshWithin, withNote, withoutNote } from "../afterWrite";
 import { isMoveNotesTool, movesInAnswer } from "../notesMoved";
 import * as tabs from "../tabs";
 import type { Note, NoteScope, ProposalEntry, ProposalScope, TurnEvent } from "../types";
-import { app, refreshProjects, refreshNotes, refreshProposals, applyDraft, reflectTabs, closeTab, dropNoteTabs, addToast } from "../state.svelte";
+import { app, refreshProjects, refreshNotes, refreshProposals, refreshCentre, applyDraft, reflectTabs, closeTab, dropNoteTabs, addToast } from "../state.svelte";
 
 // ---- the docspace ----
 
@@ -144,6 +144,8 @@ export async function saveNote(
     } catch (e) {
       addToast(`saved, but could not file the proposal as applied: ${String(e)}`);
     }
+    // Item 968: the proposal leaves Needs you (and its one number) now, not at the next 10-minute re-read.
+    void refreshCentre();
   }
   // ~~`await refreshNotes(); await refreshProjects();`~~ — in the background
   // since backlog 211: a listing hung on iCloud held Saved, the draft and
@@ -583,5 +585,7 @@ export async function dismissProposal(scope: ProposalScope, id: string): Promise
   // to mark a dismissed proposal applied.
   unstageProposal(noteDraftKey(scope, AGENTS_MD));
   await refreshProposals();
+  // Item 968: a rejected proposal leaves Needs you (and its one number) now, not at the next 10-minute re-read.
+  void refreshCentre();
   return true;
 }

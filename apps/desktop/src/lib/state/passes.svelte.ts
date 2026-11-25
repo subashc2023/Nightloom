@@ -6,7 +6,7 @@ import { CURATED, thinkingString, type ConnectionDraft } from "../catalog";
 import { refreshWithin } from "../afterWrite";
 import { cli } from "../cliUpdate.svelte";
 import { deferredRecheckAt, handoffPassDue, nightlyReady, usageGate } from "../autoPass";
-import { buildNotices, dailyDue, saveDailyPrefs, saveDismissed, saveLastDaily, saveSeenStamp, type DailyPrefs, type Notice } from "../centre";
+import { buildNotices, dailyDue, saveCentreSeen, saveDailyPrefs, saveDismissed, saveLastDaily, saveSeenStamp, withSeen, type DailyPrefs, type Notice } from "../centre";
 import type { NightshiftRow } from "../types";
 import { showNightshift } from "./nightshift.svelte";
 import { showNote, AGENTS_MD, reviewProposal } from "./notes.svelte";
@@ -397,6 +397,8 @@ export async function refreshCentre(): Promise<void> {
     api.flatCanary(cliBinary).catch(() => []),
   ]);
   app.centre.rows = rows;
+  // Item 968: every pending proposal, for Needs you (the bell lists none since item 969).
+  app.centre.proposals = proposals;
   app.centre.notices = buildNotices({
     proposals,
     commits,
@@ -547,9 +549,18 @@ export async function yieldBackfill(): Promise<void> {
   await run.catch(() => {});
 }
 
-/** The bell's count: everything listed. */
+/** The bell's count: everything listed. ~~The number on the bell~~ — since item 969 the bell wears a dot, not
+ *  a number (`bellList(...).fresh`); kept for its callers. */
 export function centreCount(): number {
   return app.centre.notices.length;
+}
+
+/** Item 969: mark the bell's rows `ids` seen — "Mark all seen", or a day he opened and Done. */
+export function markCentreSeen(ids: readonly string[]): void {
+  const next = withSeen(app.centre.seen, ids);
+  if (next.length === app.centre.seen.length) return;
+  app.centre.seen = next;
+  saveCentreSeen(next);
 }
 
 /** Take a notice off the list. The thing it names is untouched — a

@@ -2016,6 +2016,8 @@ export interface NightshiftInfo {
   dirty: number | null;
   items: number;
   open_blockers: number;
+  /** Of those, the ones held for him (`default: held`, item 968); absent from an older backend. */
+  held_blockers?: number;
   newest_morning: string | null;
   latest_shift: string | null;
 }

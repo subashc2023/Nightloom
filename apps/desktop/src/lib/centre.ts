@@ -383,3 +383,166 @@ export function saveSeenStamp(stamp: string): void {
     // best-effort
   }
 }
+
+// ---- the bell as a daily digest (item 969, 911 D) ----
+
+/**
+ * The bell's list since item 969: what the automation did is a log, not a
+ * to-do, so it is grouped — one row per day (dream commits and writes,
+ * Claude Code's memory changes, morning pages, a release installed), each
+ * opening to the per-notice rows with their diffs and Revert. Days older
+ * than `DIGEST_DAYS` drop off (the history stays in Notes and git). The bell
+ * wears no number, only a dot while a row is new (not in the seen set);
+ * "Mark all seen" clears it. What asks him to decide — proposals, held
+ * blockers — is not listed here: it is counted in Needs you (item 968).
+ * Item 758's canary and a newer Claude Code stay rows of their own: each is
+ * one row at most and carries its own action.
+ */
+export const CENTRE_SEEN_KEY = "nightloom.centre.seen";
+export const DIGEST_DAYS = 7;
+/** The kinds a day's row gathers. */
+export const DIGEST_KINDS: readonly NoticeKind[] = ["dream", "memory", "morning", "release"];
+/** The kinds listed one row each, above the days. */
+export const ALONE_KINDS: readonly NoticeKind[] = ["canary", "cli"];
+
+export interface DigestDay {
+  /** Local `YYYY-MM-DD`. */
+  key: string;
+  /** "Today", "Yesterday", "Mon, Nov 23". */
+  label: string;
+  /** "A dream changed 23 notes in nightshift-code, Nightloom and 4 more · …". */
+  summary: string;
+  notices: Notice[];
+  /** Ids not yet seen. */
+  fresh: number;
+}
+
+export interface BellList {
+  alone: Notice[];
+  days: DigestDay[];
+  /** Any row not yet seen: the bell's dot. */
+  fresh: boolean;
+  /** Every id listed, for "Mark all seen". */
+  ids: string[];
+}
+
+function dayKey(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** The day a notice belongs to: its time's local day, today for one with none (an unread morning page). */
+export function noticeDay(n: Notice, now: Date): string {
+  const t = n.at ? new Date(n.at) : null;
+  return dayKey(t && !Number.isNaN(t.getTime()) ? t : now);
+}
+
+function dayLabel(key: string, now: Date): string {
+  const today = dayKey(now);
+  const y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  if (key === today) return "Today";
+  if (key === dayKey(y)) return "Yesterday";
+  const [yy, mm, dd] = key.split("-").map(Number);
+  return new Date(yy, mm - 1, dd).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}
+
+function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** "nightshift-code", "nightshift-code and Nightloom", "nightshift-code, Nightloom and 4 more". */
+export function placesWords(names: readonly string[]): string {
+  if (names.length <= 2) return names.join(" and ");
+  return `${names[0]}, ${names[1]} and ${names.length - 2} more`;
+}
+
+/** One day's line: every kind it holds, in a few words each. */
+export function daySummary(ns: readonly Notice[]): string {
+  const parts: string[] = [];
+  let notes = 0;
+  let instructions = 0;
+  const places: string[] = [];
+  const place = (name: string) => {
+    if (!places.includes(name)) places.push(name);
+  };
+  for (const n of ns) {
+    if (n.kind !== "dream") continue;
+    if (n.commit) {
+      const c = n.commit;
+      const instr = c.files.some((f) => isInstructionsFile(c, f.path));
+      notes += c.files.length - (instr ? 1 : 0);
+      if (instr) instructions++;
+      place(c.project ? c.project.name : "the vault");
+    } else if (n.applied) {
+      instructions++;
+      place(n.applied.project ? n.applied.project.name : "your memory");
+    }
+  }
+  if (notes || instructions) {
+    const what = [notes ? plural(notes, "note") : "", instructions ? plural(instructions, "instructions file") : ""].filter(Boolean).join(" and ");
+    parts.push(`Dreams changed ${what} in ${placesWords(places)}`);
+  }
+  const mem = ns.filter((n) => n.kind === "memory");
+  if (mem.length) {
+    const files = mem.reduce((a, n) => a + (n.memory?.files.length ?? 0), 0);
+    parts.push(`Claude Code's memory changed ${mem.length === 1 ? "once" : `${mem.length} times`}${files ? ` (${plural(files, "note")})` : ""}`);
+  }
+  const pages = ns.filter((n) => n.kind === "morning");
+  if (pages.length) parts.push(pages.length === 1 ? `A morning page to read in ${pages[0].project?.name ?? "a project"}` : `${pages.length} morning pages to read`);
+  if (ns.some((n) => n.kind === "release")) parts.push("A release was installed");
+  return parts.join(" · ");
+}
+
+/**
+ * The bell's rows from the notices (`buildNotices`'s list) and the seen set:
+ * the alone rows, then one row per day, newest first, days older than
+ * `days` dropped. Proposals and blockers are left out (Needs you lists them).
+ */
+export function bellList(notices: readonly Notice[], seen: readonly string[], now: Date, days = DIGEST_DAYS): BellList {
+  const seenSet = new Set(seen);
+  const oldest = new Date(now);
+  oldest.setDate(oldest.getDate() - (days - 1));
+  const floor = dayKey(oldest);
+  const alone = notices.filter((n) => ALONE_KINDS.includes(n.kind));
+  const byDay = new Map<string, Notice[]>();
+  for (const n of notices) {
+    if (!DIGEST_KINDS.includes(n.kind)) continue;
+    const k = noticeDay(n, now);
+    if (k < floor) continue;
+    byDay.set(k, [...(byDay.get(k) ?? []), n]);
+  }
+  const out: DigestDay[] = [...byDay.entries()]
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([key, ns]) => {
+      const sorted = [...ns].sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
+      return { key, label: dayLabel(key, now), summary: daySummary(sorted), notices: sorted, fresh: sorted.filter((n) => !seenSet.has(n.id)).length };
+    });
+  const ids = [...alone.map((n) => n.id), ...out.flatMap((d) => d.notices.map((n) => n.id))];
+  return { alone, days: out, fresh: ids.some((id) => !seenSet.has(id)), ids };
+}
+
+export function loadCentreSeen(): string[] {
+  try {
+    const raw = localStorage.getItem(CENTRE_SEEN_KEY);
+    const v = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Bounded like the dismissed set: the newest `cap` ids kept. */
+export function saveCentreSeen(ids: readonly string[], cap = 1000): void {
+  try {
+    localStorage.setItem(CENTRE_SEEN_KEY, JSON.stringify(ids.slice(-cap)));
+  } catch {
+    // best-effort
+  }
+}
+
+/** The seen set with `ids` added (each once, in order). */
+export function withSeen(seen: readonly string[], ids: readonly string[]): string[] {
+  const have = new Set(seen);
+  return [...seen, ...ids.filter((id) => !have.has(id) && (have.add(id), true))];
+}

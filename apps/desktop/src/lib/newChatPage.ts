@@ -167,7 +167,7 @@ export function readings(i: ReadingsInput): Reading[] {
       short,
       value,
       sub: ns.enabled
-        ? `${plural(ns.items, "item")} · ${plural(ns.blockers, "open blocker")}`
+        ? `${plural(ns.items, "item")} · ${plural(ns.blockers, "held blocker")}`
         : "not set up for this project",
       ok: false,
       warn: false,

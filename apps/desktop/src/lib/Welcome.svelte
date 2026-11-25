@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { tip as tipAction } from "./tip";
+  import { blockerCounts } from "./needsYou";
   import {
     app,
     contextUsed,
@@ -374,7 +375,8 @@
                 ? shortClock(new Date(app.nightshift.pending.fire_at_ms).toISOString())
                 : null,
             items: openRow?.nightshift?.items ?? 0,
-            blockers: openRow?.nightshift?.open_blockers ?? 0,
+            // Item 968: the held ones (an older backend: every open one).
+            blockers: blockerCounts(null, openRow?.nightshift).held,
           }
         : null,
     }),

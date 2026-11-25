@@ -10,7 +10,7 @@
  * the view opens and every few minutes for the badge.
  */
 import { untrack } from "svelte";
-import { app, sendInChat, chatRuns, injectIntoTurn } from "./state.svelte";
+import { app, sendInChat, chatRuns, injectIntoTurn, openNotice } from "./state.svelte";
 import type { Attachment } from "./types";
 import { enqueueMessage, readDraft } from "./drafts.svelte";
 import { addToast } from "./state/toasts.svelte";
@@ -18,7 +18,8 @@ import { allRunning } from "./running.svelte";
 import * as api from "./api";
 import { chatName, turnEndListeners, windowFocused, type TurnEnded } from "./notify";
 import { answeredWhen, extractAsk, pendingAsk, type Ask } from "./askTag";
-import { followUpTitle, homeNeeds, needRows, parseEnded, seenNow, trimEnded, type HomeNeeds, type EndedTurn, type NeedRow, type OpenBlocker, type ShippedItem } from "./needsYou";
+import { followUpTitle, homeNeeds, isHeld, needRows, parseEnded, seenNow, trimEnded, type HomeNeeds, type EndedTurn, type NeedRow, type OpenBlocker, type PendingProposal, type ShippedItem } from "./needsYou";
+import { proposalNoticeId } from "./centre";
 
 export const ENDED_KEY = "nightloom.needsYou.ended";
 export const DRAFTS_KEY = "nightloom.needsYou.drafts";
@@ -142,6 +143,31 @@ if (typeof window !== "undefined") {
   });
 }
 
+/** Item 968: the proposals still pending, as the bell's last read found them (every one, dismissed or not —
+ *  a dismissal on the old bell hid the notice, never the proposal). */
+export function pendingProposals(): PendingProposal[] {
+  return (app.centre.proposals ?? []).map((p) => {
+    const at = Date.parse(p.entry.proposal.at ?? "");
+    const why = p.entry.proposal.screened ? `Kept for your review: ${p.entry.proposal.screened.why}. ${p.entry.proposal.why}` : p.entry.proposal.why;
+    return {
+      id: proposalNoticeId(p),
+      title: `A change to ${p.project ? `${p.project.name}'s instructions` : "your memory"}`,
+      why: why ?? "",
+      project: p.project?.id ?? null,
+      projectName: p.project?.name ?? null,
+      at: Number.isFinite(at) ? at : null,
+    };
+  });
+}
+
+/** Item 968: a proposal row's Review — the bell's own review flow (NoteView in proposal mode). */
+export async function reviewProposalRow(row: NeedRow): Promise<void> {
+  const p = (app.centre.proposals ?? []).find((x) => proposalNoticeId(x) === row.proposal);
+  if (!p) return;
+  app.showNeeds = false;
+  await openNotice({ kind: "proposal", id: proposalNoticeId(p), title: row.title, detail: row.detail, at: p.entry.proposal.at ?? null, project: p.project, proposal: p });
+}
+
 /** Every row of the view, now. */
 export function needsNow(): NeedRow[] {
   const here = hereAsk();
@@ -152,6 +178,7 @@ export function needsNow(): NeedRow[] {
     here: here && target ? { ...target, ask: here.ask } : null,
     blockers: needs.blockers,
     shipped: needs.shipped,
+    proposals: pendingProposals(),
     running: chatRuns,
   });
 }
@@ -177,7 +204,7 @@ export async function refreshBoard(force = false): Promise<void> {
           const [bl, items] = await Promise.all([api.nightshiftBlockers(p.id), api.nightshiftItems(p.id)]);
           for (const b of bl.blockers) {
             if (b.status !== "open") continue;
-            blockers.push({ project: p.id, projectName: p.name, id: b.id, question: b.question, guess: b.guess, held: b.fields?.default === "held", raised: b.raised });
+            blockers.push({ project: p.id, projectName: p.name, id: b.id, question: b.question, guess: b.guess, held: isHeld(b.fields), raised: b.raised });
           }
           for (const i of items.items) {
             if (i.status !== "shipped") continue;

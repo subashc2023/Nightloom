@@ -8,6 +8,9 @@
    * where the sheet's own scroll always reaches them.
    */
   import type { Snippet } from "svelte";
+  // Item 977: the phone's tool-call view, kept in this browser across reloads.
+  import { nextToolView } from "../lib/toolView";
+  import { phoneTools, stepPhoneToolView, toolViewName } from "./toolView.svelte";
 
   type Icon = "new" | "mac" | "pencil" | "sliders" | "play" | "swap" | "pulse" | "aside" | "council" | "compact" | "stop" | "trash" | "chev" | "note";
 
@@ -108,6 +111,7 @@
       {#if !p.readOnly && p.context}
         <button data-act="context" onclick={p.oncontext}>{@render p.icon("pulse")} <span class="cm-grow">Context<small>What the model is sent, and how much room is left</small></span></button>
       {/if}
+      <button data-act="tool-view" onclick={stepPhoneToolView}>{@render p.icon("sliders")} <span class="cm-grow">Tool calls: {toolViewName(phoneTools.view)}<small>Tap for {toolViewName(nextToolView(phoneTools.view))} · every chat on this phone</small></span></button>
       <button data-act="rules" onclick={p.onrules}>{@render p.icon("sliders")} <span class="cm-grow">Approval rules<small>What runs without asking, what asks, what is blocked</small></span></button>
       {#if !p.readOnly && p.macRow}
         <button onclick={p.onmac} disabled={p.macDisabled}>{@render p.icon("mac")} Open on the Mac</button>

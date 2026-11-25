@@ -21,6 +21,8 @@ export interface NsProject {
   live: boolean;
   items: number;
   open_blockers: number;
+  /** Of those, the ones held for him (`default: held`, item 968); absent from an older service. */
+  held_blockers?: number;
   newest_morning: string | null;
   config_error: string | null;
 }

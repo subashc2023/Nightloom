@@ -274,11 +274,31 @@ pub fn installed_version(binary: &Path, home: Option<&Path>) -> Option<String> {
 /// and no token. `binary` is what the spec spawns: a path, or a bare name
 /// found on `PATH`.
 pub fn cached_version(binary: &Path) -> Option<String> {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-    use std::time::SystemTime;
-    type Seen = HashMap<PathBuf, (SystemTime, Option<String>)>;
-    static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
+    let id = version_identity(binary);
+    if let Some((real, mtime)) = &id
+        && let Some((t, v)) = SEEN_VERSIONS
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(|m| m.get(real).cloned()))
+        && t == *mtime
+    {
+        return v;
+    }
+    let v = installed_version(binary, None);
+    if let Some((real, mtime)) = id {
+        keep_version(real, mtime, v.clone());
+    }
+    v
+}
+
+/// What [`cached_version`] has kept: each binary's real path, with the
+/// modification time it was asked at and its answer.
+type SeenVersions = std::collections::HashMap<PathBuf, (std::time::SystemTime, Option<String>)>;
+static SEEN_VERSIONS: std::sync::Mutex<Option<SeenVersions>> = std::sync::Mutex::new(None);
+
+/// The file `binary` runs (a path as given, a bare name the first match on
+/// `PATH`, symlinks followed) and its modification time.
+fn version_identity(binary: &Path) -> Option<(PathBuf, std::time::SystemTime)> {
     let found = if binary.components().count() > 1 {
         Some(binary.to_path_buf())
     } else {
@@ -287,29 +307,32 @@ pub fn cached_version(binary: &Path) -> Option<String> {
                 .map(|d| d.join(binary))
                 .find(|c| c.is_file())
         })
+    }?;
+    let real = found.canonicalize().ok()?;
+    let mtime = std::fs::metadata(&real).ok()?.modified().ok()?;
+    Some((real, mtime))
+}
+
+fn keep_version(real: PathBuf, mtime: std::time::SystemTime, version: Option<String>) {
+    if let Ok(mut g) = SEEN_VERSIONS.lock() {
+        g.get_or_insert_with(Default::default)
+            .insert(real, (mtime, version));
+    }
+}
+
+/// Item 978: hand [`cached_version`] an answer someone else already has —
+/// the desktop's own `--version` probe, remembered on disk across launches
+/// (item 231) — so the first connect after a launch does not spawn the CLI
+/// a second time to learn what the probe learned (0.1 s warm, seconds cold:
+/// the launch's connect waited on it). `output` is the CLI's `--version`
+/// text as printed; kept only when it parses, for the file as it is now.
+pub fn remember_version(binary: &Path, output: &str) {
+    let Some(version) = parse_version(output) else {
+        return;
     };
-    let real = found.as_deref().and_then(|p| p.canonicalize().ok());
-    let mtime = real
-        .as_deref()
-        .and_then(|p| std::fs::metadata(p).ok())
-        .and_then(|m| m.modified().ok());
-    if let (Some(real), Some(mtime)) = (&real, mtime)
-        && let Some((t, v)) = SEEN
-            .lock()
-            .ok()
-            .and_then(|g| g.as_ref().and_then(|m| m.get(real).cloned()))
-        && t == mtime
-    {
-        return v;
+    if let Some((real, mtime)) = version_identity(binary) {
+        keep_version(real, mtime, Some(version));
     }
-    let v = installed_version(binary, None);
-    if let (Some(real), Some(mtime)) = (real, mtime)
-        && let Ok(mut g) = SEEN.lock()
-    {
-        g.get_or_insert_with(HashMap::new)
-            .insert(real, (mtime, v.clone()));
-    }
-    v
 }
 
 /// `version` is `min` or newer, compared as numbers.
@@ -618,6 +641,53 @@ mod tests {
             "{}",
             r.output
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Item 978: an answer handed over by the desktop's probe is the one
+    /// [`cached_version`] gives, with no `--version` of its own; a file
+    /// changed since asks again, and text that is not a version is ignored.
+    #[cfg(unix)]
+    #[test]
+    fn a_remembered_version_answers_without_running_the_cli() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch("remember");
+        let marker = d.join("ran");
+        let bin = d.join("claude");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\ntouch '{}'\necho '2.1.100 (Claude Code)'\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        remember_version(&bin, "not a version");
+        remember_version(&bin, "2.1.332 (Claude Code)");
+        assert_eq!(cached_version(&bin).as_deref(), Some("2.1.332"));
+        assert!(
+            !marker.exists(),
+            "the CLI ran though its answer was on hand"
+        );
+        // An update replaces the file: its new modification time asks again
+        // (each retry a newer one: a run refused while another test's fork
+        // briefly holds the script open is kept as `None` for that time).
+        let mut asked = None;
+        for i in 0..100u64 {
+            let later = std::time::SystemTime::now() + Duration::from_secs(5 + i);
+            std::fs::File::open(&bin)
+                .unwrap()
+                .set_modified(later)
+                .unwrap();
+            asked = cached_version(&bin);
+            if asked.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(asked.as_deref(), Some("2.1.100"));
+        assert!(marker.exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -221,8 +221,29 @@ fn read_record(cache: &Path) -> Option<ProbeRecord> {
     serde_json::from_str(&std::fs::read_to_string(cache).ok()?).ok()
 }
 
+/// Item 978: hand a probe's answer to the service's own `--version` cache
+/// (`cli_update::cached_version`, which the prompt asks whether the CLI
+/// reads `AGENTS.md`), so a connect never runs the CLI a second time to
+/// learn what this probe already knows.
+fn share(probed: &Probed) {
+    if let Some(text) = &probed.1 {
+        nightloom_service::cli_update::remember_version(Path::new(&probed.0), text);
+    }
+}
+
+/// At launch, before anything connects: the answer remembered on disk for
+/// `binary`, when the file it resolves to is the one that gave it, handed
+/// to the service's cache ([`share`]). Pure reads; no process spawned.
+pub fn share_remembered(cache: Option<&Path>, binary: &str) {
+    let resolved = nightloom_service::resolve_binary(binary);
+    if let Some(probed) = cache.and_then(|c| recalled(read_record(c).as_ref(), binary, &resolved)) {
+        share(&probed);
+    }
+}
+
 /// Remember a probe that answered. Best-effort, written whole by rename.
 fn remember(cache: &Path, binary: &str, probed: &Probed) {
+    share(probed);
     let Some((file, len, modified_ns)) = identity(&probed.0) else {
         return;
     };
@@ -261,6 +282,7 @@ where
     stage.set("the Claude Code binary's identity (the probe's cache)");
     let on_hand = cache.and_then(|c| recalled(read_record(c).as_ref(), binary, resolved));
     if let (Some(probed), Some(cache)) = (on_hand, cache) {
+        share(&probed);
         let (cache, binary) = (cache.to_path_buf(), binary.to_string());
         let fresh = run(binary.clone());
         tokio::spawn(async move {
@@ -289,6 +311,7 @@ where
     Fut: Future<Output = Result<Probed, String>>,
 {
     let started = Instant::now();
+    share_remembered(cache.as_deref(), &binary);
     let outcome = run(binary.clone()).await;
     if let (Ok(p), Some(c)) = (&outcome, &cache) {
         remember(c, &binary, p);

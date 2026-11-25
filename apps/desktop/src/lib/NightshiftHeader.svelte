@@ -12,6 +12,7 @@
   import { app, cancelLaunch } from "./state.svelte";
   import { sameMorning } from "./nightshift";
   import { tip } from "./tip";
+  import { blockerCounts } from "./needsYou";
   import { clock12, spanWords, tally } from "./nightshiftFace";
   import { relativeTime } from "./time";
   import NotificationCentre from "./NotificationCentre.svelte";
@@ -22,11 +23,10 @@
   const latest = $derived(app.nightshift.shifts[0] ?? null);
   const pending = $derived(app.nightshift.pending);
 
-  const openBlockers = $derived(
-    app.nightshift.blockers
-      ? app.nightshift.blockers.blockers.filter((b) => b.status === "open").length
-      : (info?.open_blockers ?? 0),
-  );
+  // Item 968: the hot number is the held blockers only; one whose default went ahead waits on nobody.
+  const bc = $derived(blockerCounts(app.nightshift.blockers?.blockers, info));
+  const openBlockers = $derived(bc.open);
+  const heldBlockers = $derived(bc.held);
   const unread = $derived.by(() => {
     if (!row || !info?.newest_morning) return false;
     const read = app.nightshift.read[row.id] ?? [];
@@ -106,9 +106,9 @@
     <span class="spacer"></span>
     <!-- The bell (nightshift backlog 069): this page draws no top bar. -->
     <NotificationCentre />
-    {#if info && openBlockers > 0}
-      <button type="button" class="ns-btn wait" onclick={() => go("blockers")}>
-        <span class="k">{openBlockers}</span> blocker{openBlockers === 1 ? "" : "s"} wait{openBlockers === 1 ? "s" : ""} on you
+    {#if info && heldBlockers > 0}
+      <button type="button" class="ns-btn wait" use:tip={bc.decided > 0 ? `${bc.decided} more went ahead on their default\nIn Blockers, to say if wrong` : ""} onclick={() => go("blockers")}>
+        <span class="k">{heldBlockers}</span> blocker{heldBlockers === 1 ? "" : "s"} wait{heldBlockers === 1 ? "s" : ""} on you
       </button>
     {/if}
   </div>
@@ -122,7 +122,7 @@
         Runs{#if app.nightshift.shifts.length > 0}<span class="n">{app.nightshift.shifts.length}</span>{/if}
       </button>
       <button role="tab" aria-selected={on("blockers")} class:on={on("blockers")} onclick={() => go("blockers")}>
-        Blockers{#if openBlockers > 0}<span class="n hot">{openBlockers}</span>{/if}
+        Blockers{#if heldBlockers > 0}<span class="n hot">{heldBlockers}</span>{:else if openBlockers > 0}<span class="n">{openBlockers}</span>{/if}
       </button>
       <button role="tab" aria-selected={on("notes")} class:on={on("notes")} onclick={() => go("notes")}>
         Notes{#if noteFileCount > 0}<span class="n">{noteFileCount}</span>{/if}
