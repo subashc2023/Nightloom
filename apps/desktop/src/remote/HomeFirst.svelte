@@ -158,6 +158,8 @@
   let homeChat = $state<string | null>(null);
   let loading = $state(true);
   let problem = $state<string | null>(null);
+  /** Item 947: Needs you has been read at least once (so "nothing needs you" is a fact, not a guess). */
+  let needsRead = $state(false);
 
   const home = $derived.by(() => {
     const h = feed?.home ?? { project: null, chat: null };
@@ -166,7 +168,7 @@
   // Item 945: Nightshift's held blockers are not Needs-you rows — one folded line under the list, not counted.
   const needs = $derived(needRows(pushRows, jobs, [], { chat: remote.active_chat, label: openLabel, pending: remote.pending.length }));
   const heldRows = $derived(needRows([], [], held, { chat: null, label: null, pending: 0 }));
-  const header = $derived(headerWords(needs.length + cards.length, today));
+  const header = $derived(headerWords(needs.length + cards.length, today, needsRead));
   const headParts = $derived(header.split(" · "));
   const stop = $derived(stopWords(today));
   const fromAway = $derived(active === "away" && macPaired);
@@ -174,17 +176,37 @@
   const scanJob = $derived(jobs.find((j) => j.id === "home-morning-scan") ?? null);
   const scanDate = $derived(scan?.date ?? null);
 
-  async function quiet<T>(p: Promise<T>, fallback: T): Promise<T> {
+  /** Item 947: one read that did not come. */
+  const FAIL = Symbol("fail");
+  /** Item 947: a read that never answers is the host not answering (a phone on a bad network can wait a minute). */
+  const LIMIT_MS = 25_000;
+  async function timed<T>(p: Promise<T>): Promise<T> {
+    let t: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await p;
-    } catch (e) {
-      if (e instanceof Unreachable) throw e;
-      return fallback;
+      return await Promise.race([p, new Promise<never>((_, no) => (t = setTimeout(() => no(new Unreachable("timed out")), LIMIT_MS)))]);
+    } finally {
+      clearTimeout(t);
     }
   }
+  /** One read of Home. An older host without the route (404, 405, 501) is answered by `fallback`; a route that
+   *  fails otherwise (500, 401, a body that is not JSON) is `FAIL`, so the page keeps what it last read instead of
+   *  drawing "nothing needs you" from a read that never happened (item 947). */
+  async function quiet<T>(p: Promise<T>, fallback: T): Promise<T | typeof FAIL> {
+    try {
+      return await timed(p);
+    } catch (e) {
+      if (e instanceof Unreachable) throw e;
+      if (e instanceof ApiError && (e.status === 404 || e.status === 405 || e.status === 501)) return fallback;
+      return FAIL;
+    }
+  }
+  /** Item 947: the newest load that was applied; a slower, older read arriving later is dropped. */
+  let loadSeq = 0;
+  let appliedSeq = 0;
 
   async function load() {
     const c = client;
+    const mine = ++loadSeq;
     const has = (f: string) => !remote.features || remote.features.includes(f);
     try {
       const [t, f, s, p, j, h, r, rt] = await Promise.all([
@@ -197,36 +219,44 @@
         has("running") ? quiet(c.running(), null) : Promise.resolve(null),
         quiet(c.homeRoutes(), null),
       ]);
-      if (c !== client) return;
-      today = t;
-      feed = f;
+      if (c !== client || mine < appliedSeq) return;
+      appliedSeq = mine;
+      const bad = [t, f, s, p, j, h, r, rt].some((v) => v === FAIL);
+      if (t !== FAIL) today = t;
+      if (f !== FAIL) feed = f;
       // Item 946: per-row marks the feed no longer holds, or that a "Mark all seen" (here or on the Mac) covered,
       // are let go, so the kept place does not grow for ever.
-      if (f?.rows?.length) {
+      if (f && f !== FAIL && f.rows?.length) {
         const pruned = pruneMarked(kept.marked, newsRows(f.rows), f.seen_at ?? null);
         if (pruned !== kept.marked) {
           kept = { ...kept, marked: pruned };
           saveHomeKept(kept);
         }
       }
-      scan = s.scan;
-      scanLoaded = true;
-      pushRows = p.rows;
-      jobs = j.jobs;
-      held = h.blockers;
-      if (rt) {
+      if (s !== FAIL) {
+        scan = s.scan;
+        scanLoaded = true;
+      }
+      if (p !== FAIL) {
+        pushRows = p.rows;
+        needsRead = true;
+      }
+      if (j !== FAIL) jobs = j.jobs;
+      if (h !== FAIL) held = h.blockers;
+      if (rt && rt !== FAIL) {
         cards = rt.cards;
         heldRoutes = rt.held ?? [];
         routeDrafts = pruneRouteDrafts(routeDrafts, rt.cards);
       }
-      running = r;
-      problem = null;
-      if (f && !f.home.chat && f.home.project) {
-        const rows = await quiet(c.chats(f.home.project), []);
+      if (r !== FAIL) running = r;
+      problem = bad ? "Part of Home could not be read — it shows what it last read." : null;
+      if (f && f !== FAIL && !f.home.chat && f.home.project) {
+        const got = await quiet(c.chats(f.home.project), []);
+        const rows = got === FAIL ? [] : got;
         homeChat = rows.length ? [...rows].sort((a, b) => Date.parse(b.last_message ?? b.modified) - Date.parse(a.last_message ?? a.modified))[0].id : null;
       }
     } catch (e) {
-      problem = e instanceof Unreachable ? "The host is not answering — Home shows what it last read." : String(e);
+      problem = e instanceof Unreachable ? (needsRead ? "The host is not answering — Home shows what it last read." : "The host is not answering — Home has not read anything yet.") : String(e);
     } finally {
       loading = false;
     }
@@ -393,7 +423,7 @@
     const chat = row.chat;
     if (!chat) return;
     const text = replyText(chat).trim();
-    if (!text) return;
+    if (!text || busyKey === row.key) return; // a second tap before the first send answered (item 947)
     busyKey = row.key;
     if (await sendInto(chat, row.project, text)) {
       typedReply(chat, afterSend(replyText(chat), text));
@@ -449,7 +479,7 @@
           onnote(e instanceof Unreachable ? "The host is not answering — your message stays here" : e instanceof ApiError ? e.message : "Could not send — your words stay in the box");
         }
       } else {
-        onnote("Home is not set up on this host yet — your message stays here");
+        onnote(feed === null && problem ? "Home could not be read yet — your message stays here" : "Home is not set up on this host yet — your message stays here");
       }
     } finally {
       tellBusy = false;
@@ -575,7 +605,7 @@
   {#if watching}
   <!-- Item 944: Home starts simple and grows — a section with nothing in it is not drawn; the first time it has
        something it arrives. While nothing needs him, one calm line says so. -->
-  {#if !anyNeeds}
+  {#if !anyNeeds && (loading || needsRead)}
     <p class="h-calm" class:fil>{loading ? "Reading…" : bareHome ? "Nothing needs you. Home is watching — what needs you, today's scan and what is running show up here as they happen." : "Nothing needs you — Home is watching."}</p>
   {/if}
   <!-- 1. Needs you -->
@@ -728,7 +758,7 @@
     <label class="h-tell-label" for="h-tell">Tell Home…</label>
     <textarea id="h-tell" rows="2" bind:value={tell} oninput={typedTell} placeholder="Check why CI is red in Nightloom" data-home-tell></textarea>
     <div class="h-acts">
-      <span class="h-dim h-ellip">{home.chat ? "Goes to today's Home chat" : home.project ? "Starts Home's chat" : "Home is not set up on this host yet"}</span>
+      <span class="h-dim h-ellip">{home.chat ? "Goes to today's Home chat" : home.project ? "Starts Home's chat" : feed === null && (loading || problem) ? (loading ? "Reading Home…" : "Home could not be read yet") : "Home is not set up on this host yet"}</span>
       <button class="h-btn primary" disabled={tellBusy || !tell.trim()} onclick={sendTell}>Send</button>
     </div>
   </div>
@@ -944,6 +974,10 @@
     max-width: 760px;
     margin: 0 auto;
     padding: 6px 0 10px;
+    /* Item 947: a long list scrolls inside its own box — 60 rows opened inline buried Needs you a screen-and-a-half down. */
+    max-height: min(62vh, 560px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     border-bottom: 1px solid var(--line);
     transform-origin: top;
     animation: h-handled-down 220ms cubic-bezier(0.2, 0.9, 0.25, 1.05);

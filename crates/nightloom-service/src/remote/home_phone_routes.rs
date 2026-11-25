@@ -445,6 +445,9 @@ pub enum Need {
     Stuck(String),
     /// A job's read-only run wanted changes: the job's name.
     Job(String),
+    /// Item 947: his Run now was stopped by the spend guard and the job asks Run anyway or Cancel (the phone page's
+    /// "Run anyway" card): the job's name.
+    JobRun(String),
     /// A held blocker.
     Blocker,
 }
@@ -478,6 +481,10 @@ pub fn needs_sentence(needs: &[Need]) -> String {
             Need::Question(c) => Some(format!("a question from {}", named(c))),
             Need::Stuck(c) => Some(format!("a stuck run in {}", named(c))),
             Need::Job(j) => Some(format!("the job {} wants to make changes", named(j))),
+            Need::JobRun(j) => Some(format!(
+                "the job {} is asking whether to run anyway",
+                named(j)
+            )),
             Need::Blocker => None,
         })
         .collect();
@@ -531,11 +538,14 @@ pub fn needs_from(
         && let Some((chat, label)) = active
         && !feed.iter().any(|r| r.chat == chat)
     {
-        for _ in 0..pending {
-            out.push(Need::Approval(label.to_string()));
-        }
+        // Item 947: one need however many approvals the open chat holds — the page shows one row ("2 approvals
+        // waiting") and counts one, so Siri says the same number.
+        out.push(Need::Approval(label.to_string()));
     }
     for j in jobs {
+        if j.job.confirm.is_some() {
+            out.push(Need::JobRun(j.job.title.clone()));
+        }
         if j.job.wanted.is_some() {
             out.push(Need::Job(j.job.title.clone()));
         }
@@ -665,6 +675,17 @@ mod tests {
         );
         let n = needs_from(&[], &[], 0, 1, Some(("z", "Budget")));
         assert_eq!(n, vec![Need::Approval("Budget".into())]);
+    }
+
+    #[test]
+    fn several_open_chat_approvals_are_one_need_and_a_run_anyway_card_is_a_need_947() {
+        // The phone page draws one row ("2 approvals waiting") and counts one; Siri says the same number.
+        let n = needs_from(&[], &[], 0, 3, Some(("z", "Budget")));
+        assert_eq!(n, vec![Need::Approval("Budget".into())]);
+        assert_eq!(
+            needs_sentence(&[Need::JobRun("Morning scan".into())]),
+            "One thing needs you: the job Morning scan is asking whether to run anyway."
+        );
     }
 
     #[test]

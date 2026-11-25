@@ -208,3 +208,11 @@ describe("held blockers on the phone's Home (item 945)", () => {
     expect(heldWords945(3)).toBe("Nightshift · 3 held blockers");
   });
 });
+
+describe("the header before Needs you was read (947)", () => {
+  it("says it has not read rather than 'nothing needs you'", () => {
+    expect(headerWords(0, today, false)).toBe("Home · not read yet · today 0.3% of the week");
+    expect(headerWords(2, today, false)).toBe("Home · 2 need you · today 0.3% of the week");
+    expect(headerWords(0, today)).toBe("Home · nothing needs you · today 0.3% of the week");
+  });
+});

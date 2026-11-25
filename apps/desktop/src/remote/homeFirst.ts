@@ -32,8 +32,10 @@ export function percentWords(p: number): string {
 
 /** "Home · 3 need you · today 0.3% of the week". With no `/home/today`
  *  the percent is left off; with nothing waiting, "nothing needs you". */
-export function headerWords(needs: number, today: HomeTodayWire | null): string {
-  const parts = ["Home", needs <= 0 ? "nothing needs you" : needs === 1 ? "1 needs you" : `${needs} need you`];
+export function headerWords(needs: number, today: HomeTodayWire | null, read = true): string {
+  // Item 947: before Needs you has been read once (a host not answering, a slow first read) the page cannot say
+  // "nothing needs you" — it says it has not read yet.
+  const parts = ["Home", !read && needs <= 0 ? "not read yet" : needs <= 0 ? "nothing needs you" : needs === 1 ? "1 needs you" : `${needs} need you`];
   if (today && Number.isFinite(today.points)) parts.push(`today ${percentWords(today.points)} of the week`);
   return parts.join(" · ");
 }

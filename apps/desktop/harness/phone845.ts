@@ -47,6 +47,14 @@ handledKept();
 document.head.insertAdjacentHTML("beforeend", "<style>*,*::before,*::after{animation:none!important;transition:none!important}.lk-veil,.lk-scan{display:none!important}</style>");
 
 const SCAN = "Three things need you today; the rest is handled.\n\n## Needs you\n- The landlord's lease question — a reply is due Friday.\n- Mom asked about Saturday.\n- The round-6 pick is waiting.\n\n## Today\n- 9:00 AM stand-up\n- 3:30 PM design review (moved from 2:00 PM)\n\n## Handled overnight\n1. The night run merged two fixes; CI passed.\n2. Filed one receipt.\n\n## Projects\n- Nightloom: build 212d1d4f installed.\n- nightshift-code: 4 items shipped, 1 held blocker.";
+// Item 947: stress modes (x=crowded|f500|slow|down|flaky) — a crowded Home, a route that answers 500, a slow network,
+// the host gone, a host that answers then fails. window.__x.flip() turns flaky's failure on.
+const X = q.get("x") ?? "";
+const X_LONG = "A".repeat(90) + "-averyveryverylongprojectnamewithoutanyspaces-" + "B".repeat(60);
+const xFail = { on: X === "f500" || X === "down" };
+const xPush = X === "crowded" ? Array.from({ length: 40 }, (_, i) => ({ what: ["question", "approval", "stuck", "set_aside"][i % 4], chat: `c${i}`, label: i === 3 ? X_LONG : i % 5 === 0 ? null : `Chat number ${i} about something fairly long to name`, project: "p", at: ago(i * 7 + 1) })) : null;
+const xFeed = X === "crowded" ? Array.from({ length: 90 }, (_, i) => ({ at: new Date(ago(i * 11 + 3)).toISOString(), kind: ["done", "failed", "limit", "job_done"][i % 4], label: i === 2 ? X_LONG : `Run ${i}`, chat: i % 3 ? `c${i}` : null, project: null, line: i === 4 ? X_LONG : `Line ${i}: ${"it did a long thing and then another long thing ".repeat(i % 3)}finished` })) : null;
+(window as unknown as { __x: unknown }).__x = { flip: () => (xFail.on = true), heal: () => (xFail.on = false) };
 const told: string[] = [];
 const closed: string[] = [];
 const notes: string[] = [];
@@ -56,6 +64,13 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
   const p = url.pathname.replace(/^.*\/api/, "");
   const method = init?.method ?? "GET";
+  if (X === "slow") await wait(8000);
+  if (xFail.on && X === "down") throw new TypeError("Load failed");
+  if (xFail.on && (X === "f500" || X === "flaky") && (p === "/push/feed" || p === "/home/feed" || p === "/jobs")) return new Response("boom", { status: 500 });
+  if (xFail.on && X === "flaky") throw new TypeError("Load failed");
+  if (xPush && p === "/push/feed") return json({ rows: xPush });
+  if (xFeed && p === "/home/feed") return json({ rows: xFeed, seen_at: new Date(ago(300)).toISOString(), as_of: ago(1), home: { project: "home", chat: "h-today" } });
+  if (X === "crowded" && p === "/running") return json({ chats: Array.from({ length: 12 }, (_, i) => ({ chat: `r${i}`, title: i === 1 ? X_LONG : `Running chat ${i}`, since: ago(i * 9 + 1), waiting: i % 3 })), contexts: {} });
   if (p === "/home/seen" && method === "POST") return json({ seen_at: new Date().toISOString() });
   if (p === "/home/today") return json({ points: 0.3, cap: 5, week: 41, five_hour: 12, stopped: null });
   if (p === "/home/feed" && (real || empty)) return json({ rows: real ? [...real.feed].reverse() : [], seen_at: real ? real.seen_at : null, as_of: ago(1), home: { project: "home", chat: empty ? null : "h-today" } });

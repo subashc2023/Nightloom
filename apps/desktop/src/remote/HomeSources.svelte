@@ -12,7 +12,7 @@
    */
   import { onMount } from "svelte";
   import { canAsk, isRead, sourceStatusWords, sourcesSummary, type HomeSource, type SourceId } from "../lib/homeSources";
-  import type { Client } from "./client";
+  import { ApiError, Unreachable, type Client } from "./client";
   import Icon from "../lib/Icon.svelte";
   import { macLook } from "../lib/homeStage/sourceLook";
 
@@ -29,6 +29,13 @@
   /** What the Mac said after an ask, by row. */
   let said = $state<Partial<Record<SourceId, string>>>({});
 
+  /** Item 947: a refusal in plain words — never "Error: TypeError: Load failed". */
+  function plain(e: unknown): string {
+    if (e instanceof Unreachable) return "the Mac is not answering";
+    if (e instanceof ApiError) return e.message.trim() || `it answered ${e.status}`;
+    return "something went wrong";
+  }
+
   async function load(): Promise<void> {
     try {
       const got = await client.homeSources();
@@ -36,7 +43,7 @@
       else rows = got;
       problem = null;
     } catch (e) {
-      problem = `Could not read them — ${String(e)}`;
+      problem = `Could not read them — ${plain(e)}`;
     }
   }
 
@@ -47,7 +54,7 @@
       const r = await client.homeSourceAsk(id);
       said = { ...said, [id]: r.said };
     } catch (e) {
-      said = { ...said, [id]: `The Mac did not take it — ${String(e)}` };
+      said = { ...said, [id]: `The Mac did not take it — ${plain(e)}` };
     } finally {
       busy = null;
     }
