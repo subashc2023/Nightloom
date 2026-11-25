@@ -18,6 +18,8 @@ export interface JobLast {
   /** Item 812: he pressed Run anyway past Home's spend guard. */
   forced?: boolean;
   five_points?: number | null;
+  /** Item 951: the plan reading the guard used; `source: "none"` is no reading at all. */
+  reading?: { source: string } | null;
 }
 
 /** Item 812: his Run now that Home's spend guard refused — the Run anyway card. */
@@ -281,7 +283,9 @@ export function lastText(j: Job, now = new Date()): string {
   const how =
     l.outcome === "done" ? "finished" : l.outcome === "failed" ? "failed" : l.outcome === "stopped" ? "stopped, looked stuck" : "did not finish";
   // Item 812: a run he forced past the spend guard says so.
-  return `Last run ${whenText(l.ended, now)} — ${how}${l.forced ? " (run anyway)" : ""} · ${costText(l.week_points)}`;
+  // Item 947: a run that started with no usage reading says its 80% stop was not checked (the row's note went with the run).
+  const unread = l.reading?.source === "none" ? " · usage not read, 80% stop not checked" : "";
+  return `Last run ${whenText(l.ended, now)} — ${how}${l.forced ? " (run anyway)" : ""} · ${costText(l.week_points)}${unread}`;
 }
 
 /** What it has cost since the weekly window last reset. */

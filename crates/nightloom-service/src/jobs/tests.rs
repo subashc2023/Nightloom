@@ -1741,3 +1741,29 @@ async fn home_at_100_percent_skips_with_a_page_instead_of_waiting_silently() {
     );
     let _ = std::fs::remove_dir_all(&cfg);
 }
+
+/// Item 947: the "usage could not be read" note belongs to the run that
+/// started without a reading; when that run ends the row shows its next
+/// time again, and the last run's reading says `none`.
+#[tokio::test]
+async fn the_no_reading_note_goes_when_its_run_ends() {
+    let (h, cfg) = home_host();
+    let scan = crate::home::SCAN_JOB_ID;
+    assert!(h.jobs.ensure_home_scan("home-p", at(2026, 11, 25, 5, 0)));
+    *h.fresh.lock().unwrap() = Some(Err("no reading".into()));
+    *h.week.lock().unwrap() = None;
+    *h.five.lock().unwrap() = None;
+    h.jobs.run_now(scan).unwrap();
+    let t = at(2026, 11, 25, 6, 0);
+    h.jobs.tick(h.as_ref(), t).await;
+    assert_eq!(home_row(&h, scan).note.as_deref(), Some(NO_READING_NOTE));
+    *h.running.lock().unwrap() = None;
+    let text = home_row(&h, scan).text;
+    *h.log.lock().unwrap() = said(&text, "three things today");
+    h.jobs.tick(h.as_ref(), t + Duration::seconds(120)).await;
+    let j = home_row(&h, scan);
+    assert!(j.running.is_none());
+    assert_eq!(j.note, None);
+    assert_eq!(j.last.unwrap().reading.unwrap().source, "none");
+    let _ = std::fs::remove_dir_all(&cfg);
+}

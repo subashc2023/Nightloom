@@ -914,6 +914,9 @@ fn cut(text: &str) -> String {
     out
 }
 
+/// Item 951: the row's note on a Home run that started with no reading.
+pub const NO_READING_NOTE: &str = "usage could not be read — Home's 80% stop was not checked";
+
 /// The plan's limit is reached now (a fresh reading at 100%).
 fn limited(plan: &PlanUsage) -> bool {
     !plan.stale
@@ -1685,10 +1688,8 @@ impl Jobs {
                     j.retry_at = None;
                     // Item 951: a Home run with no reading at all (none on
                     // this machine, or the host did not answer) says so.
-                    j.note =
-                        (home && crate::home::guard::reading_missing(plan.as_ref())).then(|| {
-                            "usage could not be read — Home's 80% stop was not checked".to_string()
-                        });
+                    j.note = (home && crate::home::guard::reading_missing(plan.as_ref()))
+                        .then(|| NO_READING_NOTE.to_string());
                     j.runs += 1;
                     // Approve once is used by this run; the next one asks.
                     // (Its chat was set writable just now, by `prepare`.)
@@ -1912,6 +1913,12 @@ impl Jobs {
         let summary_line = summary.clone();
         let _ = self.change(&job.id, |j| {
             j.running = None;
+            // Item 947: the start's "usage could not be read" note is about
+            // that run; once it ends the row shows its next time again (the
+            // last line carries the warning).
+            if j.note.as_deref() == Some(NO_READING_NOTE) {
+                j.note = None;
+            }
             // A read-only run that was refused a change asks; one that was
             // not leaves an earlier ask standing until he answers it.
             if wants {
