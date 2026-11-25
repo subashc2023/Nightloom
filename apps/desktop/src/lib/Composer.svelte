@@ -138,7 +138,7 @@
   import { declaredKind, useEngine } from "./state.svelte";
   import { openSession } from "./state.svelte";
   import { handoffChildren } from "./chatList";
-  import { bubbledRows, registerSendHeld } from "./pendingBubble.svelte";
+  import { bubbledRows, cancelPending, registerSendHeld } from "./pendingBubble.svelte";
   import WaitAct from "./WaitAct.svelte";
   import {
     canUndo,
@@ -169,7 +169,6 @@
     clearDraft,
     draftKey,
     draftSelection,
-    dropQueued,
     clearInjected,
     enqueueMessage,
     historyFor,
@@ -2641,9 +2640,11 @@
     ta?.focus();
   }
 
+  /** Item 925: the row's × is the bubble's Cancel — at once, its words to
+   *  the box's history, and an Undo in the toast (before, the × dropped it
+   *  with neither). */
   async function dropRow(id: number): Promise<void> {
-    if (!(await unsend(id))) return;
-    dropQueued(key, id);
+    await cancelPending(key, id);
   }
 
   async function submitAside() {
@@ -3812,7 +3813,7 @@
               {/if}
               {#if q.inject?.after === undefined}
                 <WaitAct icon="pencil" label="Take back" hint="back into the message box" onclick={() => void takeBack(q.id)} />
-                <WaitAct icon="x" label="Drop queued message {i + 1}" hint="do not send it" onclick={() => void dropRow(q.id)} />
+                <WaitAct icon="x" label="Drop queued message {i + 1}" hint="do not send it (Undo in the toast brings it back)" onclick={() => void dropRow(q.id)} />
               {/if}
             </span>
           </div>
