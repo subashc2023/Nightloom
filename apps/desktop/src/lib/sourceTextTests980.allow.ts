@@ -193,6 +193,8 @@ export const BASELINE: readonly string[] = [
   "lib/cardKeys.test.ts",
   "lib/transcriptPrefs.test.ts",
   "remote/toolView.test.ts",
+  "lib/centre969.test.ts",
+  "lib/needsYou968.test.ts",
 ];
 
 /** Test files added after 2026-11-25 allowed to read `.svelte` source because
