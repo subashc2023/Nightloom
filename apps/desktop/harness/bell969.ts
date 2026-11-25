@@ -9,7 +9,7 @@ import "@fontsource/ibm-plex-mono/latin-400.css";
 import "../src/app.css";
 import { mount, flushSync, tick } from "svelte";
 import App from "../src/App.svelte";
-import { app } from "../src/lib/state.svelte";
+import { app, showNightshift } from "../src/lib/state.svelte";
 import { setLayout } from "../src/lib/layout.svelte";
 import { needsNow } from "../src/lib/needsBoard.svelte";
 import { waitingCount } from "../src/lib/needsYou";
@@ -88,6 +88,13 @@ const nsRow = {
       return { blockers, errors: [] };
     case "nightshift_items":
       return { items, errors: [] };
+    // Review's own flow (item 968's Review button) and the digest's diffs (969), for the click test.
+    case "list_proposals":
+      return proposals.map((p) => p.entry);
+    case "centre_dream_diff":
+    case "centre_applied_diff":
+    case "centre_claude_memory_diff":
+      return "--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -1,2 +1,3 @@\n line one\n+a rule the dream wrote\n line two\n";
     case "list_projects":
       return projects;
     case "home_feed":
@@ -124,7 +131,19 @@ async function run() {
   await tick();
   await wait(600);
   const log: string[] = [];
-  if (q.get("needs") === "1") {
+  if (q.get("t") === "clicks") {
+    try {
+      await clickTest(log);
+    } catch (e) {
+      log.push(`THREW ${String(e)}`);
+    }
+  } else if (q.get("ns") === "1") {
+    showNightshift();
+    await tick();
+    await wait(1200);
+    const txt = (el: Element | null | undefined) => JSON.stringify(el?.textContent?.replace(/\s+/g, " ").trim() ?? "none");
+    log.push(`ns page: wait button ${txt(document.querySelector(".ns-btn.wait"))}; blockers tab ${txt([...document.querySelectorAll("[role=tab], .tab")].find((b) => b.textContent?.includes("Blockers")))}; eyebrow ${txt(document.querySelector(".eyebrow"))}`);
+  } else if (q.get("needs") === "1") {
     app.showNeeds = true;
     await tick();
     await wait(600);
@@ -156,6 +175,129 @@ async function run() {
   log.push(`needs badge: ${JSON.stringify(badge?.textContent?.replace(/\s+/g, " ").trim() ?? "none")}; waiting=${waitingCount(needsNow())}`);
   log.push(`notices=${app.centre.notices.length}; bellList rows=${(() => { const b = bellList(app.centre.notices, app.centre.seen, new Date()); return b.days.length + b.alone.length; })()}`);
   log.push(`stub unknown: ${[...unknown].slice(0, 8).join(", ")}`);
-  cap.textContent += log.join("\n");
+  cap.textContent = (q.get("t") === "clicks" ? "" : cap.textContent) + log.join("\n");
 }
+/** The click test (review of 968-969, 2026-11-25): every control the build added or moved, clicked in order, each
+ *  line PASS or FAIL with what was seen. */
+async function clickTest(log: string[]): Promise<void> {
+  // Each line goes on the caption at once too, so a shot taken mid-run shows how far it got.
+  const ok = (name: string, pass: boolean, seen = "") => {
+    const line = `${pass ? "PASS" : "FAIL"} ${name}${seen ? ` — ${seen}` : ""}`;
+    log.push(line);
+    (window as unknown as { __progress?: string[] }).__progress = log;
+    cap.textContent = log.join("\n");
+  };
+  const one = (sel: string) => document.querySelector<HTMLElement>(sel);
+  const all = (sel: string) => [...document.querySelectorAll<HTMLElement>(sel)];
+  const byText = (sel: string, t: string) => all(sel).find((b) => (b.textContent ?? "").includes(t));
+  // bin/snap's hidden window throttles timers to about one a second: yield by MessageChannel (never throttled),
+  // enough turns for the stubbed backend's promises and Svelte's flush.
+  const turn = () => new Promise<void>((r) => {
+    const c = new MessageChannel();
+    c.port1.onmessage = () => r();
+    c.port2.postMessage(0);
+  });
+  const settle = async (ms = 250) => {
+    for (let i = 0; i < Math.max(8, ms / 10); i++) {
+      await tick();
+      await turn();
+    }
+  };
+  cap.style.cssText += ";top:0;bottom:auto;font-size:13px;line-height:1.35";
+  // 1. The bell: a dot, no number; opening it keeps the dot (default B).
+  const bell = one(".centre-bell");
+  ok("bell has a dot and no number", !!one(".centre-bell .centre-dot") && (bell?.textContent ?? "").replace("🔔", "").trim() === "");
+  bell?.click();
+  await settle(500);
+  ok("bell opens the panel", !!one(".centre-panel"));
+  ok("opening keeps the dot", !!one(".centre-bell .centre-dot"));
+  const days0 = all(".centre-day").length;
+  const alone0 = all(".centre-kind.alone").length;
+  ok("panel lists <= 10 rows", days0 + alone0 <= 10, `${days0} days + ${alone0} alone`);
+  // 2. Day toggle: open Today, its rows show and its dot goes.
+  const today = all(".centre-day-btn")[0];
+  today?.click();
+  await settle();
+  const todayRows = all(".centre-day-rows .centre-item").length;
+  ok("day toggle opens the day", today?.getAttribute("aria-expanded") === "true" && todayRows > 0, `${todayRows} rows`);
+  ok("opening a day clears its dot", !all(".centre-day")[0]?.querySelector(".centre-dot"));
+  // 3. Inside the day: Show the diff, then Revert and Open in editor reachable.
+  // A dream's row (Claude Code's memory rows have no Revert by design: Nightloom never writes those files).
+  const dreamRow = all(".centre-day-rows .centre-item").find((r) => r.textContent?.includes("A dream changed"));
+  const showBtn = [...(dreamRow?.querySelectorAll<HTMLElement>("button") ?? [])].find((b) => b.textContent?.includes("Show the diff"));
+  showBtn?.click();
+  await settle(400);
+  ok("Show the diff opens a diff", !!one(".centre-diff"), showBtn ? "" : "no Show the diff button");
+  ok("Revert reachable in an opened day", !!byText(".centre-files button", "Revert"));
+  let editor = byText(".centre-files button", "Open in editor");
+  if (!editor) {
+    for (const btn of all(".centre-day-btn")) {
+      if (btn.getAttribute("aria-expanded") !== "true") btn.click();
+      await settle(150);
+      for (const sb of all(".centre-day-rows button").filter((b) => b.textContent?.includes("Show the diff"))) {
+        sb.click();
+        await settle(150);
+        editor = byText(".centre-files button", "Open in editor");
+        if (editor) break;
+      }
+      if (editor) break;
+    }
+  }
+  ok("Open in editor reachable for an instructions change", !!editor);
+  // Revert asks first (the app's dialog); Cancel leaves the row.
+  byText(".centre-files button", "Revert")?.click();
+  await settle();
+  const cancel = byText(".centre-panel button, [role=dialog] button", "Cancel");
+  ok("Revert asks for confirmation", !!cancel);
+  cancel?.click();
+  await settle();
+  for (const btn of all(".centre-day-btn")) if (btn.getAttribute("aria-expanded") === "true") btn.click();
+  await settle();
+  ok("day toggle closes the day", all(".centre-day-rows").length === 0);
+  // 4. Done on a row (inside a day), then Done on a whole day.
+  all(".centre-day-btn")[1]?.click();
+  await settle();
+  const before = all(".centre-day-rows .centre-item").length;
+  byText(".centre-day-rows .centre-actions button", "Done")?.click();
+  await settle();
+  const after = all(".centre-day-rows .centre-item").length;
+  ok("Done on a row takes it off", after === before - 1, `${before} -> ${after}`);
+  const daysBefore = all(".centre-day").length;
+  const lastHead = all(".centre-day-head").at(-1);
+  [...(lastHead?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((b) => b.textContent?.trim() === "Done")?.click();
+  await settle();
+  ok("Done on a day takes the day off", all(".centre-day").length === daysBefore - 1, `${daysBefore} -> ${all(".centre-day").length}`);
+  // 5. Mark all seen: the dot goes, the button goes, the rows stay.
+  const rowsBefore = all(".centre-day").length;
+  byText(".centre-head button", "Mark all seen")?.click();
+  await settle();
+  ok("Mark all seen clears the dot", !one(".centre-bell .centre-dot"));
+  ok("Mark all seen keeps the rows", all(".centre-day").length === rowsBefore, `${rowsBefore} -> ${all(".centre-day").length}`);
+  ok("Mark all seen hides itself", !byText(".centre-head button", "Mark all seen"));
+  // 6. The foot line opens Needs you.
+  const foot = one(".centre-else");
+  ok("foot line counts what asks him", !!foot, JSON.stringify(foot?.textContent?.replace(/\s+/g, " ").trim() ?? ""));
+  foot?.click();
+  await settle(900);
+  ok("foot line opens Needs you, closes the bell", app.showNeeds && !app.centre.open && !!one(".group-head"));
+  // 7. Needs you: the Decided fold opens and closes; its rows keep their reply box.
+  log.push(`groups: ${all(".group-head").map((b) => (b.textContent ?? "").replace(/\s+/g, " ").trim()).join(" | ")}`);
+  const dec = () => byText(".group-head", "Decided for you");
+  ok("Decided starts folded", dec()?.getAttribute("aria-expanded") === "false");
+  dec()?.click();
+  await settle();
+  const decRows = document.querySelectorAll('.group[data-state="decided"] .row').length;
+  const decBoxes = document.querySelectorAll('.group[data-state="decided"] textarea').length;
+  ok("Decided opens", dec()?.getAttribute("aria-expanded") === "true" && decRows > 0, `${decRows} rows, ${decBoxes} reply boxes`);
+  dec()?.click();
+  await settle();
+  ok("Decided folds again", dec()?.getAttribute("aria-expanded") === "false" && document.querySelectorAll('.group[data-state="decided"] .row').length === 0);
+  // 8. Review on a proposal row: the view closes and the proposal review opens on its project.
+  const reviews = all('.group[data-state="waiting"] button').filter((b) => b.textContent?.trim() === "Review");
+  ok("proposal rows carry Review", reviews.length > 0, `${reviews.length} Review buttons`);
+  reviews[0]?.click();
+  await settle(1200);
+  ok("Review opens the proposal review", !app.showNeeds && !!app.proposalReview, `proposalReview=${app.proposalReview ? app.proposalReview.entry.id : "null"} project=${app.project?.id ?? "none"}`);
+}
+
 void run();
