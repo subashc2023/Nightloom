@@ -258,11 +258,17 @@ export function whenText(iso: string, now = new Date()): string {
   return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}, ${clock(d)}`;
 }
 
+/** Item 947: the row's note replaces its "next" line (a skip's note repeats the last line, so it does not). */
+export function noteShows(j: Job): boolean {
+  return j.note !== null && !(j.last?.outcome === "skipped" && j.note === j.last.summary);
+}
+
 /** The row's "next" line. */
 export function nextText(j: Job, now = new Date()): string {
   if (j.running) return "Running now";
   if (j.paused) return "Paused";
-  if (j.note) return j.note.replace(/^waiting/, "Waiting");
+  // Item 947: a skip's note repeats the last line's reason and hid the next time; the next time shows.
+  if (noteShows(j)) return (j.note ?? "").replace(/^waiting/, "Waiting");
   if (new Date(j.next_run).getTime() <= now.getTime()) return "Next run: due now";
   return `Next run: ${whenText(j.next_run, now)}`;
 }

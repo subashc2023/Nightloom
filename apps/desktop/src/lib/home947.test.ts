@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { skippedScanToday, type FeedRow } from "./home";
-import { lastText, type Job } from "../remote/jobs";
+import { lastText, nextText, type Job } from "../remote/jobs";
 
 const row = (at: string, line: string, kind: FeedRow["kind"] = "scan"): FeedRow => ({ at, kind, label: "Home", chat: null, project: null, line });
 
@@ -17,6 +17,17 @@ describe("a skipped scan on the desktop (item 947)", () => {
     expect(skippedScanToday([row(new Date(2026, 10, 25, 8, 0).toISOString(), "Morning scan · 2 waiting")], now)).toBeNull();
     expect(skippedScanToday([row(new Date(2026, 10, 24, 8, 0).toISOString(), "Morning scan skipped — x")], now)).toBeNull();
     expect(skippedScanToday([], now)).toBeNull();
+  });
+});
+
+describe("the next line of a skipped row (item 947)", () => {
+  const skipped = (note: string | null) =>
+    ({ running: null, paused: false, note, next_run: "2026-11-26T16:00:00Z", tz: "UTC", last: { outcome: "skipped", summary: "skipped — why", ended: "2026-11-25T16:00:00Z" } }) as unknown as Job;
+  it("shows the next run, not the reason again", () => {
+    expect(nextText(skipped("skipped — why"), new Date("2026-11-25T17:00:00Z"))).toMatch(/^Next run: /);
+  });
+  it("still shows a waiting note", () => {
+    expect(nextText(skipped("waiting — no chat"), new Date("2026-11-25T17:00:00Z"))).toBe("Waiting — no chat");
   });
 });
 
