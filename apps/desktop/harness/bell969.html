@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- Items 968-969: the real App with a stubbed Tauri backend — the digest bell and the Needs-you view on synthetic data shaped like his (2026-11-25)
+     ?open=today (a day opened) &classic=1 &needs=1 (the Needs-you view) &decided=1 (its Decided group opened) &seen=1 (Mark all seen clicked) &t=clicks (the click test, logged) &ns=1 (the Nightshift page)
+     Fixtures in bell969.ts; the query is read from window.__h9q (an inlined page) or location.search. -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      /* bin/snap's hidden window runs no animation: the Lock-on veil (opaque until its animation lifts it) would
+         cover the Needs-you view for good — the phone harness's rule (845). Reduce motion hides it the same way. */
+      .lk-veil, .lk-scan { display: none !important; }
+      #cap { position: fixed; left: 0; bottom: 0; right: 0; font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000c; padding: 4px 8px; white-space: pre-wrap; z-index: 999; }
+    </style>
+    <script>
+      // Before any module: the app's state reads the dismissed and seen sets at import, so a clear in bell969.ts
+      // came too late and one run's Done and Mark all seen leaked into the next (review, 2026-11-25).
+      try { localStorage.clear(); } catch {}
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => (window.__stub ? window.__stub(cmd, args) : Promise.reject("no stub")),
+        transformCallback: () => 0,
+        unregisterCallback: () => {},
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent += "\nerror: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent += "\nrejection: " + e.reason));
+    </script>
+    <script type="module" src="./bell969.ts"></script>
+  </body>
+</html>

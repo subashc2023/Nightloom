@@ -22,7 +22,7 @@
   const title = $derived(
     [
       "Needs you — what waits on you, what is ready for review, what is working, in every project",
-      ...rows.filter((r) => r.state !== "working").slice(0, 8).map((r) => `· ${r.tag} · ${r.title}`),
+      ...rows.filter((r) => r.state === "waiting" || r.state === "review").slice(0, 8).map((r) => `· ${r.tag} · ${r.title}`),
     ].join("\n"),
   );
   // The blockers and shipped items are files: read now, then every five minutes.
@@ -44,12 +44,13 @@
     class="need-badge"
     class:waiting={badge?.waiting}
     class:open={app.showNeeds}
-    aria-label={badge ? `${badge.n} ${badge.word} — open the needs-you list` : "Needs you"}
+    aria-label={badge ? `${badge.n > 0 ? `${badge.n} ` : ""}${badge.word} — open the needs-you list` : "Needs you"}
     aria-expanded={app.showNeeds}
     use:tip={title}
     onclick={toggle}
   >
-    {#if badge}<span class="n">{badge.n}</span><span class="word">{badge.word}</span>{:else}<span class="word">needs you</span>{/if}
+    <!-- Item 968: the number counts only what needs him; "to review" alone wears none. -->
+    {#if badge}{#if badge.n > 0}<span class="n">{badge.n}</span>{/if}<span class="word">{badge.word}</span>{:else}<span class="word">needs you</span>{/if}
   </button>
 {/if}
 

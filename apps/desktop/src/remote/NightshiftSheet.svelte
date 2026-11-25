@@ -156,7 +156,11 @@
     blocker = b;
     onnote(`Blocker ${b.id} answered on the ${host === "serve" ? "away server" : "Mac"}`);
     drafts = nsDraftKeys();
-    if (project) project = { ...project, open_blockers: Math.max(0, project.open_blockers - 1) };
+    if (project) {
+      const open = Math.max(0, project.open_blockers - 1);
+      // Item 968: the held count cannot be above the open one (which of them was held is not on the row).
+      project = { ...project, open_blockers: open, ...(project.held_blockers === undefined ? {} : { held_blockers: Math.min(project.held_blockers, open) }) };
+    }
   }
 
   async function beginNew() {
@@ -255,7 +259,8 @@
               <span class="nz-name">{p.name}</span>
               <small>{p.items} item{p.items === 1 ? "" : "s"}{p.newest_morning ? ` · last morning ${morningTitle(p.newest_morning)}` : ""}{p.live ? " · shift running" : ""}</small>
             </span>
-            {#if p.open_blockers > 0}<span class="nz-badge">{p.open_blockers}</span>{/if}
+            <!-- Item 968: the badge is the held blockers (an older service: every open one). -->
+            {#if (p.held_blockers ?? p.open_blockers) > 0}<span class="nz-badge">{p.held_blockers ?? p.open_blockers}</span>{/if}
           </button>
         {:else}
           <p class="nz-empty">No project here has Nightshift.</p>

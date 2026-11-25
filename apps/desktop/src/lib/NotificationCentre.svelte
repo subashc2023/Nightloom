@@ -14,8 +14,8 @@
   import * as api from "./api";
   import {
     app,
-    centreCount,
     dismissNotice,
+    markCentreSeen,
     openInstructions,
     openNotice,
     refreshCentre,
@@ -23,7 +23,8 @@
     revertDreamFile,
     runDailyPass,
   } from "./state.svelte";
-  import { KIND_LABEL, KIND_ORDER, countsOf, isInstructionsFile, memoryFileName, type Notice, type NoticeKind } from "./centre";
+  import { bellList, isInstructionsFile, memoryFileName, type Notice } from "./centre";
+  import { needsNow } from "./needsBoard.svelte";
   import { relativeTime } from "./time";
   import { hourLabel } from "./nightshiftFace";
   import DiffView from "./DiffView.svelte";
@@ -31,9 +32,11 @@
   import CliUpdateActions from "./CliUpdateActions.svelte";
   import { portal, anchorBelow } from "./portal";
 
-  const count = $derived(centreCount());
-  const counts = $derived(countsOf(app.centre.notices));
-  const kinds = $derived(KIND_ORDER.filter((k) => counts[k] > 0));
+  // Item 969: the bell is a daily digest — no number, a dot while a row is new; proposals and blockers are
+  // counted in Needs you (item 968), so the bell lists neither.
+  const bell = $derived(bellList(app.centre.notices, app.centre.seen, new Date()));
+  /** What asks him to decide, left to Needs you: one quiet line at the panel's foot. */
+  const asks = $derived(needsNow().filter((r) => r.state === "waiting" && (r.kind === "proposal" || r.kind === "blocker")).length);
 
   /** The dream notice whose diff is open, and the diff itself. */
   let shown = $state<string | null>(null);
@@ -145,26 +148,127 @@
     }
   }
 
-  function byKind(k: NoticeKind): Notice[] {
-    return app.centre.notices.filter((n) => n.kind === k);
+  /** Open or shut a day's rows; opening it marks its rows seen. */
+  function toggleDay(key: string) {
+    const opened = app.centre.openDays.includes(key);
+    app.centre.openDays = opened ? app.centre.openDays.filter((k) => k !== key) : [...app.centre.openDays, key];
+    if (!opened) markCentreSeen(bell.days.find((d) => d.key === key)?.notices.map((n) => n.id) ?? []);
   }
 
-  function dismissKind(k: NoticeKind) {
-    for (const n of byKind(k)) dismissNotice(n.id);
+  function doneDay(ns: readonly Notice[]) {
+    for (const n of ns) dismissNotice(n.id);
+  }
+
+  function openNeeds() {
+    app.centre.open = false;
+    app.showRail = false;
+    app.showContext = false;
+    app.showTasks = false;
+    app.showNeeds = true;
   }
 </script>
 
 <span class="centre-wrap">
+  {#snippet item(n: Notice)}
+    <div class="centre-item" class:seen={app.centre.seen.includes(n.id)}>
+      <div class="centre-line">
+        <span class="centre-item-title">{n.title}</span>
+        {#if n.at}<span class="centre-when" use:tip={n.at}>{relativeTime(n.at)}</span>{/if}
+      </div>
+      {#if n.detail}<div class="centre-detail">{n.detail}</div>{/if}
+      {#if n.kind === "cli"}<CliUpdateActions />{/if}
+      <div class="centre-actions">
+        {#if n.kind === "proposal"}
+          <button class="ns-btn small" onclick={() => void openNotice(n)}>Review the diff</button>
+        {:else if n.kind === "dream" || n.kind === "memory"}
+          <button class="ns-btn small" onclick={() => void showDiff(n)}>{shown === n.id ? "Hide the diff" : "Show the diff"}</button>
+        {:else if n.kind === "morning"}
+          <button class="ns-btn small" onclick={() => void openNotice(n)}>Read it</button>
+        {:else if n.kind === "blocker"}
+          <button class="ns-btn small" onclick={() => void openNotice(n)}>Answer</button>
+        {/if}
+        <button class="ns-btn ghost small" use:tip={"Take it off the list\nThe change itself stays"} onclick={() => dismissNotice(n.id)}>Done</button>
+      </div>
+      {#if n.kind === "dream" && shown === n.id && n.applied}
+        <!-- A dream's AGENTS.md write no commit carries (backlog
+             344): Revert restores the copy kept from before. -->
+        <div class="centre-files">
+          <div class="centre-file">
+            <span class="mono centre-path" use:tip={n.applied.file}>{n.applied.file}</span>
+            <button
+              class="ns-btn ghost small"
+              use:tip={"Open the instructions in the editor, to change them by hand"}
+              onclick={() => void openInstructions(n)}>Open in editor</button
+            >
+            <button
+              class="ns-btn ghost small"
+              disabled={reverting !== null}
+              use:tip={"Put this file back as it was before the dream (from the copy kept then)"}
+              onclick={() => void revert(n, n.applied!.file)}>{reverting === n.applied.file ? "…" : "Revert"}</button
+            >
+          </div>
+        </div>
+        <div class="centre-diff">
+          <DiffView text={diff} loading={diffLoading} error={diffError} leftLabel="before the dream" rightLabel="after" />
+        </div>
+      {/if}
+      {#if n.kind === "memory" && shown === n.id && n.memory}
+        <!-- Claude Code's own memory (item 751): Nightloom keeps a
+             copy and never writes his files, so no Revert here. -->
+        <div class="centre-files">
+          {#each n.memory.files as f (f.path)}
+            <div class="centre-file">
+              <span class="mono centre-path" use:tip={f.path}>{memoryFileName(f.path)}</span>
+              <span class="centre-pm"><span class="plus">+{f.added}</span> <span class="minus">−{f.removed}</span></span>
+            </div>
+          {/each}
+        </div>
+        <div class="centre-detail">A copy Nightloom keeps; it never edits Claude Code's memory files.</div>
+        <div class="centre-diff">
+          <DiffView text={diff} loading={diffLoading} error={diffError} leftLabel="before" rightLabel="after" />
+        </div>
+      {/if}
+      {#if n.kind === "dream" && shown === n.id && n.commit}
+        <!-- The snapshot's diff, and Revert per file: `git checkout
+             <hash>^ -- <file>` committed (blocker 168's default). -->
+        <div class="centre-files">
+          {#each n.commit.files as f (f.path)}
+            <div class="centre-file">
+              <span class="mono centre-path">{f.path}</span>
+              <span class="centre-pm"><span class="plus">+{f.added}</span> <span class="minus">−{f.removed}</span></span>
+              {#if isInstructionsFile(n.commit, f.path)}
+                <button
+                  class="ns-btn ghost small"
+                  use:tip={"Open the instructions in the editor, to change them by hand"}
+                  onclick={() => void openInstructions(n)}>Open in editor</button
+                >
+              {/if}
+              <button
+                class="ns-btn ghost small"
+                disabled={reverting !== null}
+                use:tip={"Put this file back as it was before the dream (a commit)"}
+                onclick={() => void revert(n, f.path)}>{reverting === f.path ? "…" : "Revert"}</button
+              >
+            </div>
+          {/each}
+        </div>
+        <div class="centre-diff">
+          <DiffView text={diff} loading={diffLoading} error={diffError} leftLabel="before the dream" rightLabel="after" />
+        </div>
+      {/if}
+    </div>
+  {/snippet}
+
   <button
     class="ns-btn ghost small centre-bell"
-    class:on={count > 0}
+    class:on={bell.fresh}
     bind:this={bellEl}
-    use:tip={count === 0 ? "Nothing to review" : `${count} to review`}
-    aria-label="Notifications"
+    use:tip={bell.fresh ? "Something new happened\nDreams, memory, pages, releases" : "What happened lately\nNothing new"}
+    aria-label={bell.fresh ? "What happened — something new" : "What happened"}
     aria-expanded={app.centre.open}
     onclick={toggle}
   >
-    🔔{#if count > 0}<span class="centre-count">{count}</span>{/if}
+    🔔{#if bell.fresh}<span class="centre-dot" aria-hidden="true"></span>{/if}
   </button>
 
   {#if app.centre.open}
@@ -177,115 +281,44 @@
       style="top: {panelPos.top}px; left: {panelPos.left}px; width: {panelPos.width}px"
     >
       <div class="centre-head">
-        <span class="centre-title">To review</span>
+        <span class="centre-title">What happened</span>
         <span class="spacer"></span>
+        {#if bell.fresh}<button class="ns-btn ghost small" use:tip={"Clears the dot\nEvery row stays until 7 days old"} onclick={() => markCentreSeen(bell.ids)}>Mark all seen</button>{/if}
         <button class="ns-btn ghost small" use:tip={"Re-read every source"} onclick={() => void refreshCentre()}>Refresh</button>
         <button class="ns-btn ghost small" use:tip={"Close"} aria-label="Close" onclick={() => (app.centre.open = false)}>×</button>
       </div>
 
       <div class="centre-body">
-        {#if kinds.length === 0}
-          <p class="centre-empty">Nothing waits on you.</p>
+        {#if bell.alone.length === 0 && bell.days.length === 0}
+          <p class="centre-empty">Nothing happened in the last 7 days.</p>
         {/if}
-        {#each kinds as k (k)}
-          <section class="centre-kind">
-            <div class="centre-kind-head">
-              <span class="centre-kind-title">{KIND_LABEL[k]}</span>
-              <span class="centre-n">{counts[k]}</span>
-              <span class="spacer"></span>
-              <button class="ns-btn ghost small" use:tip={"Dismiss all of this kind"} onclick={() => dismissKind(k)}>Dismiss all</button>
+        {#each bell.alone as n (n.id)}
+          <section class="centre-kind alone">{@render item(n)}</section>
+        {/each}
+        {#each bell.days as d (d.key)}
+          {@const opened = app.centre.openDays.includes(d.key)}
+          <section class="centre-day" class:seen={d.fresh === 0}>
+            <div class="centre-day-head">
+              <button class="centre-day-btn" aria-expanded={opened} onclick={() => toggleDay(d.key)}>
+                <span class="chev" class:folded={!opened} aria-hidden="true">▾</span>
+                <span class="centre-day-label">{d.label}</span>
+                {#if d.fresh > 0}<span class="centre-dot small" aria-label="new"></span>{/if}
+                <span class="centre-day-sum">{d.summary}</span>
+              </button>
+              <button class="ns-btn ghost small" use:tip={"Take this day off the list\nThe changes themselves stay"} onclick={() => doneDay(d.notices)}>Done</button>
             </div>
-            {#each byKind(k) as n (n.id)}
-              <div class="centre-item">
-                <div class="centre-line">
-                  <span class="centre-item-title">{n.title}</span>
-                  {#if n.at}<span class="centre-when" use:tip={n.at}>{relativeTime(n.at)}</span>{/if}
-                </div>
-                {#if n.detail}<div class="centre-detail">{n.detail}</div>{/if}
-                {#if n.kind === "cli"}<CliUpdateActions />{/if}
-                <div class="centre-actions">
-                  {#if n.kind === "proposal"}
-                    <button class="ns-btn small" onclick={() => void openNotice(n)}>Review the diff</button>
-                  {:else if n.kind === "dream" || n.kind === "memory"}
-                    <button class="ns-btn small" onclick={() => void showDiff(n)}>{shown === n.id ? "Hide the diff" : "Show the diff"}</button>
-                  {:else if n.kind === "morning"}
-                    <button class="ns-btn small" onclick={() => void openNotice(n)}>Read it</button>
-                  {:else if n.kind === "blocker"}
-                    <button class="ns-btn small" onclick={() => void openNotice(n)}>Answer</button>
-                  {/if}
-                  <button class="ns-btn ghost small" onclick={() => dismissNotice(n.id)}>Dismiss</button>
-                </div>
-                {#if n.kind === "dream" && shown === n.id && n.applied}
-                  <!-- A dream's AGENTS.md write no commit carries (backlog
-                       344): Revert restores the copy kept from before. -->
-                  <div class="centre-files">
-                    <div class="centre-file">
-                      <span class="mono centre-path" use:tip={n.applied.file}>{n.applied.file}</span>
-                      <button
-                        class="ns-btn ghost small"
-                        use:tip={"Open the instructions in the editor, to change them by hand"}
-                        onclick={() => void openInstructions(n)}>Open in editor</button
-                      >
-                      <button
-                        class="ns-btn ghost small"
-                        disabled={reverting !== null}
-                        use:tip={"Put this file back as it was before the dream (from the copy kept then)"}
-                        onclick={() => void revert(n, n.applied!.file)}>{reverting === n.applied.file ? "…" : "Revert"}</button
-                      >
-                    </div>
-                  </div>
-                  <div class="centre-diff">
-                    <DiffView text={diff} loading={diffLoading} error={diffError} leftLabel="before the dream" rightLabel="after" />
-                  </div>
-                {/if}
-                {#if n.kind === "memory" && shown === n.id && n.memory}
-                  <!-- Claude Code's own memory (item 751): Nightloom keeps a
-                       copy and never writes his files, so no Revert here. -->
-                  <div class="centre-files">
-                    {#each n.memory.files as f (f.path)}
-                      <div class="centre-file">
-                        <span class="mono centre-path" use:tip={f.path}>{memoryFileName(f.path)}</span>
-                        <span class="centre-pm"><span class="plus">+{f.added}</span> <span class="minus">−{f.removed}</span></span>
-                      </div>
-                    {/each}
-                  </div>
-                  <div class="centre-detail">A copy Nightloom keeps; it never edits Claude Code's memory files.</div>
-                  <div class="centre-diff">
-                    <DiffView text={diff} loading={diffLoading} error={diffError} leftLabel="before" rightLabel="after" />
-                  </div>
-                {/if}
-                {#if n.kind === "dream" && shown === n.id && n.commit}
-                  <!-- The snapshot's diff, and Revert per file: `git checkout
-                       <hash>^ -- <file>` committed (blocker 168's default). -->
-                  <div class="centre-files">
-                    {#each n.commit.files as f (f.path)}
-                      <div class="centre-file">
-                        <span class="mono centre-path">{f.path}</span>
-                        <span class="centre-pm"><span class="plus">+{f.added}</span> <span class="minus">−{f.removed}</span></span>
-                        {#if isInstructionsFile(n.commit, f.path)}
-                          <button
-                            class="ns-btn ghost small"
-                            use:tip={"Open the instructions in the editor, to change them by hand"}
-                            onclick={() => void openInstructions(n)}>Open in editor</button
-                          >
-                        {/if}
-                        <button
-                          class="ns-btn ghost small"
-                          disabled={reverting !== null}
-                          use:tip={"Put this file back as it was before the dream (a commit)"}
-                          onclick={() => void revert(n, f.path)}>{reverting === f.path ? "…" : "Revert"}</button
-                        >
-                      </div>
-                    {/each}
-                  </div>
-                  <div class="centre-diff">
-                    <DiffView text={diff} loading={diffLoading} error={diffError} leftLabel="before the dream" rightLabel="after" />
-                  </div>
-                {/if}
+            {#if opened}
+              <div class="centre-day-rows">
+                {#each d.notices as n (n.id)}{@render item(n)}{/each}
               </div>
-            {/each}
+            {/if}
           </section>
         {/each}
+        {#if asks > 0}
+          <button class="centre-else" use:tip={"Proposals and held blockers\nListed and answered in Needs you"} onclick={openNeeds}
+            ><span>{asks === 1 ? "1 thing asks you to decide" : `${asks} things ask you to decide`}</span><span class="centre-else-go">in Needs you →</span></button
+          >
+        {/if}
       </div>
 
       {#if pendingRevert}
@@ -344,14 +377,23 @@
   .centre-bell.on {
     color: var(--ink);
   }
-  .centre-count {
-    font-family: var(--mono);
-    font-size: 10.5px;
-    color: var(--paper);
+  /* Item 969: a dot, not a number, while something is new. */
+  .centre-dot {
+    position: absolute;
+    top: 3px;
+    right: 4px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
     background: var(--accent);
-    border-radius: 999px;
-    padding: 0 6px;
-    margin-left: 4px;
+    box-shadow: 0 0 0 2px var(--paper);
+  }
+  .centre-dot.small {
+    position: static;
+    flex: none;
+    width: 6px;
+    height: 6px;
+    box-shadow: none;
   }
   .centre-panel {
     /* Portalled and fixed (backlog 298): top, left and width are set
@@ -405,26 +447,82 @@
   .centre-kind {
     margin-top: 8px;
   }
-  .centre-kind-head {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 0;
+  /* Item 969: one row per day; its rows open under it. */
+  .centre-day {
     border-bottom: 1px solid var(--line);
   }
-  .centre-kind-title {
+  .centre-day-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 6px 0;
+  }
+  .centre-day-btn {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .centre-day-btn .centre-dot.small {
+    align-self: center;
+  }
+  .chev {
+    flex: none;
+    color: var(--dim);
+    font-size: 10px;
+    transition: transform 120ms ease;
+  }
+  .chev.folded {
+    transform: rotate(-90deg);
+  }
+  .centre-day-label {
+    flex: none;
     font-size: 11px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--dim);
+    color: var(--ink2);
   }
-  .centre-n {
-    font-family: var(--mono);
-    font-size: 10.5px;
-    color: var(--dim);
-    background: var(--well);
-    border-radius: 999px;
-    padding: 0 6px;
+  .centre-day-sum {
+    flex: 1;
+    min-width: 0;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .centre-day.seen .centre-day-sum,
+  .centre-item.seen .centre-item-title {
+    color: var(--ink2);
+  }
+  .centre-day-rows {
+    padding: 0 0 4px 18px;
+  }
+  .centre-else {
+    display: flex;
+    width: 100%;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 6px 0;
+    border: 0;
+    background: none;
+    color: var(--ink2);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .centre-else-go {
+    margin-left: auto;
+    color: var(--accent-ink);
+  }
+  .centre-else:hover .centre-else-go {
+    text-decoration: underline;
   }
   .centre-item {
     padding: 8px 0;
@@ -526,28 +624,18 @@
     height: 1px;
     background: var(--line2);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .centre-kind-head {
-    border-bottom: none;
-    gap: 8px;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .centre-kind-title {
+  /* Item 969, Jarvis: the day's label a mono heading, the dot lit. */
+  :global(:where(:root:not([data-layout="classic"]))) .centre-day-label {
     font: 500 10px var(--mono);
     letter-spacing: 0.14em;
-    color: var(--ink2);
+    min-width: 7.5em;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .centre-n {
-    order: 2;
-    background: none;
-    padding: 0;
-    color: var(--dim);
+  :global(:where(:root:not([data-layout="classic"]))) .centre-dot {
+    box-shadow: 0 0 6px var(--accent);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .centre-kind-head .spacer {
-    order: 1;
-    height: 1px;
-    background: var(--line2);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .centre-kind-head .ns-btn {
-    order: 3;
+  :global(:where(:root:not([data-layout="classic"]))) .centre-else {
+    font-family: var(--mono);
+    font-size: 11px;
   }
   :global(:where(:root:not([data-layout="classic"]))) .centre-item {
     border-bottom-color: var(--line);

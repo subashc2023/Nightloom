@@ -41,14 +41,17 @@ describe("the Needs-you view's rows (753)", () => {
       shipped: [{ project: "p1", projectName: "Nightloom", id: "712", title: "Comment button", shipped: "2026-11-16" }],
     });
     const g = groupNeeds(rows);
-    expect(g.map((x) => x.label)).toEqual(["Waiting on you", "Ready for review", "Working"]);
-    expect(g[0].rows.map((r) => r.id)).toEqual(["card:turn:c9", "ask:c3", "blocker:p1:1300", "blocker:p1:1220"]);
-    expect(g[1].rows.map((r) => r.id)).toEqual(["done:c4", "done:c2", "shipped:p1:712"]);
-    expect(g[2].rows.map((r) => r.tag)).toEqual(["turn", "subagent"]);
-    expect(waitingCount(rows)).toBe(4);
+    // Item 968: the blocker whose default went ahead (1220) is "Decided for you", not waiting.
+    expect(g.map((x) => x.label)).toEqual(["Waiting on you", "Decided for you — say if wrong", "Ready for review", "Working"]);
+    expect(g[0].rows.map((r) => r.id)).toEqual(["card:turn:c9", "ask:c3", "blocker:p1:1300"]);
+    expect(g[1].rows.map((r) => r.id)).toEqual(["blocker:p1:1220"]);
+    expect(g[2].rows.map((r) => r.id)).toEqual(["done:c4", "done:c2", "shipped:p1:712"]);
+    expect(g[3].rows.map((r) => r.tag)).toEqual(["turn", "subagent"]);
+    expect(waitingCount(rows)).toBe(3);
     // Each row that takes words says what its reply does.
-    expect(g[0].rows.map((r) => r.reply)).toEqual([null, "answer-ask", "answer-blocker", "answer-blocker"]);
-    expect(g[1].rows.map((r) => r.reply)).toEqual(["message", "message", "follow-up"]);
+    expect(g[0].rows.map((r) => r.reply)).toEqual([null, "answer-ask", "answer-blocker"]);
+    expect(g[1].rows.map((r) => r.reply)).toEqual(["answer-blocker"]);
+    expect(g[2].rows.map((r) => r.reply)).toEqual(["message", "message", "follow-up"]);
     expect(g[0].rows[2].tag).toBe("held blocker 1300");
   });
 
@@ -61,7 +64,8 @@ describe("the Needs-you view's rows (753)", () => {
 
   it("words the badge: what waits first, then what is ready", () => {
     expect(badgeWords([])).toBeNull();
-    expect(badgeWords(needRows({ ...base, ended: [ended({})] }))).toEqual({ n: 1, word: "to review", waiting: false });
+    // Item 968: "to review" wears no number (n 0) — the one number counts only what needs him.
+    expect(badgeWords(needRows({ ...base, ended: [ended({})] }))).toEqual({ n: 0, word: "to review", waiting: false });
     expect(badgeWords(needRows({ ...base, ended: [ended({}), ended({ chat: "c3", ask })] }))).toEqual({ n: 1, word: "needs you", waiting: true });
   });
 

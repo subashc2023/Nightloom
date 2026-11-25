@@ -10,6 +10,7 @@
   import { sameMorning } from "./nightshift";
   import NightshiftStateChip from "./NightshiftStateChip.svelte";
   import NotificationCentre from "./NotificationCentre.svelte";
+  import { blockerCounts } from "./needsYou";
 
   const row = $derived(
     app.nightshift.rows.find((r) => r.id === app.nightshift.selected) ?? null,
@@ -17,11 +18,9 @@
   const info = $derived(row?.nightshift ?? null);
   const review = $derived(app.nightshift.tab === "review");
 
-  const openBlockers = $derived(
-    app.nightshift.blockers
-      ? app.nightshift.blockers.blockers.filter((b) => b.status === "open").length
-      : (info?.open_blockers ?? 0),
-  );
+  // Item 968: held blockers are what waits on him; the rest went ahead on their default.
+  const bc = $derived(blockerCounts(app.nightshift.blockers?.blockers, info));
+  const openBlockers = $derived(bc.open);
   const unread = $derived.by(() => {
     if (!row || !info?.newest_morning) return false;
     const read = app.nightshift.read[row.id] ?? [];
@@ -40,7 +39,7 @@
         <span class="sep">·</span>
         {info.items} item{info.items === 1 ? "" : "s"}
         <span class="sep">·</span>
-        {openBlockers} open blocker{openBlockers === 1 ? "" : "s"}
+        {#if bc.held > 0}{bc.held} held blocker{bc.held === 1 ? "" : "s"}{#if bc.decided > 0}<span class="sep">·</span>{bc.decided} decided for you{/if}{:else}{openBlockers} blocker{openBlockers === 1 ? "" : "s"}, decided for you{/if}
       </span>
     {:else if row}
       <span class="eyebrow">not a Nightshift project</span>
@@ -92,7 +91,7 @@
       onclick={() => (app.nightshift.reviewTab = "blockers")}
     >
       Blockers
-      {#if openBlockers > 0}<span class="n">{openBlockers} open</span>{/if}
+      {#if bc.held > 0}<span class="n">{bc.held} held</span>{:else if openBlockers > 0}<span class="n">{openBlockers} open</span>{/if}
     </button>
     <button
       class="tab"
