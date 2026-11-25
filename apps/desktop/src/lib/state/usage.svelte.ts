@@ -230,9 +230,18 @@ function budgetTick(): void {
 }
 
 let planUsageClock: ReturnType<typeof setInterval> | null = null;
+/**
+ * Item 956: the clock ticks while a turn runs too (it skipped while busy).
+ * The turn's own figure reaches the chip only at its end, so during a long
+ * turn the CLI's cache — what Home's guard, the phone and the orchestrator's
+ * `usagectl.py` read — aged past five minutes (17 min seen, memory
+ * `live-usage-near-the-line`). The hook already runs `/usage` mid-turn
+ * whenever its wire reading is stale, so a refresh beside a turn is nothing
+ * new; the backend's once-a-minute gap still holds.
+ */
 export function startPlanUsageClock(): void {
   if (planUsageClock) return;
   planUsageClock = setInterval(() => {
-    if (app.connection?.engine === "claude-code" && !app.busy) void refreshPlanUsage(true);
+    if (app.connection?.engine === "claude-code") void refreshPlanUsage(true);
   }, PLAN_USAGE_LIVE_EVERY_MS);
 }

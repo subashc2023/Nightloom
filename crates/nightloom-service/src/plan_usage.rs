@@ -342,6 +342,12 @@ pub fn read_fresh_after(max_age: std::time::Duration, after_ms: Option<i64>) -> 
             _ => {
                 let s = run_usage_command(now_ms);
                 *last = Some((std::time::Instant::now(), s.clone()));
+                // Item 956: the window's five-minute poll runs here; its
+                // figure goes in the shared stamp too, so every other
+                // process (the hook, Home, the phone) reads it on hand.
+                if let Some(s) = &s {
+                    let _ = std::fs::write(stamp_path(), format_stamp(s));
+                }
                 s
             }
         }
