@@ -2,11 +2,10 @@
   import { tip } from "./tip";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
-  // Item 626: while streaming, the unfinished tail renders as it will once finished (streamingTail); item 830: by blocks.
-  import { renderReply } from "./markdown";
+  // Item 626: while streaming, the unfinished tail renders as it will once finished (streamingTail); item 830: by blocks;
+  // item 905: one hand-off prompt per turn. All three in `T.replyHtml` (assistantMessage/logic.svelte.ts).
   import MathText from "./MathText.svelte";
   import { askSettled } from "./askSettled";
-  import { renderStreamingParts } from "./streamBlocks";
   // Item 820: pictures and video the reply names, drawn under its text.
   import ReplyMedia from "./ReplyMedia.svelte";
   import { replyMediaInline, stripMedia } from "./replyMediaInline";
@@ -35,7 +34,7 @@
   import type { Segment } from "./state.svelte";
   import { fmtSecs } from "./turnTiming";
   import { displayPath, extOf, fmtSize } from "./cards";
-  import { app, endContentDrag, openContent } from "./state.svelte";
+  import { app, openContent } from "./state.svelte";
   import { agentRowLine, isAgentCall } from "./subagentRows";
   // Item 718: a helper row says whether it is a new helper or a continued one.
   import { helperMark } from "./helperMark";
@@ -80,7 +79,14 @@
   {@const boxOpen = T.softOpen(key)}
   <button class="tool-result soft soft-line" class:open={boxOpen} aria-expanded={boxOpen}
     use:tip={boxOpen ? "Fold the notice to one line" : "Show the notice whole"}
-    onclick={() => T.setOverride(key, { open: !boxOpen, rev: transcript.rev.tool })}
+    onpointerdown={(e) => {
+      // Item 920: on the press, as the rows (backlog 052) — while a reply
+      // streams the box moves under the pointer and a click never lands.
+      if (e.button === 0) T.setOverride(key, { open: !boxOpen, rev: transcript.rev.tool });
+    }}
+    onclick={(e) => {
+      if (e.detail === 0) T.setOverride(key, { open: !boxOpen, rev: transcript.rev.tool });
+    }}
     >{#if boxOpen}<span class="soft-full">{content}</span>{:else}<span class="soft-sum">{softLine(content, retried)}</span>{/if}</button>
 {/snippet}
 {#snippet subagent(children: Segment[], parent: string)}
@@ -292,7 +298,7 @@
                       : "Expand this call"}
                   draggable={agentTab ? "true" : undefined}
                   ondragstart={agentTab ? (e) => T.dragAgent(e, i, seg, agentTab) : undefined}
-                  ondragend={agentTab ? () => endContentDrag() : undefined}
+                  ondragend={agentTab ? (e) => T.dragAgentEnd(e) : undefined}
                   onpointerdown={(e) => T.press(e, i, seg)}
                   onclick={(e) => T.keyClick(e, i, seg)}
                 >
@@ -469,7 +475,7 @@
       {:else}
         <!-- Item 452: patched in place (liveHtml), not replaced whole per
              streamed delta, so a selection in its written part survives. -->
-        <div class="markdown" use:replyPages={{ copy: (t) => void copyText(t) }} use:replyMediaInline={{ chat: app.activeSessionId, roots: T.roots, label: (c) => displayPath(c.path, T.roots), onopen: (p, e) => void T.openFile(p, e) }} use:askSettled use:liveHtml={T.streaming ? renderStreamingParts(g.seg.text) : renderReply(g.seg.text)} use:memoryRefs={{ hits: T.memHits, text: g.seg.text }} use:codeCopy={T.runBlocks(g.seg.text)} use:handoffGo={T.nextChat}></div>
+        <div class="markdown" use:replyPages={{ copy: (t) => void copyText(t) }} use:replyMediaInline={{ chat: app.activeSessionId, roots: T.roots, label: (c) => displayPath(c.path, T.roots), onopen: (p, e) => void T.openFile(p, e) }} use:askSettled use:liveHtml={T.replyHtml(g.i, g.seg.text)} use:memoryRefs={{ hits: T.memHits, text: g.seg.text }} use:codeCopy={T.runBlocks(g.seg.text)} use:handoffGo={T.nextChat}></div>
         {#if !T.streaming}
           <!-- Item 820: a picture or a video this text names, right under it. -->
           <ReplyMedia items={stripMedia(g.seg.text, T.roots)} chat={app.activeSessionId} label={(c) => displayPath(c.path, T.roots)} onopen={(p, e) => void T.openFile(p, e)} />

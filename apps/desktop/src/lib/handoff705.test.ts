@@ -103,7 +103,8 @@ describe("705: every control of today's card is on option A", () => {
     expect(card).toContain('class="handoff hc" class:hc-compact={!full}');
   });
   it.each([
-    ["Wrap up now", "onclick={() => void sendWrapUpNow()}>Wrap up now"],
+    // Item 926: launched from the button, with Send's scan and edge (was `onclick={() => void sendWrapUpNow()}>Wrap up now`).
+    ["Wrap up now", 'onclick={(e) => void sendWrapUpNow(e.currentTarget)}><span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span>Wrap up now'],
     ["Stay here", "noteStay(app.activeSessionId); stayHere();"],
     ["Minimize", 'aria-label="Minimize"'],
     ["Restore (▴ and a click on the line)", "unfold(app.activeSessionId)"],

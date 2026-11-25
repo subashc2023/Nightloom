@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { scrimClose } from "./scrimClose";
   import Icon from "./Icon.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import {
@@ -59,9 +60,7 @@
   class="scrim"
   class:capturing={feedback.capturing}
   role="presentation"
-  onclick={(e) => {
-    if (e.target === e.currentTarget) closeFeedback();
-  }}
+  use:scrimClose={closeFeedback}
 >
   <div
     class="ns-card dialog"

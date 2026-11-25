@@ -35,6 +35,7 @@
   import { ASK_CARD_LOOKS, askCardLook, setAskCardLook } from "./askCardLook.svelte";
   import { CACHE_LOOKS, cacheLook, setCacheLook } from "./cacheLook.svelte";
   // Item 826: Touch ID unlock and the pre-arm card.
+  import KeepersList from "./KeepersList.svelte";
   import BitwardenTouch from "./BitwardenTouch.svelte";
   import BitwardenPreArm from "./BitwardenPreArm.svelte";
   import CacheLookPreview from "./CacheLookPreview.svelte";
@@ -212,7 +213,7 @@
   } from "./settings/subscriptionPane";
   import { keepWarm, loadHold, loadKeepWarmDefault, rescoreHold, setHoldRule, setHoldSleep, setKeepWarmDefault } from "./keepWarm.svelte";
   import { boardWords, liveOvertake, nameIn, overtakeWords, ruleWords, sleepSource } from "./holdRule";
-  import { hourWords } from "./keepWarm";
+  import { hourWords, keeperRows } from "./keepWarm";
   import { paneFilter, setPaneFilter, setOpen } from "./settings/paneState.svelte";
   // Item 844: the search box at the top of the nav.
   import { paneTitle, searchSettings, settingsIndex, type SettingHit } from "./settings/searchIndex";
@@ -1215,7 +1216,7 @@
       auto: cli.prefs.auto,
       layersAtCold: app.layerPrefs.autoAtCold,
     }),
-    cache: cacheSummary(keepWarm.defaultOn),
+    cache: cacheSummary(keepWarm.defaultOn, keeperRows(keepWarm.byChat, Date.now()).length),
     bitwarden: bitwardenSummary(bwRules?.length ?? null, bwSession),
   });
   // Item 766 part 2: the secret card's "always" rules, read once the pane
@@ -3349,6 +3350,17 @@
       </SettingsGroup>
       <!-- Item 608: keep-warm is automatic — on by default for every chat. -->
       <SettingsGroup fold="subscription/cache" title={subTitle("cache")} summary={subSummaries.cache} filtering={subFiltering} matches={subMatches("cache")}>
+        <!-- Item 913: every chat kept warm now, each with Extend and Stop. -->
+        <SettingRow fold="subscription/cache-keepers" shown={subShown("cache-keepers")} stack>
+          {#snippet label()}<span>Chats kept warm now</span>{/snippet}
+          {#snippet control()}<KeepersList />{/snippet}
+          {#snippet help()}
+            Every chat whose cache the pings are keeping warm right now, soonest
+            to go cold first. Extend holds it 12 h, then 24 h, after its last
+            reply; Stop ends the pings now (its switch stays as it is; showing
+            the chat again starts them, as reopening its tab does).
+          {/snippet}
+        </SettingRow>
         <SettingRow fold="subscription/cache-keepwarm" shown={subShown("cache-keepwarm")}>
           {#snippet label()}
             <label class="dream-auto cli-auto">
@@ -3436,12 +3448,18 @@
            removable; and the session he pasted, forgettable now. -->
       <SettingsGroup fold="subscription/bitwarden" title={subTitle("bitwarden")} summary={subSummaries.bitwarden} filtering={subFiltering} matches={subMatches("bitwarden")}>
         <SettingRow fold="subscription/bitwarden-always" shown={subShown("bitwarden-always")} stack>
-          {#snippet label()}<span>Always allowed</span>{/snippet}
+          <!-- Item 917: a heading that says what the list is (his "Always
+               allowed" read like a switch), and an empty state that says how
+               a rule gets here. -->
+          {#snippet label()}<span>Secrets given without asking</span>{/snippet}
           {#snippet control()}
             {#if bwRules === null}
               <p class="note small">Reading…</p>
             {:else if bwRules.length === 0}
-              <p class="note small">None yet. “Always for this command” on a secret card adds one.</p>
+              <p class="note small bw-empty">
+                None yet. Each rule here gives one Bitwarden secret to one command without showing its card. When a
+                chat asks for a secret, the card's <b>Always for this command</b> adds the rule.
+              </p>
             {:else}
               <ul class="bw-rules" aria-label="Bitwarden always rules">
                 {#each bwRules as r (r.id)}
@@ -3475,7 +3493,7 @@
         </SettingRow>
         <!-- Item 826: Touch ID unlock, and the pre-arm card for a run. -->
         <SettingRow fold="subscription/bitwarden-touch" shown={subShown("bitwarden-touch")} stack>
-          {#snippet label()}<span>Touch ID unlock</span>{/snippet}
+          {#snippet label()}<span>Unlocking with Touch ID</span>{/snippet}
           {#snippet control()}
             <BitwardenTouch status={bwTouch} onchange={loadBwTouch} />
           {/snippet}
@@ -3488,7 +3506,7 @@
           {/snippet}
         </SettingRow>
         <SettingRow fold="subscription/bitwarden-prearm" shown={subShown("bitwarden-prearm")} stack>
-          {#snippet label()}<span>Pre-arm for a run</span>{/snippet}
+          {#snippet label()}<span>Secrets for an away run</span>{/snippet}
           {#snippet control()}
             <BitwardenPreArm rules={bwRules} status={bwTouch} onchange={loadBwTouch} />
           {/snippet}
@@ -3501,12 +3519,13 @@
           {/snippet}
         </SettingRow>
         <SettingRow fold="subscription/bitwarden-session" shown={subShown("bitwarden-session")}>
-          {#snippet label()}<span>Session {bwSession ? "held" : "not held"}</span>{/snippet}
+          {#snippet label()}<span>Bitwarden is {bwSession ? "unlocked" : "locked"} for Nightloom</span>{/snippet}
           {#snippet control()}
-            <button class="ns-btn ghost small" disabled={!bwSession} onclick={() => void forgetBwSession()}>Forget now</button>
+            <button class="ns-btn ghost small" disabled={!bwSession} onclick={() => void forgetBwSession()}>Lock now</button>
           {/snippet}
           {#snippet help()}
-            The open session, kept in Nightloom's memory only — never on disk.
+            {bwSession ? "" : "Locked: every secret a chat asks for shows its card first. "}The open session is
+            kept in Nightloom's memory only — never on disk.
             One opened by Touch ID lasts until quit, sleep or screen lock; a key
             you pasted from bw unlock --raw is forgotten after 30 idle minutes
             or when Nightloom quits.

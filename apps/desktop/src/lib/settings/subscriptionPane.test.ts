@@ -191,7 +191,7 @@ describe("the keep-warm default (item 608)", () => {
   it("has its own group and row, found by the words he would type", () => {
     expect(GROUPS.map((g) => g.id)).toContain("cache");
     // Item 878: the group's title ("Keeping caches warm") finds its hold-rule row too.
-    expect(matchingControls("cache", "keep warm").map((c) => c.id)).toEqual(["cache-keepwarm", "cache-holdrule"]);
+    expect(matchingControls("cache", "keep warm").map((c) => c.id)).toEqual(["cache-keepers", "cache-keepwarm", "cache-holdrule"]);
     expect(matchingControls("cache", "sleep").map((c) => c.id)).toEqual(["cache-holdrule"]);
     expect(matchingControls("cache", "automatic").map((c) => c.id)).toEqual(["cache-keepwarm"]);
   });

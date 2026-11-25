@@ -353,3 +353,34 @@ export function rowToggle(row: NoticeRow): "on" | "off" {
 export function touchedUntil(s: KeepWarmStatus | null | undefined): number | null {
   return s && s.mode !== "off" && s.touched_ms != null ? s.touched_ms + 3_600_000 : null;
 }
+
+/**
+ * Item 913: the rows of Settings' "Chats kept warm now" — every chat whose
+ * cache the pings are keeping warm right now, soonest to go cold first. Pure.
+ */
+export function keeperRows(byChat: Record<string, KeepWarmStatus>, now: number): KeepWarmStatus[] {
+  return Object.values(byChat)
+    .filter((s) => isKeeping(s, now))
+    .sort((a, b) => (a.warm_until_ms as number) - (b.warm_until_ms as number));
+}
+
+/** Item 913: the hold one Extend press gives — the next of 12 h, 24 h past
+ *  the chat's current cap; null when it already holds the longest. */
+export function nextHold(s: KeepWarmStatus): number | null {
+  const cur = s.hold_hours ?? 0;
+  const base = s.policy.cap_ms / 3_600_000;
+  for (const h of HOLD_HOURS) if (h > cur && h > base) return h;
+  return null;
+}
+
+/** Item 913: one row's figures — "warm until 3:40 AM · next ping 2:55 AM ·
+ *  held 12 h · 4 pings ≈ $0.31". */
+export function keeperLine(s: KeepWarmStatus, now: number): string {
+  const parts = [`warm until ${clockTime(s.warm_until_ms as number)}`];
+  if (s.next_ping_ms != null && s.next_ping_ms > now) parts.push(`next ping ${clockTime(s.next_ping_ms)}`);
+  if (s.hold_hours != null) parts.push(`held ${s.hold_hours} h`);
+  if (s.sleep_cut) parts.push(ASLEEP);
+  const p = s.spent;
+  if (p.pings > 0) parts.push(`${p.pings} ping${p.pings === 1 ? "" : "s"}${p.cost_usd > 0 ? ` ≈ $${p.cost_usd.toFixed(2)}` : ""}`);
+  return parts.join(" · ");
+}

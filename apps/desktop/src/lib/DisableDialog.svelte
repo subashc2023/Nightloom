@@ -6,6 +6,7 @@
    * `nightshift.json.disabled`, and Enable on the same project renames it
    * back.
    */
+  import { scrimClose } from "./scrimClose";
   import type { NightshiftRow } from "./types";
   import Icon from "./Icon.svelte";
 
@@ -35,9 +36,7 @@
 <div
   class="scrim"
   role="presentation"
-  onclick={(e) => {
-    if (e.target === e.currentTarget) onclose();
-  }}
+  use:scrimClose={onclose}
 >
   <div
     class="ns-card dialog"

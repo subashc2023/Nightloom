@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fileFollow } from "./fileFollow.svelte";
   import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
   import * as api from "./api";
@@ -371,9 +372,15 @@
    * (one read, coalesced); gone shows the banner and Close, and the buffer —
    * his unsaved edits included — stays, so Save puts the file back.
    */
+  // Item 928: the check below, for the follow effect after it.
+  let followCheck: (() => Promise<void>) | null = null;
   $effect(() => {
     const target = open;
-    if (!target || (target.scope !== "project" && target.scope !== "knowledge")) return;
+    if (!target) return;
+    // Item 928: the folder watch covers only the notes and the vault; the
+    // one-file scopes (instructions, memory, models, Chat) follow a chat's
+    // writes and turn ends through `fileFollow` (below) with the same check.
+    const watched = target.scope === "project" || target.scope === "knowledge";
     let alive = true;
     let stop: UnlistenFn | null = null;
     const check = coalesced(async () => {
@@ -406,18 +413,33 @@
         } else void load(target);
       }
     });
-    listen<NotesChanged>("notes-changed", (e) => {
-      if (touchesNote(e.payload, target.scope, target.name)) void check();
-    })
-      .then((s) => {
-        if (alive) stop = s;
-        else s();
+    followCheck = check;
+    if (watched)
+      listen<NotesChanged>("notes-changed", (e) => {
+        if (touchesNote(e.payload, target.scope, target.name)) void check();
       })
-      .catch(() => {});
+        .then((s) => {
+          if (alive) stop = s;
+          else s();
+        })
+        .catch(() => {});
     return () => {
       alive = false;
+      if (followCheck === check) followCheck = null;
       stop?.();
     };
+  });
+  // Item 928: a chat's tool that may write, or a turn's end, re-checks the
+  // open note against its file (a text note on a tool; media on a turn's end).
+  let seenTools = fileFollow.tools;
+  let seenTurns = fileFollow.turns;
+  $effect(() => {
+    const tools = fileFollow.tools;
+    const turns = fileFollow.turns;
+    const due = turns !== seenTurns || (tools !== seenTools && untrack(() => media) === null);
+    seenTools = tools;
+    seenTurns = turns;
+    if (due) void untrack(() => followCheck)?.();
   });
 
   async function load(target: { scope: NoteScope; name: string } | null) {

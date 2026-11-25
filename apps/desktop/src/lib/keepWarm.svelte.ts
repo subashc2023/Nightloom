@@ -124,6 +124,26 @@ export function stopKeepWarm(chat: string): void {
   keepWarm.byChat[chat] = { ...s, mode, scheduled: false, why: mode === "off" ? "off" : "noreply", next_ping_ms: null };
 }
 
+/** Item 913: read every chat's status the backend holds (Settings' "Chats
+ *  kept warm now"); the `keep-warm` events keep the rows current after. */
+export async function loadAllKeepWarm(): Promise<void> {
+  watchKeepWarm();
+  try {
+    for (const s of await api.keepWarmList()) if (s?.chat) keepWarm.byChat[s.chat] = s;
+  } catch {
+    // An older backend without the list: the rows are the chats read so far.
+  }
+}
+
+/** Item 913: Stop from the list — the run ends now; the chat's switch
+ *  stays as he set it (the tab-close stop, by his click). */
+export async function stopKeeper(chat: string): Promise<void> {
+  // Not `loadKeepWarm` after: reading a status offers the chat's last reply
+  // again (item 608's restart path) and would start the run just ended;
+  // `keep_warm_stop` sends the new status as a `keep-warm` event itself.
+  stopKeepWarm(chat);
+}
+
 /** Read his Settings default, "Keep chats' caches warm automatically". */
 export async function loadKeepWarmDefault(): Promise<void> {
   try {

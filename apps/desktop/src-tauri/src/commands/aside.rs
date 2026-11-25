@@ -337,23 +337,36 @@ pub(crate) async fn ask_aside(
     // too: a cold chat's aside leaves the chat warm (its next send read
     // 97.3%, run R2). On another model or effort its write is its own copy
     // and only the read counts, as before.
-    let own_cache = agent
-        .spec()
-        .aside_with(model.as_deref(), effort.as_deref())
-        .is_some_and(|f| {
-            f.side_cache_mark && f.model == agent.spec().model && f.effort == agent.spec().effort
-        });
-    // Item 959: on another model, whether its write is the chat's prefix
-    // on that model (the chat's tool text there).
-    let marks_chat = !own_cache
+    // Item 949: whether the aside ran on the chat's model, by what the CLI
+    // resolved each to (an alias pick and the chat's full id are one model);
+    // only then is its read a read of the chat's cache.
+    let chat_resolved = agent.resolved_model().map(String::from).or_else(|| {
+        target
+            .try_lock()
+            .ok()
+            .and_then(|open| open.as_ref().and_then(crate::commands::agent::last_model))
+    });
+    let same_model = same_model_aside(
+        model.as_deref(),
+        agent.spec().model.as_deref(),
+        outcome.model.as_deref(),
+        chat_resolved.as_deref(),
+    );
+    let own_cache = same_model
+        && agent
+            .spec()
+            .aside_with(model.as_deref(), effort.as_deref())
+            .is_some_and(|f| f.side_cache_mark && f.effort == agent.spec().effort);
+    // Item 959: on another model (949's resolver), whether its write is the
+    // chat's prefix on that model in the chat's tool text there, so a switch
+    // of the chat to it reads it back.
+    let marks_chat = !same_model
         && !outcome.is_error
         && outcome.last_round.is_some()
         && agent
             .spec()
             .aside_with(model.as_deref(), effort.as_deref())
-            .is_some_and(|f| {
-                f.model != agent.spec().model && agent.spec().side_marks_chat_on_its_model(&f)
-            });
+            .is_some_and(|f| agent.spec().side_marks_chat_on_its_model(&f));
     let round_read = outcome.last_round.map_or(0, |u| {
         cached_for_chat(u.cache_read_tokens, u.cache_write_tokens, own_cache)
     });
@@ -361,7 +374,11 @@ pub(crate) async fn ask_aside(
     // on its way out (measured on 2.1.326: the interrupt's `message_delta`
     // carries the round's prompt side; a stopped aside on a warm chat had
     // read 67,172 of 67,174 before its first word).
+    // Item 949: an aside on another model reads its own copy, never the
+    // chat's, so it moves neither keep-warm's schedule nor the hand-off's
+    // cache edge.
     if !outcome.is_error
+        && same_model
         && outcome.last_round.is_some()
         && let Some(chat) = target.id()
     {
@@ -448,6 +465,32 @@ pub(crate) fn cached_for_chat(read: Option<u64>, write: Option<u64>, own: bool) 
     }
 }
 
+/// Whether an aside ran on the chat's own model (item 949). No pick, or the
+/// chat's own model string, is the chat's model by construction (that also
+/// covers a model switch not sent yet: the aside runs what the next send
+/// will). Another pick is compared by what the CLI resolved: the aside's
+/// answer against the chat's last turn, ignoring case and a `[1m]`-style
+/// suffix, so `opus` and `claude-opus-5-5` match. Either unknown: not the
+/// same, so a cold chat is never painted warm.
+pub(crate) fn same_model_aside(
+    pick: Option<&str>,
+    chat_spec: Option<&str>,
+    aside_resolved: Option<&str>,
+    chat_resolved: Option<&str>,
+) -> bool {
+    let pick = pick.map(str::trim).filter(|m| !m.is_empty());
+    if pick.is_none() || pick == chat_spec.map(str::trim) {
+        return true;
+    }
+    fn norm(m: &str) -> String {
+        m.split('[').next().unwrap_or(m).trim().to_ascii_lowercase()
+    }
+    match (aside_resolved, chat_resolved) {
+        (Some(a), Some(c)) => !norm(a).is_empty() && norm(a) == norm(c),
+        _ => false,
+    }
+}
+
 /// Interrupt the aside, if any (review F13, 2026-09-16) — the × on the
 /// aside card. Reaches an aside still parked behind a running turn as well
 /// as one that is running, and never touches the turn: `ask_aside` races
@@ -462,7 +505,40 @@ pub(crate) fn cancel_aside(state: State<'_, AppState>, seq: u64) {
 
 #[cfg(test)]
 mod tests {
-    use super::cached_for_chat;
+    use super::{cached_for_chat, same_model_aside};
+
+    /// Item 949: an Opus aside on a Fable chat is another model; no pick,
+    /// the chat's own string, or an alias that resolved to the chat's model
+    /// is the same; an unknown resolution is not.
+    #[test]
+    fn only_an_aside_on_the_chats_resolved_model_is_the_chats_cache() {
+        let fable = Some("claude-fable-5-2");
+        let opus = Some("claude-opus-5-5");
+        assert!(!same_model_aside(Some("opus"), fable, opus, fable));
+        assert!(same_model_aside(None, fable, fable, fable));
+        assert!(same_model_aside(Some(" "), fable, opus, fable));
+        assert!(same_model_aside(
+            Some("claude-fable-5-2"),
+            fable,
+            None,
+            None
+        ));
+        // An alias against the chat's full id, nothing resolved: unknown.
+        assert!(!same_model_aside(
+            Some("opus"),
+            Some("claude-opus-5-5"),
+            None,
+            None
+        ));
+        assert!(same_model_aside(
+            Some("opus"),
+            None,
+            Some("claude-opus-5-5"),
+            Some("Claude-Opus-5-5[1m]")
+        ));
+        assert!(!same_model_aside(Some("opus"), None, opus, None));
+        assert!(!same_model_aside(Some("opus"), None, None, opus));
+    }
 
     /// Aside-cache research 2026-11-23, run R2: a cold chat's aside read
     /// 27,014 (system and tools) and wrote 40,771 (the chat's messages);

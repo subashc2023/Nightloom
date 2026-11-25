@@ -6,6 +6,7 @@
    * a click could lose work, which Swaraag's rule says must never happen
    * silently (2026-09-13).
    */
+  import { scrimClose } from "./scrimClose";
   import Icon from "./Icon.svelte";
 
   let {
@@ -40,9 +41,7 @@
 <div
   class="scrim"
   role="presentation"
-  onclick={(e) => {
-    if (e.target === e.currentTarget) onclose();
-  }}
+  use:scrimClose={onclose}
 >
   <div class="ns-card dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title" tabindex="-1">
     <div class="head">

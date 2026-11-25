@@ -17,6 +17,7 @@ import "@fontsource/ibm-plex-mono/latin-500.css";
 // Item 716: the composer's controls, lifted out of Composer.svelte so Settings' previews can
 // draw them; before app.css, where the scoped rules sat in the bundle, so app.css keeps its ties.
 import "./composerControls.css";
+import "./filGo.css";
 import "./app.css";
 // Item 884: the question box in Jarvis, right after app.css so it wins the ties with app.css's .nl-ask rules.
 import "./askLook.css";

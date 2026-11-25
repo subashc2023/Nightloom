@@ -140,7 +140,7 @@
   import { declaredKind, useEngine } from "./state.svelte";
   import { openSession } from "./state.svelte";
   import { handoffChildren } from "./chatList";
-  import { bubbledRows, registerSendHeld } from "./pendingBubble.svelte";
+  import { bubbledRows, cancelPending, registerSendHeld } from "./pendingBubble.svelte";
   import WaitAct from "./WaitAct.svelte";
   import {
     canUndo,
@@ -171,7 +171,6 @@
     clearDraft,
     draftKey,
     draftSelection,
-    dropQueued,
     clearInjected,
     enqueueMessage,
     historyFor,
@@ -238,7 +237,7 @@
   } from "./pastedText.svelte";
   import { pasteSteps, textPastePlan } from "./textPaste";
   import { attachPastedImages, fetchPasteImage, htmlImagePaste, lostImagesNote, preparePaste, rasterize, type ImagePaste } from "./pasteImages";
-  import { launch } from "./sendMotion";
+  import { launch, QUEUED_CHANNEL } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { insertQuote, replyRequest, takeReply } from "./replyQuote.svelte";
   // Item 694: the passage highlighted before he came to the box.
@@ -1138,9 +1137,21 @@
   /** **Wrap up now**: the message as it stands, as a turn of its own.
    *  Item 915: the path is `manualHandoff.svelte.ts`'s, shared with the
    *  right panel's *Hand off now* and `/handoff`; only the send is ours. */
-  async function sendWrapUpNow(): Promise<void> {
-    await handOffNow((t) => dispatch(t, [], true));
+  async function sendWrapUpNow(from: Element | null = null): Promise<void> {
+    wrapSending = from !== null;
+    try {
+      await handOffNow((t) => dispatch(t, [], true), from);
+    } finally {
+      wrapSending = false;
+    }
   }
+  /** Item 926: Wrap up now's Send look — the edge trace from the click
+   *  until the wrap-up's turn starts (Send's item 606), the scan on hover
+   *  and the charge on the press (`.fil-go`, composerControls.css). */
+  let wrapSending = $state(false);
+  $effect(() => {
+    if (app.busy) wrapSending = false;
+  });
 
   /** The per-chat mark on the notice: raising it above the fill puts the notice away. */
   function setChatThreshold(v: string): void {
@@ -2591,6 +2602,11 @@
     if (!(await conversionsDone(key))) return;
     // Item 754: the comments go with it, as one message.
     const held = enqueueMessage(key, sendWithComments(readDraft(key).comments, readDraft(key).text), readDraft(key).attachments.slice());
+    // Item 924: a message sent mid-reply flies from the box into its
+    // waiting bubble, as a plain send flies into its turn (backlog 194);
+    // measured before the box clears. No bubble takes it (Classic's tray
+    // rows) → the launch goes stale unseen.
+    launch(QUEUED_CHANNEL, boxElement(ta));
     clearDraft(key, true);
     if (aside) {
       afterSend(key);
@@ -2638,9 +2654,11 @@
     ta?.focus();
   }
 
+  /** Item 925: the row's × is the bubble's Cancel — at once, its words to
+   *  the box's history, and an Undo in the toast (before, the × dropped it
+   *  with neither). */
   async function dropRow(id: number): Promise<void> {
-    if (!(await unsend(id))) return;
-    dropQueued(key, id);
+    await cancelPending(key, id);
   }
 
   async function submitAside() {
@@ -2757,8 +2775,10 @@
         addToast(block);
         return;
       }
+      // Item 926: the words fly from the box, as Send's do.
+      const box = boxElement(ta);
       setDraftText(key, "");
-      await sendWrapUpNow();
+      await sendWrapUpNow(box);
       return;
     }
     // Item 694: a plain turn does not take the held passage; Send drops it.
@@ -3833,7 +3853,7 @@
               {/if}
               {#if q.inject?.after === undefined}
                 <WaitAct icon="pencil" label="Take back" hint="back into the message box" onclick={() => void takeBack(q.id)} />
-                <WaitAct icon="x" label="Drop queued message {i + 1}" hint="do not send it" onclick={() => void dropRow(q.id)} />
+                <WaitAct icon="x" label="Drop queued message {i + 1}" hint="do not send it (Undo in the toast brings it back)" onclick={() => void dropRow(q.id)} />
               {/if}
             </span>
           </div>
@@ -3967,7 +3987,7 @@
       <strong class="handoff-min-title">{warmTitle(cache.remainingMs, wwContext, switchName)}</strong>
       <span class="mono handoff-fill" use:tip={coldTip(wwCosts, targetRates)}>{warmDetail(wwCosts)}</span>
       <span class="spacer"></span>
-      <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up now, while the cache is warm"} onclick={() => { markActed(wwChat, cache?.warmUntil ?? null); void sendWrapUpNow(); }}>Wrap up now</button>
+      <button class="ns-btn accent small fil-go" class:sending={wrapSending} disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up now, while the cache is warm"} onclick={(e) => { markActed(wwChat, cache?.warmUntil ?? null); void sendWrapUpNow(e.currentTarget); }}><span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span>Wrap up now</button>
       <button class="ns-btn ghost small" use:tip={"Not this hour; the cold chip offers it again"} onclick={() => markActed(wwChat, cache?.warmUntil ?? null)}>Not now</button>
     </div>
   {:else if coldChip && cache}
@@ -3976,7 +3996,7 @@
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
       <strong class="handoff-min-title" use:tip={coldTip(wwCosts, targetRates)}>{coldTitle(wwContext, switchName)}</strong>
       <span class="spacer"></span>
-      <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up; the next chat starts small"} onclick={() => void sendWrapUpNow()}>{coldWords.handoff}</button>
+      <button class="ns-btn accent small fil-go" class:sending={wrapSending} disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up; the next chat starts small"} onclick={(e) => void sendWrapUpNow(e.currentTarget)}><span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span>{coldWords.handoff}</button>
       <button class="ns-btn ghost small" use:tip={"Go on here; hidden until the next reply"} onclick={() => keepCold(wwChat, cache?.warmUntil ?? null)}>{coldWords.keep}</button>
     </div>
   {/if}
@@ -3998,7 +4018,7 @@
       <span class="hc-gauge hc-gauge-mini" aria-hidden="true"><i style:width={`${Math.min(100, handoffPct)}%`}></i><b style:left={`${Math.min(100, handoffThresholdPct)}%`}></b></span>
       <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)}</span>
       <span class="spacer"></span>
-      {#if !wrapUpQueued}<button class="ns-btn accent small hc-go" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>{/if}
+      {#if !wrapUpQueued}<button class="ns-btn accent small hc-go fil-go" class:sending={wrapSending} disabled={app.busy || !wrapUpText.trim()} onclick={(e) => void sendWrapUpNow(e.currentTarget)}><span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span>Wrap up now</button>{/if}
       <button class="hc-ico" aria-label="Expand" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>▴</button>
     </div>
   {:else if handoffCardUp}
@@ -4093,7 +4113,7 @@
         {#if full}<HandoffGoal chat={app.activeSessionId} />{/if}
         <div class="handoff-acts">
           {#if !wrapUpQueued}
-            <button class="ns-btn accent hc-go" class:small={!full} disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>
+            <button class="ns-btn accent hc-go fil-go" class:small={!full} class:sending={wrapSending} disabled={app.busy || !wrapUpText.trim()} onclick={(e) => void sendWrapUpNow(e.currentTarget)}><span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span>Wrap up now</button>
           {/if}
           <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId); stayHere(); }}>Stay here</button>
           {#if hasOwnMessage(app.activeSessionId)}

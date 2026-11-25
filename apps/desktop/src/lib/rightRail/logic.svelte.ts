@@ -7,6 +7,7 @@ import * as api from "../api";
 import { figuresOf, trackOpenChatFigures } from "../chatFigures.svelte";
 import { modelName, spenderName, stackParts, type ScopedLimits, type SessionFigures } from "../usageFigures";
 import { mark as handoffMark } from "../handoff.svelte";
+import { handOffNow } from "../manualHandoff.svelte";
 import { touchedUntil } from "../keepWarm";
 import { keepWarm } from "../keepWarm.svelte";
 import { cacheState, chipFace, newestReplySentAt, nextTickMs, ownModelCache, remainingText, sideCacheFor, stoppedUnsure } from "../cache";
@@ -321,7 +322,20 @@ export function rightRailLogic(props: () => RightRailLogicProps) {
     }
   }
 
+  /** Item 926: *Hand off now* — the one hand-off path, launched from the
+   *  button (the send motion's flight); `handing` lights Send's edge trace
+   *  on it (Jarvis) until the send returns. */
+  let handing = $state(false);
+  function handOff(from: Element | null): void {
+    handing = true;
+    void handOffNow(undefined, from).finally(() => (handing = false));
+  }
+
   return {
+    handOff,
+    get handing() {
+      return handing;
+    },
     get COLUMN_LAYERS() {
       return COLUMN_LAYERS;
     },

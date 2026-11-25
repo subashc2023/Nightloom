@@ -833,26 +833,33 @@ pub fn helper_launch_reason() -> String {
 
 /// What the chat's own thread reads beside a call that runs past its
 /// declared cap: the same grace, so it can save state rather than be cut.
+/// `pct` is the cap's window's reading: the week's under a weekly cap (958).
 pub fn main_at_cap_note(b: &TurnBudget, pct: u8, left: u8) -> String {
-    let (cap, mode) = b
-        .cap
-        .as_ref()
-        .map_or((b.stop_at, BudgetMode::WorkToCapThenContinue), |c| {
-            (c.percent, c.mode)
-        });
+    let (cap, mode, window) = b.cap.as_ref().map_or(
+        (
+            b.stop_at,
+            BudgetMode::WorkToCapThenContinue,
+            CapWindow::FiveHour,
+        ),
+        |c| (c.percent, c.mode, c.window),
+    );
+    let (win, at) = match window {
+        CapWindow::FiveHour => ("the 5-hour window", "reset"),
+        CapWindow::Weekly => ("the week", "weekly"),
+    };
     let then = match mode {
-        BudgetMode::WorkToCapThenContinue => {
-            "save your state to a file and end your reply with a <continue-later at=\"reset\"> \
+        BudgetMode::WorkToCapThenContinue => format!(
+            "save your state to a file and end your reply with a <continue-later at=\"{at}\"> \
              line naming it"
-        }
+        ),
         BudgetMode::FinishWithin => {
-            "write up the result from what you have and say what was skipped"
+            "write up the result from what you have and say what was skipped".to_string()
         }
     };
     format!(
-        "[Nightloom, not from Swaraag: usage is at {pct}% of the 5-hour window, past this \
-         message's cap of {cap}% ({}). Start nothing new and launch no helpers; {then}. About \
-         {left} more of your tool calls will run before Nightloom stops them at the cap.]",
+        "[Nightloom, not from Swaraag: usage is at {pct}% of {win}, past this message's cap \
+         of {cap}% ({}). Start nothing new and launch no helpers; {then}. About {left} more of \
+         your tool calls will run before Nightloom stops them at the cap.]",
         mode.words()
     )
 }
@@ -2260,6 +2267,87 @@ mod tests {
             );
         }
         assert_eq!(decide_with(&dir2, HELPER_READ, r).decision(), "deny");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    /// Item 958: past a weekly cap a helper gets the same wrap-up grace a
+    /// 5-hour cap gives it and is then refused; the main thread gets the
+    /// grace in the week's words and is then refused; under the cap, and
+    /// with the 5-hour window low, nothing is held back.
+    #[test]
+    fn a_weekly_cap_gets_the_wrap_up_grace_then_refusals() {
+        let week_decide = |dir: &Path, call: &str, gauge, week| {
+            let senses = brief::Senses {
+                idle_ms: &no_idle,
+                activity: None,
+            };
+            brief::decide_holding(dir, call, gauge, Some(week), 50, 10, &senses)
+        };
+        let dir = temp("week-grace");
+        start(&dir, 20);
+        let weekly = StatedCap {
+            percent: 98,
+            mode: B,
+            window: CapWindow::Weekly,
+        };
+        declare_stated(&dir, weekly, "once weekly hits 98", 1).unwrap();
+        let r = at(&dir, 40);
+        // Under the weekly cap: helpers and the main thread run plainly.
+        assert_ne!(week_decide(&dir, HELPER_READ, r, 97).decision(), "deny");
+        let main = week_decide(&dir, MAIN_READ, r, 97);
+        assert_ne!(main.decision(), "deny");
+        assert!(
+            !main
+                .additional_context()
+                .unwrap_or_default()
+                .contains("past this message's cap")
+        );
+        // At the cap: the helper's grace, with no usage figure, then refused.
+        for n in 0..WRAP_CALLS {
+            let reply = week_decide(&dir, HELPER_READ, r, 98);
+            assert_ne!(reply.decision(), "deny", "call {n}");
+            let note = reply.additional_context().unwrap_or_default();
+            assert!(
+                note.contains("wrapping up") && note.contains(WRAP_UP_HELPER),
+                "call {n}: {note}"
+            );
+        }
+        let reply = week_decide(&dir, HELPER_READ, r, 98);
+        assert_eq!(reply.decision(), "deny");
+        assert_eq!(reply.reason(), Some(helper_wrapped_reason().as_str()));
+        // The main thread: the grace in the week's words, then refused.
+        for n in 0..WRAP_CALLS {
+            let reply = week_decide(&dir, MAIN_READ, r, 98);
+            assert_ne!(reply.decision(), "deny", "main call {n}");
+            let note = reply.additional_context().unwrap_or_default();
+            assert!(
+                note.contains("98% of the week, past this message's cap of 98%")
+                    && note.contains("<continue-later at=\"weekly\">"),
+                "{note}"
+            );
+        }
+        let reply = week_decide(&dir, MAIN_READ, r, 98);
+        assert_eq!(reply.decision(), "deny");
+        assert!(
+            reply
+                .reason()
+                .is_some_and(|r| r.contains("weekly usage is at 98%")),
+            "{:?}",
+            reply.reason()
+        );
+        // A 5-hour cap reads the 5-hour window, never the week.
+        let dir2 = temp("week-grace-5h");
+        start(&dir2, 20);
+        declare(&dir2, 50, B, "up to 50%", 1).unwrap();
+        let r2 = at(&dir2, 40);
+        assert_ne!(week_decide(&dir2, MAIN_READ, r2, 99).decision(), "deny");
+        assert!(
+            !week_decide(&dir2, HELPER_READ, r2, 99)
+                .additional_context()
+                .unwrap_or_default()
+                .contains("wrapping up")
+        );
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir2);
     }

@@ -12,7 +12,7 @@
   import { tip } from "./tip";
   import { railFold, toggleRailFold } from "./railFold.svelte";
   import { liveLegend, liveTip } from "./liveContext";
-  import { handOffBlock, handOffNow } from "./manualHandoff.svelte";
+  import { handOffBlock } from "./manualHandoff.svelte";
   import { rightRailLogic, type RightRailLogicProps } from "./rightRail/logic.svelte";
 
   // Item 856: the behaviour lives once, in `rightRail/logic.svelte.ts`; this file is the look.
@@ -57,7 +57,7 @@
   <!-- Item 563: data-rail-col — the first send from the new-chat page slides this column in (sendMotion.ts departDial). -->
   <aside class="col" data-rail-col aria-label="Context, plan use, this turn and tasks" use:tabPlace={"rail:col:" + (T.aside ? "aside" : "chat")}>
     <section>
-      <h4>Context <span class="hr"><span>{modelShort(T.af?.model ?? T.aside?.model ?? app.connection?.model)}</span>{@render foldButton(false)}</span></h4>
+      <h4>Context <span class="hr"><span>{modelShort(T.af?.model ?? T.aside?.model ?? app.connection?.model)}</span></span></h4>
       <div class="dial-at" data-dial-dock>
         <!-- Item 585: a few of 581's new-chat layers behind the dial, quieter (item 587: DialMotion's column form —
              all of the new-chat dial's layers, the gears, radar and 5-hour hand between the figure and the inner ring; his keys surge it too); the ring holds a gentle surge while a turn streams
@@ -118,10 +118,11 @@
           {@const block = handOffBlock()}
           <button
             class="hand"
+            class:sending={T.handing && !app.busy}
             type="button"
             disabled={!!block}
             use:tip={block ?? "Send the wrap-up now, at any fill.\nThe next chat starts small."}
-            onclick={() => void handOffNow()}>Hand off now</button
+            onclick={(e) => T.handOff(e.currentTarget)}>Hand off now</button
           >
         {/if}
         {#if T.cache}
@@ -470,10 +471,23 @@
     gap: 10px;
     overflow: hidden;
   }
+  /* Item 931: the folded strip's open button is the sidebar's round one
+     (App.svelte's .side-expand): a 22px circle, edged, at the same height
+     as the open column's close button, which App.svelte draws on the
+     column's edge so it stays put while the column scrolls. */
+  .col.folded {
+    padding-top: 30px;
+  }
   .col.folded .fold {
     margin: 0;
-    width: 24px;
-    height: 24px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border-color: var(--line2);
+    background: var(--sheet);
+  }
+  .col.folded .fold:hover {
+    border-color: var(--dim);
   }
   .fpct {
     font: 10px var(--mono);

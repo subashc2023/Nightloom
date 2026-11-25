@@ -1536,7 +1536,7 @@ export type TurnEvent =
   /** Nightloom woke an idle main thread for the message's usage cap
    *  (item 538): `text` is Nightloom's line (not his words); `kind` the
    *  thresholds (`reserved`, `near`, `at_cap`, `pace`, `hard`). */
-  | { type: "budget_wake"; text: string; kind: string[]; pct: number | null; cap: number | null }
+  | { type: "budget_wake"; text: string; kind: string[]; pct: number | null; cap: number | null; window?: "five_hour" | "weekly" | null }
   /** The Claude Code CLI retrying a failed API call (items 440 + 441):
    *  one per try; the live reply keeps one line for them (`retryLine.ts`).
    *  `error` is the CLI's category — `unknown` with no `status` is a

@@ -142,3 +142,81 @@ export function extractHandoff(reply: string): string | null {
   const text = (last ?? "").trim();
   return text ? text : null;
 }
+
+/** Collapse runs of white space, for comparing a paragraph with a hand-off prompt. */
+function squash(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+interface Shape {
+  /** The top-level tokens' raw text, in order (they rebuild the source). */
+  raws: string[];
+  /** Per token: the hand-off prompt it carries, or null. */
+  handoffs: (string | null)[];
+  /** Per token: a paragraph's squashed text, or null. */
+  paras: (string | null)[];
+}
+
+const shapes = new Map<string, Shape | null>();
+const SHAPES_KEPT = 300;
+
+/** A text's top-level hand-off blocks and paragraphs; null when its tokens do not rebuild it exactly. */
+function shapeOf(text: string, force = false): Shape | null {
+  const key = (force ? "1" : "0") + text;
+  const hit = shapes.get(key);
+  if (hit !== undefined) return hit;
+  let shape: Shape | null = null;
+  if (force || text.includes(HANDOFF_OPEN) || FALLBACK_TITLE.test(text)) {
+    const tokens = promoteFallback(reader.lexer(text));
+    const raws = tokens.map((t) => t.raw);
+    if (raws.join("") === text) {
+      shape = {
+        raws,
+        handoffs: tokens.map((t) => (t.type === "handoff" ? (t as HandoffToken).text : null)),
+        paras: tokens.map((t) => (t.type === "paragraph" ? squash((t as Tokens.Paragraph).text) : null)),
+      };
+    }
+  }
+  shapes.set(key, shape);
+  if (shapes.size > SHAPES_KEPT) shapes.delete(shapes.keys().next().value as string);
+  return shape;
+}
+
+/**
+ * Item 905 (his report, 2026-11-23: the next chat's prompt three times in one reply). A turn that hands off, then
+ * goes on (agents report back) and hands off again, drew a card for each `<handoff>` block, and a model that also
+ * wrote the prompt as plain prose above the block drew it once more. One turn shows one prompt: the last block of
+ * its text segments stays a card; every earlier block is dropped from what is drawn, and so is any top-level
+ * paragraph that repeats a block's prompt word for word. Only what is drawn changes: the source (`extractHandoff`,
+ * Copy, the log) is untouched. `texts` are the turn's segments, null for one that is not text; a text with no
+ * hand-off comes back as it was.
+ */
+export function shownHandoffTexts(texts: readonly (string | null)[]): (string | null)[] {
+  const shapesOf = texts.map((t) => (t === null ? null : shapeOf(t)));
+  let lastSeg = -1;
+  let lastTok = -1;
+  const prompts = new Set<string>();
+  shapesOf.forEach((s, i) => {
+    s?.handoffs.forEach((h, k) => {
+      if (h === null) return;
+      prompts.add(squash(h));
+      lastSeg = i;
+      lastTok = k;
+    });
+  });
+  if (lastSeg < 0) return [...texts];
+  return texts.map((t, i) => {
+    if (t === null) return t;
+    // A segment with no block of its own is read only when it holds a prompt's words (the prose copy).
+    const flat = shapesOf[i] ? "" : squash(t);
+    const s = shapesOf[i] ?? ([...prompts].some((p) => flat.includes(p)) ? shapeOf(t, true) : null);
+    if (!s) return t;
+    let changed = false;
+    const kept = s.raws.filter((_, k) => {
+      const drop = (s.handoffs[k] !== null && !(i === lastSeg && k === lastTok)) || (s.paras[k] !== null && prompts.has(s.paras[k]!));
+      if (drop) changed = true;
+      return !drop;
+    });
+    return changed ? kept.join("") : t;
+  });
+}

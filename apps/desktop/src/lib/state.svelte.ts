@@ -161,6 +161,7 @@ import type {
 } from "./types";
 import { asidesOf, asideStash, switchAside, findAsideTurn, asideTurnEvent, asidePhase, asideAsking, asideInTab, asideTabThread, asideReads, asideOf, askAside, ATTACHMENTS_ONLY, unfoldAside, asideWaiting, asideWire, followUpAside, rewindAside, restoreAsideTurns, councilFor, setCouncilFor, draftAside, dismissAside, stopAside, settleAsideSegments, setAsideUnsent, asideHasDraft, requestDismissAside, answerAsideDiscard, onAsideClosed, reopenAside, type AsideTurn, type Aside, type AsideAsk } from "./state/asides.svelte";
 import { showNightshift, syncNightshiftProject, refreshNightshiftRow, loadNightshiftReview, refreshNightshiftReview, selectShift, refreshNightshift, selectNightshiftProject, loadMornings, openMorning, morningIsRead, markMorningRead, loadShifts, latestShift, loadShiftLog, showDiff, loadBlockers, selectBlocker, loadItems, selectItem, newItem, startInterview, sendInterview, loadInterview, cancelInterview, writeInterviewItem, deleteItem, saveItem, reorderItems, synthPlan, writeAndLaunch, scheduleLaunch, cancelLaunch, loadPendingLaunch, loadUsage, clockOf, loadNotes, openNote, answerBlocker, revertPreview, revertShift, loadNightshiftMorning, enableNightshift } from "./state/nightshift.svelte";
+import { followFileTools } from "./fileFollow.svelte";
 import { showNote, showGraph, leaveNote, currentModelId, followToolMoves, reviewProposal, noteDraftKey, closeNote, openModelInstructions, CHAT_INSTRUCTIONS_FILE, openChatInstructions, saveNote, deleteNote, moveNoteTo, followNoteMove, onNoteMove, movedNoteName, newNoteFolder, deleteNoteFolder, mirrorDraft, stageProposal, acceptProposal, unstageProposal, dismissProposal } from "./state/notes.svelte";
 import { reflectTabs, frontOpenChat, tabOpening, showContentOf, newTab, closeTab, stepTab, splitActiveTab, dropNoteTabs, flushTabs, shownContent, openContent, dropContent, focusPane, moveTab, splitTab, registerTerminalHooks, flushNewProject, startContentDrag, endContentDrag, droppedContent } from "./state/tabs.svelte";
 import { history, chatScope, undo, redo, inTextField, editAttachments, sendInFork, contextUsed, undoLabel, redoLabel, syncUndoMenu, saveEdit, removeTurn, restoreTurn, removeBlock, restoreBlock, saveReplyEdit, editContextItems, renameSession, sessionCost, roundCost, cacheHitRate } from "./state/edits.svelte";
@@ -3058,6 +3059,8 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
   if (passingEvent(ev, isShellForPassing)) return;
   // Item 483: notes a chat moved take their tabs and drafts along.
   followToolMoves(ev);
+  // Item 928: an open file tab reads its file again after a tool that may write.
+  followFileTools(ev);
   // The Running-tasks rows outlive the live message (backlog 160): a
   // status or a child's event that lands after it ended still reaches its
   // row, which is the chat's and not the message's.
@@ -3164,8 +3167,8 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       // Nightloom woke the main agent for the message's usage cap (item
       // 538): its words, not his — a notice, as for `woke`.
       closeThinking(segments);
-      segments.push({ kind: "notice", text: wakeNotice(ev.kind, ev.pct, ev.cap) });
-      if (!onScreen) addToast(`Nightloom woke ${backgroundName(host.bg!.session, host.bg!.events)}: ${wakeNotice(ev.kind, ev.pct, ev.cap)}`);
+      segments.push({ kind: "notice", text: wakeNotice(ev.kind, ev.pct, ev.cap, ev.window) });
+      if (!onScreen) addToast(`Nightloom woke ${backgroundName(host.bg!.session, host.bg!.events)}: ${wakeNotice(ev.kind, ev.pct, ev.cap, ev.window)}`);
       break;
     }
     case "round_limit":

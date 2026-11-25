@@ -102,6 +102,7 @@
   import { retryText } from "../lib/retryLine";
   import { parseRan } from "../lib/shellRun";
   import { parseHandoffMessage } from "../lib/handoffBubble";
+  import { shownHandoffTexts } from "../lib/handoffTag";
   import { KIND_WORD, chaptersOf, currentChapter, logEdits, phoneContents, placeOnRows, withEdits, type ShownChapter } from "../lib/chapters";
   /** Item 515: a file card's badge on the phone, as the Mac's. */
   const fileBadgeOf = (name: string) => extOf(name).slice(0, 5).toUpperCase() || "FILE";
@@ -3429,6 +3430,8 @@
           </div>
         {:else if r.kind === "assistant"}
           {@const changed = turnChanges(r.tools)}
+          <!-- Item 905: one hand-off prompt per turn (the last block); earlier ones and prose copies are not drawn. -->
+          {@const shown = shownHandoffTexts(r.seq.map((s) => (s.kind === "text" && !s.part.removed ? s.part.text : null)))}
           <div class="turn reply" data-row={i} class:enter={i >= enterFrom && !still} class:removed={r.removed} use:press={() => openMenu(r)}>
             <!-- 300 A2: words and calls in the order they happened. -->
             {#each r.seq as s, k (s.kind === "text" ? `${s.part.index}.${s.part.block}` : `t${k}.${s.tools[0]?.id}`)}
@@ -3436,7 +3439,7 @@
               {:else if s.part.removed}
                 <div class="part-gone" use:press={() => openMenu(r, s.part)}>[text removed]</div>
               {:else if s.part.text}
-                <div class="md" use:press={() => openMenu(r, s.part)} use:codeBlocks={copy} use:replyPages={{ copy }} use:replyMediaInline={{ chat: chatId, off: !canMedia }}>{@html renderMarkdown(s.part.text, { breaks: true, localImagesAsText: true })}</div>
+                <div class="md" use:press={() => openMenu(r, s.part)} use:codeBlocks={copy} use:replyPages={{ copy }} use:replyMediaInline={{ chat: chatId, off: !canMedia }}>{@html renderMarkdown(shown[k] ?? s.part.text, { breaks: true, localImagesAsText: true })}</div>
                 {#if canMedia}<ReplyMedia items={stripMedia(s.part.text, [])} chat={chatId} />{/if}
               {/if}
             {/each}
@@ -3459,6 +3462,7 @@
       {/each}
       {#if chapterRows.tail.length > 0}{@render chapterLines(chapterRows.tail)}{/if}
       {#if liveHere && live}
+        {@const liveShown = shownHandoffTexts(liveSegments(live).map((s) => (s.kind === "tools" ? null : s.text)))}
         <div class="turn reply live" class:enter={!still}>
           {#if fil}
             <!-- Item 572: the reply's header, Claude working in blue. -->
@@ -3468,7 +3472,7 @@
                still arriving is held until it closes, a table row until it is whole. -->
           {#each liveSegments(live) as s, k (k)}
             {#if s.kind === "tools"}{@render toolBox(s.tools, `live${k}`, true)}
-            {:else}<div class="md" use:codeBlocks={copy} use:replyMediaInline={{ chat: chatId, off: !canMedia }}>{@html k === liveSegments(live).length - 1 ? renderStreamingMarkdown(s.text, { breaks: true, localImagesAsText: true }) : renderMarkdown(s.text, { breaks: true, localImagesAsText: true })}</div>{/if}
+            {:else}<div class="md" use:codeBlocks={copy} use:replyMediaInline={{ chat: chatId, off: !canMedia }}>{@html k === liveSegments(live).length - 1 ? renderStreamingMarkdown(liveShown[k] ?? s.text, { breaks: true, localImagesAsText: true }) : renderMarkdown(liveShown[k] ?? s.text, { breaks: true, localImagesAsText: true })}</div>{/if}
           {/each}
           {@render sentChips(sentOf(live.tools))}
           {#if live.retry}

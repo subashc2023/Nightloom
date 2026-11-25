@@ -111,11 +111,13 @@ impl Default for Learned {
     }
 }
 
-/// (net $, read $, other $, saved $) for `k` pings on `g` (replay.py's `money`).
+/// (net $, read $, other $, saved $) for a rule allowing `k` pings on `g` (replay.py's `money`).
+/// Pinging stops when he comes back, so a gap he returns to is charged only the pings it needed
+/// (`min(k, need)`, item 961); before 961 every ping up to the cap was charged.
 pub fn money(g: &Gap, k: u32) -> (f64, f64, f64, f64) {
     let (rd, w, o) = prices(g.fable);
     let c = g.ctx as f64;
-    let k = f64::from(k);
+    let k = f64::from(sent(g, k));
     let read = k * c * rd / 1e6;
     let other = k * (PING_WRITE * w + PING_OUT * o) / 1e6;
     let save = if g.need() as f64 <= k {
@@ -165,6 +167,11 @@ impl Score {
 }
 
 /// replay.py's `score`, plus the 0.5 read weight.
+/// The pings a rule allowing `k` actually sends on `g`: they stop at his return (item 961).
+pub fn sent(g: &Gap, k: u32) -> u32 {
+    k.min(g.need())
+}
+
 pub fn score(gs: &[&Gap], ks: &[u32]) -> Score {
     let (mut net, mut read, mut other, mut save, mut half) = (0.0, 0.0, 0.0, 0.0, 0.0);
     let (mut avoided, mut pings) = (0, 0);
@@ -176,7 +183,7 @@ pub fn score(gs: &[&Gap], ks: &[u32]) -> Score {
         save += s;
         half += s - b - 0.5 * a;
         avoided += u32::from(s > 0.0);
-        pings += k;
+        pings += sent(g, k);
     }
     Score {
         avoided,
