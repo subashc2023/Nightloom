@@ -667,6 +667,8 @@ fn subagents_segment(reusable: bool, model: crate::agent::brief::SubagentModel) 
          context and its cache. Retire one past 300k (each launch lists your helpers' sizes), \
          and have a fresh subagent review its work before you rely on it.\n\
          - {cache}\n\
+         - Several helpers of one kind: launch one, then the rest after its first reply; \
+         they read its cached prefix instead of each writing it (about 45% cheaper).\n\
          - {model}\n\
          - Brief it with a short written spec: what to read, by path; the task; how to check \
          it; what to report. Ask for the whole report in its reply.\n\
@@ -3516,10 +3518,20 @@ As of now — the front.
         // rule and his Fable rule had to be in it; 338 measured with
         // `reusable` on. ~~350~~ — 360 since 2026-11-10 (nightshift 573):
         // gathering named as Opus work; 353 measured with `reusable` on.
+        // ~~360~~ — 385 since 2026-11-25 (nightshift 965): "launch one
+        // helper of a kind, then the rest" (practices §3, blocker 2018).
         assert!(
-            words(SegmentKind::Subagents) <= 360,
+            words(SegmentKind::Subagents) <= 385,
             "{}",
             words(SegmentKind::Subagents)
+        );
+        assert!(
+            full.segments()
+                .iter()
+                .any(|s| s.kind == SegmentKind::Subagents
+                    && s.text
+                        .contains("launch one, then the rest after its first reply")),
+            "the staggered-launch rule (965)"
         );
 
         // Each switches off alone.
