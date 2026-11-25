@@ -251,6 +251,11 @@
   import { boxMounted, chatBoxMounted, composerSummon, isSummonTarget } from "./composerSummon.svelte";
   import { registerPasteHandler, type PasteRequest } from "./pasteToCompose";
   import { handOffBlock, handOffNow, isHandoffCommand } from "./manualHandoff.svelte";
+  // Item 966: the app's slash commands, one table for every box.
+  import { commandKind, commandMatches, newKind, NEW_KINDS_HINT, parseCommand, pickRow } from "./appCommands";
+  import { rewindAsideWithUndo } from "./asideRewind.svelte";
+  import { renameAside } from "./asides.svelte";
+  import { liveFlags, renameSession, rewindTo, runMenuCommand, toggleSidebar } from "./state.svelte";
   // Backlog 283: the same composer in an aside.
   import {
     asideAsking,
@@ -949,16 +954,18 @@
    * Item 915: `/handoff` — the main chat's own command (not an aside's: an
    * aside has no hand-off), listed on either engine, before the CLI's names.
    * Sent alone it runs the hand-off-now path instead of going as text.
+   * ~~Written here by hand~~ — item 966: every app command comes from one
+   * table (`appCommands.ts`), each row `app · …`, the aside's box listing
+   * those an aside has; a Claude Code name the app also has shows the app's
+   * row alone (`taken` below).
    */
   const ownMatches = $derived(
-    !aside && /^\/[A-Za-z0-9_-]*$/.test(text) && "handoff".startsWith(text.slice(1).toLowerCase())
-      ? [{ name: "handoff", kind: "send the hand-off message now" }]
-      : [],
+    commandMatches(text, aside ? "aside" : "chat").map((c) => ({ name: c.name, kind: commandKind(c), args: c.args })),
   );
   const slashOpen = $derived((wholeSlash || savedMatches.length > 0 || insMatches.length > 0 || ownMatches.length > 0) && !slashDismissed);
   const slashMatches = $derived.by(() => {
     if (!slashOpen) return [];
-    const none = { prompt: null as MessagePrompt | null, insert: null as BoxInsert | null, own: false };
+    const none = { prompt: null as MessagePrompt | null, insert: null as BoxInsert | null, own: false, args: "" };
     const mine = savedMatches.map((p) => ({ name: p.name, kind: "saved prompt", ...none, prompt: p as MessagePrompt | null }));
     const ours = insMatches.map((i) => ({ name: i.name, kind: insertLabel(i, insTok), ...none, insert: i as BoxInsert | null }));
     const cmd = ownMatches.map((c) => ({ ...c, ...none, own: true }));
@@ -968,7 +975,9 @@
     const theirs = slashNames
       .filter((s) => s.name.toLowerCase().startsWith(q) && !taken.has(s.name.toLowerCase()))
       .map((s) => ({ ...s, ...none }));
-    return [...mine, ...ours, ...cmd, ...theirs].slice(0, 12);
+    // ~~.slice(0, 12)~~ — item 966: nine app rows and six inserts on a bare
+    // `/` left Claude Code's own names no room; the list scrolls (16rem).
+    return [...mine, ...ours, ...cmd, ...theirs].slice(0, 24);
   });
   /** Put an insert in place of its token, one undo step; a table goes in
    *  through the grid editor (the box a table is drawn in), its first cell
@@ -2770,7 +2779,170 @@
   function withEstimate(t: { text: string; keys?: string }): { text: string; keys?: string } {
     return shown && Number(rowFold) >= 5 ? { ...t, text: `${t.text} · ${shown.long}` } : t;
   }
+  /*
+   * Item 966 (916's item A): the app's slash commands, typed alone and sent
+   * (`parseCommand`), each running what its control already runs — the
+   * model and effort menus' own rows, the aside button's ask, the message
+   * menu's Rewind, ⌘⇧C, ⌘N's kinds, the search panel. True when the box
+   * held one, which then never goes as text. A command that cannot run now
+   * says why in a toast and leaves the box as typed.
+   */
+  async function runTypedCommand(): Promise<boolean> {
+    const typed = parseCommand(text, aside ? "aside" : "chat");
+    if (!typed) return false;
+    const { cmd, arg } = typed;
+    // Files or comments in the box: it is a message about them, not a command
+    // — except /aside, which asks with the box's chips as its button does.
+    if (cmd.name !== "aside" && (attachments.length > 0 || comments.length > 0)) return false;
+    const clear = () => setDraftText(key, "");
+    switch (cmd.name) {
+      case "handoff": {
+        // Item 915: `/handoff` alone is the hand-off-now path, not text to send.
+        if (!isHandoffCommand(text)) return false;
+        const block = handOffBlock();
+        if (block) {
+          addToast(block);
+          return true;
+        }
+        // Item 926: the words fly from the box, as Send's do.
+        const box = boxElement(ta);
+        clear();
+        await sendWrapUpNow(box);
+        return true;
+      }
+      case "aside": {
+        if (!arg) addToast("Type the question after /aside");
+        else if (app.connection?.engine !== "claude-code") addToast("Asides run on the Claude Code engine");
+        else if (app.events.length === 0) addToast("Ask aside once the chat has a reply — an empty chat has no context to ask");
+        else if (app.busy) addToast("A reply is running — ask aside when it ends");
+        else {
+          // The question alone in the box, then the aside button's own path.
+          setDraftText(key, arg);
+          await tick();
+          await submitAside();
+        }
+        return true;
+      }
+      case "model": {
+        if (!arg) {
+          clear();
+          openMenu("model");
+          return true;
+        }
+        const rows = (aside ? asideModelRows : modelRows).filter((r) => !["rail", "other", "none"].includes(r.id));
+        const row = pickRow(arg, rows);
+        if (row) {
+          clear();
+          row.run();
+          addToast(aside ? `This aside's model: ${row.label}` : `Model: ${row.label}`);
+        } else if (agentMode && /^claude-[a-z0-9.-]+$/i.test(arg)) {
+          clear();
+          if (aside) pickAside("model", arg);
+          else void switchModel(arg);
+          addToast(aside ? `This aside's model: ${arg}` : `Model: ${arg}`);
+        } else addToast(`No model “${arg}” — try ${rows.map((r) => r.label).join(", ")}`);
+        return true;
+      }
+      case "effort": {
+        if (!arg) {
+          clear();
+          openMenu("effort");
+          return true;
+        }
+        const rows = aside ? asideEffortRows : effortRows;
+        const row = pickRow(arg, rows);
+        const word = agentMode ? "Effort" : "Thinking";
+        if (row) {
+          clear();
+          row.run();
+          addToast(aside ? `This aside's effort: ${row.label}` : `${word}: ${row.label}`);
+        } else addToast(`No ${word.toLowerCase()} “${arg}” — try ${rows.map((r) => r.label).join(", ")}`);
+        return true;
+      }
+      case "rename": {
+        if (!arg) {
+          addToast(aside ? "Type the aside's new name after /rename" : "Type the chat's new name after /rename");
+          return true;
+        }
+        if (aside) {
+          renameAside(aside, arg);
+          clear();
+          addToast(`Aside renamed “${arg}”`);
+          return true;
+        }
+        const id = app.activeSessionId;
+        if (!id) addToast("Nothing to rename yet — a chat is kept once its first message is sent");
+        else if (app.busy) addToast("A reply is running — rename when it ends");
+        else {
+          clear();
+          await renameSession(id, arg);
+        }
+        return true;
+      }
+      case "rewind": {
+        if (aside) {
+          const last = aside.turns.length - 1;
+          if (asideAsking(aside)) addToast("The aside is answering — rewind when it ends");
+          else if (last < 0) addToast("Nothing to rewind in this aside");
+          else {
+            clear();
+            rewindAsideWithUndo(aside, last);
+          }
+          return true;
+        }
+        if (app.busy) {
+          addToast("A reply is running — rewind when it ends");
+          return true;
+        }
+        const live = liveFlags(app.events);
+        let at = -1;
+        for (let i = app.events.length - 1; i >= 0; i--) {
+          if (app.events[i].event === "user_message" && live[i]) {
+            at = i;
+            break;
+          }
+        }
+        if (at < 0) addToast("Nothing to rewind");
+        else {
+          // The box empties first: the rewound message comes back into it.
+          clear();
+          await rewindTo(at, true);
+        }
+        return true;
+      }
+      case "context": {
+        if (!app.connection) {
+          addToast("No engine connected");
+          return true;
+        }
+        clear();
+        if (!app.showContext) runMenuCommand("context");
+        return true;
+      }
+      case "new": {
+        const kind = newKind(arg);
+        if (!kind) {
+          addToast(NEW_KINDS_HINT);
+          return true;
+        }
+        clear();
+        runMenuCommand(kind === "default" ? "new_chat" : kind === "build" ? "new_build" : kind === "chat" ? "new_talk" : `new_${kind}`);
+        return true;
+      }
+      case "search": {
+        clear();
+        if (app.layout.sidebarCollapsed) toggleSidebar();
+        if (arg) app.search.query = arg;
+        app.search.open = true;
+        return true;
+      }
+    }
+    return false;
+  }
+
   async function submit() {
+    // Item 966: an app command typed alone runs instead of going as text.
+    if (await runTypedCommand()) return;
     if (aside) return asideSubmit();
     sending = true;
     try {
@@ -2783,19 +2955,6 @@
     const t = text.trim();
     const empty = !t && attachments.length === 0 && comments.length === 0;
     if (empty || !app.connection) return;
-    // Item 915: `/handoff` alone is the hand-off-now path, not text to send.
-    if (!aside && isHandoffCommand(text) && attachments.length === 0 && comments.length === 0) {
-      const block = handOffBlock();
-      if (block) {
-        addToast(block);
-        return;
-      }
-      // Item 926: the words fly from the box, as Send's do.
-      const box = boxElement(ta);
-      setDraftText(key, "");
-      await sendWrapUpNow(box);
-      return;
-    }
     // Item 694: a plain turn does not take the held passage; Send drops it.
     dropHeld(key);
     // A send is presence, for the hand-off's away rule.
@@ -4174,7 +4333,7 @@
             onmousedown={(e) => e.preventDefault()}
             onclick={() => pickSlash(m.name, m.prompt, m.insert)}
           >
-            <span class="mono">/{m.name}</span>
+            <span class="mono">/{m.name}{#if m.args}<span class="dim"> {m.args}</span>{/if}</span>
             <span class="dim">{m.kind}</span>
           </button>
         {/each}

@@ -134,4 +134,9 @@ export const COMPOSER_ASIDE_GATES: { match: string; behaviour: string; why: stri
   { match: "void asideDrain()", behaviour: "queue", why: "the aside's own drain: same behaviour" },
   { match: "return asideSubmit();", behaviour: "enterSend", why: "the aside's own send: same behaviour" },
   { match: '"claude-code" : "api"', behaviour: "attach", why: "an aside runs on Claude Code only (081)" },
+  // Item 966: the app's slash commands run in an aside's box too, each on
+  // the aside's own target — its model and effort, its name, its exchanges.
+  { match: 'if (aside) pickAside("model", arg);', behaviour: "slash", why: "same: /model with a full id sets the aside's model (item 966)" },
+  { match: "renameAside(aside, arg);", behaviour: "slash", why: "same: /rename names the aside (item 966)" },
+  { match: "const last = aside.turns.length - 1;", behaviour: "slash", why: "same: /rewind drops the aside's last exchange (item 966)" },
 ];

@@ -18,6 +18,7 @@
 import { dateWord, fillAuto, insertAt, matching, nextBlank, slashToken, wantsClipboard } from "../lib/savedPrompts";
 import { lastSelection, watchSelection } from "../lib/selectionMemory";
 import { applyInsert, insertEdit, insertMatches, insertToken, type BoxInsert } from "../lib/boxInserts";
+import { commandMatches, type AppCommand } from "../lib/appCommands";
 
 export interface PhonePrompt {
   name: string;
@@ -66,7 +67,13 @@ function put(node: HTMLTextAreaElement, text: string, start: number, end: number
   node.setSelectionRange(start, end);
 }
 
-export function promptBox(node: HTMLTextAreaElement) {
+/** Item 966: the chat's box also lists the app's commands the phone runs
+ *  (`appCommands.ts`, surface `phone`); an aside's or a job's box does not. */
+export interface PromptBoxOptions {
+  commands?: boolean;
+}
+
+export function promptBox(node: HTMLTextAreaElement, opts: PromptBoxOptions = {}) {
   ensureStyle();
   watchSelection();
   let bar: HTMLDivElement | null = null;
@@ -150,13 +157,27 @@ export function promptBox(node: HTMLTextAreaElement) {
     refresh();
   }
 
+  /** Item 966: the app's commands while the whole box is a `/word`. */
+  function commands(): AppCommand[] {
+    if (!opts.commands || node !== document.activeElement) return [];
+    return commandMatches(node.value, "phone");
+  }
+
+  /** A command picked: `/name ` in the box; Send runs it. */
+  function pickCommand(c: AppCommand): void {
+    const t = `/${c.name} `;
+    put(node, t, t.length, t.length);
+    refresh();
+  }
+
   function refresh(): void {
     const token = node === document.activeElement ? slashToken(node.value, node.selectionEnd) : null;
     const found = token ? matching(prompts, token.query, 8) : [];
     const ins = inserts();
+    const cmds = commands();
     const blanksLeft = live && nextBlank(node.value, 0, 0) !== null;
     if (!blanksLeft) live = false;
-    if (found.length === 0 && ins.length === 0 && !blanksLeft) {
+    if (found.length === 0 && ins.length === 0 && cmds.length === 0 && !blanksLeft) {
       close();
       return;
     }
@@ -168,9 +189,10 @@ export function promptBox(node: HTMLTextAreaElement) {
       document.body.appendChild(bar);
     }
     bar.replaceChildren();
-    if (found.length > 0 || ins.length > 0) {
+    if (found.length > 0 || ins.length > 0 || cmds.length > 0) {
       for (const p of found) bar.appendChild(button(`/${p.name}`, null, false, () => void pick(p)));
       for (const i of ins) bar.appendChild(button(`/${i.name}`, "insert", false, () => pickInsert(i)));
+      for (const c of cmds) bar.appendChild(button(`/${c.name}`, c.args ? `app · ${c.args}` : "app", false, () => pickCommand(c)));
     } else {
       bar.appendChild(button("‹", null, false, () => step(true)));
       bar.appendChild(button("Next blank ›", null, true, () => step(false)));
@@ -199,6 +221,12 @@ export function promptBox(node: HTMLTextAreaElement) {
       pickInsert(ins[0]);
       return;
     }
+    const cmds = commands();
+    if (cmds.length > 0 && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      pickCommand(cmds[0]);
+      return;
+    }
     if (live && step(e.shiftKey)) e.preventDefault();
   }
 
@@ -212,6 +240,9 @@ export function promptBox(node: HTMLTextAreaElement) {
   node.addEventListener("focus", refresh);
   node.addEventListener("blur", onBlur);
   return {
+    update(next: PromptBoxOptions = {}) {
+      opts = next;
+    },
     destroy() {
       node.removeEventListener("input", onInput);
       node.removeEventListener("keydown", onkey);

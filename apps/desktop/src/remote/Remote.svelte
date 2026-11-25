@@ -99,6 +99,8 @@
   import AskQuestions from "../lib/AskQuestions.svelte";
   // Wave 8B F2 (item 300): replies in order, code blocks, the keyboard.
   import { aimAction, liveSegments, retryStopping, sentOf } from "./client";
+  // Item 966: the app's slash commands, the table the Mac's boxes read.
+  import { effortLevel, newKind, parseCommand, pickRow, type TypedCommand } from "../lib/appCommands";
   import { retryText } from "../lib/retryLine";
   import { parseRan } from "../lib/shellRun";
   import { parseHandoffMessage } from "../lib/handoffBubble";
@@ -1797,6 +1799,12 @@
   async function sendNow() {
     const text = draft.trim();
     if (!text || readOnly) return;
+    // Item 966: an app command typed alone runs instead of going as text.
+    const typedCommand = photos.length === 0 ? parseCommand(text, "phone") : null;
+    if (typedCommand) {
+      await runCommand(typedCommand);
+      return;
+    }
     // Item 746: "repeat every morning: …" is a job, not a message — the
     // form opens filled, and his words stay in the box until he saves it.
     const repeat = hasFeature(remote, "jobs") && sameHost ? parseRepeat(text) : null;
@@ -1880,6 +1888,107 @@
         // into the composer rather than nowhere, so nothing typed is lost.
         fail(e);
         if (!draft) setDraft(text);
+      }
+    }
+  }
+
+  /*
+   * Item 966 (916's item A): the app's commands from the phone's chat box,
+   * each through what this page already does — the aside sheet's ask, the
+   * Model sheet's rail, the message menu's Rewind, the chat menu's Rename,
+   * the Context sheet, New chat, the drawer's search. The box empties only
+   * when the command goes; a refusal says why and leaves it as typed.
+   */
+  async function runCommand({ cmd, arg }: TypedCommand): Promise<void> {
+    const needsChat = cmd.name === "aside" || cmd.name === "rename" || cmd.name === "rewind" || cmd.name === "context";
+    if (needsChat && !chatId) {
+      note(`Open a chat first — /${cmd.name} acts on the chat on screen`);
+      return;
+    }
+    switch (cmd.name) {
+      case "aside": {
+        if (!arg) return note("Type the question after /aside");
+        if (!hasFeature(remote, "aside")) return note(missingSentence(remote.host, "This Mac's Nightloom is older than the phone page: update it to ask aside from here."));
+        await openAside();
+        if (await askAside(arg)) setDraft("");
+        return;
+      }
+      case "model":
+      case "effort": {
+        if (!arg) return void openRail();
+        if (!client || !hasFeature(remote, "rail")) return void openRail();
+        if (!rail) {
+          try {
+            rail = await client.rail();
+          } catch (e) {
+            return fail(e);
+          }
+        }
+        const agent = (rail?.engine ?? "claude-code") === "claude-code";
+        if (cmd.name === "effort") {
+          const level = agent ? effortLevel(arg) : null;
+          if (!agent) return void openRail();
+          if (level === null) return note(`No effort “${arg}” — try default, low, medium, high, xhigh, max`);
+          if (await patchRail({ effort: level })) setDraft("");
+          return;
+        }
+        const list = rail?.models?.length ? rail.models : ["sonnet", "opus", "fable", "haiku"];
+        const row = pickRow(arg, list.map((m) => ({ id: m, label: m })));
+        const model = row ? row.id : /^claude-[a-z0-9.-]+$/i.test(arg) ? arg : null;
+        if (model === null) return note(`No model “${arg}” — try ${list.join(", ")}`);
+        if (await patchRail({ model })) setDraft("");
+        return;
+      }
+      case "rename": {
+        if (!arg) return beginRename();
+        if (!chatClient || !chatId) return;
+        try {
+          await chatClient.rename(chatId, arg, sendProject);
+          setDraft("");
+          note("Renamed");
+          await refreshChats();
+        } catch (e) {
+          // His name stays: the sheet opens with it.
+          renameText = arg;
+          sheet = "rename";
+          fail(e, false, "rename the chat");
+        }
+        return;
+      }
+      case "rewind": {
+        const flags = liveFlags(events);
+        let at = -1;
+        for (let i = events.length - 1; i >= 0; i--) {
+          if (events[i].event === "user_message" && flags[i]) {
+            at = i;
+            break;
+          }
+        }
+        if (at < 0) return note("Nothing to rewind");
+        if (await act([{ op: "rewind", to: at }], "Rewound")) setDraft("");
+        return;
+      }
+      case "context": {
+        setDraft("");
+        contextOn = true;
+        return;
+      }
+      case "new": {
+        const kind = newKind(arg);
+        if (kind === null) return note("/new takes code, chat, incognito or ephemeral");
+        if (kind !== "default") return note(`The phone starts the project's own kind of chat — a ${kind === "build" ? "Claude Code" : kind} chat is the Mac's (⌘K)`);
+        setDraft("");
+        startNew();
+        return;
+      }
+      case "search": {
+        setDraft("");
+        drawer = true;
+        if (arg) {
+          search = arg;
+          searchTyped();
+        }
+        return;
       }
     }
   }
@@ -3769,7 +3878,7 @@
           <textarea
             data-kept
             bind:this={box}
-            use:promptBox
+            use:promptBox={{ commands: true }}
             rows="1"
             placeholder={chatId ? "Reply…" : fil ? "What are we making?" : `Message ${projectName(newProject)}…`}
             bind:value={draft}
