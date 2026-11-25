@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import * as api from "./api";
 import { drafts, enqueueMessage, historyFor, readDraft } from "./drafts.svelte";
 import { cancelPending } from "./pendingBubble.svelte";
 import { app, runToastAction } from "./state.svelte";
