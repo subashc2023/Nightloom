@@ -1644,3 +1644,100 @@ async fn a_watch_appends_what_changed_to_its_note_and_says_nothing_new_in_one_li
     );
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// Item 947 (jobs slice): a run's cost is the move between two readings;
+/// a stale reading on either side is no measure — the same old sample
+/// twice reads as "under 1%", which is not what it cost.
+#[test]
+fn a_stale_reading_on_either_side_gives_no_cost() {
+    let mark = RunMark {
+        started: at(2026, 11, 25, 6, 0),
+        writable: false,
+        week_before: Some(41),
+        resets_at: Some("w1".into()),
+        five_before: Some(10),
+        five_resets_at: Some("f1".into()),
+        forced: false,
+        reading: None,
+    };
+    let after = |stale: bool| PlanUsage {
+        seven_day: Some(41),
+        seven_day_resets_at: Some("w1".into()),
+        five_hour: Some(10),
+        five_hour_resets_at: Some("f1".into()),
+        stale,
+        ..PlanUsage::default()
+    };
+    assert_eq!(week_points(&mark, &after(false)), Some(0));
+    assert_eq!(week_points(&mark, &after(true)), None);
+    assert_eq!(five_points(&mark, &after(true)), None);
+}
+
+/// Item 947: a Home run that ends while the usage reading cannot be
+/// refreshed (an old cached figure) records no cost — not "under 1%" —
+/// and adds no zero to the estimate the Run anyway card is built on.
+#[tokio::test]
+async fn a_home_run_ending_on_a_stale_reading_records_no_cost() {
+    let (h, cfg) = home_host();
+    let scan = crate::home::SCAN_JOB_ID;
+    assert!(h.jobs.ensure_home_scan("home-p", at(2026, 11, 25, 5, 0)));
+    h.jobs.run_now(scan).unwrap();
+    let t = at(2026, 11, 25, 6, 0);
+    h.jobs.tick(h.as_ref(), t).await;
+    assert!(home_row(&h, scan).running.is_some());
+    *h.running.lock().unwrap() = None;
+    let text = home_row(&h, scan).text;
+    *h.log.lock().unwrap() = said(&text, "three things today");
+    *h.fresh.lock().unwrap() = Some(Ok(PlanUsage {
+        five_hour: Some(10),
+        seven_day: Some(40),
+        seven_day_resets_at: Some("w1".into()),
+        stale: true,
+        age_seconds: Some(45.0 * 60.0),
+        source: "cli-cache".into(),
+        ..PlanUsage::default()
+    }));
+    h.jobs.tick(h.as_ref(), t + Duration::seconds(120)).await;
+    let j = home_row(&h, scan);
+    assert!(j.running.is_none(), "the run ended");
+    let last = j.last.unwrap();
+    assert_eq!(last.week_points, None);
+    assert_eq!(last.five_points, None);
+    assert!(j.recent_cost.is_empty());
+    let _ = std::fs::remove_dir_all(&cfg);
+}
+
+/// Item 947: at 100% of a window Home's scan is skipped like at 80% — its
+/// row, feed line and code-only page say why — instead of waiting for the
+/// plan's reset with nothing on Home's page.
+#[tokio::test]
+async fn home_at_100_percent_skips_with_a_page_instead_of_waiting_silently() {
+    let (h, cfg) = home_host();
+    let scan = crate::home::SCAN_JOB_ID;
+    assert!(h.jobs.ensure_home_scan("home-p", at(2026, 11, 25, 5, 0)));
+    *h.week.lock().unwrap() = Some(100);
+    let t = at(2026, 11, 25, 16, 0);
+    h.jobs.tick(h.as_ref(), t).await;
+    let j = home_row(&h, scan);
+    let last = j.last.clone().expect("a skip, not a wait");
+    assert_eq!(last.outcome, Outcome::Skipped);
+    assert!(last.summary.contains("100%"), "{}", last.summary);
+    assert!(j.retry_at.is_none() && j.next_run > t);
+    let date = super::local_date(t, &j.zone()).unwrap();
+    assert!(
+        crate::home::dir_in(&cfg)
+            .join("scans")
+            .join(format!("{date}.md"))
+            .is_file()
+    );
+    // Another job still waits for the reset, as before.
+    let other = h.jobs.create(new_job("every hour"), t).unwrap().job.id;
+    h.jobs.run_now(&other).unwrap();
+    h.jobs.tick(h.as_ref(), t + Duration::minutes(1)).await;
+    assert!(
+        home_row(&h, &other)
+            .note
+            .is_some_and(|n| n.starts_with("waiting"))
+    );
+    let _ = std::fs::remove_dir_all(&cfg);
+}
