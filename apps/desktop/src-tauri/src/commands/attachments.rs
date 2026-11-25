@@ -62,6 +62,32 @@ pub(crate) fn stash_draft_file(data: String) -> Result<String, String> {
     nightloom_service::attach::stash_draft_file(&config, &data)
 }
 
+/// Files attached to a question card's answer (item 975): written into
+/// the chat's own attachments folder under its workspace, where the CLI
+/// reads them without a grant ([`nightloom_service::attach::save_chat_files`]),
+/// and the note naming their paths, which the answer carries to the model
+/// (a deferred call's answer is text in its input, never content blocks).
+/// Nothing to save is an empty note.
+#[tauri::command]
+pub(crate) fn save_answer_files(
+    workspace: String,
+    chat: String,
+    files: Vec<nightloom_service::attach::FileInput>,
+) -> Result<String, String> {
+    if files.is_empty() {
+        return Ok(String::new());
+    }
+    let ws = std::path::PathBuf::from(workspace.trim());
+    if workspace.trim().is_empty() || !ws.is_dir() {
+        return Err("this chat has no folder to put the files in".into());
+    }
+    if chat.trim().is_empty() {
+        return Err("no chat to file them under".into());
+    }
+    let paths = nightloom_service::attach::save_chat_files(&ws, chat.trim(), &files)?;
+    Ok(nightloom_service::attach::files_note_for(&paths, &files))
+}
+
 #[tauri::command]
 pub(crate) fn read_draft_file(id: String) -> Result<String, String> {
     let config = project::config_dir().ok_or("no config folder")?;

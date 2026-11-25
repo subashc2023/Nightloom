@@ -300,6 +300,13 @@ export function pruneDraftFiles(keep: string[]): Promise<{ removed: number; kept
   return invoke("prune_draft_files", { keep });
 }
 
+/** Item 975: files attached to a question card's answer, saved in the
+ *  chat's attachments folder under `workspace`; the note naming their
+ *  paths, which the answer carries ("" for none). */
+export function saveAnswerFiles(workspace: string, chat: string, files: { name: string; data: string }[]): Promise<string> {
+  return invoke("save_answer_files", { workspace, chat, files });
+}
+
 /** A kept draft file's bytes (base64) by its id. */
 export function readDraftFile(id: string): Promise<string> {
   return invoke("read_draft_file", { id });

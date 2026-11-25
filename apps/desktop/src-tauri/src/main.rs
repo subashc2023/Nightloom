@@ -1655,6 +1655,7 @@ fn main() {
             commands::attachments::office_converter,
             commands::attachments::pdf_pages,
             commands::attachments::stash_draft_file,
+            commands::attachments::save_answer_files,
             commands::attachments::prune_draft_files,
             commands::attachments::read_draft_file,
             commands::turns::turn_timing_window,
