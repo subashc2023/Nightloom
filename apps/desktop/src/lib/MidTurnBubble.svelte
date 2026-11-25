@@ -9,7 +9,7 @@
   import type { Attachment } from "./types";
   import WaitAct from "./WaitAct.svelte";
   import FoldText from "./FoldText.svelte";
-  import { fly, launchAt, reducedMotion, takeLaunch } from "./sendMotion";
+  import { arrive as arriveFrom, fly, launchAt, QUEUED_CHANNEL, reducedMotion, takeLaunch } from "./sendMotion";
   import { handoff } from "./handoff.svelte";
   import { app } from "./state.svelte";
   import { interruptLit, mainNow } from "./interruptLit";
@@ -227,7 +227,8 @@
     <span class="ns-k">You</span>
   </div>
   {#if pending && row}
-    <div class="mt-bubble" bind:this={bubbleEl}>
+    <!-- Item 924: sent mid-reply, it flies from the box to here. -->
+    <div class="mt-bubble" bind:this={bubbleEl} use:arriveFrom={{ channel: QUEUED_CHANNEL, bubble: ".user-bubble" }}>
       <FoldText foldKey={`q:${row.id}`}>
         <Bubble text={row.text} {images} {documents} {sending} />
       </FoldText>
@@ -332,7 +333,7 @@
     {/if}
     <span class="ns-k">You</span>
   </div>
-  <div class="mt-bubble">
+  <div class="mt-bubble" use:arriveFrom={{ channel: QUEUED_CHANNEL, bubble: ".user-bubble", active: pending }}>
     <Bubble text={row?.text ?? delivered?.text ?? ""} {images} {documents} {sending} />
   </div>
   {#if pending && row && st}

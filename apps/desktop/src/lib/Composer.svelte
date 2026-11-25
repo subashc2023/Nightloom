@@ -236,7 +236,7 @@
   } from "./pastedText.svelte";
   import { pasteSteps, textPastePlan } from "./textPaste";
   import { attachPastedImages, fetchPasteImage, htmlImagePaste, lostImagesNote, preparePaste, rasterize, type ImagePaste } from "./pasteImages";
-  import { launch } from "./sendMotion";
+  import { launch, QUEUED_CHANNEL } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { insertQuote, replyRequest, takeReply } from "./replyQuote.svelte";
   // Item 694: the passage highlighted before he came to the box.
@@ -2589,6 +2589,11 @@
     if (!(await conversionsDone(key))) return;
     // Item 754: the comments go with it, as one message.
     const held = enqueueMessage(key, sendWithComments(readDraft(key).comments, readDraft(key).text), readDraft(key).attachments.slice());
+    // Item 924: a message sent mid-reply flies from the box into its
+    // waiting bubble, as a plain send flies into its turn (backlog 194);
+    // measured before the box clears. No bubble takes it (Classic's tray
+    // rows) → the launch goes stale unseen.
+    launch(QUEUED_CHANNEL, boxElement(ta));
     clearDraft(key, true);
     if (aside) {
       afterSend(key);
