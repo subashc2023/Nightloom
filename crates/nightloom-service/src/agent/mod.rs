@@ -3049,6 +3049,7 @@ impl ClaudeCodeAgent {
                                     cap: top
                                         .and_then(|w| w.cap)
                                         .or(usage.as_ref().and_then(|u| u.cap)),
+                                    window: top.map(|w| w.window.as_str().to_string()),
                                 });
                             } else {
                                 // Not idle after all: back for the main
@@ -7547,6 +7548,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
                     kind,
                     pct,
                     cap,
+                    ..
                 } = e
                 {
                     woke.push((text, kind, pct, cap));
