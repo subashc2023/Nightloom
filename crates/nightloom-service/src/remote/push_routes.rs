@@ -362,6 +362,76 @@ mod tests {
     /// Item 741: the feed holds the last note per chat with no phone
     /// subscribed, newest first; opening the chat (or a note sent while he
     /// is at the Mac) drops its row.
+    /// Item 947: over real HTTP, `/shortcut/needs` (Siri) says as many things as the phone page counts from
+    /// `/push/feed` (the page's `PUSH_NEED` kinds: approval, reminder, set_aside, unattended, question, stuck).
+    #[tokio::test]
+    async fn siri_sentence_counts_what_the_phone_pages_feed_counts_947() {
+        let (server, push, _) = up("mac", true).await;
+        let push = push.unwrap();
+        let base = format!("http://{}/api", server.addr());
+        let c = client();
+        use crate::push::What;
+        for (chat, what) in [
+            ("c1", What::Question),
+            ("c2", What::Done),
+            ("c3", What::Approval),
+            ("c4", What::Stuck),
+            ("c5", What::SetAside),
+            ("c6", What::Failed),
+        ] {
+            push.notify(crate::push::Note {
+                what,
+                chat: Some(chat.into()),
+                label: Some(format!("Chat {chat}")),
+                project: Some("p1".into()),
+                at_the_mac: false,
+                detail: None,
+            })
+            .await;
+        }
+        let feed: serde_json::Value = c
+            .get(format!("{base}/push/feed"))
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let page_count = feed["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| {
+                [
+                    "approval",
+                    "reminder",
+                    "set_aside",
+                    "unattended",
+                    "question",
+                    "stuck",
+                ]
+                .contains(&r["what"].as_str().unwrap())
+            })
+            .count();
+        assert_eq!(page_count, 4, "{feed}");
+        let said = c
+            .get(format!("{base}/shortcut/needs"))
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(said.starts_with("Four things need you: "), "{said}");
+        assert!(
+            !said.contains("Chat c2") && !said.contains("Chat c6"),
+            "done and failed are Handled, not needs: {said}"
+        );
+        server.stop().await;
+    }
+
     #[tokio::test]
     async fn the_feed_lists_each_chats_last_note_until_he_opens_it() {
         let (server, push, _) = up("mac", true).await;

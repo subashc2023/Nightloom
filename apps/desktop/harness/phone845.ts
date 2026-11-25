@@ -151,6 +151,7 @@ async function run() {
   localStorage.clear();
   handledKept();
   applyLook(q.get("classic") === "1" ? "classic" : "filament");
+  if (q.get("light") === "1") document.documentElement.dataset.scheme = "light"; // item 947
   const TAB: Record<string, string> = { brief: "brief", timeline: "task:moving-the-review", todo: "task:working-your-list", triage: "task:sorting-what-arrived", browse: "task:renewing-the-permit", run: "task:merge-round-t", research: "task:cache-pricing" };
   Object.assign(kept, { focus: TAB[s] ?? "watch", strip: "open", stripFor: "", ui: {} });
   // p872=1 (item 872): one tab waiting "ready →", a done task folded away ("1 done"), Home's steps open on the phone.
