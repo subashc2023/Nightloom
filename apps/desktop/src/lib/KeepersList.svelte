@@ -82,7 +82,7 @@
             <button
               class="ns-btn small danger"
               disabled={busy === s.chat}
-              use:tip={"Stop the pings now; its cache goes cold\nThe chat's switch stays as it is"}
+              use:tip={"Stop the pings until its next message\nThe chat's switch stays as it is"}
               onclick={() => void stop(s.chat)}>Stop</button
             >
           </div>

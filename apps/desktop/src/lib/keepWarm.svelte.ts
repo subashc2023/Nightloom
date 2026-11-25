@@ -135,13 +135,22 @@ export async function loadAllKeepWarm(): Promise<void> {
   }
 }
 
-/** Item 913: Stop from the list — the run ends now; the chat's switch
- *  stays as he set it (the tab-close stop, by his click). */
+/** Item 913: Stop from the list — the run ends now and stays stopped
+ *  until the chat's next send or reply, even when he opens the chat
+ *  (blocker 2282); the chat's switch stays as he set it. */
 export async function stopKeeper(chat: string): Promise<void> {
-  // Not `loadKeepWarm` after: reading a status offers the chat's last reply
-  // again (item 608's restart path) and would start the run just ended;
-  // `keep_warm_stop` sends the new status as a `keep-warm` event itself.
-  stopKeepWarm(chat);
+  const s = keepWarm.byChat[chat];
+  if (!s || s.mode === "off") return;
+  const mode = s.mode === "once" ? "off" : s.mode;
+  keepWarm.byChat[chat] = { ...s, mode, scheduled: false, why: mode === "off" ? "off" : "stopped", next_ping_ms: null };
+  // Not `loadKeepWarm` after: `keep_warm_stop_until_next` sends the new
+  // status as a `keep-warm` event itself.
+  try {
+    await api.keepWarmStopUntilNext(chat);
+  } catch {
+    // An older backend: the tab-close stop, which lasts until the chat is shown.
+    void api.keepWarmStop(chat).catch(() => {});
+  }
 }
 
 /** Read his Settings default, "Keep chats' caches warm automatically". */

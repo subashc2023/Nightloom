@@ -8,7 +8,7 @@
 export type KeepWarmMode = "off" | "on" | "once";
 /** `handedoff` (item 728): off because the chat was handed off, once. */
 /** `sleep` (item 878): the next ping would fall in his sleep; the run ended at its start. */
-export type KeepWarmWhy = "off" | "handedoff" | "noreply" | "small" | "notonehour" | "cap" | "cold" | "missed" | "busy" | "sleep";
+export type KeepWarmWhy = "off" | "handedoff" | "noreply" | "small" | "notonehour" | "cap" | "cold" | "missed" | "busy" | "sleep" | "stopped";
 
 /** His sleep, local whole hours (item 878); it may wrap midnight. */
 export interface SleepWindow {
@@ -120,6 +120,8 @@ export function idleWords(s: KeepWarmStatus): string | null {
       return "ended — the cache went cold while the Mac slept";
     case "missed":
       return "stopped — a ping had to rebuild the cache";
+    case "stopped":
+      return "stopped — starts again at the next message";
     case "sleep":
       return `stopped — ${ASLEEP}${s.sleep ? ` (${sleepWords(s.sleep)})` : ""}`;
     default:

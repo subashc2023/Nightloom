@@ -1692,6 +1692,7 @@ fn main() {
             keep_warm::keep_warm_offer_restored,
             keep_warm::keep_warm_stop,
             keep_warm::keep_warm_list,
+            keep_warm::keep_warm_stop_until_next,
             keep_warm::keep_warm_default,
             keep_warm::keep_warm_set_default,
             keep_warm::keep_warm_board,

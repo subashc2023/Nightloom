@@ -525,6 +525,17 @@ pub fn keep_warm_stop(app: AppHandle, holder: State<'_, Holder>, chat: String) -
     was_on
 }
 
+/// Item 913 (blocker 2282): Stop from Settings' "Chats kept warm now" —
+/// the run ends now and the chat stays stopped until its next send or
+/// reply, even when he opens it ([`Registry::stop_until_next`]); the
+/// switch stays as he set it. The window is told the new status.
+#[tauri::command]
+pub fn keep_warm_stop_until_next(app: AppHandle, holder: State<'_, Holder>, chat: String) -> bool {
+    let was_on = holder.0.stop_until_next(&chat, now_ms());
+    tell(&app, &holder, &chat);
+    was_on
+}
+
 /// Item 913: every chat this run holds a keep-warm entry for, with its
 /// status — the list Settings shows ("Chats kept warm now"), each row's
 /// Extend and Stop going through `keep_warm_hold` and `keep_warm_stop`.

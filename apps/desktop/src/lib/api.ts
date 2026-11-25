@@ -988,6 +988,11 @@ export function keepWarmStop(chat: string): Promise<boolean> {
   return invoke("keep_warm_stop", { chat });
 }
 
+/** Item 913 (blocker 2282): Stop from Settings' list — stopped until the chat's next send or reply, even when he opens it. */
+export function keepWarmStopUntilNext(chat: string): Promise<boolean> {
+  return invoke("keep_warm_stop_until_next", { chat });
+}
+
 /** Item 913: every chat the backend holds a keep-warm entry for, with its status. */
 export function keepWarmList(): Promise<import("./keepWarm").KeepWarmStatus[]> {
   return invoke("keep_warm_list");

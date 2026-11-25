@@ -103,6 +103,12 @@ pub const HOLD_HOURS: [u32; 2] = [12, 24];
 /// beside [`MODE_FILE`]: `{"ms": …}`. Its presence is the "once": a later
 /// hand-off signal on the chat does nothing, so his switch back on stays.
 pub const HANDOFF_FILE: &str = "keep-warm-handoff.json";
+/// Item 913 (blocker 2282): Stop in Settings' "Chats kept warm now" holds
+/// the chat stopped until its next send or reply, beside [`MODE_FILE`]:
+/// `{"ms": …}`. Its presence is the stop, so showing the chat, or the
+/// app's restart offering its restored tab (item 972), does not start the
+/// pings again.
+pub const STOP_FILE: &str = "keep-warm-stopped.json";
 /// A test-only interval in seconds (a measurement, a dev run): read from
 /// the environment, never from the shipped defaults.
 pub const TEST_EVERY_ENV: &str = "NIGHTLOOM_KEEP_WARM_EVERY_S";
@@ -338,6 +344,9 @@ pub enum Why {
     /// Item 878: the next ping would fall in his sleep; the run ended at
     /// its start (a hold, or "until I'm back", runs through it).
     Sleep,
+    /// Item 913: he stopped it from Settings' list; it starts again at
+    /// his next message or the chat's next reply.
+    Stopped,
 }
 
 /// What the schedule says at `now`.
@@ -528,6 +537,24 @@ fn read_off_by_handoff(dir: &Path) -> bool {
 /// Whether a hand-off has already switched the chat off once (item 728).
 pub fn handed_off_once(dir: &Path) -> bool {
     dir.join(HANDOFF_FILE).exists()
+}
+
+/// Whether the chat is held stopped (item 913), as its folder holds it.
+pub fn stopped_on_disk(dir: &Path) -> bool {
+    dir.join(STOP_FILE).exists()
+}
+
+fn write_stop_mark(dir: &Path, now: i64) {
+    let path = dir.join(STOP_FILE);
+    let _ = std::fs::create_dir_all(dir);
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, format!("{{\"ms\":{now}}}")).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+fn clear_stop_mark(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join(STOP_FILE));
 }
 
 fn write_handoff_mark(dir: &Path, now: i64) {
@@ -769,6 +796,9 @@ struct Entry {
     hold: Option<Hold>,
     /// Item 728: the switch is off because the chat was handed off.
     off_by_handoff: bool,
+    /// Item 913: stopped from Settings' list until the next send or reply
+    /// ([`STOP_FILE`]).
+    stopped: bool,
 }
 
 impl Entry {
@@ -781,6 +811,7 @@ impl Entry {
             chosen: read_choice(dir),
             hold: read_hold(dir),
             off_by_handoff: read_off_by_handoff(dir),
+            stopped: stopped_on_disk(dir),
             dir: dir.to_path_buf(),
             spec: None,
             reply: None,
@@ -806,6 +837,16 @@ impl Entry {
             spent: Spent::default(),
             hold: None,
             off_by_handoff: false,
+            stopped: false,
+        }
+    }
+
+    /// The stop from Settings' list (item 913) is over: a send, a reply,
+    /// or his own switch or hold.
+    fn unstop(&mut self) {
+        if self.stopped {
+            self.stopped = false;
+            clear_stop_mark(&self.dir);
         }
     }
 
@@ -921,6 +962,7 @@ impl Registry {
             .entry(chat.to_string())
             .or_insert_with(|| Entry::load(dir));
         e.dir = dir.to_path_buf();
+        e.unstop();
         e.chosen = Some(mode);
         e.missed = false;
         e.off_by_handoff = false;
@@ -980,6 +1022,7 @@ impl Registry {
                 .entry(chat.to_string())
                 .or_insert_with(|| Entry::load(dir));
             e.dir = dir.to_path_buf();
+            e.unstop();
             e.hold = hold;
             match &hold {
                 Some(h) => write_hold(dir, h),
@@ -1009,6 +1052,10 @@ impl Registry {
     pub fn sent(&self, chat: &str, dir: Option<&Path>, now: i64) -> bool {
         let default = self.default_mode();
         let mut inner = self.inner();
+        // Item 913: his message ends a stop from Settings' list.
+        if let Some(d) = dir {
+            clear_stop_mark(d);
+        }
         if !inner.contains_key(chat) {
             // A chat switched on in an earlier run of the app: its file
             // is the only trace until something reads it.
@@ -1025,6 +1072,7 @@ impl Registry {
         if let Some(c) = e.flying.take() {
             c.cancel();
         }
+        e.unstop();
         e.reply = None;
         e.touched_ms = None;
         e.missed = false;
@@ -1040,6 +1088,11 @@ impl Registry {
     pub fn replied(&self, chat: &str, dir: &Path, spec: &AgentSpec, reply: Option<Reply>) {
         let default = self.default_mode();
         let mut inner = self.inner();
+        // Item 913: a reply ends a stop from Settings' list.
+        clear_stop_mark(dir);
+        if let Some(e) = inner.get_mut(chat) {
+            e.stopped = false;
+        }
         if !inner.contains_key(chat) {
             if read_choice(dir).unwrap_or(default) == Mode::Off {
                 return;
@@ -1095,6 +1148,34 @@ impl Registry {
         was_on
     }
 
+    /// Item 913 (blocker 2282): Stop from Settings' "Chats kept warm now".
+    /// The run ends as at [`Self::stop`] (a ping in flight is cancelled,
+    /// the reply forgotten, "until I'm back" ends), and the chat is held
+    /// stopped — on disk too — so showing it, or a restart's offer, does
+    /// not start it again; its next send or reply, or his own switch or
+    /// hold, does. `true` when it was on.
+    pub fn stop_until_next(&self, chat: &str, now: i64) -> bool {
+        let default = self.default_mode();
+        let mut inner = self.inner();
+        let Some(e) = inner.get_mut(chat) else {
+            return false;
+        };
+        if let Some(c) = e.flying.take() {
+            c.cancel();
+        }
+        let was_on = e.mode(default) != Mode::Off;
+        if e.chosen == Some(Mode::Once) {
+            e.end_once(default, now);
+        }
+        e.spec = None;
+        e.reply = None;
+        e.touched_ms = None;
+        e.missed = false;
+        e.stopped = true;
+        write_stop_mark(&e.dir, now);
+        was_on
+    }
+
     /// A chat shown with its last reply and agent on hand (after an app
     /// restart, or a tab reopened): when its switch is on and no run is
     /// held, the run starts from that reply — the default needs no reply
@@ -1105,7 +1186,7 @@ impl Registry {
         let e = inner
             .entry(chat.to_string())
             .or_insert_with(|| Entry::load(dir));
-        if e.mode(default) == Mode::Off || e.reply.is_some() || e.flying.is_some() {
+        if e.mode(default) == Mode::Off || e.stopped || e.reply.is_some() || e.flying.is_some() {
             return false;
         }
         e.spec = Some(spec.clone());
@@ -1137,8 +1218,13 @@ impl Registry {
     pub fn wants_facts(&self, chat: &str, dir: &Path) -> bool {
         let default = self.default_mode();
         match self.inner().get(chat) {
-            Some(e) => e.mode(default) != Mode::Off && e.reply.is_none() && e.flying.is_none(),
-            None => read_choice(dir).unwrap_or(default) != Mode::Off,
+            Some(e) => {
+                e.mode(default) != Mode::Off
+                    && !e.stopped
+                    && e.reply.is_none()
+                    && e.flying.is_none()
+            }
+            None => read_choice(dir).unwrap_or(default) != Mode::Off && !stopped_on_disk(dir),
         }
     }
 
@@ -1296,7 +1382,8 @@ impl Registry {
             && let Some(d) = dir
             && (d.join(MODE_FILE).exists()
                 || d.join(PINGS_FILE).exists()
-                || d.join(HOLD_FILE).exists())
+                || d.join(HOLD_FILE).exists()
+                || d.join(STOP_FILE).exists())
         {
             inner.insert(chat.to_string(), Entry::load(d));
         }
@@ -1328,6 +1415,7 @@ impl Registry {
             },
             why: match s {
                 Step::Idle(Why::Off) if !flying && e.off_by_handoff => Some(Why::HandedOff),
+                Step::Idle(Why::NoReply) if !flying && e.stopped => Some(Why::Stopped),
                 Step::Idle(w) if !flying => Some(w),
                 _ => None,
             },
@@ -1780,6 +1868,61 @@ mod tests {
         assert!(!reg.offer("o", &off, &spec(), reply(100_000)));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&off);
+    }
+
+    /// Item 913 (blocker 2282): Stop from Settings' list holds until the
+    /// chat's next send or reply — showing the chat (an offer), a tab
+    /// close and reopen, or a restart (a new registry reading the folder)
+    /// does not start the pings again; a reply does, and so does a send.
+    #[test]
+    fn a_stop_from_the_list_holds_until_the_next_send_or_reply() {
+        let dir = scratch("stop-913");
+        let reg = Registry::default();
+        let p = Policy::default();
+        assert!(reg.offer("c", &dir, &spec(), reply(100_000)));
+        assert_eq!(reg.due(&p, 55 * MIN, |_| false).len(), 1, "a ping flies");
+        assert!(reg.stop_until_next("c", 56 * MIN), "it was on");
+        assert!(dir.join(STOP_FILE).exists());
+        let s = reg.status("c", Some(&dir), &p, 56 * MIN);
+        assert!(!s.scheduled);
+        assert_eq!(s.why, Some(Why::Stopped));
+        assert_eq!(s.mode, Mode::On, "the switch stays as he set it");
+        // He opens the chat: no offer is taken, nothing is due.
+        assert!(!reg.wants_facts("c", &dir));
+        assert!(!reg.offer("c", &dir, &spec(), reply(100_000)));
+        assert!(reg.due(&p, 2 * HOUR, |_| false).is_empty());
+        // The tab closed and reopened, or the app restarted: still stopped.
+        reg.stop("c", 57 * MIN);
+        assert!(!reg.wants_facts("c", &dir));
+        assert!(!reg.offer("c", &dir, &spec(), reply(100_000)));
+        let fresh = Registry::default();
+        assert!(!fresh.wants_facts("c", &dir));
+        assert!(
+            fresh
+                .offer_restored(vec![("c".into(), dir.clone(), spec(), reply(100_000))])
+                .is_empty()
+        );
+        // The chat's next reply ends the stop: the schedule runs from it.
+        let r = Reply {
+            sent_ms: 3 * HOUR,
+            ..reply(100_000)
+        };
+        fresh.replied("c", &dir, &spec(), Some(r));
+        assert!(!dir.join(STOP_FILE).exists());
+        assert_eq!(fresh.due(&p, 3 * HOUR + 55 * MIN, |_| false).len(), 1);
+        // A send ends it too, before any reply (the switch reads on again).
+        assert!(fresh.stop_until_next("c", 4 * HOUR));
+        assert!(!fresh.wants_facts("c", &dir));
+        fresh.sent("c", Some(&dir), 4 * HOUR + MIN);
+        assert!(!dir.join(STOP_FILE).exists());
+        assert!(fresh.wants_facts("c", &dir));
+        // His own Extend (a hold) ends it as well.
+        assert!(fresh.stop_until_next("c", 5 * HOUR));
+        fresh.set_hold("c", &dir, 12, None, 5 * HOUR);
+        assert!(fresh.wants_facts("c", &dir));
+        // A chat the registry does not hold: nothing to stop.
+        assert!(!fresh.stop_until_next("unknown", 0));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Item 972: three restored tabs, one of them shown — all three are

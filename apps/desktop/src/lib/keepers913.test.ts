@@ -2,7 +2,7 @@
  * Item 913 (his ask, 2026-11-23): one screen listing every open cache keeper, with Extend and Stop on each row.
  */
 import { describe, expect, it } from "vitest";
-import { keeperLine, keeperRows, nextHold, type KeepWarmStatus } from "./keepWarm";
+import { idleWords, keeperLine, keeperRows, nextHold, type KeepWarmStatus } from "./keepWarm";
 import { cacheSummary, CONTROLS } from "./settings/subscriptionPane";
 import settings from "./SettingsModal.svelte?raw";
 import list from "./KeepersList.svelte?raw";
@@ -64,5 +64,23 @@ describe("Chats kept warm now (item 913)", () => {
     expect(list).toContain("await stopKeeper(chat)");
     const stop = store.slice(store.indexOf("export async function stopKeeper"));
     expect(stop.slice(0, stop.indexOf("\n}"))).not.toContain("loadKeepWarm(");
+  });
+  it("Stop holds until the next send or reply (blocker 2282): its own command, read as 'stopped'", () => {
+    expect(api).toContain('invoke("keep_warm_stop_until_next", { chat })');
+    const stop = store.slice(store.indexOf("export async function stopKeeper"));
+    expect(stop.slice(0, stop.indexOf("\n}"))).toContain("api.keepWarmStopUntilNext(chat)");
+    expect(list).toContain("Stop the pings until its next message");
+    const s = {
+      chat: "c",
+      mode: "on",
+      scheduled: false,
+      warm_until_ms: null,
+      touched_ms: null,
+      next_ping_ms: null,
+      why: "stopped",
+      spent: { pings: 0, cache_read: 0, cache_write: 0, output: 0, cost_usd: 0 },
+      policy: { every_ms: 55 * 60_000, cap_ms: 6 * 3_600_000, min_context: 50_000 },
+    } as KeepWarmStatus;
+    expect(idleWords(s)).toBe("stopped — starts again at the next message");
   });
 });
