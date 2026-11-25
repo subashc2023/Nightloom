@@ -130,6 +130,9 @@ export interface PriceIn {
   target: ChipRates | null;
   warm: boolean;
   engine: "claude-code" | "api";
+  /** Item 904: the box's draft, in tokens — written with the change or
+   *  without it. */
+  draft?: number;
 }
 
 /** Where the re-write starts, in tokens from the head; 0 is everything. */
@@ -146,15 +149,16 @@ export function changePrice(p: PriceIn): ChangePrice {
   const out = p.usage.output_tokens;
   const added = p.layers?.addedTokens ?? 0;
   const ctx = Math.max(0, prompt + out + added);
+  const draft = Math.max(0, p.draft ?? 0);
   if (!p.warm) {
     // Cold: everything is written either way, at the model it goes to.
-    const c = p.target ? (ctx * p.target.write) / 1e6 : null;
+    const c = p.target ? ((ctx + draft) * p.target.write) / 1e6 : null;
     return { rewrite: ctx, read: 0, with: c, without: c, cold: true };
   }
   const head = headOf(p, prompt);
   const rewrite = ctx - head;
-  const withUsd = p.target ? (head * p.target.read + rewrite * p.target.write) / 1e6 : null;
-  const withoutUsd = p.built ? (prompt * p.built.read + out * p.built.write) / 1e6 : null;
+  const withUsd = p.target ? (head * p.target.read + (rewrite + draft) * p.target.write) / 1e6 : null;
+  const withoutUsd = p.built ? (prompt * p.built.read + (out + draft) * p.built.write) / 1e6 : null;
   return { rewrite, read: head, with: withUsd, without: withoutUsd, cold: false };
 }
 
@@ -192,13 +196,15 @@ export function switchDetail(
   rates: ChipRates | null,
   warm: boolean,
   sideWarm = false,
+  /** Item 904: the box's draft, in tokens. */
+  draft = 0,
 ): string {
   if (!usage || !rowModelId || !builtModelId || rowModelId === builtModelId) return "";
-  if (sideWarm) return rates ? `warm · next ≈ ${usd(nextSendCost(usage, rates).warm)}` : "warm";
+  if (sideWarm) return rates ? `warm · next ≈ ${usd(nextSendCost(usage, rates, draft).warm)}` : "warm";
   if (!warm) return "";
   const ctx = usage.input_tokens + usage.output_tokens;
   if (!rates) return `re-writes ${tokensShort(ctx)}`;
-  return `next ≈ ${usd((ctx * rates.write) / 1e6)}`;
+  return `next ≈ ${usd(((ctx + Math.max(0, draft)) * rates.write) / 1e6)}`;
 }
 
 /**
@@ -219,6 +225,8 @@ export function pendingChangeCost(a: {
   /** Item 959: the draft's model has the chat's prefix warm from an aside
    *  (`sideCacheFor`): its switch loses nothing and is priced as a read. */
   sideWarm?: boolean;
+  /** Item 904: the box's draft, in tokens (`draftSendTokens`). */
+  draftTokens?: number;
 }): { price: ChangePrice; line: string; title: string; changes: CacheChange[]; layers: LayerChange | null } | null {
   if (!a.warm) return null;
   const built = cacheBuiltWith(a.events);
@@ -246,6 +254,7 @@ export function pendingChangeCost(a: {
     target,
     warm: true,
     engine: cc ? "claude-code" : "api",
+    draft: a.draftTokens ?? 0,
   });
   return { price, line: priceLine(price), title: priceTitle(price, target), changes, layers };
 }

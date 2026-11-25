@@ -160,6 +160,7 @@
   import { applyLook, cacheLeft, contextLine, kTokens, loadLook, saveLook, type Look } from "./look";
   // Wave O: the cache chip's price and tooltip, as the Mac's.
   import { newestReply, phoneCache } from "./cacheChip";
+  import { draftSendTokens } from "../lib/draftCost";
   import type { CacheRatesWire } from "../lib/cachePrice";
   import ContextDial from "../lib/ContextDial.svelte";
   import ProjectPage from "./ProjectPage.svelte";
@@ -658,7 +659,17 @@
     const via = sameHost ? client : chatClient;
     return lastReplyHere && via ? (cacheRatesBy[`${via.base} ${lastReplyHere.model}`] ?? null) : null;
   });
-  const chip = $derived(phoneCache(lastReplyHere, warmUntil, now, chipRates));
+  // Item 904: the box's text and photos go with the next send; priced in.
+  const photoTokens = $derived(
+    draftSendTokens(
+      "",
+      [...imagesOf(photos).map((i) => ({ kind: "image" as const, ...i })), ...docsOf(photos).map((d) => ({ kind: "document" as const, ...d }))],
+      "claude-code",
+    ),
+  );
+  const chip = $derived(phoneCache(lastReplyHere, warmUntil, now, chipRates, photoTokens + draftSendTokens(draft, [], "claude-code")));
+  /** The aside sheet's price: the chat box's draft does not go with an ask. */
+  const asideChip = $derived(phoneCache(lastReplyHere, warmUntil, now, chipRates));
   /** The chip's tooltip, shown by a tap on it (a phone has no hover). */
   let chipTip = $state(false);
   let chipTipTimer: ReturnType<typeof setTimeout> | undefined;
@@ -4137,7 +4148,7 @@
             past={asidePast}
             problem={asideProblem}
             cache={warmUntil == null ? null : (cacheText ?? "cold")}
-            price={chip?.price ?? null}
+            price={asideChip?.price ?? null}
             onask={askAside}
             onstop={stopAside}
             oncopy={copy}

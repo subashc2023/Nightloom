@@ -10,6 +10,7 @@ import { cacheState } from "../cache";
 import { coldToast, lastReply } from "../cacheCost";
 import { tellPhoneCache } from "../remoteHandlers";
 import { nextSendRates } from "../cacheRates.svelte";
+import { boxDraftTokens } from "../draftCost.svelte";
 import { modelSeen } from "../modelSeen.svelte";
 import { lastLoggedTurn } from "../contextDial";
 import { liveFor, liveTokens } from "../liveContext";
@@ -266,7 +267,8 @@ export function topBarLogic(props: () => TopBarLogicProps) {
     const pick = () => ({ draftModel: app.draft.agentModel, seen: modelSeen.byAlias });
     void nextSendRates(app.events, app.connection, pick());
     const id = setTimeout(
-      () => addToast(coldToast(app.events, nextSendRates(app.events, app.connection, pick()))),
+      // Item 904: with what the box holds when it fires.
+      () => addToast(coldToast(app.events, nextSendRates(app.events, app.connection, pick()), boxDraftTokens(app.activeSessionId, app.connection?.engine))),
       wait + 1,
     );
     return () => clearTimeout(id);

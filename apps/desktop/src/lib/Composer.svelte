@@ -195,7 +195,8 @@
     setCommentNote,
   } from "./drafts.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
-  import { chipLabel, shownQuote, commentLabel, commentWhere, type PassageComment } from "./passageComments";
+  import { chipLabel, commentsMessage, shownQuote, commentLabel, commentWhere, type PassageComment } from "./passageComments";
+  import { draftSendTokens } from "./draftCost";
   import { sendWithComments, sentComments } from "./sentComments";
   import { commentRequest, takeCommentFocus } from "./commentRequest.svelte";
   import type { Attachment } from "./types";
@@ -517,6 +518,20 @@
     return { ...estimate, title: draftEstimateTitle(estimate.tokens, why) };
   });
   const attachments = $derived(draft.attachments);
+  /**
+   * Item 904 (blocker 2283): what this box's draft adds to the next send —
+   * its text with its passage comments, and its attachments — in tokens, for
+   * every next-send figure this box shows (the chip, the cold banner's Keep,
+   * the "cache will be lost" bar, the model menu's switch price). The same
+   * box in an aside prices the aside's draft. Debounced with the estimate
+   * beside Send, so typing recounts once per pause.
+   */
+  // The chips apart from the text, so a keystroke never re-reads an image's header.
+  const chipTokens = $derived(draftSendTokens("", attachments, app.connection?.engine === "claude-code" ? "claude-code" : "api"));
+  const draftTokens = $derived.by(() => {
+    const t = estimate ? text : "";
+    return chipTokens + draftSendTokens(comments.length > 0 ? commentsMessage(comments, t) : t, [], "api");
+  });
   // Item 868: "converting slides · 1:12" ticks while a chip converts.
   tickWhile(() => attachments.some((a) => a.pending && !!a.converting));
   /**
@@ -3003,7 +3018,7 @@
     const side = !aside && kwChat && id ? sideCacheFor(asidesOf(kwChat), id, newestReplySentAt(app.events), now) : null;
     if (!chatCache.warm && !side) return "";
     if (id) void loadCacheRates(id);
-    return switchDetail(lastReply(app.events)?.usage ?? null, lastReply(app.events)?.model ?? null, id, cacheRatesOf(id), chatCache.warm, !!side);
+    return switchDetail(lastReply(app.events)?.usage ?? null, lastReply(app.events)?.model ?? null, id, cacheRatesOf(id), chatCache.warm, !!side, draftTokens);
   }
   /** The price ahead of a row's detail (`· claude-opus-5-5 · …`). */
   const withPrice = (price: string, detail: string): string => {
@@ -3540,7 +3555,7 @@
   const nextEst = $derived.by(() => {
     if (!cache) return null;
     // Item 902: a pending model switch writes everything, warm or not.
-    const est = cacheEstimate(app.events, targetRates, cache.warm && !modelSwitch);
+    const est = cacheEstimate(app.events, targetRates, cache.warm && !modelSwitch, draftTokens);
     if (!est || cache.warm || !coldPending) return est;
     // Item 933: cold already, so nothing is lost — `cold either way ≈ $X`.
     return { ...est, line: coldEitherWay(est.line) };
@@ -3558,7 +3573,7 @@
   // Item 902: at the rates of the model the next send goes to (the
   // composer's pick), never the last reply's — a switch re-prices both
   // buttons, and a model without rates shows no figure.
-  const wwCosts = $derived.by(() => (wwUsage ? chipCosts(wwUsage, targetRates, modelSwitch) : null));
+  const wwCosts = $derived.by(() => (wwUsage ? chipCosts(wwUsage, targetRates, modelSwitch, draftTokens) : null));
   const wwHandingOff = $derived(!!handedNext || (handoffHere && (handoff.stage === "wrapping" || handoff.stage === "wrapped")));
   const wwBusy = $derived(busy || queue.length > 0);
   /** The warm moment: `offer`, `do` or null; `now` ticks each minute while warm. */
@@ -3701,6 +3716,7 @@
             return cacheRatesOf(m);
           },
           sideWarm: !!sideCache,
+          draftTokens,
         })
       : null,
   );

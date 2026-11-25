@@ -100,8 +100,11 @@ export function coldChipShows(f: ColdFacts): boolean {
 
 export interface ChipCosts {
   context: number;
-  /** The cold re-write the next send pays, either way. */
+  /** The cold re-write the next send pays, either way (the wrap-up's). */
   cold: number;
+  /** Item 904: Keep's next send — the re-write plus the box's draft, which
+   *  goes with it (a hand-off's wrap-up does not carry it). */
+  next: number;
   /** What each later turn on this history costs once warm again. */
   perTurn: number;
   /** The same wrap-up sent while warm, for the warm offer. */
@@ -115,16 +118,20 @@ export function chipCosts(
   /** Item 902: the next send goes to another model, which has no cache of
    *  this chat — `rates` are that model's, and even the warm wrap-up writes. */
   switched = false,
+  /** Item 904: the draft's tokens — Keep's send carries them (`next`); the
+   *  wrap-up and later turns do not. */
+  draft = 0,
 ): ChipCosts | null {
   if (!usage || !rates) return null;
   const c = nextSendCost(usage, rates);
-  return { context: contextOf(usage), cold: c.cold, perTurn: c.warm, warm: switched ? c.cold : c.warm };
+  const next = nextSendCost(usage, rates, draft).cold;
+  return { context: contextOf(usage), cold: c.cold, next, perTurn: c.warm, warm: switched ? c.cold : c.warm };
 }
 
 /** The cold chip's two buttons, as they read. */
 export function coldButtons(c: ChipCosts | null): { handoff: string; keep: string } {
   if (!c) return { handoff: "Hand off", keep: "Keep" };
-  return { handoff: `Hand off (≈ ${usd(c.cold)})`, keep: `Keep (re-writes ${tokensShort(c.context)} ≈ ${usd(c.cold)})` };
+  return { handoff: `Hand off (≈ ${usd(c.cold)})`, keep: `Keep (re-writes ${tokensShort(c.context)} ≈ ${usd(c.next)})` };
 }
 
 export function coldTitle(context: number, newModel?: string | null): string {
@@ -141,7 +148,8 @@ export function coldTip(c: ChipCosts | null, rates: ChipRates | null | undefined
   // (measured); each line now fits one (≤ 44 chars at $12.40-sized figures).
   const how = "Hand off: that send is the wrap-up";
   if (!c || !rates) return `The next send re-writes the whole history\n${how}`;
-  return `Next send ≈ ${usd(c.cold)} · then ≈ ${usd(c.perTurn)} a turn\n${how}`;
+  // Item 904: Keep's send carries the draft (`next`).
+  return `Next send ≈ ${usd(c.next)} · then ≈ ${usd(c.perTurn)} a turn\n${how}`;
 }
 
 /** The warm offer's line: `Cache cold in 4 min — this chat is 180k`. */

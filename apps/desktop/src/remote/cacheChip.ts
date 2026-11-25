@@ -49,14 +49,16 @@ export function phoneCache(
   warmUntil: number | null,
   now: number,
   rates: CacheRatesWire | null | undefined,
+  /** Item 904: the phone box's draft (text and photos), in tokens. */
+  draft = 0,
 ): PhoneCache | null {
   if (warmUntil === null) return null;
   const left = cacheLeft(warmUntil, now);
   const warm = left !== null;
   const r = ratesFromWire(rates);
-  const cost = reply && r ? nextSendCost(reply.usage, r) : null;
+  const cost = reply && r ? nextSendCost(reply.usage, r, draft) : null;
   const price = cost ? chipNextLine(cost, warm) : null;
-  const est = reply && r ? nextTitle(reply.usage, r, warm) : null;
+  const est = reply && r ? nextTitle(reply.usage, r, warm, draft) : null;
   if (!warm) {
     return { cold: true, left: null, price, coldUsd: cost?.cold ?? null, tip: est ?? "Cache cold · the next send writes it again" };
   }

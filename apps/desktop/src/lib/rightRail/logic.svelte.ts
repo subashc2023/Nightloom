@@ -13,6 +13,9 @@ import { keepWarm } from "../keepWarm.svelte";
 import { cacheState, chipFace, newestReplySentAt, nextTickMs, ownModelCache, remainingText, sideCacheFor, stoppedUnsure } from "../cache";
 import { cacheEstimate, lastReply, ratesFromPrice } from "../cacheCost";
 import { cacheRatesOf, loadCacheRates } from "../cacheRates.svelte";
+import { boxDraftTokens } from "../draftCost.svelte";
+import { draftKey } from "../drafts.svelte";
+import { asideDraftKey } from "../asides";
 import { modelIdFor, modelSwitchPending, nextSendModel, pendingChangeCost } from "../changeCost";
 import { modelSeen } from "../modelSeen.svelte";
 import { displayName } from "../modelSeen";
@@ -157,6 +160,13 @@ export function rightRailLogic(props: () => RightRailLogicProps) {
   $effect(() => {
     if (nextModel && app.connection?.engine === "claude-code") void loadCacheRates(nextModel);
   });
+  /** Item 904: the draft in the box this column speaks for (the chat's, or
+   *  the aside's), priced into the next send as the composer's chip does. */
+  const railDraft = $derived(
+    cache
+      ? boxDraftTokens(aside ? asideDraftKey(aside) : draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread), app.connection?.engine)
+      : 0,
+  );
   /** Item 777: with a change pending on a warm cache, the price with it
    *  (the composer's bar gives both), so the two never disagree. */
   const pendingCost = $derived(
@@ -172,12 +182,13 @@ export function rightRailLogic(props: () => RightRailLogicProps) {
             return cacheRatesOf(m);
           },
           sideWarm: !!sideCache,
+          draftTokens: railDraft,
         })
       : null,
   );
   const nextEst = $derived.by(() => {
     if (!cache) return null;
-    const est = cacheEstimate(app.events, app.connection?.engine === "claude-code" ? cacheRatesOf(nextModel) : ratesFromPrice(app.connection?.price), cache.warm);
+    const est = cacheEstimate(app.events, app.connection?.engine === "claude-code" ? cacheRatesOf(nextModel) : ratesFromPrice(app.connection?.price), cache.warm, railDraft);
     const p = pendingCost?.price.with;
     // 777's with-change price; 776's *Once cold* row still needs the cold figure.
     if (p != null) return { usd: p, title: `With the pending change · ${pendingCost!.title}`, cold: est?.cold ?? null };

@@ -203,12 +203,14 @@ export function cacheEstimate(
   events: SessionEvent[],
   rates: ChipRates | null | undefined,
   warm: boolean,
+  /** Item 904: the draft's tokens (`draftSendTokens`), new input either way. */
+  draft = 0,
 ): { line: string; title: string; usd: number; warm: number; cold: number } | null {
   const last = lastReply(events);
   if (!last || !rates) return null;
-  const c = nextSendCost(last.usage, rates);
+  const c = nextSendCost(last.usage, rates, draft);
   const n = warm ? c.warm : c.cold;
-  return { line: chipNextLine(c, warm), title: nextTitle(last.usage, rates, warm), usd: n, warm: c.warm, cold: c.cold };
+  return { line: chipNextLine(c, warm), title: nextTitle(last.usage, rates, warm, draft), usd: n, warm: c.warm, cold: c.cold };
 }
 
 /** The toast on the crossing to cold (item 605), with what the next send
@@ -216,12 +218,14 @@ export function cacheEstimate(
  *  the price of cache is"): `Prompt cache cold — edits to the history now
  *  cost nothing extra · the next send re-writes 270k ≈ $4.32 API`. Without
  *  rates it is the old words alone. */
-export function coldToast(events: SessionEvent[], rates: ChipRates | null | undefined): string {
+export function coldToast(events: SessionEvent[], rates: ChipRates | null | undefined, draft = 0): string {
   const base = "Prompt cache cold — edits to the history now cost nothing extra";
   const last = lastReply(events);
   if (!last || !rates) return base;
   const ctx = last.usage.input_tokens + last.usage.output_tokens;
-  return `${base} · the next send re-writes ${tokensShort(ctx)} ≈ ${usd(nextSendCost(last.usage, rates).cold)} API`;
+  // Item 904: with a draft in the box, the price is of sending it.
+  const withDraft = draft > 0 ? " with the draft" : "";
+  return `${base} · the next send re-writes ${tokensShort(ctx)} ≈ ${usd(nextSendCost(last.usage, rates, draft).cold)} API${withDraft}`;
 }
 
 /** The toast for a turn that just ended (item 699), or null: `before` is

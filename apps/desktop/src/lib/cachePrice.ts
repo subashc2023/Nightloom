@@ -1,4 +1,5 @@
 import type { Usage } from "./types";
+import { draftCostNote } from "./draftCost";
 
 /**
  * The cache chip's prices (items 699, 776), pure: no app state, so the phone
@@ -45,13 +46,16 @@ export function ratesFromWire(r: CacheRatesWire | null | undefined): ChipRates |
   return { read: r.read, write: r.write_1h, from };
 }
 
-/** The next send's two prices from the newest reply's usage. */
-export function nextSendCost(usage: Usage, r: ChipRates): { warm: number; cold: number } {
+/** The next send's two prices from the newest reply's usage. Item 904:
+ *  `draft` — the box's text and attachments, in tokens (`draftCost.ts`) —
+ *  is new input, written warm or cold. */
+export function nextSendCost(usage: Usage, r: ChipRates, draft = 0): { warm: number; cold: number } {
   const prompt = usage.input_tokens;
   const out = usage.output_tokens;
+  const add = Math.max(0, draft);
   return {
-    warm: (prompt * r.read + out * r.write) / 1e6,
-    cold: ((prompt + out) * r.write) / 1e6,
+    warm: (prompt * r.read + (out + add) * r.write) / 1e6,
+    cold: ((prompt + out + add) * r.write) / 1e6,
   };
 }
 
@@ -72,9 +76,12 @@ export function chipNextLine(c: { warm: number; cold: number }, warm: boolean): 
  *  short line, numbers first. ~~The context size, both rates per MTok,
  *  where the rates came from and the plan caveat~~ (cut 2026-11-16; the
  *  rates' source stays in `ChipRates.from` for whoever needs it). */
-export function nextTitle(usage: Usage, r: ChipRates, warm: boolean): string {
-  const c = nextSendCost(usage, r);
-  return warm
+export function nextTitle(usage: Usage, r: ChipRates, warm: boolean, draft = 0): string {
+  const c = nextSendCost(usage, r, draft);
+  const line = warm
     ? `Next send ≈ ${usd(c.warm)} · cold ≈ ${usd(c.cold)} (API price)`
     : `Cache cold · next send ≈ ${usd(c.cold)} (API price)`;
+  // Item 904: the figure counts the draft; the tooltip says so.
+  const note = draftCostNote(draft);
+  return note ? `${line}\n${note}` : line;
 }
