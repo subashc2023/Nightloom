@@ -40,9 +40,9 @@
  * while a gap is coming and lit when none is (`interruptLit.ts`).
  */
 import { takeBackInjected } from "./api";
-import { clearInjected, dropQueued, readDraft, recordDraft, takeBackQueued, type QueuedMessage } from "./drafts.svelte";
+import { clearInjected, dropQueued, readDraft, recordDraft, restoreQueued, takeBackQueued, type QueuedMessage } from "./drafts.svelte";
 import { requestComposerFocus } from "./rewindDraft.svelte";
-import { addToast, handReason, replyToPending, sendNowAny, sendNowPlan, slipRow, type HandReason, type SendNowPlan } from "./state.svelte";
+import { addToast, app, handReason, injectIntoTurn, replyToPending, sendNowAny, sendNowPlan, slipRow, type HandReason, type SendNowPlan } from "./state.svelte";
 
 export type PendingState = "next-step" | "now" | "turn-end" | "waiting" | "replying";
 
@@ -206,17 +206,32 @@ export async function editPending(key: string, qid: number): Promise<boolean> {
   return true;
 }
 
-/** *Cancel* (after its confirm): the row leaves the queue unsent; its words
- *  go to the box's draft history first, so nothing is lost. */
+/** *Cancel*: the row leaves the queue unsent; its words go to the box's
+ *  draft history first, so nothing is lost. ~~After its confirm~~ — item
+ *  925 (his words 2026-11-23: "it shoudln't do that, it should jus delete
+ *  it"): at once, no "Cancel message / Keep it" ask; the toast's *Undo*
+ *  puts it back where it stood (`restoreQueued`), files and all, and back
+ *  into the running turn when one runs. */
 export async function cancelPending(key: string, qid: number): Promise<boolean> {
-  const q = readDraft(key).queue.find((r) => r.id === qid);
+  const all = readDraft(key).queue;
+  const at = all.findIndex((r) => r.id === qid);
+  const q = all[at];
   if (!q) return false;
   if (!(await unsend(key, qid))) return false;
+  const kept: QueuedMessage = { id: q.id, text: q.text, attachments: q.attachments.slice() };
   recordDraft(key, q.text, new Date().toISOString(), 1);
   dropQueued(key, qid);
   delete letArrive[qid];
   groundFlight(qid);
-  addToast("Cancelled — not sent. Its words are in the message box's history.");
+  addToast("Cancelled — not sent. Its words are in the message box's history too.", {
+    label: "Undo",
+    run: () => {
+      restoreQueued(key, kept, at);
+      // A turn still running takes it at its next step again (backlog 328);
+      // `injectIntoTurn` checks the turn is this chat's and says why not.
+      if (app.busy && !app.parked) void injectIntoTurn(key, kept);
+    },
+  });
   return true;
 }
 

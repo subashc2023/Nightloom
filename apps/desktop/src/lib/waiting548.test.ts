@@ -197,7 +197,8 @@ describe("549: every action is an icon with a name, a tip and the keyboard", () 
       ["send-now", "sendNow(chatKey, row!.id)"],
       ["arrive", "letArrive[row!.id] = true"],
       ["edit", "editPending(chatKey, row!.id)"],
-      ["cancel", "confirming = true"],
+      // Item 925: at once, no confirm (was "confirming = true").
+      ["cancel", "cancelPending(chatKey, row!.id)"],
     ]) {
       const i = fil.indexOf(`data-mt="${mt}"`);
       expect(i, mt).toBeGreaterThan(0);

@@ -930,6 +930,18 @@ export function settleInjected(turn: string, delivered: string[]): void {
   if (changed) schedule();
 }
 
+/**
+ * Item 925: a cancelled held message back where it stood (its toast's
+ * Undo) — at `at` in the queue, or the end if the queue is shorter now. It
+ * keeps its row id; one already back (a second Undo) is not added twice.
+ */
+export function restoreQueued(key: string, q: QueuedMessage, at: number): void {
+  const d = draftFor(key);
+  if (d.queue.some((r) => r.id === q.id)) return;
+  d.queue.splice(Math.max(0, Math.min(at, d.queue.length)), 0, q);
+  schedule();
+}
+
 /** Drop a held message. His click, not the app's. */
 export function dropQueued(key: string, id: number): void {
   const d = drafts[key];

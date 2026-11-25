@@ -12,6 +12,7 @@
 import { app, addToast, send } from "./state.svelte";
 import { abortWrapUp, beginWrapUp, message, noteActivity, wrapUpToSend } from "./handoff.svelte";
 import { requestWrapUp } from "./wrapAsides.svelte";
+import { launch } from "./sendMotion";
 
 /** `/handoff`, alone in the box (spaces around it are fine). */
 export function isHandoffCommand(text: string): boolean {
@@ -29,8 +30,9 @@ export function handOffBlock(): string | null {
  * Send the wrap-up now, as a turn of its own. `dispatch` is how the caller
  * sends (the composer's own, which also drains its queue and restores a
  * failed send); the default is a plain send that puts a failed wrap-up back.
+ * `from` is where the words leave from, for the send motion (item 926).
  */
-export async function handOffNow(dispatch?: (text: string) => Promise<void>): Promise<void> {
+export async function handOffNow(dispatch?: (text: string) => Promise<void>, from?: Element | null): Promise<void> {
   const wrapUpText = message(app.activeSessionId);
   if (app.busy || !app.connection || !wrapUpText.trim()) return;
   noteActivity();
@@ -45,6 +47,10 @@ export async function handOffNow(dispatch?: (text: string) => Promise<void>): Pr
       return;
     }
     beginWrapUp(chat);
+    // Item 926: the wrap-up flies into the thread as a typed send does
+    // (backlog 194) — from the control that sent it (`from`: the button, or
+    // the box for `/handoff`), measured now, after any aside picker.
+    if (from?.isConnected) launch("chat", from);
     const out = extra ? `${text}\n\n${extra}` : text;
     if (dispatch) {
       await dispatch(out);

@@ -9,7 +9,7 @@
   import type { Attachment } from "./types";
   import WaitAct from "./WaitAct.svelte";
   import FoldText from "./FoldText.svelte";
-  import { fly, launchAt, reducedMotion, takeLaunch } from "./sendMotion";
+  import { arrive as arriveFrom, fly, launchAt, QUEUED_CHANNEL, reducedMotion, takeLaunch } from "./sendMotion";
   import { handoff } from "./handoff.svelte";
   import { app } from "./state.svelte";
   import { interruptLit, mainNow } from "./interruptLit";
@@ -90,7 +90,6 @@
   const arrive = $derived(row ? letArrive[row.id] === true : false);
   /** Item 536: what *Send now* does for this row, and why it is not handed in. */
   const plan = $derived(row && st ? bubblePlan(chatKey, row.id) : null);
-  let confirming = $state(false);
   let working = $state(false);
   /**
    * Item 720: whether *Interrupt and send* is the better option now — the
@@ -227,7 +226,8 @@
     <span class="ns-k">You</span>
   </div>
   {#if pending && row}
-    <div class="mt-bubble" bind:this={bubbleEl}>
+    <!-- Item 924: sent mid-reply, it flies from the box to here. -->
+    <div class="mt-bubble" bind:this={bubbleEl} use:arriveFrom={{ channel: QUEUED_CHANNEL, bubble: ".user-bubble" }}>
       <FoldText foldKey={`q:${row.id}`}>
         <Bubble text={row.text} {images} {documents} {sending} />
       </FoldText>
@@ -239,11 +239,9 @@
   {/if}
   {#if pending && row && st}
     <div class="mt-actions" role="group" aria-label="this message is not sent yet">
-      {#if confirming}
-        <span class="mt-ask">Cancel this message? It is not sent; its words go to the box's history.</span>
-        <button class="ns-btn small danger" disabled={working} onclick={() => void run(() => cancelPending(chatKey, row!.id))}>Cancel message</button>
-        <button class="ns-btn ghost small" onclick={() => (confirming = false)}>Keep it</button>
-      {:else}
+      <!-- Item 925: no "Cancel message / Keep it" ask — Cancel goes at once;
+           its toast's Undo puts the message back (his words: "it should
+           jus delete it"). -->
         {#if held && !aside}
           <WaitAct
             icon="send"
@@ -315,9 +313,8 @@
         {/if}
         {#if st !== "replying"}
           <WaitAct icon="pencil" label="Edit" hint="take it back into the message box to change it" data-mt="edit" disabled={working} onclick={() => void run(() => editPending(chatKey, row!.id))} />
-          <WaitAct icon="x" label="Cancel" hint="do not send it (asks first)" data-mt="cancel" disabled={working} onclick={() => (confirming = true)} />
+          <WaitAct icon="x" label="Cancel" hint="do not send it (Undo in the toast brings it back)" data-mt="cancel" disabled={working} onclick={() => void run(() => cancelPending(chatKey, row!.id))} />
         {/if}
-      {/if}
     </div>
   {/if}
 </div>
@@ -332,16 +329,14 @@
     {/if}
     <span class="ns-k">You</span>
   </div>
-  <div class="mt-bubble">
+  <div class="mt-bubble" use:arriveFrom={{ channel: QUEUED_CHANNEL, bubble: ".user-bubble", active: pending }}>
     <Bubble text={row?.text ?? delivered?.text ?? ""} {images} {documents} {sending} />
   </div>
   {#if pending && row && st}
     <div class="mt-actions" role="group" aria-label="this message is not sent yet">
-      {#if confirming}
-        <span class="mt-ask">Cancel this message? It is not sent; its words go to the box's history.</span>
-        <button class="ns-btn small danger" disabled={working} onclick={() => void run(() => cancelPending(chatKey, row!.id))}>Cancel message</button>
-        <button class="ns-btn ghost small" onclick={() => (confirming = false)}>Keep it</button>
-      {:else}
+      <!-- Item 925: no "Cancel message / Keep it" ask — Cancel goes at once;
+           its toast's Undo puts the message back (his words: "it should
+           jus delete it"). -->
         {#if offersReply(st)}
           <button
             class="ns-btn small"
@@ -384,9 +379,8 @@
         {/if}
         {#if st !== "replying"}
         <button class="ns-btn ghost small" data-mt="edit" disabled={working} use:tip={"Take it back into the message box to change it"} onclick={() => void run(() => editPending(chatKey, row!.id))}>Edit</button>
-        <button class="ns-btn ghost small" data-mt="cancel" disabled={working} use:tip={"Do not send it"} onclick={() => (confirming = true)}>Cancel</button>
+        <button class="ns-btn ghost small" data-mt="cancel" disabled={working} use:tip={"Do not send it (Undo in the toast brings it back)"} onclick={() => void run(() => cancelPending(chatKey, row!.id))}>Cancel</button>
         {/if}
-      {/if}
     </div>
   {/if}
 </div>
@@ -466,10 +460,6 @@
   .ns-btn.dim:hover,
   .ns-btn.dim:focus-visible {
     opacity: 0.85;
-  }
-  .mt-ask {
-    font-size: 12px;
-    color: var(--ink);
   }
   /* Item 549: the icon row sits tight under the bubble. */
   .fil .mt-actions {

@@ -37,6 +37,9 @@ export const FLIGHT_MS = 340;
 export const REVEAL_MS = 180;
 export const SETTLE_MS = 420;
 export const TOTAL_MS = FLIGHT_MS + SETTLE_MS;
+/** Item 924: the channel of a message sent while a turn runs — it lands on
+ *  its waiting bubble (`MidTurnBubble`), the main chat's and an aside's. */
+export const QUEUED_CHANNEL = "queued";
 /** A launch not taken within this long is stale (the send failed, or went to the queue). */
 export const LAUNCH_TTL_MS = 1500;
 

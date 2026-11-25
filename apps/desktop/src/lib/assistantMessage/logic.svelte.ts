@@ -3,7 +3,7 @@
 // one look binds to something the other does not. Moved verbatim from AssistantMessage.svelte's script.
 // Every Copy button goes through the in-app clipboard ring (backlog 173).
 import { copyText } from "../clipRing.svelte";
-import { type Segment, addToast, app, openContent, startContentDrag, type SubagentRow } from "../state.svelte";
+import { type Segment, addToast, app, endContentDrag, openContent, startContentDrag, type SubagentRow } from "../state.svelte";
 import { gapLead, gapPhase, liveFor } from "../liveContext";
 import { shortTokens } from "../contextDial";
 import { liveContextOf, stepMarksOf } from "../liveContext.svelte";
@@ -139,6 +139,19 @@ export interface FileCard {
   path: string;
   label: string;
   size: number;
+}
+
+/**
+ * Item 920: an Agent row's drag ended this far from its press — a drag he
+ * meant (onto a tab strip), not a click that jittered past WebKit's 3 px
+ * drag start. 12 px: a trackpad press moves a few; a drag to a strip moves
+ * far more. A drag end reported at 0,0 (an engine that gives no place)
+ * counts as away, which is the old behaviour.
+ */
+export const DRAG_AWAY_PX = 12;
+export function draggedAway(from: { x: number; y: number }, to: { x: number; y: number }): boolean {
+  if (to.x === 0 && to.y === 0) return true;
+  return Math.hypot(to.x - from.x, to.y - from.y) >= DRAG_AWAY_PX;
 }
 
 export function assistantMessageLogic(props: () => AssistantMessageLogicProps) {
@@ -350,8 +363,13 @@ export function assistantMessageLogic(props: () => AssistantMessageLogicProps) {
   // handled at its press.
   function press(e: PointerEvent, i: number, seg: Segment): void {
     if (e.button !== 0) return;
+    pressedAt = { x: e.clientX, y: e.clientY };
     toggle(i, seg);
   }
+  /** Where the last row press was (item 920), for telling a drag from a click. */
+  let pressedAt: { x: number; y: number } | null = null;
+  /** The Agent row a drag started on, and where its press was (item 920). */
+  let dragFrom: { i: number; seg: Segment; x: number; y: number } | null = null;
   function keyClick(e: MouseEvent, i: number, seg: Segment): void {
     if (e.detail === 0) toggle(i, seg);
   }
@@ -374,10 +392,20 @@ export function assistantMessageLogic(props: () => AssistantMessageLogicProps) {
   }
   /** The press already flipped the row (the toggle is on pointerdown, for
    *  the streaming reason above); a press that turns into a drag was not a
-   *  click, so the flip is undone as the drag starts. */
+   *  click, so the flip is undone — ~~as the drag starts~~ (item 920,
+   *  2026-11-25: WebKit starts a drag after 3 px, so a trackpad click that
+   *  moved that much opened the row and shut it in the same instant — the
+   *  Agent row "can't be clicked open") — when the drag ends, and only if
+   *  the pointer travelled like a drag ({@link draggedAway}). */
   function dragAgent(e: DragEvent, i: number, seg: Segment, content: TabContent): void {
-    toggle(i, seg);
+    dragFrom = pressedAt ? { i, seg, ...pressedAt } : null;
     startContentDrag(e, content);
+  }
+  function dragAgentEnd(e: DragEvent): void {
+    endContentDrag();
+    const from = dragFrom;
+    dragFrom = null;
+    if (from && draggedAway(from, { x: e.clientX, y: e.clientY })) toggle(from.i, from.seg);
   }
 
   function pressFold(e: PointerEvent, key: string): void {
@@ -784,6 +812,7 @@ export function assistantMessageLogic(props: () => AssistantMessageLogicProps) {
       return diff;
     },
     dragAgent,
+    dragAgentEnd,
     get files() {
       return files;
     },
