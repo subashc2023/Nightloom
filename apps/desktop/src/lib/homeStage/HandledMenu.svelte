@@ -15,6 +15,8 @@
   import Detail from "./Detail.svelte";
   import { bag } from "./stageState.svelte";
   import { handledRows, pruneMarked, unseenWords } from "./watch";
+  import { arriveWhen } from "./arrive";
+  import { classic } from "../layout.svelte";
 
   const ui = bag("handled", { open: false, scroll: 0, row: null as string | null, marked: {} as Record<string, number> });
   const h = $derived(handledRows(home.rows, home.seenAt, ui.marked));
@@ -23,6 +25,13 @@
   const feedLight = (kind: string) =>
     /failed|stuck/.test(kind) ? "bad" : /question|approval|limit|waiting|hand_off/.test(kind) ? "warn" : /changes|started/.test(kind) ? "live" : "ok";
 
+  // Item 944: the button arrives when Home's first handled row lands while he is looking (not at every open).
+  let drawn = false;
+  $effect(() => {
+    const t = setTimeout(() => (drawn = true), 1500);
+    return () => clearTimeout(t);
+  });
+  const late = arriveWhen(() => drawn && !classic());
   let root = $state<HTMLElement | null>(null);
   let btn = $state<HTMLElement | null>(null);
   const mark = (key: string) => {
@@ -75,7 +84,9 @@
   }
 </script>
 
-<span class="hm" bind:this={root} data-handled>
+<!-- Item 944: the button arrives with the first thing Home handles; a Home that has handled nothing has none. -->
+{#if home.rows.length > 0 || ui.open}
+<span class="hm" bind:this={root} data-handled use:late>
   <button class="hm-btn" class:on={ui.open} class:has={h.unseen > 0} bind:this={btn} aria-haspopup="dialog" aria-expanded={ui.open} onclick={() => (ui.open = !ui.open)} use:tip={ui.open ? "" : h.unseen ? `What Home handled\n${h.unseen} you have not seen` : "What Home handled\nAll seen"}>
     <Icon name="check" size={13} /><span class="hm-t">Handled</span>
     {#if h.unseen > 0}<span class="hm-n" aria-label="{h.unseen} not seen">{unseenWords(h.unseen)}</span>{/if}
@@ -115,6 +126,7 @@
     </div>
   {/if}
 </span>
+{/if}
 
 <style>
   .hm { position: relative; flex: none; display: inline-flex; }

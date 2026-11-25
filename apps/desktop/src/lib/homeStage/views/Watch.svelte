@@ -25,6 +25,11 @@
   import { bag } from "../stageState.svelte";
   import { sourceRows, sourceGroups } from "../watch";
   import { tip } from "../../tip";
+  import { classic } from "../../layout.svelte";
+  import { isScanMessage } from "../../home";
+  import { stageHost } from "../host";
+  import { stepsOf } from "../steps";
+  import { arriveWhen, watchShape } from "../arrive";
   import { nudge } from "../tasks.svelte";
   import MathText from "../../MathText.svelte";
 
@@ -54,6 +59,17 @@
   const mine = $derived(homeNeedsNow());
   const needs = $derived(mine.rows);
   const elsewhere = $derived(nightshiftWords(mine));
+  // Item 944: Home starts simple and grows — a section with nothing in it is not drawn (no empty board, no bare
+  // heading); it arrives the first time it has something. While nothing needs him, one calm line says so.
+  const stepCount = $derived(stepsOf(stageHost.now.events(), 3, isScanMessage).length);
+  const shape = $derived(watchShape({ sources: sources.length, reading: home.reach === null, needs: needs.length, steps: stepCount, busy: app.busy }));
+  // A section arrives only when it appears after the view is drawn (not at every open of Watching).
+  let drawn = false;
+  $effect(() => {
+    const t = setTimeout(() => (drawn = true), 700);
+    return () => clearTimeout(t);
+  });
+  const late = arriveWhen(() => drawn && !classic());
   const checked = $derived(home.reach?.checked_at ? `checked ${clock(home.reach.checked_at)}` : "not checked yet");
   // Check now on one source is one of the four that start a short Home turn (846 §2, blocker 2143): the check itself
   // is code (no model); once it is back, Home is told what it found and may act on it.
@@ -67,9 +83,19 @@
   }
 </script>
 
-<div class="h9-grid">
-  <div class="h9-row">
-    <div class="h9-col h9-fill">
+<div class="w-watch" class:bare={shape.bare}>
+{#if shape.calm}
+  <div class="w-calm" use:late>
+    <i class="w-light ok" aria-hidden="true"></i><span class="w-calm-t">{shape.calm}</span>
+    {#if elsewhere}<button class="w-else inline" use:tip={"Not listed on Home\nOpens the Needs-you view"} onclick={() => (app.showNeeds = true)}><span class="w-else-t">Nightshift · {elsewhere}</span><span class="w-else-go">in Needs you →</span></button>{/if}
+  </div>
+{/if}
+{#if !shape.bare}
+<div class="h9-grid" class:nosteps={!shape.steps} class:onlysteps={!shape.sources && !shape.needs}>
+  {#if shape.sources || shape.needs}
+  <div class="h9-row" class:w-lone={!shape.needs}>
+    {#if shape.sources}
+    <div class="h9-col h9-fill" use:late>
       <Panel title="Sources" sub={checked} live={home.checking}>
         {#snippet tools()}<Btn small icon="refresh" disabled={home.checking} tip={"Ask Claude Code what Home reaches now\nNo model request"} onclick={() => void check()}>{home.checking ? "Checking…" : "Check all"}</Btn>{/snippet}
         <!-- Item 873: each service one group with its own mark and tint (sourceLook.ts) — a service with several
@@ -108,7 +134,9 @@
         {#if sources.length === 0}<Loading label={home.reach === null ? "Reading what Home can reach" : "No sources yet — connect one in Settings → Home"} lines={2} />{/if}
       </Panel>
     </div>
-    <div class="h9-col h9-fill">
+    {/if}
+    {#if shape.needs}
+    <div class="h9-col h9-fill" use:late>
       <Panel title="Needs you" sub={String(needs.length)} lock={needs.length > 0}>
         <div class="w-needs">
           {#each needs as n (n.id)}
@@ -147,15 +175,18 @@
               </span>
             </div>
           {/each}
-          {#if needs.length === 0}<Loading label="Nothing needs you — Home is watching" lines={2} />{/if}
           <!-- Item 945: Nightshift's open blockers and shipped items are not listed here (he answers those where he
                runs Nightshift); one quiet line says how many, and opens the Needs-you view, which lists every one. -->
           {#if elsewhere}<button class="w-else" use:tip={"Not listed on Home\nOpens the Needs-you view"} onclick={() => (app.showNeeds = true)}><span class="w-else-t">Nightshift · {elsewhere}</span><span class="w-else-go">in Needs you →</span></button>{/if}
         </div>
       </Panel>
     </div>
+    {/if}
   </div>
-  <div class="h9-col h9-wide"><Panel title="Home's steps" live={app.busy} flush><Steps id="watch" /></Panel></div>
+  {/if}
+  {#if shape.steps}<div class="h9-col h9-wide" use:late><Panel title="Home's steps" live={app.busy} flush><Steps id="watch" /></Panel></div>{/if}
+</div>
+{/if}
 </div>
 
 <style>
@@ -189,6 +220,18 @@
   .w-chk { flex: none; opacity: 0.55; transition: opacity 120ms; }
   .w-src:hover .w-chk, .w-src.isopen .w-chk, .w-chk:focus-within { opacity: 1; }
   .w-needs { display: flex; flex-direction: column; gap: 8px; }
+  /* Item 944: the view is the calm line (while nothing needs him) over whichever sections have something. */
+  .w-watch { height: 100%; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .w-watch > :global(.h9-grid) { flex: 1; min-height: 0; height: auto; }
+  .w-watch :global(.h9-grid.nosteps), .w-watch :global(.h9-grid.onlysteps) { grid-template-columns: minmax(0, 1fr); }
+  .w-lone { max-width: 720px; }
+  .w-calm { flex: none; display: flex; align-items: baseline; gap: 10px; padding: 4px 6px 0; font-size: 13px; color: var(--ink2); }
+  .w-calm > .w-light { align-self: center; }
+  .w-calm-t { min-width: 0; }
+  .w-watch.bare { justify-content: center; align-items: center; }
+  .w-watch.bare .w-calm { max-width: 520px; flex-wrap: wrap; font-size: 14px; line-height: 1.5; }
+  .w-else.inline { width: auto; flex: none; margin-left: auto; padding: 0; }
+  .w-watch.bare .w-else.inline { margin-left: 17px; }
   .w-else { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 6px 4px 2px; border: 0; background: none; color: var(--dim); font: 11.5px var(--sans); text-align: left; cursor: pointer; }
   .w-else-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .w-else-go { flex: none; margin-left: auto; font: 10.5px var(--mono); letter-spacing: 0.04em; opacity: 0.75; }

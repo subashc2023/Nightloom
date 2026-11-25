@@ -224,6 +224,9 @@
   }
 
   // ---- the place kept: scroll and folds ----
+  // Item 944: whether Needs you has anything to draw, and whether the whole of Home's own column is empty.
+  const anyNeeds = $derived(needs.length + cards.length + heldRoutes.length + heldRows.length > 0);
+  const bareHome = $derived(!anyNeeds && !scan && !(running?.chats.length));
   let kept = $state(loadHomeKept());
   // Item 946: the same feed as a notification list — every news row, the unseen ones marked.
   const handled = $derived(handledRows(newsRows(feed?.rows ?? []), feed?.seen_at ?? null, kept.marked));
@@ -561,8 +564,14 @@
   <HomeStage {client} {home} {scan} needs={needs.length + cards.length} {fil} tick={bump} bind:watching bind:where={stageWhere} onopen={(c, p) => onopen(c, p)} {onnote} />
 
   {#if watching}
+  <!-- Item 944: Home starts simple and grows — a section with nothing in it is not drawn; the first time it has
+       something it arrives. While nothing needs him, one calm line says so. -->
+  {#if !anyNeeds}
+    <p class="h-calm" class:fil>{loading ? "Reading…" : bareHome ? "Nothing needs you. Home is watching — what needs you, today's scan and what is running show up here as they happen." : "Nothing needs you — Home is watching."}</p>
+  {/if}
   <!-- 1. Needs you -->
-  <div class="h-sec" data-home-section="needs">
+  {#if anyNeeds}
+  <div class="h-sec arrive" class:fil data-home-section="needs">
     {@render head("needs", "Needs you", needs.length + cards.length)}
     {#if !folded("needs")}
       {#each cards as route (route.id)}
@@ -658,9 +667,11 @@
       {/if}
     {/if}
   </div>
+  {/if}
 
   <!-- 2. Today's scan -->
-  <div class="h-sec" data-home-section="scan">
+  {#if scan}
+  <div class="h-sec arrive" class:fil data-home-section="scan">
     {@render head("scan", scan && !scan.today ? "Last scan" : "Today's scan", null, scan ? scanWhen(scan, (ms) => clock12(ms)) : null)}
     {#if !folded("scan")}
       {#if !scanLoaded}
@@ -676,11 +687,13 @@
       {/if}
     {/if}
   </div>
+  {/if}
 
   <!-- 3. Done since you looked: item 946 — the Handled button in the header's corner (above). -->
 
   <!-- 4. Running -->
-  <div class="h-sec" data-home-section="running">
+  {#if running?.chats.length}
+  <div class="h-sec arrive" class:fil data-home-section="running">
     {@render head("running", "Running", running?.chats.length ?? 0)}
     {#if !folded("running")}
       {#if !running || running.chats.length === 0}
@@ -698,7 +711,7 @@
       {/if}
     {/if}
   </div>
-
+  {/if}
   {/if}
 
   <!-- 5. Tell Home, and the Jobs row -->
@@ -874,6 +887,29 @@
     font-size: 12px;
     font-weight: 400;
     white-space: nowrap;
+  }
+  /* Item 944: the calm line, and a section's arrival (Jarvis; plain otherwise). */
+  .h-calm {
+    max-width: 760px;
+    margin: 14px auto 6px;
+    padding: 0 2px;
+    color: var(--dim);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .h-sec.arrive.fil {
+    animation: h-arrive 380ms cubic-bezier(0.2, 0.9, 0.25, 1.05) backwards;
+  }
+  @keyframes h-arrive {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .h-sec.arrive.fil {
+      animation: none;
+    }
   }
   /* Item 946: the Handled button and the list it opens downward under the header. */
   .h-hbtn {

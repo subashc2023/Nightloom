@@ -339,3 +339,8 @@
 .h9-more { padding: 6px 10px; font-size: 12px; color: var(--dim, #8a93a3); }
 /* Item 894: on the Mac the views fill the stage area, so the line floats over its foot, above the views. */
 .h9-stale.over { position: absolute; left: 16px; bottom: 12px; margin: 0; z-index: 21; background: var(--bg, #0d1117); }
+
+/* Item 944: a section of Home that appears after the view is drawn (arrive.ts) — a short rise out of an amber glow. */
+.h9-arrive { animation: h9-arrive 420ms cubic-bezier(0.2, 0.9, 0.25, 1.05) backwards; }
+@keyframes h9-arrive { from { opacity: 0; transform: translateY(10px) scale(0.985); filter: drop-shadow(0 0 14px color-mix(in srgb, var(--accent) 60%, transparent)); } }
+@media (prefers-reduced-motion: reduce) { .h9-arrive { animation: none; } }
