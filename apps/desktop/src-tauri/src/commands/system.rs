@@ -335,6 +335,158 @@ pub(crate) fn notify_usage_refreshed(
     }
 }
 
+/// The event the needs-you banner's buttons raise (item 973): `{ id,
+/// answer }`, `answer` one of [`banner_answer`]'s words. The frontend
+/// routes it to the waiting call with exactly that id, or says the call was
+/// answered already.
+#[cfg(target_os = "macos")]
+pub(crate) const APPROVAL_BANNER_ANSWERED: &str = "approval-banner-answered";
+
+/// The needs-you banner's one button (item 973): Allow on a banner that
+/// shows the whole call, else Deny. Its title is what the response carries
+/// back, so it is matched by these constants.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const BANNER_ALLOW: &str = "Allow";
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const BANNER_DENY: &str = "Deny";
+/// The close button's label. Closing answers nothing: it is not known
+/// whether clearing or swiping a banner also reports as this button, and a
+/// silent Deny while he is away would derail the chat (coordinator's call,
+/// 2026-11-25).
+#[cfg(target_os = "macos")]
+pub(crate) const BANNER_LATER: &str = "Later";
+
+/// What a press on the needs-you banner answers (item 973). `offered` is
+/// the one button the banner carried; `action` the title the notification
+/// centre reported for an action-button press. `allow` only from the
+/// offered Allow button, `deny` only from the offered Deny button, `open`
+/// for a click on the body (or an action title the banner did not offer),
+/// and nothing for the close button, a clear, a time-out — never an answer
+/// by default.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn banner_answer(
+    offered: &str,
+    action: Option<&str>,
+    closed: bool,
+    clicked: bool,
+) -> Option<&'static str> {
+    match action {
+        Some(a) if a == offered && a == BANNER_ALLOW => Some("allow"),
+        Some(a) if a == offered && a == BANNER_DENY => Some("deny"),
+        Some(_) => Some("open"),
+        None if closed => None,
+        None if clicked => Some("open"),
+        None => None,
+    }
+}
+
+/// The needs-you banner with its button (item 973, from Caprock's
+/// notification, report 762). macOS gives a banner one action button (the
+/// crate's multi-action dropdown rides on private keys, unverified), so:
+/// **Allow** when the frontend judged the banner shows the whole call
+/// (`allow`, `bannerAnswer.ts bannerAllows`) — Deny for that call is on its
+/// card — else **Deny**. The close button is "Later" and answers nothing.
+/// Posted like the Refresh-now banner, through `mac-notification-sys` on a
+/// thread of its own that waits for the press; the press is emitted as
+/// `approval-banner-answered` with the call's `id` and the frontend answers
+/// that call, and only that one. A button answers without bringing the
+/// window forward; a click on the body does. Off macOS it is `notify`.
+#[tauri::command]
+pub(crate) fn notify_approval(
+    app: AppHandle,
+    id: String,
+    title: String,
+    body: String,
+    allow: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::thread::Builder::new()
+            .name("approval-banner".into())
+            .spawn(move || {
+                // See `notify_usage_refreshed`: without it macOS asks
+                // "Where is use_default?".
+                let _ = mac_notification_sys::set_application("app.nightloom.desktop");
+                let offered = if allow { BANNER_ALLOW } else { BANNER_DENY };
+                let mut n = mac_notification_sys::Notification::new();
+                n.title(&title)
+                    .message(&body)
+                    .main_button(mac_notification_sys::MainButton::SingleAction(offered))
+                    .close_button(BANNER_LATER)
+                    .wait_for_click(true);
+                use mac_notification_sys::NotificationResponse as R;
+                let answer = match n.send() {
+                    Ok(R::ActionButton(a)) => banner_answer(offered, Some(&a), false, false),
+                    Ok(R::CloseButton(_)) => banner_answer(offered, None, true, false),
+                    Ok(R::Click) => banner_answer(offered, None, false, true),
+                    _ => None,
+                };
+                let Some(answer) = answer else { return };
+                if answer == "open"
+                    && let Some(w) = app.get_window("main")
+                {
+                    let _ = w.unminimize();
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+                let _ = app.emit(
+                    APPROVAL_BANNER_ANSWERED,
+                    serde_json::json!({ "id": id, "answer": answer }),
+                );
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (id, allow);
+        notify(app, title, body)
+    }
+}
+
+#[cfg(test)]
+mod banner_answer_tests {
+    use super::*;
+
+    #[test]
+    fn allow_comes_only_from_an_offered_allow_button() {
+        assert_eq!(
+            banner_answer("Allow", Some("Allow"), false, false),
+            Some("allow")
+        );
+        // A Deny banner never allows, whatever title comes back.
+        assert_eq!(
+            banner_answer("Deny", Some("Allow"), false, false),
+            Some("open")
+        );
+        assert_eq!(
+            banner_answer("Allow", Some("Show"), false, false),
+            Some("open")
+        );
+    }
+
+    #[test]
+    fn deny_comes_only_from_an_offered_deny_button() {
+        assert_eq!(
+            banner_answer("Deny", Some("Deny"), false, false),
+            Some("deny")
+        );
+        // An Allow banner never denies.
+        assert_eq!(
+            banner_answer("Allow", Some("Deny"), false, false),
+            Some("open")
+        );
+    }
+
+    #[test]
+    fn close_clear_and_time_out_answer_nothing_and_a_click_opens() {
+        assert_eq!(banner_answer("Allow", None, true, false), None);
+        assert_eq!(banner_answer("Deny", None, true, false), None);
+        assert_eq!(banner_answer("Allow", None, false, false), None);
+        assert_eq!(banner_answer("Deny", None, false, true), Some("open"));
+    }
+}
+
 /// The sleep-safe switches (nightshift backlog 101), sent by `sleep.ts` at
 /// start-up and on every change. The frontend keeps them, the way it keeps
 /// the notification switches; Rust only needs to know what to spawn. A

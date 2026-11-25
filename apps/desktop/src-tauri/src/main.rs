@@ -1876,6 +1876,7 @@ fn main() {
             commands::system::open_url,
             commands::system::notify,
             commands::system::notify_usage_refreshed,
+            commands::system::notify_approval,
             commands::system::set_power_prefs,
             commands::system::power_hold,
             commands::system::set_zoom,

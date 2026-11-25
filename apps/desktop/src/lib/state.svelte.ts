@@ -57,7 +57,8 @@ import {
 import { madeChatRow } from "./afterWrite";
 import { coalesced } from "./notesFollow";
 import { runLaunch } from "./launch.svelte";
-import { chatName, notifyNeedsYou, notifyNudge, postHeldNeedsYou } from "./notify";
+import { chatName, notifyNeedsYou, notifyNudge, postHeldNeedsYou, postedBanner } from "./notify";
+import { answeredLine, routeBannerPress, staleLine, type BannerPress } from "./bannerAnswer";
 import { connectorWords } from "../remote/rules";
 import { onAway, watchPresence } from "./away.svelte";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
@@ -1153,6 +1154,11 @@ export async function init(): Promise<void> {
   // it still waiting (nightshift backlog 373).
   watchPresence();
   onAway(() => void postHeldNeedsYou(approvalWaits));
+  // Item 973: Allow or Deny pressed on the needs-you banner — answers the
+  // call with exactly that id, or says it was answered already.
+  await listen<{ id: string; answer: BannerPress }>("approval-banner-answered", (e) => {
+    void answerFromBanner(e.payload.id, e.payload.answer);
+  });
   // The phone page (nightshift backlog 091, Shape B; item 246 wave 1):
   // a message, an answer, a stop or a chat action from the phone reaches
   // this window as an event and runs through the same state functions a
@@ -2932,6 +2938,48 @@ export async function resolveApproval(
     addToast(`Your answer was not taken: ${String(e)}`);
     return false;
   }
+}
+
+/**
+ * A press on the needs-you banner (item 973; routing and its rules in
+ * `bannerAnswer.ts`). On screen it is the card's own `resolveApproval`; a
+ * background chat's call is answered by its id, as the backend keys every
+ * waiting call, and leaves that chat's list. Either way he is told what was
+ * done and when — a toast here and a banner where he is — or, for a call no
+ * longer waiting, that nothing was.
+ */
+export async function answerFromBanner(id: string, press: BannerPress, now = Date.now()): Promise<void> {
+  const route = routeBannerPress(id, press, app.pendingApprovals, app.background);
+  const named = postedBanner(id);
+  if (route.act === "open") return;
+  if (route.act === "stale") {
+    const line = staleLine(named?.name ?? null, named?.chat ?? null);
+    addToast(line);
+    void api.notify("Already answered", line).catch(() => {});
+    return;
+  }
+  const { req, decision } = route;
+  const chat = named?.chat ?? (route.background ? backgroundName(route.background) : bannerChat());
+  let ok = true;
+  if (route.background === null) {
+    ok = await resolveApproval(id, req.name, decision);
+  } else {
+    const bg = app.background[route.background];
+    if (bg) bg.approvals = bg.approvals.filter((r) => r.id !== id);
+    try {
+      await api.approveCall(id, req.name, decision);
+    } catch (e) {
+      // Never a card that silently left: it comes back to be answered there.
+      const back = app.background[route.background];
+      if (back && !back.approvals.some((r) => r.id === id)) back.approvals.push(req);
+      addToast(`Your answer from the notification was not taken: ${String(e)}`);
+      ok = false;
+    }
+  }
+  if (!ok) return;
+  const line = answeredLine(decision, req.name, chat, now);
+  addToast(line);
+  void api.notify(decision === "allow" ? "Allowed" : "Denied", line).catch(() => {});
 }
 
 /** Mark a trailing in-progress thinking segment as complete (collapses its pill). */
