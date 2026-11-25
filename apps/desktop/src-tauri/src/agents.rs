@@ -243,6 +243,17 @@ impl Agents {
         }
     }
 
+    /// The newest connection's spec when it runs in `workspace` (item 972):
+    /// the base for a restored chat that has no agent of its own yet, as
+    /// `reserve_for_job` takes it for a job's chat. `None` before the rail
+    /// has connected, or when it runs in another folder.
+    pub fn rail_spec(&self, workspace: Option<&std::path::Path>) -> Option<AgentSpec> {
+        self.inner()
+            .spec
+            .clone()
+            .filter(|s| workspace.is_none_or(|w| s.workspace == w))
+    }
+
     /// Whether `chat`'s agent is held now: its turn or an aside runs
     /// (backlog 582 — a keep-warm ping waits for it).
     pub fn busy(&self, chat: &str) -> bool {

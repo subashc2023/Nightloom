@@ -10,6 +10,7 @@ import * as tabs from "../tabs";
 import { loadSavedWorkspaces, rebuild } from "../tabsStore";
 import type { ProjectInfo, NewProjectPath } from "../types";
 import { isHome } from "../home";
+import { offerRestoredKeepWarm, restoredChats } from "../keepWarmRestored";
 import { switchAside } from "./asides.svelte";
 import { syncNightshiftProject } from "./nightshift.svelte";
 import { leaveNote } from "./notes.svelte";
@@ -576,6 +577,8 @@ export async function restoreTabs(opts: { show?: boolean; newProjectFront?: bool
       // The tab stays; its content opens on the next click.
     }
   }
+  // Item 972: every restored tab's chat is offered to keep-warm, not only the shown one.
+  void offerRestoredKeepWarm(restoredChats(app.tabs));
   const hooks = terminalHooks;
   if (hooks && reopenShells.length > 0 && !hooks.any()) {
     for (const s of reopenShells) {
