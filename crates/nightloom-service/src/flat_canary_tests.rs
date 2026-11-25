@@ -231,6 +231,35 @@ fn an_alarm_is_logged_once_per_id() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// Item 942: a behaviour notice from another CLI version than the one
+/// installed is not in the bell, so it never toasts; the installed
+/// version's own notice and the bundle notice still are.
+#[test]
+fn a_notice_from_an_older_cli_is_not_shown_on_the_installed_one() {
+    let old = cache_alarm(&second(91, 100), FLAT_SECOND, Some("2.1.327")).unwrap();
+    let now = cache_alarm(&second(90, 100), FLAT_SECOND, Some("2.1.331")).unwrap();
+    let unknown = cache_alarm(&second(90, 100), FLAT_SECOND, None).unwrap();
+    let b = bundle_notice(Some("2.1.331"), &["x"], 0).unwrap();
+    // His case: the only line is 2.1.327's, the CLI is 2.1.331.
+    assert!(notices_from(None, vec![old.clone()], Some("2.1.331")).is_empty());
+    let got = notices_from(
+        Some(b.clone()),
+        vec![old.clone(), now.clone(), unknown.clone()],
+        Some("2.1.331"),
+    );
+    assert_eq!(got, vec![b, now.clone()]);
+    // The same notice on the version that raised it still shows.
+    assert_eq!(
+        notices_from(None, vec![old.clone()], Some("2.1.327")),
+        vec![old.clone()]
+    );
+    // No installed version to compare: kept.
+    assert_eq!(
+        notices_from(None, vec![old.clone(), unknown.clone()], None),
+        vec![old, unknown]
+    );
+}
+
 /// Against the CLI installed on this machine: its file still holds both
 /// strings. Reads the file only — no model call, no token. Ignored by
 /// default (CI has no CLI): `cargo test -p nightloom-service flat_canary --

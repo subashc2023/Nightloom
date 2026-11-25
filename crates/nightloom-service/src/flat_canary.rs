@@ -401,14 +401,30 @@ fn raise(alarm: &Alarm) {
 }
 
 /// The bell's notices: the bundle check now, and every behaviour notice
-/// the log holds (the bell drops the ones he dismissed).
+/// the log holds for the installed CLI (the bell drops the ones he
+/// dismissed).
 pub fn notices(binary: &Path) -> Vec<Alarm> {
-    let mut out: Vec<Alarm> = bundle_alarm(binary).into_iter().collect();
-    if let Some(log) = log_path() {
-        for a in read_log(&log) {
-            if a.kind == AlarmKind::Cache && !out.iter().any(|o| o.id == a.id) {
-                out.push(a);
-            }
+    let bundle = bundle_alarm(binary);
+    let logged = log_path().map(|l| read_log(&l)).unwrap_or_default();
+    let installed = crate::cli_update::cached_version(binary);
+    notices_from(bundle, logged, installed.as_deref())
+}
+
+/// [`notices`] off its parts. A behaviour notice raised by another CLI
+/// version than `installed` is dropped (item 942: a 2.1.327 notice
+/// re-toasted on 2.1.331 — an update is the fix it asks for, and a later
+/// failure on the new release is a new notice under a new id). With the
+/// installed version unknown, nothing can be compared and all are kept.
+pub fn notices_from(
+    bundle: Option<Alarm>,
+    logged: Vec<Alarm>,
+    installed: Option<&str>,
+) -> Vec<Alarm> {
+    let mut out: Vec<Alarm> = bundle.into_iter().collect();
+    for a in logged {
+        let current = installed.is_none_or(|v| a.cli_version.as_deref() == Some(v));
+        if a.kind == AlarmKind::Cache && current && !out.iter().any(|o| o.id == a.id) {
+            out.push(a);
         }
     }
     out
