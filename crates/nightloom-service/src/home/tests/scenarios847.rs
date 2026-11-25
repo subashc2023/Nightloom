@@ -201,32 +201,30 @@ fn plan(five: u8, week: u8, stale: bool) -> PlanUsage {
 #[test]
 fn d1_to_d5_the_spend_guard_at_its_lines() {
     let cap = guard::DEFAULT_CAP;
+    let zone = jiff::tz::TimeZone::UTC;
+    let now = at(8, 0);
+    let stop =
+        |p: Option<&PlanUsage>, spent: f64| guard::stop_reason(p, None, spent, cap, now, &zone);
+    assert_eq!(stop(Some(&plan(79, 79, false)), 0.0), None);
     assert_eq!(
-        guard::stop_reason(Some(&plan(79, 79, false)), None, 0.0, cap),
-        None
+        stop(Some(&plan(80, 10, false)), 0.0).as_deref(),
+        Some("the 5-hour window was at 80%")
     );
     assert_eq!(
-        guard::stop_reason(Some(&plan(80, 10, false)), None, 0.0, cap).as_deref(),
-        Some("the 5-hour window is at 80%")
+        stop(Some(&plan(10, 80, false)), 0.0).as_deref(),
+        Some("the weekly window was at 80%")
+    );
+    // Item 951 (was: "a stale figure does not stop a run"): a stale
+    // figure stops it and says so.
+    assert_eq!(
+        stop(Some(&plan(95, 95, true)), 0.0).as_deref(),
+        Some("usage could not be read")
     );
     assert_eq!(
-        guard::stop_reason(Some(&plan(10, 80, false)), None, 0.0, cap).as_deref(),
-        Some("the weekly window is at 80%")
-    );
-    assert_eq!(
-        guard::stop_reason(Some(&plan(95, 95, true)), None, 0.0, cap),
-        None,
-        "a stale figure does not stop a run"
-    );
-    assert_eq!(
-        guard::stop_reason(None, None, cap, cap).as_deref(),
+        stop(None, cap).as_deref(),
         Some("Home has used today's 1% of the week")
     );
-    assert_eq!(
-        guard::stop_reason(None, None, 0.99, cap),
-        None,
-        "offline: runs, cap binds"
-    );
+    assert_eq!(stop(None, 0.99), None, "offline: runs, cap binds");
 }
 
 #[test]
