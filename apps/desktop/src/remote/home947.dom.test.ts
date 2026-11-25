@@ -6,7 +6,7 @@
  *  - /push/feed answering 500 after a good read: the rows of the last read stay, a line says part could not be read;
  *  - an older read that lands after a newer one is dropped (a slow reply must not bring back an answered question).
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import HomeFirst from "./HomeFirst.svelte";
 import { ApiError, Unreachable, type Client, type RemoteState } from "./client";
@@ -143,5 +143,23 @@ describe("947: answering a Needs-you question on the phone", () => {
     sendBtn().click();
     await settle();
     expect(sends).toBe(1);
+  });
+});
+
+describe("947: a read that never answers", () => {
+  it("is the host not answering after 25 s, not 'Reading…' for ever", async () => {
+    vi.useFakeTimers();
+    try {
+      open(fake({ push: () => new Promise(() => {}) }));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(text()).toContain("Reading");
+      await vi.advanceTimersByTimeAsync(26_000);
+      flushSync();
+      expect(text()).toContain("not answering");
+      expect(text()).not.toContain("Reading…");
+      expect(document.querySelector(".h-title")?.textContent).toContain("not read yet");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
