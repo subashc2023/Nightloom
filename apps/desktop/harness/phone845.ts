@@ -22,8 +22,12 @@ const away = q.get("away") === "1";
 // from copies — never committed); empty944=1 is a Home with nothing in it yet; handled=1 opens the Handled list.
 const real = q.get("real944") === "1" ? ((window as unknown as { __real?: { feed: unknown[]; seen_at: string | null; blockers: { id: string; question: string; fields?: Record<string, string> }[] } }).__real ?? null) : null;
 const empty = q.get("empty944") === "1";
-if (q.get("handled") === "1") localStorage.setItem("nightloom.remote.home", JSON.stringify({ handledOpen: true }));
-else localStorage.removeItem("nightloom.remote.home");
+// (Set again in run(), after its storage reset — set here only, the flag was cleared before the page read it.)
+const handledKept = () => {
+  if (q.get("handled") === "1") localStorage.setItem("nightloom.remote.home", JSON.stringify({ handledOpen: true }));
+  else localStorage.removeItem("nightloom.remote.home");
+};
+handledKept();
 
 // The phone's :root token blocks, verbatim from Remote.svelte (`:global(:root…) { … }`).
 {
@@ -52,6 +56,7 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
   const p = url.pathname.replace(/^.*\/api/, "");
   const method = init?.method ?? "GET";
+  if (p === "/home/seen" && method === "POST") return json({ seen_at: new Date().toISOString() });
   if (p === "/home/today") return json({ points: 0.3, cap: 5, week: 41, five_hour: 12, stopped: null });
   if (p === "/home/feed" && (real || empty)) return json({ rows: real ? [...real.feed].reverse() : [], seen_at: real ? real.seen_at : null, as_of: ago(1), home: { project: "home", chat: empty ? null : "h-today" } });
   if (p === "/home/held" && real) return json({ blockers: real.blockers.filter((b) => b.fields?.default === "held").map((b) => ({ project: "ns", project_name: "Nightshift (value generalization)", id: b.id, item: null, question: b.question })) });
@@ -122,6 +127,7 @@ const props = () => ({
 
 async function run() {
   localStorage.clear();
+  handledKept();
   applyLook(q.get("classic") === "1" ? "classic" : "filament");
   const TAB: Record<string, string> = { brief: "brief", timeline: "task:moving-the-review", todo: "task:working-your-list", triage: "task:sorting-what-arrived", browse: "task:renewing-the-permit", run: "task:merge-round-t", research: "task:cache-pricing" };
   Object.assign(kept, { focus: TAB[s] ?? "watch", strip: "open", stripFor: "", ui: {} });
@@ -172,6 +178,38 @@ async function run() {
     restart = ` restart=${saved.length}B told=${told.length} notes=${notes.length}`;
   }
   void root;
+  // click946=1 (items 944–946 review): the Handled button's tap test on the phone — open, a row's ✓, Mark all seen,
+  // shut and open again (kept). Read off the caption as `h946=PASS` or `h946=FAIL(<which>)`.
+  let h946 = "";
+  if (q.get("click946") === "1") {
+    const fails: string[] = [];
+    const $ = (sel: string) => document.querySelector<HTMLElement>(sel);
+    const n = () => Number(($(".h-hn")?.textContent ?? "0").replace("+", "")) || 0;
+    const wasOpen = !!$(".h-handled");
+    if (!wasOpen) $("[data-home-handled]")?.click();
+    await wait(300);
+    if (!$(".h-handled")) fails.push("open");
+    const u0 = n();
+    const rows0 = document.querySelectorAll(".h-hrow").length;
+    $(".h-hseen")?.click();
+    await wait(200);
+    if (n() !== u0 - 1) fails.push(`rowcheck(${n()})`);
+    if (document.querySelectorAll(".h-hrow").length !== rows0) fails.push("rowcheck-dropped");
+    const kept946 = localStorage.getItem("nightloom.remote.home") ?? "";
+    if (!/"handledOpen":true/.test(kept946) || !/"marked":\{"/.test(kept946)) fails.push("notkept");
+    const all = [...document.querySelectorAll<HTMLButtonElement>(".h-hhead button")].find((b) => /Mark all seen/.test(b.textContent ?? ""));
+    all?.click();
+    await wait(400);
+    if ($(".h-hn")) fails.push(`markall(${n()})`);
+    if (document.querySelectorAll(".h-hrow").length !== rows0) fails.push("markall-dropped");
+    $("[data-home-handled]")?.click();
+    await wait(200);
+    if ($(".h-handled")) fails.push("shut");
+    $("[data-home-handled]")?.click();
+    await wait(300);
+    if (!$(".h-handled")) fails.push("reopen");
+    h946 = ` h946=${fails.length ? `FAIL(${fails.join(",")})` : "PASS"} u0=${u0} rows=${rows0}${wasOpen ? " was-open" : ""}`;
+  }
   // at=sources (item 873): the page scrolled to Home on this Mac, so the shot shows the Mac's apps and their marks.
   if (q.get("at") === "sources") {
     const sec = document.querySelector<HTMLElement>('[data-home-section="sources"]');
@@ -214,7 +252,7 @@ async function run() {
   }
   const piles = [...document.querySelectorAll<HTMLElement>(".g-pile")].map((p) => Math.round(p.getBoundingClientRect().width)).join("/");
   (window as unknown as { __capset: (m: string) => void }).__capset(
-    `845p s=${s}${away ? " away" : ""} tokens=${(window as unknown as { __tokens: number }).__tokens} stage=${st ? `${Math.round(st.getBoundingClientRect().width)}w ${st.className.replace(/svelte-\S+/g, "").replace(/\s+/g, " ").trim()}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} on=${document.querySelector(".h9-tab.on .tn")?.textContent ?? "-"} sections=${document.querySelectorAll("[data-home-section]").length} tell=${document.querySelector("[data-home-tell]") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""} sideways=${wide} out=${out.length}${out.length ? ` (${out.slice(0, 4).join(", ")})` : ""}${piles ? ` piles=${piles}` : ""}${restart} vw${innerWidth}`,
+    `845p s=${s}${away ? " away" : ""} tokens=${(window as unknown as { __tokens: number }).__tokens} stage=${st ? `${Math.round(st.getBoundingClientRect().width)}w ${st.className.replace(/svelte-\S+/g, "").replace(/\s+/g, " ").trim()}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} on=${document.querySelector(".h9-tab.on .tn")?.textContent ?? "-"} sections=${document.querySelectorAll("[data-home-section]").length} tell=${document.querySelector("[data-home-tell]") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""} sideways=${wide} out=${out.length}${out.length ? ` (${out.slice(0, 4).join(", ")})` : ""}${piles ? ` piles=${piles}` : ""}${restart}${h946} vw${innerWidth}`,
   );
 }
 // The page is folded into one file with this script in <head>: wait for the body.

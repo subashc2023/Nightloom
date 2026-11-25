@@ -56,18 +56,37 @@
     const out = (e: Event) => {
       if (root && e.target instanceof Node && !root.contains(e.target)) ui.open = false;
     };
+    // Escape is taken here first (capture) and marked used, so the composer, an aside or a panel that also
+    // listens for Escape does not act on the same key press.
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") (ui.open = false), btn?.focus();
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault();
+      e.stopPropagation();
+      ui.open = false;
+      btn?.focus();
     };
     window.addEventListener("pointerdown", out, true);
-    window.addEventListener("keydown", key);
+    window.addEventListener("keydown", key, true);
     return () => {
       window.removeEventListener("pointerdown", out, true);
-      window.removeEventListener("keydown", key);
+      window.removeEventListener("keydown", key, true);
     };
   });
   // The list's scroll: put back when it opens, kept (a moment after he stops) as he scrolls.
   let saving: ReturnType<typeof setTimeout> | null = null;
+  // The list never runs past the foot of Home's stage (the stage clips it, and the composer sits below): its
+  // height is what is left between the button and the stage's foot, kept as the window is resized.
+  function fit(node: HTMLElement) {
+    const size = () => {
+      const stage = node.closest<HTMLElement>("[data-home-stage]");
+      if (!stage || !btn) return;
+      const room = stage.getBoundingClientRect().bottom - btn.getBoundingClientRect().bottom - 8 - 12;
+      node.style.maxHeight = `${Math.max(160, Math.min(540, Math.floor(room)))}px`;
+    };
+    size();
+    window.addEventListener("resize", size);
+    return { destroy: () => window.removeEventListener("resize", size) };
+  }
   function place(node: HTMLElement) {
     node.scrollTop = ui.scroll;
     const on = () => {
@@ -93,7 +112,7 @@
     <span class="hm-chev" class:open={ui.open} aria-hidden="true">▾</span>
   </button>
   {#if ui.open}
-    <div class="hm-menu hud-m" role="dialog" aria-label="Handled" in:hudIn|global={{ anchor: btn }} out:hudOut|global>
+    <div class="hm-menu hud-m" role="dialog" aria-label="Handled" use:fit in:hudIn|global={{ anchor: btn }} out:hudOut|global>
       <div class="hm-head">
         <span class="hm-cap">Handled</span>
         <span class="hm-sub">{h.unseen ? `${h.unseen} not seen` : h.list.length ? "all seen" : ""}</span>
@@ -138,6 +157,8 @@
   .hm-chev { font-size: 9px; color: var(--dim); transition: transform 180ms; }
   .hm-chev.open { transform: rotate(180deg); }
   .hm-menu { position: absolute; z-index: 40; top: calc(100% + 8px); right: 0; width: min(400px, calc(100vw - 32px)); max-height: min(540px, calc(100vh - 230px)); display: flex; flex-direction: column; border: 1px solid var(--line2); border-radius: var(--r2); overflow: hidden; background-color: color-mix(in srgb, var(--paper) 96%, var(--accent)); }
+  /* Jarvis: the shared menu's glass is see-through; this list is long and sits over Needs you, so it is solid. */
+  :global(:root:not([data-layout="classic"])) .hm-menu.hm-menu.hud-m { background: linear-gradient(180deg, var(--raised), color-mix(in srgb, var(--raised) 55%, var(--term))); }
   .hm-head { flex: none; display: flex; align-items: center; gap: 10px; padding: 9px 12px 8px; border-bottom: 1px solid var(--line); }
   .hm-cap { font: 500 10.5px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink2); }
   .hm-sub { flex: 1; min-width: 0; font: 10.5px var(--mono); color: var(--dim); letter-spacing: 0.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

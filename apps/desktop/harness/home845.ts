@@ -50,6 +50,8 @@ const feed = [
   { at: ago(140), kind: "failed", label: "Lecture activities — answers check", chat: "c3", project: "nl", line: "Failed" },
   { at: ago(200), kind: "done", label: null, chat: null, project: "nightshift-code", line: "Research on cache pricing finished — 1 page" },
 ];
+// click946=1 (items 944–946 review): thirty more handled rows, so the Handled list scrolls.
+if (q.get("click946") === "1") for (let i = 0; i < 30; i++) feed.push({ at: ago(300 + i * 20), kind: "done", label: `Fixture chat ${i + 1}`, chat: `x${i}`, project: "nl", line: "Finished" });
 const acct = (service: string, kind: string, nth: number | null, extra: Record<string, unknown> = {}) => ({ connector: `claude.ai ${service}${nth ? ` ${nth}` : ""}`, service, kind, address: null, nth, status: "connected", on: true, claude_ai: true, in_scan: true, ...extra });
 const reach = { checked_at: ago(12), error: null, locals: [], accounts: [
   acct("Gmail", "mail", 1), acct("Gmail", "mail", 2), acct("Gmail", "mail", 3),
@@ -251,6 +253,115 @@ async function run() {
     }
     clicks = ` clicks=${fails.length ? `FAIL(${fails.join(",")})` : "PASS"}`;
   }
+  // click946=1 (items 944–946 review): the Handled button's click test. Read off the title as `h946=PASS` or
+  // `h946=FAIL(<which>)` with the figures it saw; run with s=watch.
+  let h946 = "";
+  const fails: string[] = [];
+  const facts: string[] = [];
+  const banner = document.createElement("pre");
+  if (q.get("click946") === "1") {
+    banner.style.cssText = "position:fixed;z-index:999999;left:0;top:0;right:0;margin:0;padding:6px;background:#000;color:#6f6;font:13px monospace;white-space:pre-wrap";
+    document.body.appendChild(banner);
+    addEventListener("error", (e) => (banner.textContent += ` ERR(${e.message} ${(e as ErrorEvent).filename ?? ""}:${(e as ErrorEvent).lineno ?? ""})`));
+    addEventListener("unhandledrejection", (e) => (banner.textContent += ` REJ(${String((e as PromiseRejectionEvent).reason?.message ?? (e as PromiseRejectionEvent).reason)})`));
+  }
+  const step = (n: string) => (banner.textContent = `h946 step ${n} fails=${fails.join(",")}`);
+  if (q.get("click946") === "1") try {
+    const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T & HTMLElement>(sel);
+    const unseen = () => Number(($(".hm-n")?.textContent ?? "0").replace("+", "")) || 0;
+    // Open or shut by the button's own state: a shut list's outro can stay in the page in bin/snap's hidden window.
+    const menu = () => ($(".hm-btn")?.getAttribute("aria-expanded") === "true" ? $(".hm-menu") : null);
+    const list = () => $(".hm-list");
+    if (!$("[data-handled] .hm-btn")) fails.push("nobutton");
+    $(".hm-btn")?.click();
+    await wait(250);
+    if (!menu()) fails.push("open");
+    const u0 = unseen();
+    const rows0 = document.querySelectorAll(".hm-row").length;
+    facts.push(`u0=${u0} rows=${rows0}`);
+    step("1");
+
+    // A row's own check marks that one seen; it stays listed.
+    $<HTMLButtonElement>("button.hm-seen")?.click();
+    await wait(200);
+    if (unseen() !== u0 - 1) fails.push(`rowcheck(${unseen()})`);
+    if (document.querySelectorAll(".hm-row").length !== rows0) fails.push("rowcheck-dropped");
+    step("2");
+
+    // A row opens for its detail, and opening an unseen one marks it seen.
+    const firstUnseen = [...document.querySelectorAll<HTMLElement>(".hm-row:not(.seen)")][0];
+    firstUnseen?.click();
+    await wait(200);
+    if (!$(".hm-row.isopen")) fails.push("rowopen");
+    if (unseen() !== u0 - 2) fails.push(`rowopen-mark(${unseen()})`);
+    step("3");
+
+    // The menu stays inside Home's stage (it was cut by the stage's foot in a short window).
+    const st = $("[data-home-stage]")?.getBoundingClientRect();
+    const mr = menu()?.getBoundingClientRect();
+    if (st && mr && mr.bottom > st.bottom + 1) fails.push(`pastfoot(${Math.round(mr.bottom - st.bottom)})`);
+    facts.push(`menu=${mr ? Math.round(mr.height) : 0}`);
+    step("4");
+
+    // Scroll kept across leaving Home and coming back.
+    const l = list();
+    if (l) l.scrollTop = 240;
+    await wait(400);
+    const want = list()?.scrollTop ?? 0;
+    app.project = projects[1] as unknown as typeof app.project;
+    await wait(400);
+    const gone = !$(".hm-menu");
+    app.project = home as unknown as typeof app.project;
+    await wait(700);
+    flushSync();
+    if (!gone) facts.push("stayed-mounted");
+    if (!menu()) fails.push("reopen-after-leave");
+    const back = list()?.scrollTop ?? -1;
+    facts.push(`scroll=${want}->${back}`);
+    if (want < 50 || Math.abs(back - want) > 2) fails.push("scrollkept");
+    if (!$(".hm-row.isopen")) fails.push("openrow-kept");
+    step("5");
+
+    // Mark all seen: the count goes, every row stays (dimmed).
+    const mark = [...document.querySelectorAll<HTMLButtonElement>(".hm-head button")].find((b) => /Mark all seen/.test(b.textContent ?? ""));
+    if (!mark) fails.push("nomarkall");
+    mark?.click();
+    await wait(400);
+    if ($(".hm-n")) fails.push(`markall(${unseen()})`);
+    if (document.querySelectorAll(".hm-row").length !== rows0) fails.push(`markall-dropped(${document.querySelectorAll(".hm-row").length})`);
+    if (document.querySelectorAll(".hm-row:not(.seen)").length) fails.push("markall-undimmed");
+    step("6");
+
+    // A click outside shuts it.
+    $(".w-watch")?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    await wait(250);
+    if (menu()) fails.push("outside");
+    step("7");
+
+    // Escape shuts it, and the key is not passed on.
+    $(".hm-btn")?.click();
+    await wait(250);
+    if (!menu()) fails.push("reopen");
+    const esc = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    document.body.dispatchEvent(esc);
+    await wait(250);
+    if (menu()) fails.push("escape");
+    if (!esc.defaultPrevented) fails.push("escape-passed-on");
+    step("8");
+
+    // Open again for the shot when shot=open.
+    if (q.get("shot") === "open") {
+      $(".hm-btn")?.click();
+      await wait(300);
+    }
+  } catch (e) {
+    fails.push(`threw(${String((e as Error)?.message ?? e)})`);
+  }
+  if (q.get("click946") === "1") {
+    h946 = ` h946=${fails.length ? `FAIL(${fails.join(",")})` : "PASS"} ${facts.join(" ")}`;
+    // Drawn at once, at the top, so a shot shows it whatever the later checks do.
+    banner.textContent = h946;
+  }
   // checkone=1: one source's own Check now pressed (the stub holds it, so the row shows it checking).
   if (q.get("checkone") === "1") {
     document.querySelectorAll<HTMLElement>(".w-src .w-chk .jb")[2]?.click();
@@ -326,7 +437,7 @@ async function run() {
     moreAt = ` more="${m?.textContent ?? "MISSING"}"@${mr ? `${Math.round(mr.top)}+${Math.round(mr.height)}` : "-"}`;
   }
   const r = stage?.getBoundingClientRect();
-  document.title = `845 s=${s}${moreAt} stage=${r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} views=${g0}→${g1} welcome=${document.querySelector(".welcome") ? "yes" : "no"} composer=${document.querySelector(".composer") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""} ell=${ell.length}${ell.length ? ` (${ell.slice(0, 4).join(", ")})` : ""} out=${out.length}${out.length ? ` (${out.slice(0, 4).join(", ")})` : ""} sideways=${sideways}${restart}${clicks}${alive} cq=${(() => { const v = document.querySelector<HTMLElement>(".h9-view"); const wd = document.querySelector<HTMLElement>(".h9-wide"); return `${v ? Math.round(v.getBoundingClientRect().width) : 0}/${wd ? getComputedStyle(wd).display : "-"}/vw${innerWidth}/dpr${devicePixelRatio}`; })()}`;
+  document.title = `845 s=${s}${moreAt} stage=${r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} views=${g0}→${g1} welcome=${document.querySelector(".welcome") ? "yes" : "no"} composer=${document.querySelector(".composer") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""} ell=${ell.length}${ell.length ? ` (${ell.slice(0, 4).join(", ")})` : ""} out=${out.length}${out.length ? ` (${out.slice(0, 4).join(", ")})` : ""} sideways=${sideways}${restart}${clicks}${h946}${alive} cq=${(() => { const v = document.querySelector<HTMLElement>(".h9-view"); const wd = document.querySelector<HTMLElement>(".h9-wide"); return `${v ? Math.round(v.getBoundingClientRect().width) : 0}/${wd ? getComputedStyle(wd).display : "-"}/vw${innerWidth}/dpr${devicePixelRatio}`; })()}`;
   if (q.get("cap") === "1") (window as unknown as { __capset: (m: string) => void }).__capset(document.title);
 }
 if (document.readyState === "loading") addEventListener("DOMContentLoaded", () => void run());

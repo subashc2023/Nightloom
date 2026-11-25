@@ -200,6 +200,15 @@
       if (c !== client) return;
       today = t;
       feed = f;
+      // Item 946: per-row marks the feed no longer holds, or that a "Mark all seen" (here or on the Mac) covered,
+      // are let go, so the kept place does not grow for ever.
+      if (f?.rows?.length) {
+        const pruned = pruneMarked(kept.marked, newsRows(f.rows), f.seen_at ?? null);
+        if (pruned !== kept.marked) {
+          kept = { ...kept, marked: pruned };
+          saveHomeKept(kept);
+        }
+      }
       scan = s.scan;
       scanLoaded = true;
       pushRows = p.rows;
