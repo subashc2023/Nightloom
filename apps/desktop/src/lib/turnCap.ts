@@ -17,6 +17,8 @@ import type { CapMode, TurnBudget } from "./types";
 /** The backend's `budget::WAKE_MARGIN`: the model is woken this many points
  *  below the cap, so the chip turns "near" there too. */
 export const NEAR_MARGIN = 5;
+/** A weekly cap's near line (item 935): the backend's `WEEK_WAKE_MARGIN`. */
+export const WEEK_NEAR_MARGIN = 2;
 
 /** The popover's − / + step, in points. */
 export const CAP_STEP = 5;
@@ -36,7 +38,9 @@ export interface CapView {
   sourceWords: string;
   /** He corrected it this message: Claude's later calls change nothing. */
   locked: boolean;
-  /** The latest 5-hour reading, when one is on hand. */
+  /** The cap's window (item 935): the 5-hour window or the week. */
+  weekly: boolean;
+  /** The latest reading of the cap's window, when one is on hand. */
   latest: number | null;
   /** Points this message has spent (latest − start), when both are known. */
   spent: number | null;
@@ -79,8 +83,12 @@ function sourceWords(source: string, locked: boolean): string {
 export function capView(b: TurnBudget | null | undefined): CapView | null {
   const cap = b?.cap;
   if (!b || !cap) return null;
-  const latest = b.latest_pct ?? null;
-  const start = b.start_pct ?? null;
+  // A weekly cap (item 935) is judged by the week's figures.
+  const weekly = cap.window === "weekly";
+  const latest = (weekly ? b.latest_week : b.latest_pct) ?? null;
+  const start = (weekly ? b.start_week : b.start_pct) ?? null;
+  const margin = weekly ? WEEK_NEAR_MARGIN : NEAR_MARGIN;
+  const win = weekly ? "the week" : "the 5-hour window";
   const spent = latest !== null && start !== null ? Math.max(0, latest - start) : null;
   const allowance = start !== null ? Math.max(0, cap.percent - start) : null;
   const fill =
@@ -91,15 +99,15 @@ export function capView(b: TurnBudget | null | undefined): CapView | null {
       : latest !== null
         ? Math.min(1, latest / cap.percent)
         : 0;
-  const phase: CapPhase = latest === null ? "set" : latest >= cap.percent ? "at" : latest >= cap.percent - NEAR_MARGIN ? "near" : "set";
+  const phase: CapPhase = latest === null ? "set" : latest >= cap.percent ? "at" : latest >= cap.percent - margin ? "near" : "set";
   const locked = !!b.cap_locked;
   const who = sourceWords(cap.source, locked);
   const where =
     latest === null
       ? "No usage reading yet."
       : spent !== null && allowance !== null
-        ? `The 5-hour window is at ${latest}%: this message has spent ${spent} of the ${allowance} points it had.`
-        : `The 5-hour window is at ${latest}%.`;
+        ? `${weekly ? "The week" : "The 5-hour window"} is at ${latest}%: this message has spent ${spent} of the ${allowance} points it had.`
+        : `${weekly ? "The week" : "The 5-hour window"} is at ${latest}%.`;
   const lead =
     phase === "at"
       ? "Reached: Claude is wrapping up. "
@@ -117,12 +125,13 @@ export function capView(b: TurnBudget | null | undefined): CapView | null {
     source: cap.source,
     sourceWords: who,
     locked,
+    weekly,
     latest,
     spent,
     allowance,
     fill,
     reason: cap.reason,
-    tip: `${lead}This message's cap: ${cap.percent}% of the 5-hour window, ${MODE_LONG[cap.mode].toLowerCase()} (${who}). ${where}${why}${lockNote} Click to change it.`,
+    tip: `${lead}This message's cap: ${cap.percent}% of ${win}, ${MODE_LONG[cap.mode].toLowerCase()} (${who}). ${where}${why}${lockNote} Click to change it.`,
   };
 }
 

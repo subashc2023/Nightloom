@@ -799,7 +799,10 @@ export interface TurnBudget {
   /** Wake thresholds crossed this message (item 538). */
   wakes_fired?: string[];
   /** Points held for running helpers (item 538; 537's fix 1). */
-  reserved?: { points: number; at_pct: number | null; at_ms?: number }[];
+  reserved?: { points: number; at_pct: number | null; at_ms?: number }[];  /** The weekly figure when the message began, and the latest (item 935):
+   *  what a weekly cap is judged by. */
+  start_week?: number | null;
+  latest_week?: number | null;
 }
 
 /** The two ways a cap is worked under (item 538, blocker 1785). */
@@ -807,13 +810,16 @@ export type CapMode = "finish_within" | "work_to_cap_then_continue";
 
 /** A message's declared usage cap (item 538): the backend's `budget::Cap`. */
 export interface TurnCap {
-  /** Percent of the plan's 5-hour window, 1–100: the message's stop line. */
+  /** Percent of the plan's 5-hour window (the message's stop line) or, for
+   *  a weekly cap, of the week; 1–100. */
   percent: number;
   mode: CapMode;
   /** `model` (set_budget), `message` (his words, the backstop), `user` (the chip). */
   source: "model" | "message" | "user";
   reason: string;
   set_at_ms: number;
+  /** Which window `percent` is of (item 935); absent: the 5-hour window. */
+  window?: "five_hour" | "weekly";
 }
 
 /**

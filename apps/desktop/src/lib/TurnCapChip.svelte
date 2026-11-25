@@ -86,7 +86,7 @@
       data-locked={view.locked ? "" : undefined}
       aria-haspopup="dialog"
       aria-expanded={open}
-      aria-label={`Usage cap ${view.percent}%, ${view.modeShort}, ${view.sourceWords}`}
+      aria-label={`Usage cap ${view.percent}%${view.weekly ? " of the week" : ""}, ${view.modeShort}, ${view.sourceWords}`}
       use:tip={view.tip}
       onclick={toggle}
     >
@@ -97,7 +97,7 @@
         </svg>
       {/if}
       <span class="cap-k">cap</span>
-      <span class="cap-n">{view.percent}%</span>
+      <span class="cap-n">{view.percent}%{#if view.weekly} week{/if}</span>
       <span class="cap-mode">{view.modeShort}</span>
       <span class="cap-sep" aria-hidden="true">·</span>
       <span class="cap-src">{view.sourceWords}{#if view.locked}<span class="cap-lock" aria-label="you corrected it"> ✓</span>{/if}</span>
@@ -112,7 +112,7 @@
       <div class="cap-pop hud-m" role="dialog" aria-label="Change this message's usage cap" in:hudIn|global out:hudOut|global>
         <div class="pop-head">This message's cap</div>
         <div class="pop-sub">
-          {#if view.latest !== null}{`5-hour window now ${view.latest}%${view.spent !== null ? ` · ${view.spent} pts spent` : ""}`}{:else}No usage reading yet{/if}
+          {#if view.latest !== null}{`${view.weekly ? "Week" : "5-hour window"} now ${view.latest}%${view.spent !== null ? ` · ${view.spent} pts spent` : ""}`}{:else}No usage reading yet{/if}
         </div>
         <div class="pop-row">
           <button class="ns-btn small step" aria-label="Lower the cap" disabled={busy || draft <= 1} onclick={() => (draft = clampCap(draft - CAP_STEP))}>−</button>

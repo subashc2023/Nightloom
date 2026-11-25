@@ -703,7 +703,8 @@ pub fn usage_line(
         // A stop line switched off (backlog 253) is `NEVER_PCT`: not a line.
         // A declared cap (538) is the line, named with its mode and who set it.
         match (
-            b.and_then(|b| b.cap.as_ref()),
+            b.and_then(|b| b.cap.as_ref())
+                .filter(|c| c.window == super::budget::CapWindow::FiveHour),
             b.map(|b| b.stop_at).filter(|s| *s > 0 && *s <= 100),
         ) {
             (Some(cap), _) => parts.push(format!(
@@ -723,8 +724,24 @@ pub fn usage_line(
             (None, None) => parts.push(format!("5-hour {}%", r.five_hour_pct)),
         }
     }
-    if let Some(w) = week {
-        parts.push(format!("week {w}%"));
+    // A weekly cap (935) is named beside the week's figure.
+    match (
+        week,
+        b.and_then(|b| b.cap.as_ref())
+            .filter(|c| c.window == super::budget::CapWindow::Weekly),
+    ) {
+        (Some(w), Some(cap)) => parts.push(format!(
+            "week {w}% (cap {}%: {}, {})",
+            cap.percent,
+            cap.mode.words(),
+            match cap.source.as_str() {
+                "model" => "from your set_budget call",
+                "user" => "set by Swaraag in the window",
+                _ => "from his message",
+            }
+        )),
+        (Some(w), None) => parts.push(format!("week {w}%")),
+        (None, _) => {}
     }
     if let Some(c) = context {
         parts.push(if c < 1000 {
@@ -1625,6 +1642,12 @@ pub struct TurnBudget {
     /// the line goes again when the week crosses into a higher one.
     #[serde(default)]
     pub week_shown: Option<u8>,
+    /// The weekly figure when the message began, and the latest (935):
+    /// what a weekly cap's wakes and the cap chip judge by.
+    #[serde(default)]
+    pub start_week: Option<u8>,
+    #[serde(default)]
+    pub latest_week: Option<u8>,
 }
 
 impl TurnBudget {
@@ -1729,6 +1752,8 @@ pub fn start_turn_budget(
         reserved: Vec::new(),
         main_who: None,
         week_shown: None,
+        start_week: None,
+        latest_week: None,
     }
 }
 
@@ -2240,7 +2265,12 @@ pub fn call_verdict_for(
             _ if subagent => return graced(stop(), false),
             // Past a cap declared for this message, the chat's own thread
             // saves its state under the same grace (538).
-            None if b.cap.is_some() && left > 0 => {
+            None if b
+                .cap
+                .as_ref()
+                .is_some_and(|c| c.window == super::budget::CapWindow::FiveHour)
+                && left > 0 =>
+            {
                 return CallVerdict::Wrapping(budget::main_at_cap_note(b, r.five_hour_pct, left));
             }
             None if present => return CallVerdict::Hold,
@@ -2485,6 +2515,9 @@ fn note_prompt(
     // The week the line shows him is the main thread's baseline (938).
     if let Some(w) = week {
         b.week_shown = Some(week_band(w).max(b.week_shown.unwrap_or(0)));
+        // The week the message starts at (935).
+        b.start_week.get_or_insert(w);
+        b.latest_week = Some(w);
     }
     if let Some(band) = context_due(b.context_shown.get(who).copied(), context, false) {
         b.context_shown.insert(who.to_string(), band);
@@ -2603,7 +2636,7 @@ fn note_reading(
         verdict,
         CallVerdict::Allow { .. } | CallVerdict::Wrapping(_)
     );
-    let wakes = super::budget::wakes_for_call(&mut b, reading, !subagent && runs, now_ms);
+    let wakes = super::budget::wakes_for_call(&mut b, reading, week, !subagent && runs, now_ms);
     let wake = super::budget::wake_text(&wakes, None);
     let _ = file.set_len(0);
     let _ = file.seek(std::io::SeekFrom::Start(0));
@@ -3363,7 +3396,7 @@ fn decide_holding_unheld(
         let claim = with_ledger(dir, |b| {
             mode = b.cap.as_ref().map(|c| c.mode);
             super::budget::claim_reservation(b, reading, points).map(|()| {
-                let wakes = super::budget::wakes_for_call(b, reading, !subagent, now_ms);
+                let wakes = super::budget::wakes_for_call(b, reading, week, !subagent, now_ms);
                 super::budget::wake_text(&wakes, None)
             })
         });
