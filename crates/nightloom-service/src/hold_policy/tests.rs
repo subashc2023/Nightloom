@@ -360,3 +360,16 @@ fn the_scoreboard_scores_every_rule_and_writes_an_overtake_once() {
     );
     assert_ne!(b.leader, sim::FORESIGHT);
 }
+
+#[test]
+fn an_idle_moment_copied_into_a_later_session_counts_once() {
+    // Item 970: the same gap under two Claude Code sessions (a resume
+    // carries the history), plus a different gap at the same moment.
+    let a = gap(at(1, 12, 0), 180.0, 200_000);
+    let copy = gap(at(1, 12, 0), 180.0, 200_000);
+    let other = gap(at(1, 12, 0), 90.0, 200_000);
+    let rows = super::gaps::dedupe(vec![a, copy, other]);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].gap_min, 180.0);
+    assert_eq!(rows[1].gap_min, 90.0);
+}
