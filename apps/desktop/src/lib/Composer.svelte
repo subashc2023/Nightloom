@@ -52,6 +52,8 @@
     coldEitherWay,
     chipFace,
     ownModelCache,
+    newestReplySentAt,
+    sideCacheFor,
     stoppedUnsure,
   } from "./cache";
   import { asideFigures } from "./asideFigures";
@@ -134,7 +136,7 @@
   import KeepButton from "./KeepButton.svelte";
   import { keepKey } from "./keep";
   import { keepStateOf, revealKept } from "./keep.svelte";
-  import { menuInterceptors, asideReads } from "./state.svelte";
+  import { menuInterceptors, asideReads, asidesOf } from "./state.svelte";
   import { declaredKind, useEngine } from "./state.svelte";
   import { openSession } from "./state.svelte";
   import { handoffChildren } from "./chatList";
@@ -2995,10 +2997,13 @@
    *  the menu says it before he picks (`switchDetail`); "" on the cache's
    *  own model, a cold cache or no reply. */
   function switchPrice(pick: string): string {
-    if (!onClaudeCode || !cache?.warm) return "";
+    if (!onClaudeCode || !chatCache) return "";
     const id = modelIdFor(pick, modelSeen.byAlias);
+    // Item 959: a row whose model an aside wrote the chat on is warm, cold chat or not.
+    const side = !aside && kwChat && id ? sideCacheFor(asidesOf(kwChat), id, newestReplySentAt(app.events), now) : null;
+    if (!chatCache.warm && !side) return "";
     if (id) void loadCacheRates(id);
-    return switchDetail(lastReply(app.events)?.usage ?? null, lastModel, id, cacheRatesOf(id), true);
+    return switchDetail(lastReply(app.events)?.usage ?? null, lastReply(app.events)?.model ?? null, id, cacheRatesOf(id), chatCache.warm, !!side);
   }
   /** The price ahead of a row's detail (`· claude-opus-5-5 · …`). */
   const withPrice = (price: string, detail: string): string => {
@@ -3494,13 +3499,24 @@
   /** Item 786: an aside on another model than the chat's reads none of the
    *  chat's cache; its own answers write and read that model's. */
   const asideOwnModel = $derived(!!aside?.model && displayName(aside.model) !== chatModelName);
-  const cache = $derived(
+  const chatCache = $derived(
     floating || (aside && !kwChat)
       ? null
       : aside && asideOwnModel
         ? ownModelCache(aside.turns, now)
         : cacheState(app.events, now, touchedUntil(kw), asideReads(kwChat, lastReply(app.events)?.model)),
   );
+  /** Item 959: the chat's own composer with a switch to another model
+   *  pending, where an aside on that model wrote the chat's prefix there
+   *  (`sideCacheFor`): the next send reads it, so the chip shows that
+   *  entry — warm, its hour — and the switch is priced as a read. */
+  const sideCache = $derived(
+    !aside && !floating && kwChat && chatCache && app.connection?.engine === "claude-code" && modelSwitchPending(app.events, app.draft.agentModel, modelSeen.byAlias)
+      ? sideCacheFor(asidesOf(kwChat), modelIdFor(app.draft.agentModel, modelSeen.byAlias), newestReplySentAt(app.events), now)
+      : null,
+  );
+  /** The cache the next send meets: the side entry above, else the chat's. */
+  const cache = $derived(sideCache ?? chatCache);
   /** Item 786: the chat's own turn stopped before its reply was logged —
    *  a cold reading is unknown until the next send. */
   const cacheUnsure = $derived(!aside && !!cache && !cache.warm && stoppedUnsure(app.events, app.busy));
@@ -3592,7 +3608,13 @@
   const coldWords = $derived(coldButtons(wwCosts));
   $effect(() => {
     if (floating) return;
-    const warmUntil = cacheState(app.events, Date.now(), touchedUntil(kw), asideReads(kwChat, lastReply(app.events)?.model))?.warmUntil ?? null;
+    const chatUntil = cacheState(app.events, Date.now(), touchedUntil(kw), asideReads(kwChat, lastReply(app.events)?.model))?.warmUntil ?? null;
+    // Item 959: an aside's entry on the picked model ticks the chip too (not through `now`, which this sets).
+    const sideUntil =
+      !aside && kwChat && app.connection?.engine === "claude-code" && modelSwitchPending(app.events, app.draft.agentModel, modelSeen.byAlias)
+        ? (sideCacheFor(asidesOf(kwChat), modelIdFor(app.draft.agentModel, modelSeen.byAlias), newestReplySentAt(app.events), Date.now())?.warmUntil ?? null)
+        : null;
+    const warmUntil = chatUntil == null ? sideUntil : sideUntil == null ? chatUntil : Math.max(chatUntil, sideUntil);
     if (warmUntil == null) return;
     now = Date.now();
     let id: ReturnType<typeof setTimeout> | null = null;
@@ -3627,7 +3649,8 @@
           kind: declaredKind(app.events),
           builtKind: kindAtCache(app.events),
           apiModel: app.connection && app.connection.engine !== "claude-code" ? app.connection.model : undefined,
-        })
+          // Item 959: the model switch onto an aside's warm entry loses nothing.
+        }).filter((c) => !(sideCache && c.what === "model"))
       : [],
   );
   /*
@@ -3643,7 +3666,7 @@
   /** Item 902: the next send goes to another model than built the cache. */
   const modelSwitch = $derived(
     // An aside on its own model prices its own cache (item 786), not the chat's.
-    !!cache && !floating && onClaudeCode && !(aside && asideOwnModel) && modelSwitchPending(app.events, aside?.model || app.draft.agentModel, modelSeen.byAlias),
+    !!cache && !floating && onClaudeCode && !(aside && asideOwnModel) && !sideCache && modelSwitchPending(app.events, aside?.model || app.draft.agentModel, modelSeen.byAlias),
   );
   /** Item 902: the banner's "<model> has no cache of it". */
   const switchName = $derived(modelSwitch ? displayName(aside?.model || app.draft.agentModel) || "the new model" : null);
@@ -3677,6 +3700,7 @@
             if (m && onClaudeCode) void loadCacheRates(m);
             return cacheRatesOf(m);
           },
+          sideWarm: !!sideCache,
         })
       : null,
   );
@@ -3725,6 +3749,8 @@
     if (!cache.warm && !aside && asideSinceCold(cache, asideReads(kwChat))) return `${ASIDE_COLD_TIP}\n${nextEst?.title ?? "The next send writes it again"}`;
     if (!cache.warm) return nextEst?.title ?? "Cache cold · the next send writes it again";
     const left = remainingText(cache.remainingMs);
+    // Item 959: the entry an aside on the picked model wrote.
+    if (cache.sideModel) return `Warm on ${displayName(cache.sideModel)} for ${left} more · an aside on it wrote this chat\n${nextEst?.title ?? ""}`.trim();
     const refreshed = !aside && cache.asideShare != null ? " (an aside refreshed it)" : "";
     const first = share ? `${share} · warm for ${left} more${refreshed}` : `Cache warm for ${left} more${refreshed}`;
     return nextEst ? `${first}\n${nextEst.title}` : first;

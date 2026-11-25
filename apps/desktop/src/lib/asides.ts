@@ -212,6 +212,8 @@ interface StoredTurn {
    *  cache read, so its refresh of the chat's cache outlives a relaunch. */
   readAt?: number;
   roundRead?: number;
+  /** Item 959: its write is the chat's prefix on its own model. */
+  marksChat?: boolean;
   /** Item 775: the files the answer changed, and its note's name. */
   changes?: AsideChange[];
   noteId?: string;
@@ -299,6 +301,7 @@ function storeTurn(t: AsideTurn): StoredTurn | null {
   if (typeof t.readAt === "number" && typeof t.roundRead === "number") {
     out.readAt = t.readAt;
     out.roundRead = t.roundRead;
+    if (t.marksChat) out.marksChat = true;
   }
   if (t.changes && t.changes.length > 0 && t.noteId) {
     out.changes = t.changes.map((c) => ({ ...c }));
@@ -474,6 +477,7 @@ function loadAside(v: unknown): Aside | null {
     if (typeof m.readAt === "number" && Number.isFinite(m.readAt) && typeof m.roundRead === "number" && m.roundRead >= 0) {
       turn.readAt = m.readAt;
       turn.roundRead = m.roundRead;
+      if (m.marksChat === true) turn.marksChat = true;
     }
     // Item 775: what it changed, for the thread's line.
     const changes = cleanChanges(m.changes);

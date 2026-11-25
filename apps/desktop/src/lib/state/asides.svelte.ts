@@ -80,6 +80,9 @@ export interface AsideTurn {
    *  answered before 677, which then moves nothing. */
   readAt?: number;
   roundRead?: number;
+  /** Item 959: the backend's `marks_chat` — this answer wrote the chat's
+   *  prefix on its own model, so a switch of the chat to it is warm. */
+  marksChat?: boolean;
   /** Clock when it was asked (backlog 309): the running list's elapsed.
    *  In memory only; a stored turn is never running. */
   startedAt?: number;
@@ -461,6 +464,7 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
     if (!res.is_error && typeof res.sent_ms === "number" && typeof res.round_read === "number") {
       t.readAt = res.sent_ms;
       t.roundRead = res.round_read;
+      if (res.marks_chat) t.marksChat = true;
     }
     if (noteId) {
       t.changes = changes;
@@ -497,10 +501,14 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
  * left as it stood. No report (stopped before the request was answered, or
  * killed): nothing is claimed. Exported for the suite.
  */
-export function stoppedRead(t: AsideTurn, res: Pick<AsideResult, "is_error" | "sent_ms" | "round_read" | "first_read" | "cache_read" | "context_tokens" | "cost_usd">): void {
+export function stoppedRead(
+  t: AsideTurn,
+  res: Pick<AsideResult, "is_error" | "sent_ms" | "round_read" | "first_read" | "cache_read" | "context_tokens" | "cost_usd" | "marks_chat">,
+): void {
   if (res.is_error || res.first_read == null || typeof res.sent_ms !== "number" || typeof res.round_read !== "number") return;
   t.readAt = res.sent_ms;
   t.roundRead = res.round_read;
+  if (res.marks_chat) t.marksChat = true;
   t.cacheRead = res.cache_read;
   if (typeof res.context_tokens === "number") t.context = res.context_tokens;
   if (typeof res.cost_usd === "number") t.added = res.cost_usd;

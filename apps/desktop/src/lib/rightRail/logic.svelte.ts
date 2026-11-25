@@ -2,7 +2,7 @@
 // `RightRailClassic.svelte` mount this and keep only their markup and CSS; `logic.test.ts` beside it fails when
 // one look binds to something the other does not. Moved verbatim from RightRail.svelte's script.
 import { ContextDrive } from "../contextDrive.svelte";
-import { app, asideReads, chatAgentSession, contextUsed, currentTodos, type Aside } from "../state.svelte";
+import { app, asideReads, asidesOf, chatAgentSession, contextUsed, currentTodos, type Aside } from "../state.svelte";
 import * as api from "../api";
 import { figuresOf, trackOpenChatFigures } from "../chatFigures.svelte";
 import { modelName, spenderName, stackParts, type ScopedLimits, type SessionFigures } from "../usageFigures";
@@ -10,10 +10,10 @@ import { mark as handoffMark } from "../handoff.svelte";
 import { handOffNow } from "../manualHandoff.svelte";
 import { touchedUntil } from "../keepWarm";
 import { keepWarm } from "../keepWarm.svelte";
-import { cacheState, chipFace, nextTickMs, ownModelCache, remainingText, stoppedUnsure } from "../cache";
+import { cacheState, chipFace, newestReplySentAt, nextTickMs, ownModelCache, remainingText, sideCacheFor, stoppedUnsure } from "../cache";
 import { cacheEstimate, lastReply, ratesFromPrice } from "../cacheCost";
 import { cacheRatesOf, loadCacheRates } from "../cacheRates.svelte";
-import { nextSendModel, pendingChangeCost } from "../changeCost";
+import { modelIdFor, modelSwitchPending, nextSendModel, pendingChangeCost } from "../changeCost";
 import { modelSeen } from "../modelSeen.svelte";
 import { displayName } from "../modelSeen";
 import { clockText, freshIn, handoffText, lastLoggedTurn, niceCeil, shortTokens, tickCounts, toolMarks, toolsText } from "../contextDial";
@@ -123,13 +123,21 @@ export function rightRailLogic(props: () => RightRailLogicProps) {
   const railOwnModel = $derived(
     !!aside?.model && displayName(aside.model) !== (app.draft.agentModel.trim() ? displayName(app.draft.agentModel) : "default"),
   );
-  const cache = $derived(
+  const chatCache = $derived(
     !column || (aside && !railChat)
       ? null
       : aside && railOwnModel
         ? ownModelCache(aside.turns, now)
         : cacheState(app.events, now, railChat ? touchedUntil(keepWarm.byChat[railChat]) : null, asideReads(railChat, lastReply(app.events)?.model)),
   );
+  // Item 959: as the composer's chip — a switch pending onto a model an
+  // aside wrote the chat on meets that entry (`sideCacheFor`).
+  const sideCache = $derived(
+    !aside && railChat && chatCache && app.connection?.engine === "claude-code" && modelSwitchPending(app.events, app.draft.agentModel, modelSeen.byAlias)
+      ? sideCacheFor(asidesOf(railChat), modelIdFor(app.draft.agentModel, modelSeen.byAlias), newestReplySentAt(app.events), now)
+      : null,
+  );
+  const cache = $derived(sideCache ?? chatCache);
   /** Item 786: cold after a stop that logged no reply reads "unknown". */
   const railFace = $derived(chipFace(cache, !aside && !!cache && !cache.warm && stoppedUnsure(app.events, app.busy)));
   $effect(() => {
@@ -163,6 +171,7 @@ export function rightRailLogic(props: () => RightRailLogicProps) {
             if (m && app.connection?.engine === "claude-code") void loadCacheRates(m);
             return cacheRatesOf(m);
           },
+          sideWarm: !!sideCache,
         })
       : null,
   );

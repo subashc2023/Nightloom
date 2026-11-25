@@ -1,7 +1,7 @@
 import type { SessionEvent, Usage } from "./types";
 import { cacheBuiltWith, cacheLoss, kindAtCache, type CacheChange, type PendingSettings } from "./cache";
 import type { ChipRates } from "./cacheCost";
-import { lastReply, ratesFromPrice, tokensShort, usd } from "./cacheCost";
+import { lastReply, nextSendCost, ratesFromPrice, tokensShort, usd } from "./cacheCost";
 import { declaredKind } from "./state/threads.svelte";
 import { liveFlags } from "./state.svelte";
 import { promptLayerEdits, promptLayersOff, sameEdits, sameLayers } from "./state/layers.svelte";
@@ -181,15 +181,21 @@ export function priceTitle(c: ChangePrice, _target: ChipRates | null): string {
 /** A model menu row's price for switching, put first in the row's detail
  *  so a narrow menu's ellipsis never eats it — numbers first, to `rowModel` while the cache is
  *  warm (777: the picker says it before he commits), or "" — the row of
- *  the model the cache is on, a cold cache, or no rates. */
+ *  the model the cache is on, a cold cache, or no rates.
+ *  Item 959: `sideWarm` — an aside on the row's model wrote the chat's
+ *  prefix there (`sideCacheFor`): the row's warm price, `warm · next ≈
+ *  $X`, warm or cold chat alike. */
 export function switchDetail(
   usage: Usage | null,
   builtModelId: string | null,
   rowModelId: string | null,
   rates: ChipRates | null,
   warm: boolean,
+  sideWarm = false,
 ): string {
-  if (!usage || !warm || !rowModelId || !builtModelId || rowModelId === builtModelId) return "";
+  if (!usage || !rowModelId || !builtModelId || rowModelId === builtModelId) return "";
+  if (sideWarm) return rates ? `warm · next ≈ ${usd(nextSendCost(usage, rates).warm)}` : "warm";
+  if (!warm) return "";
   const ctx = usage.input_tokens + usage.output_tokens;
   if (!rates) return `re-writes ${tokensShort(ctx)}`;
   return `next ≈ ${usd((ctx * rates.write) / 1e6)}`;
@@ -210,6 +216,9 @@ export function pendingChangeCost(a: {
   seen: SeenModels;
   warm: boolean;
   rates: (model: string | null) => ChipRates | null;
+  /** Item 959: the draft's model has the chat's prefix warm from an aside
+   *  (`sideCacheFor`): its switch loses nothing and is priced as a read. */
+  sideWarm?: boolean;
 }): { price: ChangePrice; line: string; title: string; changes: CacheChange[]; layers: LayerChange | null } | null {
   if (!a.warm) return null;
   const built = cacheBuiltWith(a.events);
@@ -220,14 +229,15 @@ export function pendingChangeCost(a: {
     kind: declaredKind(a.events),
     builtKind: kindAtCache(a.events),
     apiModel: a.connection && !cc ? (a.connection.model ?? undefined) : undefined,
-  });
+  }).filter((c) => !(a.sideWarm && c.what === "model"));
   const layers = layerChangeSinceCache(a.events);
   if (changes.length === 0 && !layers) return null;
   const modelPending = built.key.engine === "claude-code" && (built.key.model ?? "") !== a.draft.agentModel.trim();
   const engineChange = changes.some((c) => c.what === "engine");
   const targetModel = modelPending ? modelIdFor(a.draft.agentModel, a.seen) : last.model;
   const target = engineChange ? null : cc ? a.rates(targetModel) : ratesFromPrice(a.connection?.price);
-  const builtRates = cc ? a.rates(last.model) : changes.some((c) => c.what === "model" || engineChange) ? null : target;
+  // Item 959: warm on the draft's model, the price without the change is that model's read too.
+  const builtRates = cc ? (a.sideWarm && modelPending ? target : a.rates(last.model)) : changes.some((c) => c.what === "model" || engineChange) ? null : target;
   const price = changePrice({
     usage: last.usage,
     changes,

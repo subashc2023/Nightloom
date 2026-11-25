@@ -1633,6 +1633,10 @@ export interface AsideResult {
   /** The newest round's cache read (item 677): the share of the chat's
    *  prefix the aside found warm (`cache_read` sums the rounds). */
   round_read?: number;
+  /** Item 959: on another model than the chat's, its write is the chat's
+   *  prefix on that model in the chat's tool text — a switch to it reads
+   *  it back. Absent from an older backend (no claim). */
+  marks_chat?: boolean;
   /** Item 699: the first round's cache read and write — the miss test's
    *  (a later round reads back what the first wrote). Null when no round
    *  reported; absent from an older backend. */
