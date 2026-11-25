@@ -114,7 +114,8 @@
         <button class="group-head" aria-expanded={!folded} onclick={() => (g.state === "decided" ? setFold("decided-open", folded) : setFold(g.state, !folded))}>
           <span class="chev" class:folded aria-hidden="true">▾</span>
           <span class="group-name">{g.label}</span>
-          {#if g.state !== "decided"}<span class="count">{g.rows.length}</span>{/if}
+          <!-- No number on Decided; the empty span still closes Jarvis's "[ … ]" bracket. -->
+          {#if g.state !== "decided"}<span class="count">{g.rows.length}</span>{:else}<span class="count" aria-hidden="true"></span>{/if}
         </button>
         {#if !folded}
           {#if g.rows.length === 0}
