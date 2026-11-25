@@ -13,6 +13,7 @@
     stopSort,
   } from "./inboxSort.svelte";
   import { tip } from "./tip";
+  import { scrimClose } from "./scrimClose";
   import { appliedWords, checkDest, keptAt, leafOf, movesOf } from "./inboxSort";
 
   let sureReset = $state(false);
@@ -50,7 +51,8 @@
 </script>
 
 {#if inboxSort.open}
-  <div class="sort-scrim" aria-hidden="true"></div>
+  <!-- Item 927: a click outside the sheet is its ×, Close (the plan is kept). -->
+  <div class="sort-scrim" aria-hidden="true" use:scrimClose={closeInboxSort}></div>
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="sort" role="dialog" aria-modal="true" aria-label="Sort inbox" tabindex="-1" onkeydown={keys}>
     <header>

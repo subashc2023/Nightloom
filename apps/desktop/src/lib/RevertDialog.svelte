@@ -6,6 +6,7 @@
    * runs until then; a dirty tree disables it outright, as the backend
    * would refuse anyway.
    */
+  import { scrimClose } from "./scrimClose";
   import type { RevertPreview } from "./types";
   import { revertShift } from "./state.svelte";
   import { short } from "./nightshift";
@@ -47,9 +48,7 @@
 <div
   class="scrim"
   role="presentation"
-  onclick={(e) => {
-    if (e.target === e.currentTarget) onclose();
-  }}
+  use:scrimClose={onclose}
 >
   <div
     class="ns-card dialog"

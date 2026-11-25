@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { scrimClose } from "./scrimClose";
   import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
   import { recoveredDrafts } from "./recoveredDrafts";
@@ -1430,7 +1431,8 @@
   {#if clash}
     {@const c = clash}
     {@const w = clashWords(c.rel, c.both)}
-    <div class="clash-scrim" aria-hidden="true"></div>
+    <!-- Item 927: a click outside the question is its Cancel. -->
+    <div class="clash-scrim" aria-hidden="true" use:scrimClose={() => answerClash("cancel")}></div>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="clash" role="alertdialog" aria-modal="true" aria-label="A file by that name is there" tabindex="-1" onkeydown={clashKeys}>
       <p class="clash-q">{w.question}</p>

@@ -1021,7 +1021,15 @@ button {
   flex: none;
   transition:
     background-color 120ms,
-    border-color 120ms;
+    border-color 120ms,
+    transform 80ms ease-out;
+}
+/* Item 927: a press gives — the button sinks a touch while held and springs
+   back on release, so a click is felt (Jarvis only; no motion under
+   reduced-motion, below). */
+:where(:root:not([data-layout="classic"])) .ns-btn:active:not(:disabled) {
+  transform: translateY(0.5px) scale(0.97);
+  transition-duration: 40ms;
 }
 :where([data-layout="classic"]) .ns-btn {
   display: inline-flex;
@@ -1201,6 +1209,9 @@ button {
   background: var(--line2);
 }
 @media (prefers-reduced-motion: reduce) {
+  :where(:root:not([data-layout="classic"])) .ns-btn:active:not(:disabled) {
+    transform: none;
+  }
   :where(:root:not([data-layout="classic"])) .ns-btn,
 .ns-switch > i,
 .ns-switch > i::after {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { scrimClose } from "./scrimClose";
   import { tip } from "./tip";
   /**
    * Review → Blockers (3.4): open first, then the rest; the selected
@@ -220,9 +221,7 @@
   <div
     class="scrim"
     role="presentation"
-    onclick={(e) => {
-      if (e.target === e.currentTarget) file = null;
-    }}
+    use:scrimClose={() => (file = null)}
   >
     <div class="ns-card viewer" role="dialog" aria-modal="true" tabindex="-1">
       <div class="viewer-h">

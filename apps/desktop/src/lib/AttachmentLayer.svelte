@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { scrimClose } from "./scrimClose";
   import { tip } from "./tip";
   import { app, dropContent } from "./state.svelte";
   import { outcome, startMove } from "./floatingMove";
@@ -148,9 +149,7 @@
   <div
     class="attach-scrim"
     role="presentation"
-    onclick={(e) => {
-      if (e.target === e.currentTarget) closeAttachment();
-    }}
+    use:scrimClose={closeAttachment}
   >
     <div
       class="attach-card"
