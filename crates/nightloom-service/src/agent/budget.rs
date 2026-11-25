@@ -60,6 +60,19 @@ pub const PACE_STEP: u8 = 10;
 /// own stop, so they can save before it cuts them off (539 piece 6).
 pub const HARD_WAKE_PCT: u8 = 96;
 
+/// A weekly cap's near-wake, in weekly points below it (935): a weekly
+/// point is several 5-hour points, so the 5-hour margin would wake hours
+/// early.
+pub const WEEK_WAKE_MARGIN: u8 = 2;
+
+/// Mode B under a weekly cap (936): the main agent is woken each time the
+/// message has spent this many more weekly points while helpers run.
+pub const WEEK_PACE_STEP: u8 = 2;
+
+/// With no weekly cap (936): the wake when helpers run this close to the
+/// plan's weekly stop, so they save before it cuts them off.
+pub const WEEK_HARD_WAKE_PCT: u8 = 98;
+
 /// How many calls of a process run with the wrap-up beside them before its
 /// calls are refused (539 piece 4, "~10").
 pub const WRAP_CALLS: u8 = 10;
@@ -141,6 +154,43 @@ pub struct Cap {
     #[serde(default)]
     pub reason: String,
     pub set_at_ms: i64,
+    /// Which window `percent` is of (935): the 5-hour window (the turn's
+    /// `stop_at` with it) or the week (the chat's own stop line stays).
+    #[serde(default)]
+    pub window: CapWindow,
+}
+
+impl CapWindow {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FiveHour => "five_hour",
+            Self::Weekly => "weekly",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "five_hour" | "5h" | "five-hour" => Some(Self::FiveHour),
+            "weekly" | "week" => Some(Self::Weekly),
+            _ => None,
+        }
+    }
+
+    /// The window in words, for the model: "the 5-hour window", "the week".
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::FiveHour => "the 5-hour window",
+            Self::Weekly => "the week",
+        }
+    }
+
+    /// The `<continue-later at>` value for its reset.
+    fn reset_at(self) -> &'static str {
+        match self {
+            Self::FiveHour => "reset",
+            Self::Weekly => "weekly",
+        }
+    }
 }
 
 /// One launch's expected cost, held against the cap until the reading
@@ -232,6 +282,9 @@ pub struct Wake {
     #[serde(default)]
     pub from: Option<u8>,
     pub at_ms: i64,
+    /// The window `pct` and `cap` are of (935): a weekly wake's are the week's.
+    #[serde(default)]
+    pub window: CapWindow,
 }
 
 // ---- the reservation (537 fix 1; refusals in mode A only) -------------------
@@ -283,6 +336,7 @@ pub fn claim_reservation(
     let pct = reading.map(|r| r.five_hour_pct);
     if let (Some(cap), Some(pct)) = (&b.cap, pct)
         && cap.mode == BudgetMode::FinishWithin
+        && cap.window == CapWindow::FiveHour
     {
         let held = outstanding(b, pct);
         if pct as u32 + held as u32 + points as u32 >= cap.percent as u32 {
@@ -328,7 +382,9 @@ pub fn due_wakes(b: &mut TurnBudget, reading: Option<WindowReading>, now_ms: i64
     let pct = r.five_hour_pct;
     let spent = b.start_pct.map_or(0, |s| pct.saturating_sub(s));
     let held = outstanding(b, pct);
-    let cap = b.cap.clone();
+    // A weekly cap (935) is judged on the week ([`due_week_wakes`]); for
+    // the 5-hour window the message then has no cap.
+    let cap = b.cap.clone().filter(|c| c.window == CapWindow::FiveHour);
     let wake = |kind: WakeKind| Wake {
         kind,
         pct,
@@ -338,6 +394,7 @@ pub fn due_wakes(b: &mut TurnBudget, reading: Option<WindowReading>, now_ms: i64
         spent,
         from: None,
         at_ms: now_ms,
+        window: CapWindow::FiveHour,
     };
     let mut out = Vec::new();
     let Some(c) = &cap else {
@@ -378,6 +435,63 @@ pub fn due_wakes(b: &mut TurnBudget, reading: Option<WindowReading>, now_ms: i64
     out
 }
 
+/// The weekly thresholds this weekly figure newly crosses, pure (935,
+/// 936): with a weekly cap, `Near` (cap − [`WEEK_WAKE_MARGIN`]), `AtCap`,
+/// and in mode B one `Pace` per [`WEEK_PACE_STEP`] weekly points this
+/// message has spent; with none, `Hard` at [`WEEK_HARD_WAKE_PCT`]. Each
+/// once per turn, keyed apart from the 5-hour ones. The ledger records
+/// the week's start and latest figure.
+pub fn due_week_wakes(b: &mut TurnBudget, week: Option<u8>, now_ms: i64) -> Vec<Wake> {
+    let Some(w) = week else {
+        return Vec::new();
+    };
+    if b.start_week.is_none() {
+        b.start_week = Some(w);
+    }
+    b.latest_week = Some(w);
+    let spent = b.start_week.map_or(0, |s| w.saturating_sub(s));
+    let cap = b.cap.clone().filter(|c| c.window == CapWindow::Weekly);
+    let wake = |kind: WakeKind| Wake {
+        kind,
+        pct: w,
+        cap: cap.as_ref().map(|c| c.percent),
+        mode: cap.as_ref().map(|c| c.mode),
+        reserved: 0,
+        spent,
+        from: None,
+        at_ms: now_ms,
+        window: CapWindow::Weekly,
+    };
+    let mut out = Vec::new();
+    let Some(c) = &cap else {
+        if w >= WEEK_HARD_WAKE_PCT && fire(b, "week-hard") {
+            out.push(wake(WakeKind::Hard));
+        }
+        return out;
+    };
+    let near = c.percent.saturating_sub(WEEK_WAKE_MARGIN);
+    if w >= c.percent {
+        let new = fire(b, "week-cap");
+        fire(b, "week-near");
+        if new {
+            out.push(wake(WakeKind::AtCap));
+        }
+    } else if w >= near && fire(b, "week-near") {
+        out.push(wake(WakeKind::Near));
+    }
+    if c.mode == BudgetMode::WorkToCapThenContinue && w < near {
+        let step = spent / WEEK_PACE_STEP;
+        let mut new = false;
+        for n in 1..=step {
+            new |= fire(b, &format!("week-pace-{n}"));
+        }
+        if new {
+            out.push(wake(WakeKind::Pace));
+        }
+    }
+    out
+}
+
 fn helper_list(helpers: Option<&[(String, String)]>) -> String {
     match helpers {
         Some(h) if !h.is_empty() => format!(
@@ -401,12 +515,14 @@ pub fn wake_text(wakes: &[Wake], helpers: Option<&[(String, String)]>) -> Option
     let list = helper_list(helpers);
     let cap = w.cap.unwrap_or(100);
     let mode = w.mode.unwrap_or(BudgetMode::WorkToCapThenContinue);
+    let win = w.window.words();
+    let at = w.window.reset_at();
     let wrap = |lead: &str| match mode {
         BudgetMode::WorkToCapThenContinue => format!(
             "{lead} Start nothing new. {list} Send each one this with SendMessage, with no \
              usage figure in it: \"{WRAP_UP_HELPER}\" When they have reported, save your own \
              state to a file and end your reply with a line of its own, <continue-later \
-             at=\"reset\">…</continue-later>, naming the state files to continue from; \
+             at=\"{at}\">…</continue-later>, naming the state files to continue from; \
              Nightloom sends it to you after the reset. {RESUME_RULE}"
         ),
         BudgetMode::FinishWithin => format!(
@@ -425,7 +541,7 @@ pub fn wake_text(wakes: &[Wake], helpers: Option<&[(String, String)]>) -> Option
             mode.words()
         ),
         WakeKind::Near => wrap(&format!(
-            "usage is at {}% of the 5-hour window; this message's cap is {cap}% ({}).",
+            "usage is at {}% of {win}; this message's cap is {cap}% of {win} ({}).",
             w.pct,
             mode.words()
         )),
@@ -433,13 +549,13 @@ pub fn wake_text(wakes: &[Wake], helpers: Option<&[(String, String)]>) -> Option
             "{} Nightloom is giving each helper the same wrap-up itself now, and refuses a \
              helper's calls after about {WRAP_CALLS} more.",
             wrap(&format!(
-                "usage has reached this message's cap: {}% of the 5-hour window (cap {cap}%, {}).",
+                "usage has reached this message's cap: {}% of {win} (cap {cap}%, {}).",
                 w.pct,
                 mode.words()
             ))
         ),
         WakeKind::Pace => format!(
-            "usage is at {}% of the 5-hour window; this message has spent {} points and its \
+            "usage is at {}% of {win}; this message has spent {} points of it and its \
              cap is {cap}% ({}). {list} Nothing to do yet unless you want to re-plan; do not \
              pass usage figures to helpers. Nightloom wakes you again near the cap.",
             w.pct,
@@ -447,7 +563,7 @@ pub fn wake_text(wakes: &[Wake], helpers: Option<&[(String, String)]>) -> Option
             mode.words()
         ),
         WakeKind::Raised => format!(
-            "Swaraag raised this message's cap from {}% to {cap}% of the 5-hour window ({}); \
+            "Swaraag raised this message's cap from {}% to {cap}% of {win} ({}); \
              usage is at {}%. Stop wrapping up: the work goes on in this window. {RESUME_RULE} \
              Nightloom wakes you again near the new cap.",
             w.from.unwrap_or(0),
@@ -455,11 +571,16 @@ pub fn wake_text(wakes: &[Wake], helpers: Option<&[(String, String)]>) -> Option
             w.pct
         ),
         WakeKind::Hard => format!(
-            "usage is at {}% of the 5-hour window, and the plan stops everything at 100%. \
+            "usage is at {}% of {win}, and the plan stops everything at 100% of it. \
              {list} Send each one this with SendMessage now, so it saves before the limit \
              cuts it off: \"{WRAP_UP_HELPER}\" Then save your own state; a turn the limit \
-             cuts off is resumed by Nightloom after the reset.",
-            w.pct
+             cuts off is resumed by Nightloom after the reset{}.",
+            w.pct,
+            match w.window {
+                CapWindow::FiveHour => "",
+                CapWindow::Weekly =>
+                    " (the weekly one: end with <continue-later at=\"weekly\"> if you stop first)",
+            }
         ),
     };
     Some(format!("[Nightloom, not from Swaraag: {body}]"))
@@ -473,10 +594,13 @@ pub fn wake_text(wakes: &[Wake], helpers: Option<&[(String, String)]>) -> Option
 pub fn wakes_for_call(
     b: &mut TurnBudget,
     reading: Option<WindowReading>,
+    week: Option<u8>,
     main: bool,
     now_ms: i64,
 ) -> Vec<Wake> {
     let new = due_wakes(b, reading, now_ms);
+    b.wakes_pending.extend(new);
+    let new = due_week_wakes(b, week, now_ms);
     b.wakes_pending.extend(new);
     if !main {
         return Vec::new();
@@ -497,7 +621,13 @@ pub fn wakes_for_call(
 /// judged like a hook's (so a stretch with no hook call still wakes). When
 /// the main thread can take a line now (`deliver`), the waiting wakes are
 /// taken and returned — less the helper-only kinds when none runs.
-pub fn take_wakes(dir: &Path, now_ms: i64, running: bool, deliver: bool) -> Vec<Wake> {
+pub fn take_wakes(
+    dir: &Path,
+    now_ms: i64,
+    running: bool,
+    deliver: bool,
+    week: Option<u8>,
+) -> Vec<Wake> {
     if dir.as_os_str().is_empty() {
         return Vec::new();
     }
@@ -517,6 +647,9 @@ pub fn take_wakes(dir: &Path, now_ms: i64, running: bool, deliver: bool) -> Vec<
             let new = due_wakes(b, Some(r), now_ms);
             b.wakes_pending.extend(new);
         }
+        // The week on hand (935, 936), judged the same way.
+        let new = due_week_wakes(b, week, now_ms);
+        b.wakes_pending.extend(new);
         if !deliver {
             return Vec::new();
         }
@@ -764,18 +897,57 @@ pub fn set_cap(
     reason: &str,
     now_ms: i64,
 ) {
+    let five = StatedCap {
+        percent,
+        mode,
+        window: CapWindow::FiveHour,
+    };
+    set_stated(
+        b,
+        five,
+        source,
+        reason,
+        now_ms,
+        &brief::SubagentLimits::default(),
+    );
+}
+
+/// [`set_cap`] in either window (935). A 5-hour cap is the turn's stop
+/// line; a weekly one leaves the chat's own stop line and per-message
+/// share (`limits`) in force for the 5-hour window — the same lines a
+/// message with no cap has.
+pub fn set_stated(
+    b: &mut TurnBudget,
+    cap: StatedCap,
+    source: &str,
+    reason: &str,
+    now_ms: i64,
+    limits: &brief::SubagentLimits,
+) {
+    let StatedCap {
+        percent,
+        mode,
+        window,
+    } = cap;
     let percent = percent.clamp(1, 100);
-    let moved = b.cap.as_ref().is_none_or(|c| c.percent != percent);
+    let was_five = b
+        .cap
+        .as_ref()
+        .is_some_and(|c| c.window == CapWindow::FiveHour);
+    let moved = b
+        .cap
+        .as_ref()
+        .is_none_or(|c| c.percent != percent || c.window != window);
     // His raise after a wrap-up was asked for (item 693): the main agent
     // is told the work goes on, or it keeps wrapping up under the new cap.
     let raised_from = b
         .cap
         .as_ref()
-        .filter(|c| source == "user" && percent > c.percent)
+        .filter(|c| source == "user" && percent > c.percent && c.window == window)
         .filter(|_| {
             b.wakes_fired
                 .iter()
-                .any(|k| matches!(k.as_str(), "cap" | "near"))
+                .any(|k| matches!(k.as_str(), "cap" | "near" | "week-cap" | "week-near"))
         })
         .map(|c| (c.percent, c.mode));
     b.cap = Some(Cap {
@@ -784,23 +956,43 @@ pub fn set_cap(
         source: source.to_string(),
         reason: reason.trim().chars().take(300).collect(),
         set_at_ms: now_ms,
+        window,
     });
-    b.stop_at = percent;
-    b.budget_pct = 0;
+    match window {
+        CapWindow::FiveHour => {
+            b.stop_at = percent;
+            b.budget_pct = 0;
+        }
+        // From a 5-hour cap to a weekly one: the chat's own lines again.
+        CapWindow::Weekly if was_five => {
+            let l = limits.effective();
+            b.stop_at = l.stop_at;
+            b.budget_pct = l.budget_pct;
+        }
+        CapWindow::Weekly => {}
+    }
     if moved {
-        b.wakes_fired
-            .retain(|k| !matches!(k.as_str(), "cap" | "near" | "reserved" | "hard"));
+        b.wakes_fired.retain(|k| {
+            !matches!(
+                k.as_str(),
+                "cap" | "near" | "reserved" | "hard" | "week-cap" | "week-near" | "week-hard"
+            )
+        });
         b.wakes_pending.retain(|w| matches!(w.kind, WakeKind::Pace));
         if let Some((from, _)) = raised_from {
             b.wakes_pending.push(Wake {
                 kind: WakeKind::Raised,
-                pct: b.latest_pct.unwrap_or(0),
+                pct: match window {
+                    CapWindow::FiveHour => b.latest_pct.unwrap_or(0),
+                    CapWindow::Weekly => b.latest_week.unwrap_or(0),
+                },
                 cap: Some(percent),
                 mode: Some(mode),
                 reserved: 0,
                 spent: 0,
                 from: Some(from),
                 at_ms: now_ms,
+                window,
             });
         }
         b.wrap_calls.clear();
@@ -815,8 +1007,12 @@ fn clear_cap(b: &mut TurnBudget, limits: &brief::SubagentLimits) {
     b.cap = None;
     b.stop_at = l.stop_at;
     b.budget_pct = l.budget_pct;
-    b.wakes_fired
-        .retain(|k| !matches!(k.as_str(), "cap" | "near" | "reserved"));
+    b.wakes_fired.retain(|k| {
+        !matches!(
+            k.as_str(),
+            "cap" | "near" | "reserved" | "week-cap" | "week-near"
+        )
+    });
     b.wakes_pending.clear();
     b.wrap_calls.clear();
     b.stopped = None;
@@ -833,13 +1029,30 @@ pub fn declare(
     reason: &str,
     now_ms: i64,
 ) -> Result<String, String> {
+    let five = StatedCap {
+        percent,
+        mode,
+        window: CapWindow::FiveHour,
+    };
+    declare_stated(dir, five, reason, now_ms)
+}
+
+/// [`declare`] in either window (935).
+pub fn declare_stated(
+    dir: &Path,
+    cap: StatedCap,
+    reason: &str,
+    now_ms: i64,
+) -> Result<String, String> {
+    let limits = brief::read_limits(dir);
     brief::with_ledger(dir, |b| {
         if b.cap_locked {
             return match &b.cap {
                 Some(c) => format!(
-                    "Kept as Swaraag set it in the window for this message: cap {}% of the \
-                     5-hour window, mode {} ({}). Your call changed nothing.",
+                    "Kept as Swaraag set it in the window for this message: cap {}% of {}, \
+                     mode {} ({}). Your call changed nothing.",
                     c.percent,
+                    c.window.words(),
                     c.mode.as_str(),
                     c.mode.words()
                 ),
@@ -848,7 +1061,7 @@ pub fn declare(
                     .to_string(),
             };
         }
-        set_cap(b, percent, mode, "model", reason, now_ms);
+        set_stated(b, cap, "model", reason, now_ms, &limits);
         set_words(b)
     })
     .ok_or_else(|| {
@@ -864,11 +1077,18 @@ fn set_words(b: &TurnBudget) -> String {
     let Some(c) = &b.cap else {
         return "No cap is set.".into();
     };
-    let now = match b.latest_pct {
-        Some(p) => format!(" Usage now: {p}% of the 5-hour window."),
+    let latest = match c.window {
+        CapWindow::FiveHour => b.latest_pct,
+        CapWindow::Weekly => b.latest_week,
+    };
+    let now = match latest {
+        Some(p) => format!(" Usage now: {p}% of {}.", c.window.words()),
         None => String::new(),
     };
-    let near = c.percent.saturating_sub(WAKE_MARGIN);
+    let near = c.percent.saturating_sub(match c.window {
+        CapWindow::FiveHour => WAKE_MARGIN,
+        CapWindow::Weekly => WEEK_WAKE_MARGIN,
+    });
     let rest = match c.mode {
         BudgetMode::WorkToCapThenContinue => format!(
             "Nightloom wakes you at about {near}% (earlier if your running helpers are expected \
@@ -885,15 +1105,24 @@ fn set_words(b: &TurnBudget) -> String {
              with what they have and write up the result."
         ),
     };
-    let past = match b.latest_pct {
+    let past = match latest {
         Some(p) if p >= c.percent => " Usage is already at or past this cap: wrap up now.",
         _ => "",
     };
+    let weekly = match c.window {
+        CapWindow::FiveHour => "",
+        CapWindow::Weekly => {
+            " The 5-hour window keeps the chat's own stop line; the plan still stops \
+             everything at 100% of it, and Nightloom wakes you near that too. At this cap, \
+             end with <continue-later at=\"weekly\">."
+        }
+    };
     format!(
-        "Set: cap {}% of the 5-hour window, mode {} ({}).{now}{past} {rest} The cap chip above \
+        "Set: cap {}% of {}, mode {} ({}).{now}{past} {rest}{weekly} The cap chip above \
          the message box shows this; Swaraag can correct it there. Call set_budget again to \
          change it.",
         c.percent,
+        c.window.words(),
         c.mode.as_str(),
         c.mode.words()
     )
@@ -917,11 +1146,23 @@ pub fn correct(
                 let mode = m
                     .or(have.as_ref().map(|c| c.mode))
                     .unwrap_or(BudgetMode::WorkToCapThenContinue);
+                // His correction keeps the cap's window (935).
+                let window = have.as_ref().map(|c| c.window).unwrap_or_default();
                 let reason = have.map(|c| c.reason).unwrap_or_default();
-                set_cap(b, p, mode, "user", &reason, now_ms);
+                let cap = StatedCap {
+                    percent: p,
+                    mode,
+                    window,
+                };
+                set_stated(b, cap, "user", &reason, now_ms, &limits);
             }
             (None, Some(m), Some(have)) => {
-                set_cap(b, have.percent, m, "user", &have.reason, now_ms);
+                let cap = StatedCap {
+                    percent: have.percent,
+                    mode: m,
+                    window: have.window,
+                };
+                set_stated(b, cap, "user", &have.reason, now_ms, &limits);
             }
             (None, Some(_), None) => {
                 return Err("there is no cap on this message to change the mode of".to_string());
@@ -938,8 +1179,7 @@ pub fn correct(
 
 /// Which of the plan's windows a cap is a percent of (item 937). His rule:
 /// a usage percent is the 5-hour window unless he says the week (memory
-/// `usage-percent-means-5h`, 2026-11-18). Item 935 holds a weekly cap in
-/// the ledger; until then only a 5-hour one is written there.
+/// `usage-percent-means-5h`, 2026-11-18). The ledger holds either (935).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapWindow {
@@ -1244,30 +1484,21 @@ fn window_of(own: &str, start: usize, end: usize) -> CapWindow {
 }
 
 /// At a turn's start: the cap his message states, into the fresh ledger
-/// with source `message`. Nothing when the message states none, or only a
-/// weekly cap (937; the ledger holds 5-hour caps until 935).
+/// with source `message`, in the window his words name (937, 935).
+/// Nothing when the message states none.
 pub fn declare_from_message(dir: &Path, text: &str, now_ms: i64) {
     if dir.as_os_str().is_empty() {
         return;
     }
-    let Some(StatedCap {
-        percent,
-        mode,
-        window,
-    }) = cap_from_message(text)
-    else {
+    let Some(cap) = cap_from_message(text) else {
         return;
     };
-    // A weekly cap is not a 5-hour one (935): writing "98% weekly" as a
-    // 5-hour cap of 98 would be wrong. Until the ledger holds a weekly cap
-    // (935), the model reads it from his words, and the usage line reaches
-    // it while it waits on helpers (938).
-    if window != CapWindow::FiveHour {
-        return;
-    }
+    // A weekly cap is held as one (935), never as a 5-hour cap of the
+    // same figure.
+    let limits = brief::read_limits(dir);
     brief::with_ledger(dir, |b| {
         if b.cap.is_none() {
-            set_cap(b, percent, mode, "message", "stated in the message", now_ms);
+            set_stated(b, cap, "message", "stated in the message", now_ms, &limits);
         }
     });
 }
@@ -1295,7 +1526,8 @@ impl Tool for SetBudget {
         ToolDef {
             name: TOOL_NAME.into(),
             description: "Declare the usage cap this message works under, as a percent of the \
-                 plan's 5-hour window, and how to work under it. Call it when the user's \
+                 plan's 5-hour window (the default) or of the week (window weekly, only when \
+                 the user's cap names the week: \"98% weekly\"), and how to work under it. Call it when the user's \
                  message states a cap (\"use up to 50%\") or the task is big enough to need \
                  one, before launching helpers. Mode work_to_cap_then_continue (the default \
                  for any cap the user states): do the whole job; near the cap Nightloom wakes \
@@ -1312,7 +1544,12 @@ impl Tool for SetBudget {
                         "type": "number",
                         "minimum": 1,
                         "maximum": 100,
-                        "description": "The cap, as a percent of the plan's 5-hour usage window (the figure the usage line calls 5-hour)."
+                        "description": "The cap, as a percent of the window named by `window`: the plan's 5-hour usage window by default (the figure the usage line calls 5-hour), or the week (the usage line's week figure)."
+                    },
+                    "window": {
+                        "type": "string",
+                        "enum": ["five_hour", "weekly"],
+                        "description": "Which window cap_percent is of. five_hour unless the user said the week."
                     },
                     "mode": {
                         "type": "string",
@@ -1342,9 +1579,19 @@ impl Tool for SetBudget {
             .ok_or_else(|| {
                 "mode must be \"finish_within\" or \"work_to_cap_then_continue\"".to_string()
             })?;
+        let window = match input.get("window").and_then(Value::as_str) {
+            None => CapWindow::FiveHour,
+            Some(w) => CapWindow::parse(w)
+                .ok_or_else(|| "window must be \"five_hour\" or \"weekly\"".to_string())?,
+        };
         let reason = input.get("reason").and_then(Value::as_str).unwrap_or("");
         let now_ms = chrono::Utc::now().timestamp_millis();
-        declare(&self.dir, percent, mode, reason, now_ms)
+        let cap = StatedCap {
+            percent,
+            mode,
+            window,
+        };
+        declare_stated(&self.dir, cap, reason, now_ms)
     }
 }
 
@@ -1837,6 +2084,7 @@ mod tests {
             spent: 0,
             from: None,
             at_ms: 3,
+            window: CapWindow::FiveHour,
         });
         assert!(wake_text(&both, None).unwrap().contains("Stop wrapping up"));
 
@@ -2034,14 +2282,14 @@ mod tests {
             [WakeKind::Near]
         );
         // The main thread busy: the look leaves it.
-        assert!(take_wakes(&dir, now, true, false).is_empty());
+        assert!(take_wakes(&dir, now, true, false, None).is_empty());
         // Idle with helpers: taken, once.
-        let took = take_wakes(&dir, now, true, true);
+        let took = take_wakes(&dir, now, true, true, None);
         assert_eq!(
             took.iter().map(|w| w.kind).collect::<Vec<_>>(),
             [WakeKind::Near]
         );
-        assert!(take_wakes(&dir, now, true, true).is_empty());
+        assert!(take_wakes(&dir, now, true, true, None).is_empty());
         // Not written after all: back, and the main thread's next call has it.
         put_back(&dir, took);
         let reply = decide_with(&dir, MAIN_READ, at(&dir, 46));
@@ -2066,7 +2314,7 @@ mod tests {
         });
         at(&dir2, 96);
         let now = chrono::Utc::now().timestamp_millis();
-        let took = take_wakes(&dir2, now, true, true);
+        let took = take_wakes(&dir2, now, true, true, None);
         assert_eq!(
             took.iter().map(|w| w.kind).collect::<Vec<_>>(),
             [WakeKind::Hard]
@@ -2078,12 +2326,12 @@ mod tests {
             claim_reservation(b, reading(60, 1), 3).unwrap();
         });
         at(&dir3, 96);
-        assert!(take_wakes(&dir3, now, false, true).is_empty());
+        assert!(take_wakes(&dir3, now, false, true, None).is_empty());
         // A hold just taken outlives the look (its helper may not be
         // reported started yet); past the grace it goes.
         assert_eq!(read_turn_budget(&dir3).unwrap().reserved.len(), 1);
         let later = chrono::Utc::now().timestamp_millis() + RESERVE_GRACE_MS + 1;
-        assert!(take_wakes(&dir3, later, false, true).is_empty());
+        assert!(take_wakes(&dir3, later, false, true, None).is_empty());
         assert!(read_turn_budget(&dir3).unwrap().reserved.is_empty());
         for d in [dir, dir2, dir3] {
             let _ = std::fs::remove_dir_all(&d);
@@ -2159,6 +2407,178 @@ mod tests {
             [17, 17, 18, 19, 25, 28]
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 935: set_budget takes a weekly cap. The ledger holds it (the
+    /// 5-hour stop line stays the chat's own), a reading at weekly 97 with
+    /// the 5-hour window at 40 fires the weekly near-wake, and the 5-hour
+    /// figure alone never judges a weekly cap.
+    #[tokio::test]
+    async fn set_budget_holds_a_weekly_cap_and_the_week_wakes_near_it() {
+        let dir = temp("weekly-cap");
+        start(&dir, 40);
+        let own_stop = read_turn_budget(&dir).unwrap().stop_at;
+        let tool = SetBudget::new(&dir);
+        let cancel = CancellationToken::new();
+        let said = tool
+            .call(
+                json!({"cap_percent": 98, "window": "weekly", "mode": "work_to_cap_then_continue", "reason": "if it's getting to like 98%"}),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        assert!(said.starts_with("Set: cap 98% of the week"), "{said}");
+        let b = read_turn_budget(&dir).unwrap();
+        let cap = b.cap.clone().unwrap();
+        assert_eq!(
+            (cap.percent, cap.mode, cap.window, b.stop_at),
+            (98, B, CapWindow::Weekly, own_stop)
+        );
+        // A bad window is refused; none given is the 5-hour window.
+        assert!(
+            tool.call(
+                json!({"cap_percent": 98, "window": "monthly", "mode": "finish_within", "reason": ""}),
+                &cancel,
+            )
+            .await
+            .is_err()
+        );
+        // The 5-hour window near 98 judges nothing for a weekly cap.
+        let mut five = b.clone();
+        assert!(due_wakes(&mut five, reading(95, 1), 1).is_empty());
+        // Weekly 95: under the near line (96), nothing; 97: the near-wake,
+        // once, in the week's words.
+        let senses = brief::Senses {
+            idle_ms: &no_idle,
+            activity: None,
+        };
+        let quiet = brief::decide_holding(&dir, MAIN_READ, at(&dir, 40), Some(95), 50, 10, &senses);
+        assert!(
+            !quiet
+                .additional_context()
+                .unwrap_or_default()
+                .contains("Nightloom, not from"),
+            "{quiet:?}"
+        );
+        let reply = brief::decide_holding(&dir, MAIN_READ, at(&dir, 40), Some(97), 50, 10, &senses);
+        let line = reply.additional_context().unwrap_or_default();
+        assert!(
+            line.contains("usage is at 97% of the week; this message's cap is 98% of the week")
+                && line.contains(r#"at="weekly""#),
+            "{line}"
+        );
+        // The usage line names the weekly cap beside the week's figure.
+        assert!(line.contains("week 97% (cap 98%"), "{line}");
+        let again = brief::decide_holding(&dir, MAIN_READ, at(&dir, 41), Some(97), 50, 10, &senses);
+        assert!(
+            !again
+                .additional_context()
+                .unwrap_or_default()
+                .contains("Nightloom, not from"),
+            "{again:?}"
+        );
+        let b = read_turn_budget(&dir).unwrap();
+        assert!(b.wakes_fired.iter().any(|k| k == "week-near"));
+        assert_eq!((b.start_week, b.latest_week), (Some(95), Some(97)));
+        // His correction on the chip keeps the window.
+        let b = correct(&dir, Some(99), None, 9).unwrap();
+        assert_eq!(
+            b.cap.map(|c| (c.percent, c.window)),
+            Some((99, CapWindow::Weekly))
+        );
+        // And none at all.
+        let b = correct(&dir, None, None, 10).unwrap();
+        assert!(b.cap.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 936: a weekly cap's near, at-cap and pace wakes fire once each
+    /// per turn from weekly readings; with no weekly cap, the hard wake at
+    /// [`WEEK_HARD_WAKE_PCT`] reaches an idle main thread through
+    /// `take_wakes`, only while helpers run.
+    #[test]
+    fn the_week_wakes_fire_once_each_and_the_hard_one_reaches_an_idle_main_thread() {
+        let weekly = |percent| StatedCap {
+            percent,
+            mode: B,
+            window: CapWindow::Weekly,
+        };
+        let mut b = ledger(40, None);
+        set_stated(
+            &mut b,
+            weekly(98),
+            "model",
+            "t",
+            1,
+            &SubagentLimits::default(),
+        );
+        let kinds = |b: &mut TurnBudget, w: u8| {
+            due_week_wakes(b, Some(w), 2)
+                .into_iter()
+                .map(|w| (w.kind, w.pct, w.window))
+                .collect::<Vec<_>>()
+        };
+        use CapWindow::Weekly as W;
+        assert!(kinds(&mut b, 90).is_empty());
+        assert_eq!(kinds(&mut b, 92), [(WakeKind::Pace, 92, W)]);
+        assert!(kinds(&mut b, 93).is_empty());
+        assert_eq!(kinds(&mut b, 94), [(WakeKind::Pace, 94, W)]);
+        assert_eq!(kinds(&mut b, 96), [(WakeKind::Near, 96, W)]);
+        assert!(kinds(&mut b, 97).is_empty());
+        assert_eq!(kinds(&mut b, 98), [(WakeKind::AtCap, 98, W)]);
+        assert!(kinds(&mut b, 99).is_empty());
+        // The words are the week's.
+        let mut c = ledger(40, None);
+        set_stated(
+            &mut c,
+            weekly(98),
+            "model",
+            "t",
+            1,
+            &SubagentLimits::default(),
+        );
+        c.start_week = Some(90);
+        let text = wake_text(&due_week_wakes(&mut c, Some(98), 2), None).unwrap();
+        assert!(
+            text.contains("98% of the week (cap 98%") && text.contains(r#"at="weekly""#),
+            "{text}"
+        );
+        // No weekly cap (a 5-hour one, or none): the hard wake at 98, once.
+        let mut h = ledger(40, Some((50, B)));
+        assert!(due_week_wakes(&mut h, Some(97), 2).is_empty());
+        let hard = due_week_wakes(&mut h, Some(98), 2);
+        assert_eq!(
+            hard.iter().map(|w| (w.kind, w.window)).collect::<Vec<_>>(),
+            [(WakeKind::Hard, W)]
+        );
+        assert!(due_week_wakes(&mut h, Some(99), 2).is_empty());
+        assert!(
+            wake_text(&hard, None)
+                .unwrap()
+                .contains("98% of the week, and the plan stops everything at 100% of it")
+        );
+        // Through the drive loop's look: idle with helpers, it is taken once;
+        // with none running it is not a wake at all.
+        let dir = temp("week-hard");
+        start(&dir, 40);
+        let now = chrono::Utc::now().timestamp_millis();
+        at(&dir, 41);
+        assert!(take_wakes(&dir, now, true, true, Some(97)).is_empty());
+        let took = take_wakes(&dir, now, true, true, Some(98));
+        assert_eq!(
+            took.iter()
+                .map(|w| (w.kind, w.pct, w.window))
+                .collect::<Vec<_>>(),
+            [(WakeKind::Hard, 98, W)]
+        );
+        assert!(take_wakes(&dir, now, true, true, Some(98)).is_empty());
+        let dir2 = temp("week-hard-none");
+        start(&dir2, 40);
+        at(&dir2, 41);
+        assert!(take_wakes(&dir2, now, false, true, Some(98)).is_empty());
+        for d in [dir, dir2] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 
     /// A subagent may not set the budget: the brief hook refuses its call.
@@ -2245,12 +2665,21 @@ mod tests {
                 "{text}"
             );
         }
-        // A weekly cap is not written to the ledger as a 5-hour one (935
-        // holds it); a 5-hour one still is.
+        // A weekly cap is held as a weekly one (935), never as a 5-hour
+        // cap of 98; a 5-hour one is still the stop line.
         let dir = temp("weekly-backstop");
         start(&dir, 40);
+        let own_stop = read_turn_budget(&dir).unwrap().stop_at;
         declare_from_message(&dir, his, 5);
-        assert!(read_turn_budget(&dir).unwrap().cap.is_none());
+        let b = read_turn_budget(&dir).unwrap();
+        assert_eq!(
+            b.cap
+                .as_ref()
+                .map(|c| (c.percent, c.mode, c.window, c.source.as_str())),
+            Some((98, B, W, "message"))
+        );
+        assert_eq!(b.stop_at, own_stop);
+        start(&dir, 40);
         declare_from_message(&dir, "don't go past 90 of the 5 hour", 6);
         assert_eq!(
             read_turn_budget(&dir)

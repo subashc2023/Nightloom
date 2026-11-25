@@ -144,6 +144,20 @@ describe("correctCap: the call through set_turn_cap", () => {
   });
 });
 
+describe("capView: a weekly cap (item 935)", () => {
+  it("reads the week's figures and says so", () => {
+    const v = capView(ledger({ cap: cap({ percent: 98, window: "weekly" }), latest_pct: 40, start_week: 92, latest_week: 97 }))!;
+    expect(v.weekly).toBe(true);
+    expect([v.percent, v.latest, v.spent, v.allowance, v.phase]).toEqual([98, 97, 5, 6, "near"]);
+    expect(v.tip).toContain("98% of the week");
+    expect(v.tip).toContain("The week is at 97%");
+    // The 5-hour reading alone does not move it.
+    expect(capView(ledger({ cap: cap({ percent: 98, window: "weekly" }), latest_pct: 99, latest_week: 93 }))!.phase).toBe("set");
+    // No window: the 5-hour cap as before.
+    expect(capView(ledger({ cap: cap() }))!.weekly).toBe(false);
+  });
+});
+
 describe("the wake notice and the composer's slot", () => {
   it("says what Nightloom told the main agent, in his terms", () => {
     expect(wakeNotice(["near"], 46, 50)).toBe("usage at 46% is near the 50% cap — Nightloom told the main agent to have its helpers wrap up");

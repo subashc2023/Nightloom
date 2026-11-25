@@ -2997,14 +2997,15 @@ impl ClaudeCodeAgent {
                         // (938).
                         let listed = helpers.clone();
                         let (wakes, earlier, usage) = tokio::task::spawn_blocking(move || {
-                            let wakes = budget::take_wakes(&d, now_ms, running, idle);
+                            // The week on hand: a weekly cap's wakes and the
+                            // no-cap weekly hard wake (935, 936), and the
+                            // usage line's figure (938).
+                            let week = brief::week_on_hand(now_ms);
+                            let wakes = budget::take_wakes(&d, now_ms, running, idle, week);
                             let earlier = (!wakes.is_empty())
                                 .then(|| brief::read_turn_budget(&d).and_then(|b| b.main_transcript))
                                 .flatten()
                                 .and_then(|t| brief::continuable_agents_lines(&t, now_ms));
-                            let week = (running && idle)
-                                .then(|| brief::week_on_hand(now_ms))
-                                .flatten();
                             let usage = budget::take_usage_line(
                                 &d,
                                 now_ms,
