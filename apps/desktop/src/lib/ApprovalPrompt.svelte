@@ -27,6 +27,8 @@
   import DriveCard from "./DriveCard.svelte";
   import { isDriveRequest } from "./drive";
   import { trackCard } from "./waitingNotice.svelte";
+  // Item 974: a digit focuses button n on the permission and plan cards; Enter presses it.
+  import { keyPicks } from "./cardKeys";
 
   let { req }: { req: ApprovalRequest } = $props();
 
@@ -137,6 +139,13 @@
   // The permission card's strip says `⏎ allow · esc deny`; the other two
   // strips name no keys, so their fields take none — a plan should not be
   // approved by an Enter in a text box nothing on the board promised.
+  // Item 974: the question card focuses its box on arrival; a digit or Enter there is the active question's.
+  let asker = $state<{ hostKey(e: KeyboardEvent): boolean } | null>(null);
+  function onQuestionBoxKey(e: KeyboardEvent) {
+    if (e.target !== box || !asker) return;
+    asker.hostKey(e);
+  }
+
   function onNoteKey(e: KeyboardEvent) {
     if (kind !== "call") return;
     if (e.key === "Enter") {
@@ -424,18 +433,22 @@
   <!-- The question card (backlog 314; redesigned by 354, his pick): the tabs on top, every question inline below
        them in the card's one scroll, a Next after each, the lit tab following the scroll (AskQuestions). The
        card grows to its content up to the cap and then scrolls as one; the strip stays at its top. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     class="ask qcard lk-shell"
     class:folded
     bind:this={box}
     use:trackCard={req.id}
     tabindex="-1"
+    data-keycard
+    onkeydown={onQuestionBoxKey}
     role="group"
     aria-label="the model asks {questions.length} question{questions.length === 1 ? '' : 's'}"
     style:max-height={sized.maxHeight !== null ? `${sized.maxHeight}px` : null}
   >
     <AskLock />
     <AskQuestions
+      bind:this={asker}
       {questions}
       idBase={req.id}
       {picks}
@@ -444,6 +457,9 @@
       onother={(i, v) => (others[i] = v)}
       {notes}
       onnote={(i, label, v) => (notes[i] = { ...(notes[i] ?? {}), [label]: v })}
+      onenter={() => {
+        if (answered) answerQuestions();
+      }}
       {folded}
     >
       {#snippet tail()}
@@ -472,6 +488,7 @@
     class:folded
     bind:this={box}
     use:trackCard={req.id}
+    use:keyPicks
     tabindex="-1"
     role="group"
     aria-label="plan approval"
@@ -516,9 +533,10 @@
 
       {@render noteField()}
       <div class="actions">
-        <button class="ns-btn accent" onclick={() => decide("allow", req.input, then)}>Approve</button>
+        <button class="ns-btn accent" data-pick onclick={() => decide("allow", req.input, then)}>Approve</button>
         <button
           class="ns-btn outline"
+          data-pick
           onclick={() => decide("deny", undefined, undefined, "keep planning: the user wants changes to the plan")}
         >
           Keep planning
@@ -561,6 +579,7 @@
     class:folded
     bind:this={box}
     use:trackCard={req.id}
+    use:keyPicks
     tabindex="-1"
     role="group"
     aria-label="permission required to run {req.name}"
@@ -645,22 +664,23 @@
         </div>
       {/if}
       <div class="actions">
-        <button class="ns-btn accent" data-act="allow" onclick={() => decide("allow")}
+        <button class="ns-btn accent" data-act="allow" data-pick onclick={() => decide("allow")}
           >{req.kind === "remember" ? "Remember it" : req.kind === "connector" || req.kind === "home_write" ? "Allow once" : "Allow"}</button
         >
         {#if req.kind === "connector"}
-          <button class="ns-btn" data-act="always" use:tip={ALWAYS_READ_TIP} onclick={() => decide("always")}>Allow always</button>
+          <button class="ns-btn" data-act="always" data-pick use:tip={ALWAYS_READ_TIP} onclick={() => decide("always")}>Allow always</button>
         {:else if req.aside === undefined && !addsFolder && req.kind !== "remember" && req.kind !== "home_write"}
           <button
             class="ns-btn"
+            data-pick
             use:tip={`every later ${req.name} in this chat runs unasked`}
             onclick={() => decide("always")}>Allow for this chat</button
           >
         {/if}
-        <button class="ns-btn danger" bind:this={denyButton} onclick={() => decide("deny")}>Deny</button>
+        <button class="ns-btn danger" data-pick bind:this={denyButton} onclick={() => decide("deny")}>Deny</button>
         <!-- Item 743: the phone card's "Not now — carry on", same words, the `later` reply the window takes. -->
-        {#if req.aside === undefined}<button class="ns-btn" data-act="later" use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>{/if}
-        <span class="keys">⏎ allow · esc deny · the note goes with either</span>
+        {#if req.aside === undefined}<button class="ns-btn" data-act="later" data-pick use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>{/if}
+        <span class="keys">1–9 pick a button, ⏎ presses it · in the note ⏎ allow, esc deny</span>
       </div>
     {/if}
   </div>
@@ -669,6 +689,7 @@
   class="approval"
   bind:this={box}
   use:trackCard={req.id}
+  use:keyPicks
   tabindex="-1"
   role="group"
   aria-label="permission required to run {req.name}"
@@ -689,14 +710,14 @@
   </div>
 
   <div class="actions">
-    <button class="btn allow" onclick={() => decide("allow")}>Allow once</button>
-    <button class="btn" onclick={() => decide("always")}>
+    <button class="btn allow" data-pick onclick={() => decide("allow")}>Allow once</button>
+    <button class="btn" data-pick onclick={() => decide("always")}>
       Always allow {req.name}
     </button>
-    <button class="btn deny" bind:this={denyButton} onclick={onDeny}>
+    <button class="btn deny" data-pick bind:this={denyButton} onclick={onDeny}>
       {denying ? "Deny" : "Deny…"}
     </button>
-    <button class="btn" data-act="later" use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>
+    <button class="btn" data-act="later" data-pick use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>
   </div>
 
   {#if denying}

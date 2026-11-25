@@ -1,4 +1,6 @@
 <script lang="ts">
+  // Item 974: a digit focuses button n; Enter presses it.
+  import { keyPicks } from "./cardKeys";
   import { trackCard } from "./waitingNotice.svelte";
   // Playwright's approval card (nightshift backlog 367, blocker 1413): "the
   // model wants to use playwright, and it gave this purpose as a reason",
@@ -55,7 +57,7 @@
   }
 </script>
 
-<div class="ask" bind:this={box} use:trackCard={req.id} tabindex="-1" role="group" aria-label="Claude wants to use its own browser (Playwright)">
+<div class="ask" bind:this={box} use:trackCard={req.id} use:keyPicks tabindex="-1" role="group" aria-label="Claude wants to use its own browser (Playwright)">
   <div class="head">
     <span class="mark" aria-hidden="true">◎</span>
     <span>Claude wants to use its own browser <span class="dim">(Playwright)</span></span>
@@ -95,13 +97,14 @@
         class="ns-btn"
         class:accent={b.decision === "allow"}
         class:danger={b.decision === "deny"}
+        data-pick
         disabled={done}
         use:tip={b.tip}
         onclick={() => decide(b.decision)}>{b.label}</button
       >
     {/each}
     <!-- Item 743: the phone card's "Not now — carry on", same words, the `later` reply the window takes. -->
-    {#if req.aside === undefined}<button class="ns-btn" data-act="later" disabled={done} use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>{/if}
+    {#if req.aside === undefined}<button class="ns-btn" data-act="later" disabled={done} data-pick use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>{/if}
     <span class="keys">⏎ allow once · esc deny</span>
   </div>
 </div>
