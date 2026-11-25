@@ -32,6 +32,7 @@
   import { lastExchange, type Ev } from "./steps";
   import { tabsFor, focusOf, type Tab } from "./tabs";
   import { setStageHost, stageHost } from "./host";
+  import { keepScroll } from "./keepScroll";
   import { desktopHost } from "./desktopHost";
 
   // The views ask the window for what they need (the phone's Home page sets its own host).
@@ -245,7 +246,7 @@
   {/snippet}
   <div class="h9-body" class:split={!!secondTask} bind:clientWidth={bodyW} bind:clientHeight={bodyH}>
     {#key focus.id}
-      <div class="h9-view" class:chatview={focus.view === "chat"} in:viewIn|global={{ anchor: chips[focus.id] }} out:viewOut|global>
+      <div class="h9-view" class:chatview={focus.view === "chat"} use:keepScroll={focus.view === "chat" ? "" : focus.id} in:viewIn|global={{ anchor: chips[focus.id] }} out:viewOut|global>
         {#if focus.view === "chat"}
           <div class="h9-chat">{@render children()}</div>
         {:else if focus.view === "brief" && !focusTask}
@@ -259,7 +260,7 @@
     {/key}
     {#if secondTask}
       {#key secondTask.id}
-        <div class="h9-view second">{@render taskView(secondTask)}</div>
+        <div class="h9-view second" use:keepScroll={secondTask.id}>{@render taskView(secondTask)}</div>
       {/key}
     {/if}
     <!-- Item 894: a failed read of Home's tasks says so; the last rows stay drawn. -->
