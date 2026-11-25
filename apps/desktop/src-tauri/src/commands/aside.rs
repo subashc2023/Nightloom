@@ -49,6 +49,12 @@ pub(crate) struct AsideResult {
     /// shell command moved in the workspace. The window carries them to
     /// the main chat at the end of his next message there.
     changes: Vec<nightloom_service::aside_changes::Change>,
+    /// Item 959: the aside ran on another model than the chat's and wrote
+    /// the chat's prefix there in the chat's tool text
+    /// (`AgentSpec::side_marks_chat_on_its_model`): switching the chat to
+    /// that model reads it back (933b run C2, 96.3%). The window prices
+    /// such a switch warm while the aside's hour lasts.
+    marks_chat: bool,
 }
 
 /// A piece of an aside's answer as it streams (nightshift backlog 128):
@@ -337,6 +343,17 @@ pub(crate) async fn ask_aside(
         .is_some_and(|f| {
             f.side_cache_mark && f.model == agent.spec().model && f.effort == agent.spec().effort
         });
+    // Item 959: on another model, whether its write is the chat's prefix
+    // on that model (the chat's tool text there).
+    let marks_chat = !own_cache
+        && !outcome.is_error
+        && outcome.last_round.is_some()
+        && agent
+            .spec()
+            .aside_with(model.as_deref(), effort.as_deref())
+            .is_some_and(|f| {
+                f.model != agent.spec().model && agent.spec().side_marks_chat_on_its_model(&f)
+            });
     let round_read = outcome.last_round.map_or(0, |u| {
         cached_for_chat(u.cache_read_tokens, u.cache_write_tokens, own_cache)
     });
@@ -414,6 +431,7 @@ pub(crate) async fn ask_aside(
             .first_round
             .map(|u| u.cache_write_tokens.unwrap_or(0)),
         changes,
+        marks_chat,
     })
 }
 

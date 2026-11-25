@@ -33,6 +33,9 @@ export interface CacheState {
   /** Item 677: set when an aside's read is what keeps the entry — the
    *  share of the reply's context it read from cache (0.53 for his). */
   asideShare?: number;
+  /** Item 959: set when this is another model's entry an aside wrote on
+   *  the chat's prefix (`sideCacheFor`) — the model, as the draft picks it. */
+  sideModel?: string;
 }
 
 /**
@@ -268,6 +271,65 @@ export function ownModelCache(turns: readonly { readAt?: number }[], now: number
   const warmUntil = at === null ? now - 1 : at + TTL_MS[ttl];
   const remainingMs = warmUntil - now;
   return { sentAt: at ?? warmUntil - TTL_MS[ttl], ttl, warmUntil, remainingMs, warm: remainingMs > 0 };
+}
+
+/**
+ * Item 959 (933b's finding): an aside on model X of a chat, with the
+ * tether off, writes the chat's prefix on X (`marksChat`, the backend's
+ * fingerprint match: model plus the permission mode's tool text). A switch
+ * of the chat to X reads it back — measured 96.3% (933b run C2) and 95.5%
+ * (959 run S2) — so while that entry lives the switch is priced warm.
+ *
+ * The entry of the newest such answer on `targetModelId` (the CLI's
+ * resolved id, compared without a `[1m]` tag), sent after the chat's
+ * newest live reply (`replySentAt`: a reply since then grew the prefix
+ * past what the aside wrote), within the hour Claude Code writes with.
+ * Null otherwise — never a guess: an answer from a backend before 959
+ * carries no mark.
+ */
+export interface SideMarkTurn {
+  error?: string | null;
+  readAt?: number;
+  model?: string | null;
+  marksChat?: boolean;
+}
+
+const idKey = (m: string): string => m.trim().toLowerCase().replace(/\[[^\]]*\]$/, "");
+
+export function sideCacheFor(
+  asides: readonly { turns: readonly SideMarkTurn[] }[],
+  targetModelId: string | null | undefined,
+  replySentAt: number | null,
+  now: number,
+): CacheState | null {
+  if (!targetModelId?.trim() || replySentAt == null) return null;
+  const want = idKey(targetModelId);
+  let at: number | null = null;
+  for (const a of asides)
+    for (const t of a.turns) {
+      if (t.error || !t.marksChat || t.readAt == null || t.readAt <= replySentAt) continue;
+      if (!t.model?.trim() || idKey(t.model) !== want) continue;
+      if (at === null || t.readAt > at) at = t.readAt;
+    }
+  if (at === null) return null;
+  const warmUntil = at + TTL_MS["1h"];
+  const remainingMs = warmUntil - now;
+  if (remainingMs <= 0) return null;
+  return { sentAt: at, ttl: "1h", warmUntil, remainingMs, warm: true, sideModel: targetModelId };
+}
+
+/** When the newest live reply's request went out (ms epoch), or null —
+ *  the moment `sideCacheFor` needs an aside to come after. */
+export function newestReplySentAt(events: SessionEvent[]): number | null {
+  const live = liveFlags(events);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (!live[i]) continue;
+    const e = events[i];
+    if (e.event !== "assistant_message") continue;
+    const t = e.sent_at ? Date.parse(e.sent_at) : NaN;
+    return Number.isFinite(t) ? t : null;
+  }
+  return null;
 }
 
 /**

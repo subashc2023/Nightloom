@@ -1376,6 +1376,74 @@ impl AgentSpec {
         Some(spec)
     }
 
+    /// The permission mode this spec's requests go out under: the Ask
+    /// position's when it has one (it overrides), else the spec's own —
+    /// `None` is the CLI's default (`args`'s rule).
+    pub fn sent_permission_mode(&self) -> Option<&str> {
+        match &self.ask {
+            Some(ask) => Some(ask.mode.permission_mode()),
+            None => self.permission_mode.as_deref(),
+        }
+    }
+
+    /// The tool text a request sends on `model` under `mode`, as a class
+    /// (item 959): two requests in one class send the same tools, so a
+    /// cache entry one writes the other reads. Only what was measured;
+    /// anything else is `None` and matches nothing.
+    /// - Fable 5.2: every mode one text (item 774, 2026-11-16).
+    /// - Opus 5.5: `default`/`dontAsk` one, `auto`/`plan`/`bypassPermissions`
+    ///   another (item 774).
+    /// - Haiku: `default`, `dontAsk`, `auto`, `bypassPermissions` one; under
+    ///   `plan` the CLI runs Sonnet, another model (item 802).
+    /// - Sonnet 5.5: `default` and `dontAsk` one (item 959, 2026-11-25: a
+    ///   `dontAsk` aside's write was read 95.5% by a `default` send, run S2).
+    ///
+    /// No mode is the CLI's `default`. A model without a family name (the
+    /// CLI's default model) is not known here: `None`.
+    pub fn tool_text_class(model: Option<&str>, mode: Option<&str>) -> Option<u8> {
+        let m = model?.to_ascii_lowercase();
+        let mode = mode.unwrap_or("default");
+        if m.contains("fable") {
+            return Some(0);
+        }
+        if m.contains("haiku") {
+            return matches!(mode, "default" | "dontAsk" | "auto" | "bypassPermissions")
+                .then_some(0);
+        }
+        if m.contains("opus") {
+            return match mode {
+                "default" | "dontAsk" => Some(1),
+                "auto" | "plan" | "bypassPermissions" => Some(2),
+                _ => None,
+            };
+        }
+        if m.contains("sonnet") {
+            return matches!(mode, "default" | "dontAsk").then_some(1);
+        }
+        None
+    }
+
+    /// Whether `side` — an aside or keep-warm ping of this chat, perhaps
+    /// on another model — wrote a cache entry the chat's own next send
+    /// would read **if the chat switched to the side's model** (item 959):
+    /// it marks the chat's prefix (`side_cache_mark`, tether off) and its
+    /// tool text on that model is the chat's (`tool_text_class`). Measured:
+    /// after a Sonnet aside on a cold Haiku chat, the chat's send on Sonnet
+    /// read 96.3% (933b run C2), and 95.5% under `default` (959 run S2).
+    pub fn side_marks_chat_on_its_model(&self, side: &AgentSpec) -> bool {
+        if !side.side_cache_mark {
+            return false;
+        }
+        let model = side.model.as_deref();
+        match (
+            Self::tool_text_class(model, side.sent_permission_mode()),
+            Self::tool_text_class(model, self.sent_permission_mode()),
+        ) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    }
+
     /// The permission mode an aside of a chat without the Ask hook runs
     /// in, given the chat's (item 774, blocker 2037). Measured 2026-11-16,
     /// CLI 2.1.326, requests captured against a closed local port (no
@@ -4767,6 +4835,42 @@ mod tests {
         plain.resume = Some("sess-9".into());
         assert!(off(&plain.aside().unwrap()), "a chat without the Ask hook");
         assert!(off(&plain.keep_warm_ping().unwrap()));
+    }
+
+    /// Item 959: an aside on another model marks the chat's prefix on that
+    /// model only where its tool text is the chat's there.
+    #[test]
+    fn an_other_model_aside_marks_the_chat_on_its_model_in_the_chats_class() {
+        // An Ask chat (`default`) and its `dontAsk` aside: one class on
+        // Sonnet (959 run S2), Opus, Fable and Haiku.
+        let mut s = asking(AskMode::Ask);
+        s.resume = Some("sess-9".into());
+        s.model = Some("haiku".into());
+        for m in ["sonnet", "opus", "claude-opus-5-5", "fable", "haiku"] {
+            let side = s.aside_with(Some(m), None).unwrap();
+            assert!(s.side_marks_chat_on_its_model(&side), "{m}");
+        }
+        // An Auto chat's aside stays `auto`: Opus and Fable match, Sonnet's
+        // `auto` was never measured, so nothing is claimed there.
+        let mut a = asking(AskMode::Auto);
+        a.resume = Some("sess-9".into());
+        assert!(a.side_marks_chat_on_its_model(&a.aside_with(Some("opus"), None).unwrap()));
+        assert!(a.side_marks_chat_on_its_model(&a.aside_with(Some("fable"), None).unwrap()));
+        assert!(!a.side_marks_chat_on_its_model(&a.aside_with(Some("sonnet"), None).unwrap()));
+        // A chat without the hook in `plan` on Haiku runs Sonnet: no claim.
+        let mut p = spec();
+        p.resume = Some("sess-9".into());
+        p.permission_mode = Some("plan".into());
+        assert!(!p.side_marks_chat_on_its_model(&p.aside_with(Some("haiku"), None).unwrap()));
+        // No tether switch, no mark; no model name, no claim.
+        let mut side = s.aside_with(Some("opus"), None).unwrap();
+        side.side_cache_mark = false;
+        assert!(!s.side_marks_chat_on_its_model(&side));
+        assert_eq!(AgentSpec::tool_text_class(None, Some("default")), None);
+        assert_eq!(
+            AgentSpec::tool_text_class(Some("opus"), Some("acceptEdits")),
+            None
+        );
     }
 
     /// An aside is the chat's own command line — model, tools, servers,
