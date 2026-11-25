@@ -190,8 +190,11 @@ fn age_words(secs: f64) -> String {
     let min = (secs / 60.0).round().max(0.0) as i64;
     if min < 120 {
         format!("{min} min")
-    } else {
+    } else if min < 48 * 60 {
         format!("{} h", (min as f64 / 60.0).round() as i64)
+    } else {
+        // Item 947: a weekly margin is days, not "100 h".
+        format!("{} days", (min as f64 / 1440.0).round() as i64)
     }
 }
 
@@ -416,6 +419,15 @@ mod tests {
     /// No reading time or source: the fake reading of the tests.
     fn stop(plan: Option<&PlanUsage>, pace: Option<&PlanPace>) -> Option<String> {
         stop_reason(plan, pace, 0.0, 1.0, at("2026-11-24T16:00:14Z"), &pst())
+    }
+
+    /// Item 947: ages read in minutes, hours, then days.
+    #[test]
+    fn ages_read_in_minutes_hours_then_days() {
+        assert_eq!(age_words(41.0 * 60.0), "41 min");
+        assert_eq!(age_words(3.0 * 3600.0), "3 h");
+        assert_eq!(age_words(47.0 * 3600.0), "47 h");
+        assert_eq!(age_words(100.0 * 3600.0), "4 days");
     }
 
     #[test]

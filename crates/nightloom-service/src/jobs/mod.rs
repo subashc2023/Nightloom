@@ -914,6 +914,9 @@ fn cut(text: &str) -> String {
     out
 }
 
+/// Item 951: the row's note on a Home run that started with no reading.
+pub const NO_READING_NOTE: &str = "usage could not be read — Home's 80% stop was not checked";
+
 /// The plan's limit is reached now (a fresh reading at 100%).
 fn limited(plan: &PlanUsage) -> bool {
     !plan.stale
@@ -943,10 +946,13 @@ pub const SAME_RESET_SECS: i64 = 60;
 /// less the figure before, when both were read in the same window. Pure.
 pub fn week_points(mark: &RunMark, after: &PlanUsage) -> Option<u8> {
     let (before, now) = (mark.week_before?, after.seven_day?);
-    if !same_reset(
-        mark.resets_at.as_deref(),
-        after.seven_day_resets_at.as_deref(),
-    ) || now < before
+    // Item 947: an old sample on either side is no measure.
+    if after.stale
+        || !same_reset(
+            mark.resets_at.as_deref(),
+            after.seven_day_resets_at.as_deref(),
+        )
+        || now < before
     {
         return None;
     }
@@ -957,10 +963,12 @@ pub fn week_points(mark: &RunMark, after: &PlanUsage) -> Option<u8> {
 /// [`week_points`] reads the week. Pure.
 pub fn five_points(mark: &RunMark, after: &PlanUsage) -> Option<u8> {
     let (before, now) = (mark.five_before?, after.five_hour?);
-    if !same_reset(
-        mark.five_resets_at.as_deref(),
-        after.five_hour_resets_at.as_deref(),
-    ) || now < before
+    if after.stale
+        || !same_reset(
+            mark.five_resets_at.as_deref(),
+            after.five_hour_resets_at.as_deref(),
+        )
+        || now < before
     {
         return None;
     }
@@ -1602,17 +1610,20 @@ impl Jobs {
         if home && let Ok(fresh) = host.usage_fresh(crate::home::guard::GUARD_MAX_AGE).await {
             plan = Some(fresh);
         }
+        // Item 763 H6: Home's unattended runs stop short of his limits.
+        // Item 812: his Run anyway passes once; his Run now asks.
+        // Item 947: before the plan-limit wait, so Home at 100% skips with
+        // its reading and page (the 80% stop covers it) instead of waiting
+        // silently for the reset.
+        let forced = job.run_now && job.force_once;
+        if !forced && let Some(why) = self.home_guard(job, plan.as_ref(), now) {
+            return self.skip(job, &why, plan.as_ref(), job.run_now, now);
+        }
         if plan.as_ref().is_some_and(limited) {
             return wait(
                 "the plan's usage limit is reached; it runs after the reset".into(),
                 LIMIT_RETRY_SECS,
             );
-        }
-        // Item 763 H6: Home's unattended runs stop short of his limits.
-        // Item 812: his Run anyway passes once; his Run now asks.
-        let forced = job.run_now && job.force_once;
-        if !forced && let Some(why) = self.home_guard(job, plan.as_ref(), now) {
-            return self.skip(job, &why, plan.as_ref(), job.run_now, now);
         }
         let chat = match host
             .job_prepare(Prep {
@@ -1664,9 +1675,9 @@ impl Jobs {
                     j.running = Some(RunMark {
                         started: now,
                         writable: job.writable(),
-                        week_before: plan.as_ref().and_then(|p| p.seven_day),
+                        week_before: plan.as_ref().filter(|p| !p.stale).and_then(|p| p.seven_day),
                         resets_at: plan.as_ref().and_then(|p| p.seven_day_resets_at.clone()),
-                        five_before: plan.as_ref().and_then(|p| p.five_hour),
+                        five_before: plan.as_ref().filter(|p| !p.stale).and_then(|p| p.five_hour),
                         five_resets_at: plan.as_ref().and_then(|p| p.five_hour_resets_at.clone()),
                         forced,
                         reading: home.then(|| crate::home::guard::GuardReading::of(plan.as_ref())),
@@ -1677,10 +1688,8 @@ impl Jobs {
                     j.retry_at = None;
                     // Item 951: a Home run with no reading at all (none on
                     // this machine, or the host did not answer) says so.
-                    j.note =
-                        (home && crate::home::guard::reading_missing(plan.as_ref())).then(|| {
-                            "usage could not be read — Home's 80% stop was not checked".to_string()
-                        });
+                    j.note = (home && crate::home::guard::reading_missing(plan.as_ref()))
+                        .then(|| NO_READING_NOTE.to_string());
                     j.runs += 1;
                     // Approve once is used by this run; the next one asks.
                     // (Its chat was set writable just now, by `prepare`.)
@@ -1904,6 +1913,12 @@ impl Jobs {
         let summary_line = summary.clone();
         let _ = self.change(&job.id, |j| {
             j.running = None;
+            // Item 947: the start's "usage could not be read" note is about
+            // that run; once it ends the row shows its next time again (the
+            // last line carries the warning).
+            if j.note.as_deref() == Some(NO_READING_NOTE) {
+                j.note = None;
+            }
             // A read-only run that was refused a change asks; one that was
             // not leaves an earlier ask standing until he answers it.
             if wants {

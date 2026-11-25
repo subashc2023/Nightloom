@@ -22,6 +22,7 @@
   let { task }: { task?: HomeTask } = $props();
   const page = $derived(task ? briefPageOf(task.data) : null);
   const brief = $derived<Brief | null>(task && page ? { at: task.updated_at || null, asked: "", sections: sectionsOf(page.body), writing: task.state === "live" && !page.body } : stageHost.now.brief());
+  const skipped = $derived(stageHost.now.skippedScan());
   const title = $derived(task ? page?.title || task.name : "Today's page");
   // The stage keys each view on its tab, so another task is another view.
   // svelte-ignore state_referenced_locally
@@ -91,7 +92,9 @@
           <Btn small icon="note" disabled={!!savedAs || saving} tip={savedAs ? `Kept in Home's notes as\n${savedAs}` : task ? "Keep this page\nA new note in Home's notes" : "Keep today's page\nA new note in Home's notes"} onclick={() => void keepNote()}>{savedAs ? "Kept in Notes" : saving ? "Keeping…" : "Keep as a note"}</Btn>
         {/if}
       {/snippet}
-      {#if !brief}
+      {#if !brief && !task && skipped}
+        <span class="h9-dim b-none" data-scan-skipped>Today's scan was skipped at {clock(skipped.at)} — {skipped.why}. Home's chat has no page for it; the facts alone are on the phone's Home.</span>
+      {:else if !brief}
         <span class="h9-dim b-none">No scan in this chat yet — the morning scan runs {stageHost.now.scanWords()?.toLowerCase() ?? "every day at 8:00 AM"}, and its page lands here.</span>
       {:else if brief.sections.length === 0}
         <Loading label={brief.writing ? (task ? task.doing || "Home is writing this page" : "Home is writing today's page") : task ? "Home has not written this page yet" : "The scan ended without a page"} lines={4} />

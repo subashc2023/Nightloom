@@ -36,6 +36,7 @@
     type Answer,
     lastText,
     nextText,
+    noteShows,
     offsetMin,
     proposeWatch,
     readJobDraft,
@@ -255,7 +256,7 @@
       <span class="jb-badge" class:write={!j.read_only} class:always={j.approval === "always"}>{approvalBadge(j)}</span>
       {#if j.watch}<span class="jb-line" data-watch>{watchLine(j)}</span>{/if}
       <span class="jb-line">{everyText(j)}</span>
-      <span class="jb-line" class:live={j.running !== null} class:warn={!j.running && !j.paused && j.note !== null}>{nextText(j)}</span>
+      <span class="jb-line" class:live={j.running !== null} class:warn={!j.running && !j.paused && noteShows(j)}>{nextText(j)}</span>
       <span class="jb-line">{lastText(j)}</span>
       {#if weekText(j)}<span class="jb-line">{weekText(j)}</span>{/if}
     </button>

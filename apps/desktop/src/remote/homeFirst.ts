@@ -163,6 +163,24 @@ export function scanWhen(s: HomeScanWire, clock: (ms: number) => string): string
   return [`from ${s.date}`, ran].filter(Boolean).join(" · ");
 }
 
+/** Item 947: a skipped scan's page opens with its own `Skipped: why` line and a line saying the page is code-only;
+ *  the card already says both above the page ("Skipped: why. This is the code-only page."), so the body is the
+ *  facts alone. A page that was not skipped is untouched. */
+export function scanBody(s: Pick<HomeScanWire, "text" | "skipped">): string {
+  if (!s.skipped) return s.text;
+  const lines = s.text.split("\n");
+  const out: string[] = [];
+  let head = true;
+  for (const l of lines) {
+    const t = l.trim().replace(/^>\s*/, "").replace(/^\*\*/, "").trim();
+    if (head && (/^skipped:/i.test(t) || /^this page is the facts alone/i.test(t))) continue;
+    if (head && t === "") continue;
+    head = false;
+    out.push(l);
+  }
+  return out.join("\n").trim();
+}
+
 /** At most `max` words of the page (the scan is ≤ 200 by its prompt; a
  *  longer one is cut and says so). */
 export function scanText(text: string, max = 200): { text: string; cut: boolean } {

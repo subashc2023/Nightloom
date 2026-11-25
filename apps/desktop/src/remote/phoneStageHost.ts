@@ -44,6 +44,7 @@ export function phoneStageHost(d: PhoneStageDeps): StageHost {
     busy: () => false,
     brief: () => phoneBrief(d.scan()),
     scanWords: () => null,
+    skippedScan: () => null,
     homeTasks: () => d.client().homeTasks(),
     taskEvent: async (task, view, line) => {
       try {

@@ -76,6 +76,7 @@ const notes: string[] = [];
 
 (window as unknown as { __stub: (c: string, a?: Record<string, unknown>) => Promise<unknown> }).__stub = async (cmd, a) => {
   switch (cmd) {
+    case "door_started": return {}; // item 947: the stub answered null, which Sidebar read as a map
     case "list_models": return ["claude-opus-5-5", "claude-sonnet-5"];
     case "list_projects": return projects;
     case "list_sessions": return sessions;

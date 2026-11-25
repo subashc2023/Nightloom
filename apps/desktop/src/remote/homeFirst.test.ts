@@ -16,6 +16,7 @@ import {
   runningLine,
   saveHomeKept,
   scanText,
+  scanBody,
   scanWhen,
   stopWords,
   toggleFold,
@@ -122,6 +123,19 @@ describe("the scan card", () => {
   it("cuts a page past 200 words and says so", () => {
     expect(scanText("a b c", 5)).toEqual({ text: "a b c", cut: false });
     expect(scanText("a b c d e f g", 3)).toEqual({ text: "a b c …", cut: true });
+  });
+});
+
+describe("a skipped scan's page body (item 947)", () => {
+  const page = "Skipped: the weekly window was at 91% at 7:55 AM (Claude Code's usage cache)\n\nThis page is the facts alone, collected in code — no model read them.\n\n- Needs you: 2 held blockers\n- Calendar: 9:00 AM stand-up";
+  it("drops the page's own Skipped line and boilerplate (the card says both), keeps the facts", () => {
+    expect(scanBody({ text: page, skipped: "the weekly window was at 91%" })).toBe("- Needs you: 2 held blockers\n- Calendar: 9:00 AM stand-up");
+    expect(scanBody({ text: "> **Skipped:** the 5-hour window is at 82%\n\n- 2 blockers held", skipped: "x" })).toBe("- 2 blockers held");
+  });
+  it("leaves a page that was not skipped, and a Skipped word deeper in the facts, alone", () => {
+    expect(scanBody({ text: page, skipped: null })).toBe(page);
+    expect(scanBody({ text: "- a\n- Skipped: one", skipped: "x" })).toBe("- a\n- Skipped: one");
+    expect(scanBody({ text: "Skipped: only", skipped: "only" })).toBe("");
   });
 });
 

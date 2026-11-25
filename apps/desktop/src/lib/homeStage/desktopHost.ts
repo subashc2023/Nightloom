@@ -5,7 +5,7 @@
 import * as api from "../api";
 import { app, addToast, openRun, sendInChat, chatRuns } from "../state.svelte";
 import { home, homeProject } from "../home.svelte";
-import { isScanMessage } from "../home";
+import { isScanMessage, skippedScanToday } from "../home";
 import { phase, readStatus, startBrowsers } from "../claudeBrowser.svelte";
 import ClaudeBrowserView from "../ClaudeBrowserView.svelte";
 import { briefOf } from "./brief";
@@ -17,6 +17,7 @@ export const desktopHost: StageHost = {
   busy: () => app.busy,
   brief: () => briefOf(app.events as unknown as Ev[], isScanMessage, app.busy),
   scanWords: () => home.info?.scan_words ?? null,
+  skippedScan: () => skippedScanToday(home.rows),
   homeTasks: () => api.homeTasks(),
   // A click that could not be kept for Home says so (845 review, (c)): the view still shows it, Home would not.
   taskEvent: (task, view, line) =>
