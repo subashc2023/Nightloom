@@ -34,7 +34,8 @@ describe("975: files on a question card's answer", () => {
     expect(body.indexOf("saveAnswerFiles(")).toBeLessThan(body.indexOf('decide("allow", payload)'));
     expect(apiSrc).toContain('invoke("save_answer_files"');
   });
-  it("not on an aside's card (its answer carries no input)", () => {
-    expect(promptSrc).toContain("const takesFiles = $derived(req.aside === undefined);");
+  // ~~Not on an aside's card (its answer carried no input)~~ — item 982 (2026-11-25): an aside's answer carries it.
+  it("on an aside's card too, since 982 carries an aside's answers", () => {
+    expect(promptSrc).toContain("const takesFiles = true;");
   });
 });

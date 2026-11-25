@@ -414,3 +414,96 @@ fn an_aside_call_waits_for_its_card() {
         ("deny", Some(ask::ASIDE_UNANSWERED))
     );
 }
+
+/// Item 982: an aside's `AskUserQuestion` waits on its card (no longer
+/// refused), and his answers written to the aside's directory come back
+/// as the allow's `updatedInput` — the very reply the chat's hook gives
+/// for the same answer on its resume. The plan tools stay refused.
+#[test]
+fn an_aside_question_answer_reaches_its_model_as_the_chats_does() {
+    use std::time::Duration;
+    let base = std::env::temp_dir().join(format!("nl-982-q-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (side, chat) = (base.join("aside"), base.join("chat"));
+    std::fs::create_dir_all(&side).unwrap();
+    std::fs::create_dir_all(&chat).unwrap();
+    let questions = serde_json::json!({ "questions": [{
+        "question": "Which?", "header": "Pick", "multiSelect": false,
+        "options": [{ "label": "A", "description": "" }, { "label": "B", "description": "" }]
+    }]});
+    let line = serde_json::json!({
+        "tool_name": ask::QUESTION_TOOL, "tool_use_id": "q1", "permission_mode": "default",
+        "tool_input": questions
+    })
+    .to_string();
+    let call = ask::DeferredCall {
+        id: "q1".into(),
+        name: ask::QUESTION_TOOL.into(),
+        input: questions.clone(),
+    };
+    let mut answered = questions.clone();
+    answered["answers"] = serde_json::json!({ "Which?": "B" });
+    let answer = || ask::Answer::Allow {
+        updated_input: Some(answered.clone()),
+        plan_then: None,
+        grant: None,
+    };
+    let (d2, input) = (side.clone(), line.clone());
+    let waiter = std::thread::spawn(move || {
+        ask::decide_waiting(
+            &d2,
+            None,
+            &input,
+            Duration::from_millis(10),
+            Duration::from_secs(20),
+            &|| true,
+        )
+    });
+    let mut seen = None;
+    for _ in 0..500 {
+        seen = ask::aside_pending(&side);
+        if seen.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        seen,
+        Some(call.clone()),
+        "the question's card shows in the aside"
+    );
+    ask::AskDir::new(&side).write(&call, &answer()).unwrap();
+    let aside_reply = waiter.join().unwrap();
+    assert_eq!(aside_reply.decision(), "allow");
+    // The chat's hook, on the resume after the same answer.
+    ask::AskDir::new(&chat).write(&call, &answer()).unwrap();
+    let chat_reply = ask::decide_under(&chat, None, &line, false);
+    let (a, c) = (
+        serde_json::to_value(&aside_reply).unwrap(),
+        serde_json::to_value(&chat_reply).unwrap(),
+    );
+    assert_eq!(a, c, "the aside's reply is the chat's");
+    assert_eq!(
+        a["hookSpecificOutput"]["updatedInput"]["answers"]["Which?"],
+        "B"
+    );
+    // The plan tools are still refused in words.
+    let plan = serde_json::json!({
+        "tool_name": ask::EXIT_PLAN_TOOL, "tool_use_id": "p1", "permission_mode": "plan",
+        "tool_input": { "plan": "x" }
+    })
+    .to_string();
+    let r = ask::decide_waiting(
+        &side,
+        None,
+        &plan,
+        Duration::from_millis(10),
+        Duration::from_secs(1),
+        &|| true,
+    );
+    assert_eq!(
+        (r.decision(), r.reason()),
+        ("deny", Some(ask::ASIDE_QUESTION_DENIED))
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}

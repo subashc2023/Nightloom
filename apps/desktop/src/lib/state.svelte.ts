@@ -2888,7 +2888,7 @@ export async function resolveApproval(
 ): Promise<boolean> {
   const i = app.pendingApprovals.findIndex((r) => r.id === id);
   // Item 919: an aside's card answers the aside alone.
-  if (i < 0) return resolveAsideApproval(id, decision, reason);
+  if (i < 0) return resolveAsideApproval(id, decision, reason, answer);
   const [req] = app.pendingApprovals.splice(i, 1);
   // An approved plan moves the chat off the Plan position (backlog 085):
   // the backend's agent takes the pick as it resumes, and the rail's

@@ -671,13 +671,16 @@ fn release_pending(app: &AppHandle, seq: u64, dir: &Path) {
 
 /// His answer on an aside's card (item 919): `allow` or `deny`, for the
 /// call `id` the aside `seq` waits on. Written to the aside's own
-/// directory only, so nothing is approved in the chat.
+/// directory only, so nothing is approved in the chat. `answer` is the
+/// `updatedInput` an allow carries — the question card's answers (item
+/// 982), the same value the chat's `approve_call` takes.
 #[tauri::command]
 pub(crate) fn answer_aside_ask(
     seq: u64,
     id: String,
     decision: String,
     reason: Option<String>,
+    answer: Option<serde_json::Value>,
 ) -> Result<(), String> {
     use nightloom_service::agent::ask::{self, Answer, AskDir};
     let dir = SEATED
@@ -691,7 +694,7 @@ pub(crate) fn answer_aside_ask(
         .ok_or_else(|| "this card was already answered".to_string())?;
     let answer = if decision == "allow" {
         Answer::Allow {
-            updated_input: None,
+            updated_input: answer,
             plan_then: None,
             grant: None,
         }

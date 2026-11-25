@@ -50,7 +50,13 @@ export function applyAsideAsk(e: AsideAskEvent): void {
  * chat's own then answers it). "Allow for this chat" and "Not now" are not
  * offered on an aside's card; were one sent, it is an Allow once / a Deny.
  */
-export async function resolveAsideApproval(id: string, decision: ApprovalDecision, reason?: string): Promise<boolean> {
+export async function resolveAsideApproval(
+  id: string,
+  decision: ApprovalDecision,
+  reason?: string,
+  /** Item 982: a question card's answers (the allow's `updatedInput`), as the chat's card sends them. */
+  answer?: unknown,
+): Promise<boolean> {
   const req = Object.values(asideAsks.bySeq).find((r) => r.id === id);
   if (!req || req.aside === undefined) return false;
   const seq = req.aside;
@@ -59,7 +65,8 @@ export async function resolveAsideApproval(id: string, decision: ApprovalDecisio
   asideAsks.bySeq = next;
   const word = decision === "allow" || decision === "always" ? "allow" : "deny";
   try {
-    await api.answerAsideAsk(seq, id, word, word === "deny" ? reason : undefined);
+    if (word === "allow" && answer !== undefined) await api.answerAsideAsk(seq, id, word, undefined, answer);
+    else await api.answerAsideAsk(seq, id, word, word === "deny" ? reason : undefined);
   } catch {
     // The aside ended under the card: its hook was answered with a refusal.
   }

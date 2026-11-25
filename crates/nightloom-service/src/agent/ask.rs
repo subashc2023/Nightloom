@@ -1469,9 +1469,11 @@ pub const WAIT_TIMEOUT_SECS: u64 = 3600;
 /// the aside ended under it.
 pub const ASIDE_UNANSWERED: &str = "The user did not answer this call's approval card in the aside, so it was not run. Carry on without it, or say what it would have done.";
 
-/// An aside's question or plan call (item 919): its card cannot carry the
-/// answers back.
-pub const ASIDE_QUESTION_DENIED: &str = "An aside cannot ask the user a question or present a plan: put the question or the plan in your answer, and the user will reply in the aside.";
+/// An aside's plan call (item 919): its card cannot carry the plan's pick
+/// back. ~~The model's question too~~ — since item 982 (2026-11-25) an
+/// aside's `AskUserQuestion` waits on its card like any call, and his
+/// answers come back in `updatedInput`, as the chat's resume carries them.
+pub const ASIDE_QUESTION_DENIED: &str = "An aside cannot present a plan: put the plan in your answer, and the user will reply in the aside.";
 
 /// [`decide_under`] for an aside that shows cards (item 919): the chat's
 /// answer for every call, except that where the chat's hook would defer,
@@ -1502,13 +1504,11 @@ pub fn decide_waiting(
     if own_card {
         return decide_under(dir, home, stdin_json, true);
     }
-    // The model's question and the plan tools carry their answer back in
-    // the call's input, which an Allow/Deny card cannot: refused in words,
-    // as the prompt tool refused them before 919.
-    if matches!(
-        input.tool_name.as_str(),
-        QUESTION_TOOL | EXIT_PLAN_TOOL | "EnterPlanMode"
-    ) {
+    // The plan tools carry their pick back in the call's input, which the
+    // aside's card does not: refused in words, as the prompt tool refused
+    // them before 919. The model's question waits on its card (item 982):
+    // his answers land as the allow's `updatedInput`, the chat's shape.
+    if matches!(input.tool_name.as_str(), EXIT_PLAN_TOOL | "EnterPlanMode") {
         return HookReply::deny(ASIDE_QUESTION_DENIED.into());
     }
     let first = decide_under(dir, home, stdin_json, false);

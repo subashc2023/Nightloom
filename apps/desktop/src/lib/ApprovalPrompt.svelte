@@ -317,10 +317,10 @@
 
   /*
    * Item 975: files dropped or pasted on a question's Other — chips in the drafts store under this card's key
-   * per question, so they outlast a chat switch; the composer's routes and caps. Not on an aside's card: an
-   * aside's answer is an allow or a deny only (`resolveAsideApproval`), so nothing it carries would arrive.
+   * per question, so they outlast a chat switch; the composer's routes and caps. ~~Not on an aside's card~~ —
+   * since item 982 an aside's answer carries the answers too (`resolveAsideApproval`), so its card takes files.
    */
-  const takesFiles = $derived(req.aside === undefined);
+  const takesFiles = true;
   const fileChips = $derived(
     Object.fromEntries(questions.map((_, i) => [i, readDraft(answerFilesKey(req.id, i)).attachments])),
   );

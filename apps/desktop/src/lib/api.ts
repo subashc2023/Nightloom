@@ -428,8 +428,15 @@ export function askAside(text: string, seq: number, opts: AsideSendOptions = {})
 
 /** His answer on an aside's approval card (item 919): written to that
  *  aside's own place, never the chat's. */
-export function answerAsideAsk(seq: number, id: string, decision: "allow" | "deny", reason?: string): Promise<void> {
-  return invoke("answer_aside_ask", { seq, id, decision, reason: reason ?? null });
+export function answerAsideAsk(
+  seq: number,
+  id: string,
+  decision: "allow" | "deny",
+  reason?: string,
+  /** Item 982: the allow's `updatedInput` — a question card's answers, as `approveCall` sends them. */
+  answer?: unknown,
+): Promise<void> {
+  return invoke("answer_aside_ask", { seq, id, decision, reason: reason ?? null, answer: answer ?? null });
 }
 
 /**
