@@ -1968,6 +1968,10 @@ export function forYouReveal(path: string): Promise<null> {
 export function takeOpenedFiles(): Promise<string[]> {
   return invoke("take_opened_files");
 }
+/** `nightloom://new` links opened while or before the page ran (item 976), each once. */
+export function takePromptLinks(): Promise<string[]> {
+  return invoke("take_prompt_links");
+}
 
 /** Open an `https://` link in the browser. */
 export function openUrl(url: string): Promise<null> {

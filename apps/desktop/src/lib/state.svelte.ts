@@ -1295,6 +1295,8 @@ export async function init(): Promise<void> {
       // Files opened with Nightloom from the Finder (backlog 378), after
       // the restored tabs so none lands over them.
       void import("./openedFiles.svelte").then((m) => m.installOpenedFiles()).catch(() => {});
+      // Prompt links (item 976), after the restored tabs too, so the New chat they open stays in front.
+      void import("./promptLinks.svelte").then((m) => m.installPromptLinks()).catch(() => {});
     },
     mark: (step, ms, detail) => void api.startupMark(step, ms, detail).catch(() => {}),
     now: () => performance.now(),

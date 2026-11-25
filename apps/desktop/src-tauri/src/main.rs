@@ -107,6 +107,8 @@ mod opened_files;
 mod panic_log;
 /// A paste's web images, fetched (nightshift backlog 382).
 mod paste_images;
+/// `nightloom://new` links put a prompt in a New chat's box (nightshift item 976).
+mod prompt_links;
 #[cfg(not(debug_assertions))]
 mod offscreen {
     /// Never in a release build.
@@ -1978,6 +1980,7 @@ fn main() {
             for_you::for_you_stamp,
             for_you::for_you_reveal,
             opened_files::take_opened_files,
+            prompt_links::take_prompt_links,
             preview::preview_list,
             preview::preview_get,
             preview::preview_stop,
@@ -2003,7 +2006,11 @@ fn main() {
             // Finder's Open With → Nightloom (nightshift backlog 378): the
             // file becomes a tab, whether the open launched the app or not.
             #[cfg(target_os = "macos")]
-            tauri::RunEvent::Opened { urls } => opened_files::on_opened(app, &urls),
+            // Item 976: a `nightloom://new` link in the same event.
+            tauri::RunEvent::Opened { urls } => {
+                opened_files::on_opened(app, &urls);
+                prompt_links::on_opened(app, &urls);
+            }
             // The window's close button while work runs asks first (backlog
             // 308); with nothing running it closes, and the app quits, as
             // before.

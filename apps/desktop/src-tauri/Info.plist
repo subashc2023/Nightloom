@@ -14,5 +14,17 @@
 	<string>Home reads today's and tomorrow's events in the Calendar app for your morning scan. It never adds or changes an event.</string>
 	<key>NSCalendarsUsageDescription</key>
 	<string>Home reads today's and tomorrow's events in the Calendar app for your morning scan. It never adds or changes an event.</string>
+	<!-- Item 976: nightloom://new?project=…&prompt=… opens a new chat with the prompt in its box, never sent. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>app.nightloom.desktop.prompt-link</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>nightloom</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
