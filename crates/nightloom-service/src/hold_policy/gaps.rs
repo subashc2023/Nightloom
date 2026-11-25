@@ -183,14 +183,29 @@ pub fn extract(config_dir: &Path, claude_projects: &Path, since: i64, now: i64) 
             }
         }
     }
+    let mut sessions: Vec<_> = files.into_iter().collect();
+    sessions.sort_by(|a, b| a.0.cmp(&b.0));
     let mut rows = Vec::new();
-    for paths in files.values_mut() {
+    for (_, paths) in &mut sessions {
         paths.sort();
         let reqs = requests(paths);
         rows.extend(gaps_of(&reqs, since, now));
     }
+    let mut rows = dedupe(rows);
     rows.sort_by_key(|g| g.t0);
     rows
+}
+
+/// Item 961/970: a resumed or handed-off Claude Code session carries the
+/// earlier sessions' history, so one idle moment shows up once per session
+/// that holds it (194 of 482 on 2026-11-25). Keep the first copy of each
+/// (t0, gap length) — rows arrive in session-id order, as the Python
+/// features script keeps them.
+pub fn dedupe(rows: Vec<Gap>) -> Vec<Gap> {
+    let mut seen = std::collections::HashSet::new();
+    rows.into_iter()
+        .filter(|g| seen.insert((g.t0, g.gap_min.to_bits())))
+        .collect()
 }
 
 /// One session's idle moments from its requests (sorted).
