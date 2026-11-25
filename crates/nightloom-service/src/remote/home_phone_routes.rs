@@ -408,8 +408,7 @@ async fn held_blockers(shared: &Shared) -> Vec<HeldBlocker> {
         for p in roots {
             let (all, _) = crate::nightshift::blockers::list_blockers(&p.root.root);
             for b in all {
-                let held = b.fields.get("default").is_some_and(|d| d.trim() == "held");
-                if b.status == "open" && held {
+                if b.is_held() {
                     out.push(HeldBlocker {
                         project: p.id.clone(),
                         project_name: p.name.clone(),

@@ -7,6 +7,12 @@
  *   Ready for review a chat whose turn finished (or failed) since he last
  *                    had it open; a shipped item in its review window
  *   Working          everything running: chats, helpers, passes
+ *   Decided for you  (item 968) an open blocker whose default was applied —
+ *                    work went ahead on it, nothing waits; folded, no count
+ *
+ * Item 968 (911 C): "Waiting on you" — the badge's one number — is only what
+ * needs him: held blockers, a chat's question or approval card, a proposed
+ * change to instructions or memory still pending.
  *
  * — each row answerable in place where an answer is words. Pure: the store
  * (`needsBoard.svelte.ts`) reads the app and calls these; `needsYou753.test.ts`
@@ -15,20 +21,35 @@
 import type { RunEntry } from "./running";
 import type { Ask } from "./askTag";
 
-export type NeedState = "waiting" | "review" | "working";
-export const NEED_STATES: NeedState[] = ["waiting", "review", "working"];
+export type NeedState = "waiting" | "decided" | "review" | "working";
+export const NEED_STATES: NeedState[] = ["waiting", "decided", "review", "working"];
 export const NEED_LABEL: Record<NeedState, string> = {
   waiting: "Waiting on you",
+  decided: "Decided for you — say if wrong",
   review: "Ready for review",
   working: "Working",
 };
 export const NEED_EMPTY: Record<NeedState, string> = {
   waiting: "Nothing waits on you.",
+  decided: "Nothing was decided for you.",
   review: "Nothing has finished since you last looked.",
   working: "Nothing is running.",
 };
 
-export type NeedKind = "card" | "ask" | "blocker" | "done" | "failed" | "shipped" | "run";
+export type NeedKind = "card" | "ask" | "blocker" | "proposal" | "done" | "failed" | "shipped" | "run";
+
+/** Item 968: a proposed change to a project's instructions or his own memory, still pending his review. */
+export interface PendingProposal {
+  /** The bell's id for it (`proposalNoticeId`), which the row's Review opens. */
+  id: string;
+  /** "A change to nightshift-code's instructions". */
+  title: string;
+  why: string;
+  project: string | null;
+  projectName: string | null;
+  /** Unix ms, when the proposal says. */
+  at: number | null;
+}
 
 /** A chat's turn that ended while he was not looking at it (kept by the store). */
 export interface EndedTurn {
@@ -87,6 +108,8 @@ export interface NeedRow {
   ask?: Ask;
   blocker?: string;
   item?: string;
+  /** Item 968: a proposal row's id, which its Review opens. */
+  proposal?: string;
 }
 
 export interface NeedSources {
@@ -97,6 +120,8 @@ export interface NeedSources {
   here: { chat: string; name: string; project: string | null; projectName: string | null; ask: Ask } | null;
   blockers: readonly OpenBlocker[];
   shipped: readonly ShippedItem[];
+  /** Item 968: proposals still pending; absent reads as none. */
+  proposals?: readonly PendingProposal[];
   /** Chats with a turn running now: their kept rows are stale and not shown. */
   running: (chat: string) => boolean;
 }
@@ -151,21 +176,39 @@ export function needRows(s: NeedSources): NeedRow[] {
     asked.add(e.chat);
     rows.push(askRow(e.chat, e.name, e.project, e.projectName, e.ask, e.at));
   }
-  // -- waiting: open blockers, held ones first
+  // -- waiting: proposals still pending (item 968)
+  for (const p of [...(s.proposals ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0) || a.id.localeCompare(b.id))) {
+    rows.push({
+      id: `proposal:${p.id}`,
+      state: "waiting",
+      kind: "proposal",
+      tag: "proposal",
+      title: p.title,
+      detail: p.why,
+      where: p.projectName ?? "your memory",
+      project: p.project,
+      chat: null,
+      at: p.at,
+      reply: null,
+      replyHint: "",
+      proposal: p.id,
+    });
+  }
+  // -- open blockers: a held one waits on him; one whose default went ahead is "decided for you" (item 968)
   for (const b of [...s.blockers].sort((a, b) => Number(b.held) - Number(a.held) || a.projectName.localeCompare(b.projectName) || a.id.localeCompare(b.id))) {
     rows.push({
       id: `blocker:${b.project}:${b.id}`,
-      state: "waiting",
+      state: b.held ? "waiting" : "decided",
       kind: "blocker",
       tag: `${b.held ? "held " : ""}blocker ${b.id}`,
       title: b.question,
-      detail: b.guess ? `Default: ${b.guess}` : "",
+      detail: b.guess ? (b.held ? `Default: ${b.guess}` : `Went ahead on: ${b.guess}`) : "",
       where: b.projectName,
       project: b.project,
       chat: null,
       at: null,
       reply: "answer-blocker",
-      replyHint: "Your decision, in your words",
+      replyHint: b.held ? "Your decision, in your words" : "Wrong? Your decision, in your words",
       blocker: b.id,
     });
   }
@@ -231,22 +274,45 @@ export interface NeedGroup {
   rows: NeedRow[];
 }
 
-/** The three groups, always all three (an empty one says so). */
+/** The groups: Waiting, Ready for review and Working always (an empty one says so); Decided for you only
+ *  while it has rows (item 968). */
 export function groupNeeds(rows: readonly NeedRow[]): NeedGroup[] {
-  return NEED_STATES.map((state) => ({ state, label: NEED_LABEL[state], rows: rows.filter((r) => r.state === state) }));
+  return NEED_STATES.map((state) => ({ state, label: NEED_LABEL[state], rows: rows.filter((r) => r.state === state) })).filter(
+    (g) => g.state !== "decided" || g.rows.length > 0,
+  );
 }
 
-/** The badge's number: what waits on him. */
+/** The badge's number: what waits on him (item 968: never a decided blocker, never what is to review). */
 export function waitingCount(rows: readonly NeedRow[]): number {
   return rows.filter((r) => r.state === "waiting").length;
 }
 
-/** The badge's words: "2 need you", "3 to review"; empty with neither. */
+/** The badge's words: "2 need you"; with nothing waiting but something to review, "to review" with no number
+ *  (item 968: the one number counts only what needs him — `n` is 0); empty with neither. */
 export function badgeWords(rows: readonly NeedRow[]): { n: number; word: string; waiting: boolean } | null {
   const w = waitingCount(rows);
   if (w > 0) return { n: w, word: w === 1 ? "needs you" : "need you", waiting: true };
   const r = rows.filter((x) => x.state === "review").length;
-  return r > 0 ? { n: r, word: "to review", waiting: false } : null;
+  return r > 0 ? { n: 0, word: "to review", waiting: false } : null;
+}
+
+/**
+ * Item 968: a project's blockers as the counts show them — `held` (waits on him: the hot number) and `open`
+ * (every open one, decided ones included). From the loaded list when there is one, else the project row's
+ * counts; an older backend without `held_blockers` reads as every open one held (nothing hidden).
+ */
+export function blockerCounts(
+  list: readonly { status: string; fields?: Record<string, string> }[] | null | undefined,
+  info: { open_blockers: number; held_blockers?: number } | null | undefined,
+): { held: number; open: number; decided: number } {
+  const open = list ? list.filter((b) => b.status === "open").length : (info?.open_blockers ?? 0);
+  const held = list ? list.filter((b) => b.status === "open" && isHeld(b.fields)).length : (info?.held_blockers ?? open);
+  return { held, open, decided: Math.max(0, open - held) };
+}
+
+/** Item 968: a blocker held for him — `default: held` in its front matter (the phone's `/home/held` rule). */
+export function isHeld(fields: Record<string, string> | undefined | null): boolean {
+  return (fields?.default ?? "").trim() === "held";
 }
 
 /** The message a shipped row's reply files as a new item's title: his words, whole, after what they are about. */
@@ -276,8 +342,9 @@ export function parseEnded(raw: string | null): EndedTurn[] {
 
 // ---- Home's own list (item 945) ----
 
-/** The rows Nightshift's files put on the board: a project's open blockers and its shipped items. */
-const NIGHTSHIFT_KINDS: readonly NeedKind[] = ["blocker", "shipped"];
+/** The rows Nightshift's files put on the board: a project's open blockers and its shipped items. Item 968's
+ *  proposals are the dream's, not his chats', so Home leaves them to the Needs-you view too. */
+const NIGHTSHIFT_KINDS: readonly NeedKind[] = ["blocker", "shipped", "proposal"];
 
 export interface HomeNeeds {
   /** What Home lists under Needs you: questions, cards, and turns that finished unseen — never what is running. */
@@ -296,6 +363,7 @@ export function homeNeeds(rows: readonly NeedRow[]): HomeNeeds {
   const mine = rows.filter((r) => r.state !== "working");
   return {
     rows: mine.filter((r) => !NIGHTSHIFT_KINDS.includes(r.kind)),
+    // Every open blocker, held or decided: the quiet line under Home's list counts them as before (item 945).
     blockers: mine.filter((r) => r.kind === "blocker").length,
     shipped: mine.filter((r) => r.kind === "shipped").length,
   };

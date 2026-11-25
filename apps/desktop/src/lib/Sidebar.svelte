@@ -278,7 +278,7 @@
            pages" (2026-09-11 review). -->
       {#if T.nightshiftBlockers > 0 || T.nightshiftNewPage}
         <span class="badges">
-          {#if T.nightshiftBlockers > 0}<span class="badge" use:tip={`${T.nightshiftBlockers} open blocker(s)`}>{T.nightshiftBlockers} open</span>{/if}
+          {#if T.nightshiftBlockers > 0}<span class="badge" use:tip={`${T.nightshiftBlockers} held blocker(s)\nThey wait on you`}>{T.nightshiftBlockers} held</span>{/if}
           {#if T.nightshiftNewPage}<span class="badge page" use:tip={"An unread morning page"}>new page</span>{/if}
         </span>
       {/if}

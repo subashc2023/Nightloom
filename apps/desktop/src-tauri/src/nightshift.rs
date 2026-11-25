@@ -67,6 +67,8 @@ pub struct NightshiftInfo {
     pub dirty: Option<usize>,
     pub items: usize,
     pub open_blockers: usize,
+    /// Of those, the ones held for him (`default: held`, item 968).
+    pub held_blockers: usize,
     pub newest_morning: Option<String>,
     pub latest_shift: Option<String>,
 }
@@ -88,6 +90,7 @@ impl NightshiftInfo {
             dirty: git::dirty_count(&root.root),
             items: items::item_files(&root.root).len(),
             open_blockers: bl.iter().filter(|b| b.status == "open").count(),
+            held_blockers: bl.iter().filter(|b| b.is_held()).count(),
             newest_morning: mornings::newest_morning(&root.root).map(|m| m.name),
             latest_shift: shifts::list_shifts(&root.root)
                 .first()

@@ -20,7 +20,8 @@ describe("Home's own Needs you (item 945)", () => {
     expect(h.shipped).toBe(3);
     // The sidebar's Home count: what waits on him on Home — the question, not the held blocker.
     expect(waitingCount(h.rows)).toBe(1);
-    expect(waitingCount(rows)).toBe(3);
+    // Item 968: the app-wide count takes the held blocker and the question, not the decided blocker.
+    expect(waitingCount(rows)).toBe(2);
   });
   it("never lists what is running", () => {
     const rows = needRows(sources({ runs: [{ id: "r", kind: "chat", chat: "x", where: "p", project: "p", session: "x", startedAt: 1, waiting: false, doing: "…" } as never] }));

@@ -61,6 +61,10 @@ pub struct ProjectRow {
     pub live: bool,
     pub items: usize,
     pub open_blockers: usize,
+    /// Of those, the ones held for him (`default: held`, item 968); the
+    /// rest went ahead on their default.
+    #[serde(default)]
+    pub held_blockers: usize,
     /// The newest morning page's file name.
     pub newest_morning: Option<String>,
     /// Why `nightshift.json` did not read, when it did not.
@@ -255,6 +259,7 @@ async fn projects(State(shared): State<Arc<Shared>>) -> Response {
                         live: launch::read_lock(r).is_some_and(|l| l.blocks_writes()),
                         items: items::item_files(r).len(),
                         open_blockers: bl.iter().filter(|b| b.status == "open").count(),
+                        held_blockers: bl.iter().filter(|b| b.is_held()).count(),
                         newest_morning: mornings::newest_morning(r).map(|m| m.name),
                         config_error: p.root.config_error.clone(),
                         id: p.id,

@@ -1,6 +1,7 @@
 // Item 856 (2026-11-19): the behaviour of Sidebar, once. `Sidebar.svelte` (Jarvis) and
 // `SidebarClassic.svelte` mount this and keep only their markup and CSS; `logic.test.ts` beside it fails when
 // one look binds to something the other does not. Moved verbatim from Sidebar.svelte's script.
+import { blockerCounts } from "../needsYou";
 import { refreshDoorStarted } from "../door.svelte";
 import { refreshRoutes } from "../home.svelte";
 import { saveMemoryFromChat, app, addToast, deleteSession, endContentDrag, droppedContent, moveChatToThread, moveSession, newChatInThread, enableNightshift, chatSelected, newSession, openSession, refreshNightshift, renameSession, toggleSidebar, contextUsed, connectionWindowFor, liveChats, backFromNightshift } from "../state.svelte";
@@ -687,7 +688,8 @@ export function sidebarLogic(props: () => SidebarLogicProps) {
   const openRow = $derived(
     app.project ? (app.nightshift.rows.find((r) => r.id === app.project?.id) ?? null) : null,
   );
-  const nightshiftBlockers = $derived(openRow?.nightshift?.open_blockers ?? 0);
+  // Item 968: the badge counts the held blockers only (an older backend: every open one).
+  const nightshiftBlockers = $derived(blockerCounts(null, openRow?.nightshift).held);
   /** A morning page this window has not opened, on the open project. */
   const nightshiftNewPage = $derived.by(() => {
     const r = openRow;
@@ -786,7 +788,8 @@ export function sidebarLogic(props: () => SidebarLogicProps) {
     const page = info.newest_morning
       ? info.newest_morning.replace(/\.md$/, "")
       : "no page yet";
-    return `${info.items} items · ${info.open_blockers} open · ${page}`;
+    const bc = blockerCounts(null, info);
+    return `${info.items} items · ${bc.held} held · ${bc.decided} decided · ${page}`;
   }
 
   /**

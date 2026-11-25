@@ -37,6 +37,18 @@ pub struct Blocker {
     pub sections: Vec<Section>,
 }
 
+impl Blocker {
+    /// Open and `default: held` in its front matter: nothing proceeds
+    /// without him (item 968 — the one kind of blocker that "needs you").
+    pub fn is_held(&self) -> bool {
+        self.status == "open"
+            && self
+                .fields
+                .get("default")
+                .is_some_and(|d| d.trim() == "held")
+    }
+}
+
 pub fn blocker_files(root: &Path) -> BTreeMap<String, PathBuf> {
     id_files(&root.join("blockers"))
 }
@@ -456,6 +468,39 @@ mod tests {
         let (list, _) = list_blockers(&ws);
         let ids: Vec<_> = list.iter().map(|b| b.id.as_str()).collect();
         assert_eq!(ids, vec!["021", "030", "005"]);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn only_an_open_blocker_with_default_held_is_held() {
+        let ws = scratch();
+        for (f, body) in [
+            (
+                "040-a.md",
+                "---\nid: 040\nstatus: open\ndefault: held\n---\n\n## Question\nq\n",
+            ),
+            (
+                "041-b.md",
+                "---\nid: 041\nstatus: open\ndefault: applied\n---\n\n## Question\nq\n",
+            ),
+            (
+                "042-c.md",
+                "---\nid: 042\nstatus: answered\ndefault: held\n---\n\n## Question\nq\n",
+            ),
+            (
+                "043-d.md",
+                "---\nid: 043\nstatus: open\ndefault:  held \n---\n\n## Question\nq\n",
+            ),
+        ] {
+            fs::write(ws.join("blockers").join(f), body).unwrap();
+        }
+        let (list, _) = list_blockers(&ws);
+        let held: Vec<_> = list
+            .iter()
+            .filter(|b| b.is_held())
+            .map(|b| b.id.as_str())
+            .collect();
+        assert_eq!(held, vec!["040", "043"]);
         let _ = fs::remove_dir_all(&ws);
     }
 }

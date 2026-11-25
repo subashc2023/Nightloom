@@ -17,7 +17,7 @@
   import { relativeTime, relativeTimeLong } from "./time";
   import { withNote } from "./askQuestions";
   import { NEED_EMPTY, groupNeeds, type NeedRow } from "./needsYou";
-  import { needs, needsNow, refreshBoard, replyTo, setDraft, setFold } from "./needsBoard.svelte";
+  import { needs, needsNow, refreshBoard, replyTo, reviewProposalRow, setDraft, setFold } from "./needsBoard.svelte";
   import AskLock from "./AskLock.svelte";
   import StartCards from "./StartCards.svelte";
   import { look } from "./askMotion";
@@ -108,12 +108,13 @@
     <!-- Item 763 H5: Home's Start cards wait on him first. -->
     {#if hasHome}<div class="start-cards"><StartCards /></div>{/if}
     {#each groups as g (g.state)}
-      {@const folded = needs.folds[g.state] === "1"}
+      <!-- Item 968: Decided for you starts folded (its own "opened" mark) and wears no count. -->
+      {@const folded = g.state === "decided" ? needs.folds["decided-open"] !== "1" : needs.folds[g.state] === "1"}
       <section class="group" data-state={g.state}>
-        <button class="group-head" aria-expanded={!folded} onclick={() => setFold(g.state, !folded)}>
+        <button class="group-head" aria-expanded={!folded} onclick={() => (g.state === "decided" ? setFold("decided-open", folded) : setFold(g.state, !folded))}>
           <span class="chev" class:folded aria-hidden="true">▾</span>
           <span class="group-name">{g.label}</span>
-          <span class="count">{g.rows.length}</span>
+          {#if g.state !== "decided"}<span class="count">{g.rows.length}</span>{/if}
         </button>
         {#if !folded}
           {#if g.rows.length === 0}
@@ -164,6 +165,8 @@
               <span class="when">{when(row.at)}</span>
               {#if row.chat}
                 <button class="ns-btn ghost small open" onclick={() => void open(row)}>Open</button>
+              {:else if row.kind === "proposal"}
+                <button class="ns-btn ghost small open" use:tip={"Review the diff\nApply or reject it there"} onclick={() => void reviewProposalRow(row)}>Review</button>
               {:else}
                 <span></span>
               {/if}
