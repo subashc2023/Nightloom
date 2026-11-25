@@ -824,18 +824,65 @@ pub fn correct(
 
 // ---- the backstop: a cap stated in his message (539 piece 1) -----------------
 
+/// Which of the plan's windows a cap is a percent of (item 937). His rule:
+/// a usage percent is the 5-hour window unless he says the week (memory
+/// `usage-percent-means-5h`, 2026-11-18). Item 935 holds a weekly cap in
+/// the ledger; until then only a 5-hour one is written there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapWindow {
+    #[default]
+    FiveHour,
+    Weekly,
+}
+
+/// A cap his message states: the percent, the mode its words pick, and
+/// the window it is a percent of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatedCap {
+    pub percent: u8,
+    pub mode: BudgetMode,
+    pub window: CapWindow,
+}
+
 /// A cap his message states, and the mode its words pick (blocker 1785's
 /// default): "use up to 50%", "stop at 50%", "no more than 50%" → work to
 /// the cap, then continue; "within 50%", "finish in 50%", or a message
 /// that says "urgent" or "just get it working" → finish within the cap.
 /// Lines inside a code fence and quoted lines (`>`) are not his ask. Only
 /// a backstop: the model's `set_budget` call replaces it.
-pub fn cap_from_message(text: &str) -> Option<(u8, BudgetMode)> {
+///
+/// Item 937 widened it to the way he talks: "if it's getting to like 98%
+/// then call the subagents back", "once weekly hits 98", "stop around 80",
+/// "wrap up all work by 95%", "don't go past 90 of the 5 hour". A firm
+/// lead-in ("up to", "stop at", "wrap up by", "don't go past", …) takes a
+/// percent as before; a loose one ("getting to", "hits", "past", "under",
+/// "around", …) only when his sentence also speaks of usage or of stopping;
+/// a figure with no `%` only then too, from 25 up, and not when a noun or a
+/// clock follows it ("stop at 3 files", "until 10:30"). The window is the
+/// one his words name nearest the figure ("5h", "weekly", …); with none in
+/// its sentence, the week when another sentence states a weekly figure
+/// ("Weekly usage is at 92%. … if it's getting to like 98% …"); else the
+/// 5-hour window.
+pub fn cap_from_message(text: &str) -> Option<StatedCap> {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = RE.get_or_init(|| {
-        regex::Regex::new(
-            r"(?i)\b(up to|stop at|stop once (?:it|usage|you) (?:hits?|reach(?:es)?|is at)|cap(?:ped)?(?: it)? (?:at|of)|within|finish in|no more than|at most|until|till)\s+(?:about\s+|around\s+|~\s*)?(\d{1,3})\s*(?:%|percent)",
-        )
+        regex::Regex::new(concat!(
+            r"(?i)\b(?:(?P<firm>",
+            r"up to|stop once (?:it|usage|you|we) (?:hits?|reach(?:es)?|is at|gets to)",
+            r"|stop(?:ping)?(?: (?:work|working|everything|all work|all|things|there))? (?:at|around|near|by|once (?:it |usage |you |we |the (?:5h|5-hour|week|weekly|window) |(?:5h|weekly|the week) )?(?:hits?|reach(?:es)?|is at|gets to))",
+            r"|wrap(?:ping)?(?: (?:it|things|everything))? up(?: (?:all(?: the)? work|everything|the work|work|things))? (?:at|by|around|near|before|once (?:it |usage |you |we |weekly |the week )?(?:hits?|reach(?:es)?|is at|gets to))",
+            r"|wrap (?:at|by)|(?:pause|halt|quit) (?:at|around|by)",
+            r"|cap(?:ped)?(?: it)? (?:at|of)|within|finish in|no more than|at most|until|till|max(?:imum)?(?: of)?",
+            r"|(?:don['’]?t|do not|never) (?:go|get|let it go|let (?:it|usage) (?:go|get)) (?:past|over|above|beyond)",
+            r"|keep (?:it |usage |us |things )?(?:under|below)|stay (?:under|below)",
+            r")|(?P<loose>",
+            r"getting to|gets? to|hits?|hitting|reach(?:es|ing)?|past|go(?:es|ing)? (?:past|over|above|beyond)",
+            r"|exceed(?:s|ing)?|over|above|beyond|under|below|around|near",
+            r"))\s+(?:(?:like|about|around|roughly|approximately|approx|maybe|say|just|~)\s*)*",
+            r"(?P<n>\d{1,3})\b(?:\s*(?:-|–|to|or)\s*\d{1,3}\b)?",
+            r"(?P<unit>\s*(?:%|percent\b|pct\b))?",
+        ))
         .expect("the cap pattern compiles")
     });
     let mut fenced = false;
@@ -852,112 +899,260 @@ pub fn cap_from_message(text: &str) -> Option<(u8, BudgetMode)> {
         own.push_str(line);
         own.push('\n');
     }
-    // A percent of something other than the plan's usage is not a cap
-    // ("within 2% of the baseline", "up to 30% faster", "at most 5% error";
-    // review 2026-11-10): "of …" must name the usage, and a measure word
-    // right after the figure rules it out.
-    let about_usage = |after: &str| {
-        let after = after.trim_start().to_ascii_lowercase();
-        let first = after
-            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
-            .find(|w| !w.is_empty())
-            .unwrap_or("");
-        const MEASURES: &[&str] = &[
-            "faster",
-            "slower",
-            "more",
-            "less",
-            "fewer",
-            "off",
-            "error",
-            "errors",
-            "accuracy",
-            "better",
-            "worse",
-            "bigger",
-            "smaller",
-            "larger",
-            "longer",
-            "shorter",
-            "cheaper",
-            "zoom",
-            "opacity",
-            "width",
-            "height",
-            "coverage",
-            "loss",
-            "increase",
-            "decrease",
-            "growth",
-            "margin",
-            "discount",
-            "chance",
-            "probability",
-        ];
-        if MEASURES.contains(&first) {
-            return false;
-        }
-        if first != "of" {
-            return true;
-        }
-        // The words "of" governs: up to the clause's end, a few words long.
-        let rest: String = after
-            .chars()
-            .take_while(|ch| !matches!(ch, '.' | ';' | ',' | '!' | '?' | '\n' | '%'))
-            .take(32)
-            .collect();
-        [
-            "5h",
-            "5-h",
-            "5 h",
-            "five",
-            "hour",
-            "limit",
-            "usage",
-            "window",
-            "plan",
-            "budget",
-            "quota",
-            "token",
-            "week",
-            "my max",
-            "the max",
-            "max plan",
-            "allowance",
-            "session",
-        ]
-        .iter()
-        .any(|w| rest.contains(w))
-    };
     let c = re
         .captures_iter(&own)
-        .find(|c| c.get(0).is_some_and(|m| about_usage(&own[m.end()..])))?;
-    let percent: u8 = c
-        .get(2)?
-        .as_str()
-        .parse()
-        .ok()
-        .filter(|p| (1..=100).contains(p))?;
-    let phrase = c.get(1)?.as_str().to_ascii_lowercase();
+        .find(|c| stated_here(&own, c).is_some())?;
+    let percent = stated_here(&own, &c)?;
+    let whole = c.get(0)?;
+    let firm = c.name("firm").map(|m| m.as_str().to_ascii_lowercase());
     let lower = own.to_ascii_lowercase();
     let urgent = lower.contains("urgent") || lower.contains("just get it working");
-    let mode = if urgent || phrase == "within" || phrase == "finish in" {
+    let mode = if urgent || matches!(firm.as_deref(), Some("within" | "finish in")) {
         BudgetMode::FinishWithin
     } else {
         BudgetMode::WorkToCapThenContinue
     };
-    Some((percent, mode))
+    let window = window_of(&own, whole.start(), whole.end());
+    Some(StatedCap {
+        percent,
+        mode,
+        window,
+    })
+}
+
+/// The sentence around `[start, end)`: from the last stop before it to the
+/// first after it (`.` only before a space or the end, so "approx." and
+/// "1.5" do not split one).
+fn sentence_of(text: &str, start: usize, end: usize) -> (usize, usize) {
+    let is_stop = |i: usize, ch: char| match ch {
+        '!' | '?' | ';' | '\n' => true,
+        '.' => text[i + 1..].chars().next().is_none_or(char::is_whitespace),
+        _ => false,
+    };
+    let from = text[..start]
+        .char_indices()
+        .rev()
+        .find(|&(i, ch)| is_stop(i, ch))
+        .map_or(0, |(i, ch)| i + ch.len_utf8());
+    let to = text[end..]
+        .char_indices()
+        .find(|&(i, ch)| is_stop(end + i, ch))
+        .map_or(text.len(), |(i, _)| end + i);
+    (from, to)
+}
+
+/// Whether a sentence speaks of the plan's usage or of stopping work: the
+/// cue a loose lead-in or a bare figure needs.
+fn has_cue(sentence: &str) -> bool {
+    static CUE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    CUE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)\b(?:usage|used|limit|limits|5\s*-?\s*h(?:(?:ou)?rs?)?|five[- ]hours?|weekly|week|window|plan|quota|budget|tokens?|stop|stopping|wrap|wrapping|pause|halt|quit|cut (?:it |them )?off|call\b.{0,30}\bback|save|cap|subagents?|helpers?|agents?)\b",
+        )
+        .expect("the cue pattern compiles")
+    })
+    .is_match(sentence)
+}
+
+/// The percent one match of the pattern states, when it is a cap on the
+/// plan's usage; `None` when it is a percent of something else.
+fn stated_here(own: &str, c: &regex::Captures) -> Option<u8> {
+    let whole = c.get(0)?;
+    let n: u8 = c
+        .name("n")?
+        .as_str()
+        .parse()
+        .ok()
+        .filter(|p| (1..=100).contains(p))?;
+    let bare = c.name("unit").is_none();
+    let loose = c.name("loose").is_some();
+    let (from, to) = sentence_of(own, whole.start(), whole.end());
+    let sentence = &own[from..to];
+    if (bare || loose) && !has_cue(sentence) {
+        return None;
+    }
+    let after = &own[whole.end()..];
+    if bare {
+        // A bare figure: from 10 up, and nothing after it that makes it a
+        // count or a clock ("stop at 3 files", "until 10:30", "at 5 pm").
+        // From 25 up: below that a bare figure is as likely an hour.
+        let clock =
+            after.starts_with([':', '.']) && after[1..].starts_with(|c: char| c.is_ascii_digit());
+        if n < 25 || clock {
+            return None;
+        }
+        let first = after
+            .trim_start()
+            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-' && ch != '\'')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        const MAY_FOLLOW: &[&str] = &[
+            "", "of", "on", "in", "for", "then", "and", "or", "so", "but", "if", "when", "before",
+            "please", "pls", "plz", "ok", "okay", "i", "you", "we", "weekly", "week", "5h",
+            "5-hour", "5-hr", "5", "five", "usage", "used", "at", "is", "it", "that", "though",
+            "tho", "max", "lol", "bro", "ish", "call", "stop", "wrap", "save", "pause", "tell",
+            "have", "send", "start", "just", "let",
+        ];
+        if !MAY_FOLLOW.contains(&first.as_str()) {
+            return None;
+        }
+    }
+    about_usage(after, loose).then_some(n)
+}
+
+/// A percent of something other than the plan's usage is not a cap
+/// ("within 2% of the baseline", "up to 30% faster", "at most 5% error";
+/// review 2026-11-10): "of …" must name the usage, and a measure word
+/// right after the figure rules it out. After a loose lead-in (`strict`)
+/// "of the window" is not enough — "under 40% of the window" is as likely
+/// a pane's size.
+fn about_usage(after: &str, strict: bool) -> bool {
+    let after = after.trim_start().to_ascii_lowercase();
+    let first = after
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+        .find(|w| !w.is_empty())
+        .unwrap_or("");
+    const MEASURES: &[&str] = &[
+        "faster",
+        "slower",
+        "more",
+        "less",
+        "fewer",
+        "off",
+        "error",
+        "errors",
+        "accuracy",
+        "better",
+        "worse",
+        "bigger",
+        "smaller",
+        "larger",
+        "longer",
+        "shorter",
+        "cheaper",
+        "zoom",
+        "opacity",
+        "width",
+        "height",
+        "coverage",
+        "loss",
+        "increase",
+        "decrease",
+        "growth",
+        "margin",
+        "discount",
+        "chance",
+        "probability",
+    ];
+    if MEASURES.contains(&first) {
+        return false;
+    }
+    if first != "of" {
+        return true;
+    }
+    // The words "of" governs: up to the clause's end, a few words long.
+    let rest: String = after
+        .chars()
+        .take_while(|ch| !matches!(ch, '.' | ';' | ',' | '!' | '?' | '\n' | '%'))
+        .take(32)
+        .collect();
+    [
+        "5h",
+        "5-h",
+        "5 h",
+        "five",
+        "hour",
+        "limit",
+        "usage",
+        "window",
+        "plan",
+        "budget",
+        "quota",
+        "token",
+        "week",
+        "my max",
+        "the max",
+        "max plan",
+        "allowance",
+        "session",
+    ]
+    .iter()
+    .filter(|w| !(strict && matches!(**w, "window" | "session")))
+    .any(|w| rest.contains(w))
+}
+
+/// The window a cap at `[start, end)` is a percent of (937): the window
+/// word nearest it in its sentence; with none there, the week when another
+/// sentence states a weekly figure; else the 5-hour window (his default).
+fn window_of(own: &str, start: usize, end: usize) -> CapWindow {
+    static WEEK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static FIVE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static FIGURE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let week = WEEK.get_or_init(|| {
+        regex::Regex::new(r"(?i)\b(?:weekly|weeks?|wk|7[- ]?days?|seven[- ]days?|7d)\b")
+            .expect("the week pattern compiles")
+    });
+    let five = FIVE.get_or_init(|| {
+        regex::Regex::new(r"(?i)\b(?:5\s*-?\s*h(?:(?:ou)?rs?)?|five[- ]hours?|session)\b")
+            .expect("the five-hour pattern compiles")
+    });
+    let figure = FIGURE.get_or_init(|| {
+        regex::Regex::new(r"\d{1,3}\s*(?:%|percent)").expect("the figure pattern compiles")
+    });
+    let (from, to) = sentence_of(own, start, end);
+    let sentence = &own[from..to];
+    let distance = |m: regex::Match| {
+        let (s, e) = (from + m.start(), from + m.end());
+        if e <= start {
+            start - e
+        } else {
+            s.saturating_sub(end)
+        }
+    };
+    let near_week = week.find_iter(sentence).map(distance).min();
+    let near_five = five.find_iter(sentence).map(distance).min();
+    match (near_week, near_five) {
+        (Some(w), Some(f)) if w < f => return CapWindow::Weekly,
+        (Some(_), None) => return CapWindow::Weekly,
+        (_, Some(_)) => return CapWindow::FiveHour,
+        (None, None) => {}
+    }
+    // No window in its own sentence: another sentence's weekly figure.
+    let mut at = 0;
+    while at < own.len() {
+        let (f, t) = sentence_of(own, at, at);
+        let s = &own[f..t];
+        if (f, t) != (from, to) && week.is_match(s) && figure.is_match(s) && !five.is_match(s) {
+            return CapWindow::Weekly;
+        }
+        at = t + 1;
+    }
+    CapWindow::FiveHour
 }
 
 /// At a turn's start: the cap his message states, into the fresh ledger
-/// with source `message`. Nothing when the message states none.
+/// with source `message`. Nothing when the message states none, or only a
+/// weekly cap (937; the ledger holds 5-hour caps until 935).
 pub fn declare_from_message(dir: &Path, text: &str, now_ms: i64) {
     if dir.as_os_str().is_empty() {
         return;
     }
-    let Some((percent, mode)) = cap_from_message(text) else {
+    let Some(StatedCap {
+        percent,
+        mode,
+        window,
+    }) = cap_from_message(text)
+    else {
         return;
     };
+    // A weekly cap is not a 5-hour one (935): writing "98% weekly" as a
+    // 5-hour cap of 98 would be wrong. Until the ledger holds a weekly cap
+    // (935), the model reads it from his words, and the usage line reaches
+    // it while it waits on helpers (938).
+    if window != CapWindow::FiveHour {
+        return;
+    }
     brief::with_ledger(dir, |b| {
         if b.cap.is_none() {
             set_cap(b, percent, mode, "message", "stated in the message", now_ms);
@@ -1285,7 +1480,11 @@ mod tests {
             ),
             ("you can use up to 40% of my 5-hour limit", Some((40, B))),
         ] {
-            assert_eq!(cap_from_message(text), want, "{text}");
+            assert_eq!(
+                cap_from_message(text).map(|c| (c.percent, c.mode)),
+                want,
+                "{text}"
+            );
         }
         let dir = temp("backstop");
         start(&dir, 26);
@@ -1789,6 +1988,94 @@ mod tests {
         assert_eq!(reply.decision(), "deny");
         let main = call.replace(r#""agent_id":"h1","#, "");
         assert_ne!(decide_with(&dir, &main, at(&dir, 27)).decision(), "deny");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 937: the way he states a cap — the table of phrasings in
+    /// `937-938-report-2026-11-25.md`, each with the cap it reads as. The
+    /// 5-hour window unless his words name the week.
+    #[test]
+    fn his_natural_phrasings_are_read_with_their_window() {
+        use CapWindow::{FiveHour as H, Weekly as W};
+        let his = "Weekly usage is at 92% so in general try to be watchful, it expires in like \
+                   12 hours so it's not that big of a deal. i'd say if it's getting to like 98% \
+                   then call the subagents back, and save their states so that you can continue \
+                   after the reset";
+        for (text, want) in [
+            // His exact message (2026-11-24): a weekly cap of 98, mode B.
+            (his, Some((98, B, W))),
+            (
+                "i'd say if it's getting to like 98% then call the subagents back, and save their states",
+                Some((98, B, H)),
+            ),
+            (
+                "once weekly hits 98, call the helpers back",
+                Some((98, B, W)),
+            ),
+            ("around 98% weekly, stop", Some((98, B, W))),
+            ("stop around 80", Some((80, B, H))),
+            ("wrap up by 95% weekly", Some((95, B, W))),
+            ("try to wrap up all work by 95%", Some((95, B, H))),
+            ("don't go past 90 of the 5 hour", Some((90, B, H))),
+            (
+                "please stop at 80% 5h usage for this session",
+                Some((80, B, H)),
+            ),
+            ("stop work at 85% actually 5h", Some((85, B, H))),
+            ("yes wrap up at 98-99% weekly", Some((98, B, W))),
+            ("in the next window stop at 75%", Some((75, B, H))),
+            ("launch while the 5h window is under 80%", Some((80, B, H))),
+            ("stop once it hits 90%", Some((90, B, H))),
+            ("keep usage under 70%", Some((70, B, H))),
+            ("if usage gets to 85 call everyone back", Some((85, B, H))),
+            ("cap it at 60% of the week", Some((60, B, W))),
+            ("don't let it go over 95% weekly", Some((95, B, W))),
+            ("don’t go past 88% this week", Some((88, B, W))),
+            ("max 80% of my 5-hour limit", Some((80, B, H))),
+            ("weekly is at 92%, stop at 80% of the 5h", Some((80, B, H))),
+            ("stop at 80% 5h, weekly's at 92%", Some((80, B, H))),
+            ("within 40% weekly, it's urgent", Some((40, A, W))),
+            (
+                "if it's getting to like 98% weekly then call the subagents back",
+                Some((98, B, W)),
+            ),
+            ("stop around 80 of the week", Some((80, B, W))),
+            ("the week is fine. stop at 85%", Some((85, B, H))),
+            ("use up to 50% of the 5h", Some((50, B, H))),
+            // Not a cap.
+            ("it's past 85% already lol", None),
+            ("lets say 85%", None),
+            ("Weekly usage is at 92%", None),
+            ("stop at 3 files", None),
+            ("stop at 90 lines", None),
+            ("work until 11 then stop", None),
+            ("stop at 5 pm", None),
+            ("get it to reach 30% faster, then stop", None),
+            ("over 50% of the tests fail, stop and fix them", None),
+            ("the bar should be under 50% opacity", None),
+            ("keep the panel under 40% of the window, then stop", None),
+            ("make the build 50% faster", None),
+        ] {
+            assert_eq!(
+                cap_from_message(text).map(|c| (c.percent, c.mode, c.window)),
+                want,
+                "{text}"
+            );
+        }
+        // A weekly cap is not written to the ledger as a 5-hour one (935
+        // holds it); a 5-hour one still is.
+        let dir = temp("weekly-backstop");
+        start(&dir, 40);
+        declare_from_message(&dir, his, 5);
+        assert!(read_turn_budget(&dir).unwrap().cap.is_none());
+        declare_from_message(&dir, "don't go past 90 of the 5 hour", 6);
+        assert_eq!(
+            read_turn_budget(&dir)
+                .unwrap()
+                .cap
+                .map(|c| (c.percent, c.mode)),
+            Some((90, B))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
