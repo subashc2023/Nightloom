@@ -82,8 +82,11 @@ export function step(k: FocusKept, row: readonly Tab[], n: Now, asked: (id: stri
     // Forget what is gone; a gone tab never waits.
     k.ready = k.ready.filter((id) => ids.has(id));
     for (const id of Object.keys(k.seen)) if (!ids.has(id)) delete k.seen[id];
-    // Fold: the tab in focus went away.
-    if (!ids.has(k.focus)) {
+    // Fold: the task in focus went away. Item 947: only a task's tab — the Chat and Morning brief tabs are drawn from
+    // the chat, which is read after the tasks at every start and every return to Home; for that moment they are not in
+    // the row, and this moved him off the tab he left it on (to the task that needs him) for good. While such a tab is
+    // missing the stage shows Watch (`focusOf`) and keeps his pick, so it comes back with the chat.
+    if (!ids.has(k.focus) && k.focus.startsWith("task:")) {
       const best = row.filter(tasky).sort((a, b) => rank(b, asked) - rank(a, asked))[0];
       setFocus(k, best?.id ?? "watch", n, "fold");
     }

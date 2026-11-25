@@ -25,6 +25,7 @@
   import Research from "../lib/homeStage/views/Research.svelte";
   import { tasks, refreshTasks, closeTask, STALE_WORDS } from "../lib/homeStage/tasks.svelte";
   import { bag, def, keep, stage, type ViewId } from "../lib/homeStage/stageState.svelte";
+  import { keepScroll } from "../lib/homeStage/keepScroll";
   import Btn from "../lib/homeStage/Btn.svelte";
   import Steps from "../lib/homeStage/Steps.svelte";
   import { rulesPass, foldDone, unfold, holdsHim, type FocusKept } from "../lib/homeStage/focus";
@@ -216,7 +217,8 @@
   {#if focus.view !== "watch"}
     <div class="h9-body">
       {#key focus.id}
-        <div class="h9-view">
+        <!-- Item 947: each view keeps the place of its own scrolling boxes (the page's own scroll is kept by homeFirst). -->
+        <div class="h9-view" use:keepScroll={focus.id}>
           {#if focus.view === "brief" && !focusTask}
             <Brief />
           {:else if focusTask && focusTask.view === "brief"}
