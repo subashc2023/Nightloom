@@ -23,13 +23,13 @@
 </script>
 
 {#if ask}
-  <div class="ja" role="group" aria-label="Run the job anyway" data-job-run-confirm={job.id}>
+  <div class="ja" role="group" aria-label={job.confirm?.scheduled ? "Run the skipped job now" : "Run the job anyway"} data-job-run-confirm={job.id} data-scheduled={job.confirm?.scheduled ? "" : undefined}>
     <p class="ja-title">{ask.title}</p>
     <p class="ja-body">{ask.body}</p>
     <p class="ja-body why">{ask.reason}</p>
     <div class="ja-row">
-      <button class="ja-btn primary" data-act="job-run-anyway" disabled={busy} use:tip={"Starts it once, now\nPast Home's spend guard"} onclick={() => onanswer(true)}>Run anyway</button>
-      <button class="ja-btn quiet" data-act="job-run-cancel" disabled={busy} use:tip={"Leaves it skipped\nScheduled runs still check"} onclick={() => onanswer(false)}>Cancel</button>
+      <button class="ja-btn primary" data-act="job-run-anyway" disabled={busy} use:tip={ask.runTip} onclick={() => onanswer(true)}>{ask.run}</button>
+      <button class="ja-btn quiet" data-act="job-run-cancel" disabled={busy} use:tip={ask.keepTip} onclick={() => onanswer(false)}>{ask.keep}</button>
     </div>
   </div>
 {/if}

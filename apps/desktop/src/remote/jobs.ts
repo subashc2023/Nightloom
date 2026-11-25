@@ -35,6 +35,8 @@ export interface RunConfirm {
   week: number | null;
   /** The usage reading was old or missing at the press. */
   stale: boolean;
+  /** Item 910: no press — its scheduled run skipped itself; the card asks Run it now / Keep skipping. */
+  scheduled?: boolean;
 }
 
 export interface Job {
@@ -64,6 +66,8 @@ export interface Job {
   confirm?: RunConfirm | null;
   /** Item 812: Run anyway pressed; its run has not started yet. */
   force_once?: boolean;
+  /** Item 910: the local day (YYYY-MM-DD) he answered Keep skipping; later skips that day do not ask. */
+  keep_skipping?: string | null;
   /** Item 794: a research watch — each run appends what changed to `watch.note`. */
   watch?: Watch | null;
 }
@@ -198,7 +202,27 @@ function reasonLine(why: string): string {
 }
 
 /** The Run anyway card's words (same shape as the approval card's): title, the estimate and where he is, the guard's reason. */
-export function confirmAsk(j: Job): { title: string; body: string; reason: string } | null {
+export interface ConfirmAsk {
+  title: string;
+  body: string;
+  reason: string;
+  /** The buttons' words and two-line tips. */
+  run: string;
+  runTip: string;
+  keep: string;
+  keepTip: string;
+}
+
+/** Item 910: which day a scheduled skip happened, in words — "this morning's", else "Tuesday's". */
+function skipDay(at: string, now: Date): string {
+  const d = new Date(at);
+  if (Number.isNaN(d.getTime())) return "the";
+  const same = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  if (same) return d.getHours() < 12 ? "this morning's" : "today's";
+  return `${d.toLocaleDateString("en-US", { weekday: "long" })}'s`;
+}
+
+export function confirmAsk(j: Job, now: Date = new Date()): ConfirmAsk | null {
   const c = j.confirm;
   if (!c) return null;
   const pct = (n: number | null) => (n == null ? "?" : `${n}%`);
@@ -207,7 +231,28 @@ export function confirmAsk(j: Job): { title: string; body: string; reason: strin
   if (c.est_week == null) est = "No estimate yet — first run";
   else if (c.est_five == null) est = `Home estimates ${about(c.est_week)} of the week`;
   else est = `Home estimates ${about(c.est_five)} of your 5h window (${about(c.est_week)} of the week)`;
-  return { title: `Run ${j.title} anyway?`, body: `${est}; ${at}.`, reason: reasonLine(c.why) };
+  if (c.scheduled) {
+    // Item 910: no press of his — the scheduled run skipped itself; the card asks whether to keep skipping.
+    const what = j.id === "home-morning-scan" ? "scan" : `${j.title} run`;
+    return {
+      title: `Skipped ${skipDay(c.at, now)} ${what} to save your limits — run it now?`,
+      body: `${est}; ${at}.`,
+      reason: `Skipped because ${reasonLine(c.why).replace(/^Stopped because /, "")}`,
+      run: "Run it now",
+      runTip: "Runs it once, now\nPast Home's spend guard",
+      keep: "Keep skipping",
+      keepTip: "Leaves today skipped\nIt asks again on its next skip",
+    };
+  }
+  return {
+    title: `Run ${j.title} anyway?`,
+    body: `${est}; ${at}.`,
+    reason: reasonLine(c.why),
+    run: "Run anyway",
+    runTip: "Starts it once, now\nPast Home's spend guard",
+    keep: "Cancel",
+    keepTip: "Leaves it skipped\nScheduled runs still check",
+  };
 }
 
 /** The patch each button on the Run anyway card sends. */

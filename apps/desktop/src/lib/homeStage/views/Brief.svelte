@@ -18,11 +18,45 @@
   import { stageHost, type HomeTask } from "../host";
   import { briefPageOf, noteName } from "../taskData";
   import MathText from "../../MathText.svelte";
+  import JobRunConfirm from "../../../remote/JobRunConfirm.svelte";
+  import { confirmPatch, type Job } from "../../../remote/jobs";
 
   let { task }: { task?: HomeTask } = $props();
   const page = $derived(task ? briefPageOf(task.data) : null);
   const brief = $derived<Brief | null>(task && page ? { at: task.updated_at || null, asked: "", sections: sectionsOf(page.body), writing: task.state === "live" && !page.body } : stageHost.now.brief());
   const skipped = $derived(stageHost.now.skippedScan());
+
+  // Item 910: a scheduled skip asks him here (Run it now / Keep skipping); answered once on any surface — the job's
+  // card goes for every one. Read when drawn, every 20 s, and after his answer.
+  let scanJob = $state<Job | null>(null);
+  let answering = $state(false);
+  async function readScanJob() {
+    if (task || !stageHost.now.scanJob) return;
+    try {
+      scanJob = await stageHost.now.scanJob();
+    } catch {
+      scanJob = null;
+    }
+  }
+  $effect(() => {
+    void skipped;
+    void readScanJob();
+    const t = setInterval(() => void readScanJob(), 20000);
+    return () => clearInterval(t);
+  });
+  async function answerScan(run: boolean) {
+    const j = scanJob;
+    if (!j || answering || !stageHost.now.answerJob) return;
+    answering = true;
+    try {
+      await stageHost.now.answerJob(j.id, confirmPatch(run));
+    } catch (e) {
+      stageHost.now.toast(`Could not answer — ${String(e)}`);
+    } finally {
+      answering = false;
+      await readScanJob();
+    }
+  }
   const title = $derived(task ? page?.title || task.name : "Today's page");
   // The stage keys each view on its tab, so another task is another view.
   // svelte-ignore state_referenced_locally
@@ -92,6 +126,9 @@
           <Btn small icon="note" disabled={!!savedAs || saving} tip={savedAs ? `Kept in Home's notes as\n${savedAs}` : task ? "Keep this page\nA new note in Home's notes" : "Keep today's page\nA new note in Home's notes"} onclick={() => void keepNote()}>{savedAs ? "Kept in Notes" : saving ? "Keeping…" : "Keep as a note"}</Btn>
         {/if}
       {/snippet}
+      {#if !task && scanJob?.confirm?.scheduled}
+        <div data-scan-ask><JobRunConfirm job={scanJob} busy={answering} onanswer={(run) => void answerScan(run)} /></div>
+      {/if}
       {#if !brief && !task && skipped}
         <span class="h9-dim b-none" data-scan-skipped>Today's scan was skipped at {clock(skipped.at)} — {skipped.why}. Home's chat has no page for it; the facts alone are on the phone's Home.</span>
       {:else if !brief}

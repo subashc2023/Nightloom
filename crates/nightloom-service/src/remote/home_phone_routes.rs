@@ -447,6 +447,8 @@ pub enum Need {
     /// Item 947: his Run now was stopped by the spend guard and the job asks Run anyway or Cancel (the phone page's
     /// "Run anyway" card): the job's name.
     JobRun(String),
+    /// Item 910: the job's scheduled run skipped itself to save his limits and asks Run it now / Keep skipping.
+    JobSkipped(String),
     /// A held blocker.
     Blocker,
 }
@@ -482,6 +484,10 @@ pub fn needs_sentence(needs: &[Need]) -> String {
             Need::Job(j) => Some(format!("the job {} wants to make changes", named(j))),
             Need::JobRun(j) => Some(format!(
                 "the job {} is asking whether to run anyway",
+                named(j)
+            )),
+            Need::JobSkipped(j) => Some(format!(
+                "{} skipped itself to save your limits and asks whether to run it",
                 named(j)
             )),
             Need::Blocker => None,
@@ -542,8 +548,10 @@ pub fn needs_from(
         out.push(Need::Approval(label.to_string()));
     }
     for j in jobs {
-        if j.job.confirm.is_some() {
-            out.push(Need::JobRun(j.job.title.clone()));
+        match &j.job.confirm {
+            Some(c) if c.scheduled => out.push(Need::JobSkipped(j.job.title.clone())),
+            Some(_) => out.push(Need::JobRun(j.job.title.clone())),
+            None => {}
         }
         if j.job.wanted.is_some() {
             out.push(Need::Job(j.job.title.clone()));
@@ -684,6 +692,14 @@ mod tests {
         assert_eq!(
             needs_sentence(&[Need::JobRun("Morning scan".into())]),
             "One thing needs you: the job Morning scan is asking whether to run anyway."
+        );
+    }
+
+    #[test]
+    fn a_scheduled_skip_is_its_own_need_910() {
+        assert_eq!(
+            needs_sentence(&[Need::JobSkipped("Morning scan".into())]),
+            "One thing needs you: Morning scan skipped itself to save your limits and asks whether to run it."
         );
     }
 

@@ -3,6 +3,8 @@
  * Stage.svelte sets it; the phone's page never imports this file.
  */
 import * as api from "../api";
+import { invoke } from "@tauri-apps/api/core";
+import type { Job, JobPatch } from "../../remote/jobs";
 import { app, addToast, openRun, sendInChat, chatRuns } from "../state.svelte";
 import { home, homeProject } from "../home.svelte";
 import { isScanMessage, skippedScanToday } from "../home";
@@ -18,6 +20,8 @@ export const desktopHost: StageHost = {
   brief: () => briefOf(app.events as unknown as Ev[], isScanMessage, app.busy),
   scanWords: () => home.info?.scan_words ?? null,
   skippedScan: () => skippedScanToday(home.rows),
+  scanJob: async () => (await invoke<Job[]>("job_home_list")).find((j) => j.id === "home-morning-scan") ?? null,
+  answerJob: (id: string, patch: JobPatch) => invoke("job_answer", { id, patch }),
   homeTasks: () => api.homeTasks(),
   // A click that could not be kept for Home says so (845 review, (c)): the view still shows it, Home would not.
   taskEvent: (task, view, line) =>

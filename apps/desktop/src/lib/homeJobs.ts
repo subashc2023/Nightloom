@@ -18,7 +18,7 @@ export interface RunNowButton {
 export function runNowButton(j: Job, busy: boolean): RunNowButton {
   if (busy) return { disabled: true, tip: "Asking the Mac…\nOne press is enough" };
   if (j.running) return { disabled: true, tip: "It is running now\nIts chat shows the run" };
-  if (j.confirm) return { disabled: true, tip: "Home's spend guard stopped it\nAnswer the card below" };
+  if (j.confirm) return { disabled: true, tip: j.confirm.scheduled ? "Skipped to save your limits\nAnswer the card below" : "Home's spend guard stopped it\nAnswer the card below" };
   if (j.run_now || j.force_once) return { disabled: true, tip: "Starting at the next tick\nWithin 30 s" };
   return { disabled: false, tip: "Runs it once, now\nPast Home's guard it asks first" };
 }
