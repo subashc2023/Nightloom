@@ -2352,6 +2352,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir2);
     }
 
+    /// Item 939's test: weekly cap 98, a helper's call reading 98 — that
+    /// helper's next [`WRAP_CALLS`] calls carry the wrap-up, then it is
+    /// refused; the main thread gets the weekly `AtCap` wake, once (by the
+    /// drive loop's look while it sits idle on its helpers).
+    #[test]
+    fn a_helper_reading_the_weekly_cap_wraps_up_and_wakes_the_main_thread() {
+        let senses = brief::Senses {
+            idle_ms: &no_idle,
+            activity: None,
+        };
+        let dir = temp("939-week-cap");
+        start(&dir, 20);
+        let weekly = StatedCap {
+            percent: 98,
+            mode: B,
+            window: CapWindow::Weekly,
+        };
+        declare_stated(&dir, weekly, "once weekly hits 98", 1).unwrap();
+        let r = at(&dir, 40);
+        for n in 0..WRAP_CALLS {
+            let reply = brief::decide_holding(&dir, HELPER_READ, r, Some(98), 50, 10, &senses);
+            assert_ne!(reply.decision(), "deny", "call {n}");
+            let note = reply.additional_context().unwrap_or_default();
+            assert!(note.contains(WRAP_UP_HELPER), "call {n}: {note}");
+            assert!(!note.contains("98%"), "no usage figure to a helper: {note}");
+        }
+        let reply = brief::decide_holding(&dir, HELPER_READ, r, Some(98), 50, 10, &senses);
+        assert_eq!(reply.decision(), "deny");
+        assert_eq!(reply.reason(), Some(helper_wrapped_reason().as_str()));
+        // The helper's reading left the weekly AtCap wake for the main thread.
+        let pending = read_turn_budget(&dir).unwrap().wakes_pending;
+        let at_cap = |ws: &[Wake]| {
+            ws.iter()
+                .filter(|w| w.kind == WakeKind::AtCap)
+                .map(|w| (w.pct, w.window))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(at_cap(&pending), [(98, CapWindow::Weekly)], "{pending:?}");
+        let now = chrono::Utc::now().timestamp_millis();
+        let took = take_wakes(&dir, now, true, true, Some(98));
+        assert_eq!(at_cap(&took), [(98, CapWindow::Weekly)], "{took:?}");
+        assert!(wake_text(&took, None).unwrap().contains(r#"at="weekly""#));
+        assert!(at_cap(&take_wakes(&dir, now, true, true, Some(98))).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A wake found on a helper's call waits in the ledger; the drive
     /// loop's look takes it when the main thread can be written to, once;
     /// otherwise the main thread's own next call carries it.
