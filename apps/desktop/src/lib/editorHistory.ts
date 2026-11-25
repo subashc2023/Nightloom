@@ -48,6 +48,13 @@ export function keptEditorState(key: string, doc: string, extensions: Extension)
   }
 }
 
+/** Forget draft `key`'s kept history: an editor opened afresh (item 934's
+ *  review — reopening a sent or cancelled edit must not bring back its
+ *  steps). */
+export function forgetEditorHistory(key: string): void {
+  kept.delete(key);
+}
+
 /** Tests: forget every kept history. */
 export function forgetEditorHistories(): void {
   kept.clear();

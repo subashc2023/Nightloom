@@ -2283,6 +2283,35 @@ pub fn call_verdict_for(
     subagent: bool,
     who: &str,
 ) -> CallVerdict {
+    call_verdict_week(b, reading, None, ans, present, subagent, who)
+}
+
+/// The refusal past a weekly cap declared for this message, once the
+/// grace is used (958).
+pub fn week_cap_reason(week: u8, cap: u8) -> String {
+    format!(
+        "Nightloom refuses further tool calls: the plan's weekly usage is at {week}%, past this \
+         message's cap of {cap}% of the week. Stop now and report to the user, in your reply, \
+         what you have and what is left; do not retry this or any other call."
+    )
+}
+
+/// [`call_verdict_for`] with the week's reading (958): past a **weekly**
+/// cap declared for this message, a helper gets the same wrap-up grace a
+/// 5-hour cap gives it and is then refused, and the chat's own thread gets
+/// the grace with the week's words and is then refused (no hold: his
+/// Continue/Stop card speaks of the 5-hour stop line; raising the cap on
+/// the chip is how he lets the work go on). His *Wrap up* is handled first,
+/// as ever; the 5-hour checks below still apply under a weekly cap.
+pub fn call_verdict_week(
+    b: &TurnBudget,
+    reading: Option<WindowReading>,
+    week: Option<u8>,
+    ans: Option<&Answer>,
+    present: bool,
+    subagent: bool,
+    who: &str,
+) -> CallVerdict {
     use super::budget;
     let wrapping = matches!(ans, Some(Answer::Wrap(_)));
     let left = budget::wrap_left(b, who);
@@ -2304,6 +2333,23 @@ pub fn call_verdict_for(
         if b.wrap_at_ms.is_none() {
             return CallVerdict::WrapUp(wrap_up_reason(text));
         }
+    }
+    if !wrapping
+        && let Some(w) = week
+        && let Some(cap) = b
+            .cap
+            .as_ref()
+            .filter(|c| c.window == budget::CapWindow::Weekly)
+        && w >= cap.percent
+    {
+        let stop = week_cap_reason(w, cap.percent);
+        if subagent {
+            return graced(stop, false);
+        }
+        if left > 0 {
+            return CallVerdict::Wrapping(budget::main_at_cap_note(b, w, left));
+        }
+        return CallVerdict::Deny(stop);
     }
     let Some(r) = reading else {
         return CallVerdict::Allow { overridden: false };
@@ -2623,7 +2669,7 @@ fn note_reading(
         && ans.is_none()
         && !subagent
         && is_present(read_presence(dir), senses.look(now_ms).0, now_ms);
-    let mut verdict = call_verdict_for(&b, reading, ans.as_ref(), present, subagent, who);
+    let mut verdict = call_verdict_week(&b, reading, week, ans.as_ref(), present, subagent, who);
     let mut deadline = 0;
     match &verdict {
         CallVerdict::Deny(reason) => b.stopped = Some(reason.clone()),

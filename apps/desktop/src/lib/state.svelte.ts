@@ -3167,8 +3167,8 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       // Nightloom woke the main agent for the message's usage cap (item
       // 538): its words, not his — a notice, as for `woke`.
       closeThinking(segments);
-      segments.push({ kind: "notice", text: wakeNotice(ev.kind, ev.pct, ev.cap) });
-      if (!onScreen) addToast(`Nightloom woke ${backgroundName(host.bg!.session, host.bg!.events)}: ${wakeNotice(ev.kind, ev.pct, ev.cap)}`);
+      segments.push({ kind: "notice", text: wakeNotice(ev.kind, ev.pct, ev.cap, ev.window) });
+      if (!onScreen) addToast(`Nightloom woke ${backgroundName(host.bg!.session, host.bg!.events)}: ${wakeNotice(ev.kind, ev.pct, ev.cap, ev.window)}`);
       break;
     }
     case "round_limit":

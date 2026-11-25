@@ -39,6 +39,8 @@ const { EditorView } = await import("@codemirror/view");
 const Composer = (await import("./Composer.svelte")).default;
 const LiveBox = (await import("./LiveBox.svelte")).default;
 const NoteEditor = (await import("./NoteEditor.svelte")).default;
+const { forgetEditorHistory } = await import("./editorHistory");
+const { liveProps } = await import("./undo934Props.svelte");
 const src = (p: string) => import(/* @vite-ignore */ `${p}?raw`).then((m) => m.default as string);
 
 // happy-dom fires `selectionchange` synchronously, inside CodeMirror's own DOM update, where CodeMirror
@@ -334,10 +336,64 @@ describe("934: a formatted box alone (LiveBox — the composer's and the edit bo
     await unmount(c);
   });
 
+  it("an edit box open in two chats at one message: a switch that moves key and text together keeps both histories", async () => {
+    // Item 934's review, finding 2: chat A and chat B each with an editor open on message 3, Format on.
+    const host = document.body.appendChild(document.createElement("div"));
+    const props = liveProps({ value: "a", historyKey: "edit:chat-A:3", onchange: (v: string) => (props.value = v) });
+    const c = mount(LiveBox, { target: host, props });
+    await settle();
+    typeLive(" one", host);
+    expect(props.value).toBe("a one");
+    // To B: its key and its text in one flush (`editChat` is set with `editing`).
+    props.historyKey = "edit:chat-B:3";
+    props.value = "b";
+    await settle();
+    typeLive(" two", host);
+    expect(props.value).toBe("b two");
+    // Back to A: A's ⌘Z still undoes A's typing.
+    props.historyKey = "edit:chat-A:3";
+    props.value = "a one";
+    await settle();
+    cm(host).focus();
+    menu();
+    await settle();
+    expect(props.value).toBe("a");
+    // And B's is its own.
+    props.historyKey = "edit:chat-B:3";
+    props.value = "b two";
+    await settle();
+    cm(host).focus();
+    menu();
+    await settle();
+    expect(props.value).toBe("b");
+    await unmount(c);
+  });
+
+  it("an editor opened afresh on a message does not bring back a closed editor's steps", async () => {
+    // Item 934's review, finding 1: edit message 3 to "M X", close; reopen on "M X": ⌘Z must not give "M".
+    const host = document.body.appendChild(document.createElement("div"));
+    const props = { value: "M" };
+    let c = mount(LiveBox, { target: host, props: { value: "M", historyKey: "edit:chat-A:3", onchange: (v: string) => (props.value = v) } });
+    await settle();
+    typeLive(" X", host);
+    await unmount(c);
+    forgetEditorHistory("edit:chat-A:3"); // what `openEditor` does first
+    c = mount(LiveBox, { target: host, props: { value: "M X", historyKey: "edit:chat-A:3", onchange: (v: string) => (props.value = v) } });
+    await settle();
+    cm(host).focus();
+    menu();
+    await settle();
+    expect(props.value).toBe("M X");
+    await unmount(c);
+  });
+
   it("the edit box is given its chat's and message's key, in both layouts", async () => {
     for (const p of ["./Transcript.svelte", "./TranscriptClassic.svelte"]) expect(await src(p)).toContain("historyKey={T.editHistoryKey}");
     const logic = await src("./transcript/logic.svelte.ts");
-    expect(logic).toContain("return editing ? `edit:${sessionKey}:${editing.index}` : null;");
+    expect(logic).toContain("return editing ? `edit:${editChat ?? sessionKey}:${editing.index}` : null;");
+    // The key's chat is set with the editor itself (the review's ordering risk), and opening an editor starts afresh.
+    expect(logic.match(/editChat = (sessionKey|key);/g)?.length).toBe(4);
+    expect(logic).toContain("forgetEditorHistory(`edit:${sessionKey}:${item.index}`);");
     // The plain edit box's history goes into the stash with the editor and comes back with it.
     expect(logic).toContain("hist: editHist");
     expect(logic.match(/takeEditHist\(back\);/g)?.length).toBe(2);

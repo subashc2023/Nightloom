@@ -85,6 +85,7 @@ import { followStep, holdsSelection, restDistance, sendJumps } from "../sendScro
 import { hasText, turnClock } from "../turnTiming";
 // The dot ground the pointer pushes (item 621).
 import { dotField } from "../dotField";
+import { forgetEditorHistory } from "../editorHistory";
 // Item 674: what is drawn — the open chat, a pane's chat, or an aside.
 import { chatSource, paneSource, type TranscriptSource } from "../transcriptSource.svelte";
 
@@ -630,6 +631,11 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
   // fixed reading rather than a ticking one, since the sentence is advice
   // about the edit being typed, not a clock.
   let editing = $state<EditState>(null);
+  // Item 934's review: the chat the open editor belongs to, set with
+  // `editing` itself, so the formatted edit box's history key and its text
+  // change together on a chat switch (`sessionKey` moves first, `editing`
+  // in the effect after it).
+  let editChat = $state<string | null>(null);
   let editCacheLine = $state("");
   // The edited mark's toggle (nightshift backlog 105): the turns whose edit
   // is drawn as a diff over the current text — what the edit removed struck
@@ -828,6 +834,11 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
     setDraftAttachments(editKey, chips);
     const chipsAt = item.kind === "user" ? chips.map(chipPrint) : undefined;
     void keepPlace(item.index, () => {
+      // Item 934's review: opening an editor starts afresh in the formatted
+      // box too (the plain one makes a new history, item 399) — a closed
+      // editor's steps on this message never come back.
+      forgetEditorHistory(`edit:${sessionKey}:${item.index}`);
+      editChat = sessionKey;
       editing = editReduce(editing, { type: "begin", index: item.index, text, parts, chipsAt });
       editCacheLine = src.words
         ? src.words.editLine
@@ -1428,6 +1439,7 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
         const back = takeEdit(sessionKey);
         if (back) {
           takeEditHist(back);
+          editChat = sessionKey;
           editing = back.editing;
           editCacheLine = back.line;
           placeBack(back.boxes);
@@ -1746,6 +1758,7 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
         if (from !== null && editing) stashEdit(from, editStash(editing));
         const back = takeEdit(key);
         takeEditHist(back);
+        editChat = key;
         editing = back?.editing ?? null;
         editCacheLine = back?.line ?? "";
         placeBack(back?.boxes);
@@ -2697,7 +2710,7 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
     },
     /** Item 934: the formatted edit box's history key (`LiveBox`'s `historyKey`). */
     get editHistoryKey() {
-      return editing ? `edit:${sessionKey}:${editing.index}` : null;
+      return editing ? `edit:${editChat ?? sessionKey}:${editing.index}` : null;
     },
     get editHist() {
       return editHist;
@@ -2727,6 +2740,7 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
       return editing;
     },
     set editing(v) {
+      editChat = sessionKey;
       editing = v;
     },
     editorDragOver,

@@ -168,12 +168,16 @@ pub enum TurnEvent {
     /// `near`, `at_cap`, `pace`, `hard`, `raised`), and `usage` when the
     /// usage line rode it (item 938: a band crossed while the main thread
     /// waits on helpers); `pct` the five-hour reading and `cap` the cap,
-    /// when one is set. Claude Code engine only.
+    /// when one is set. Claude Code engine only. `window` (958) is the
+    /// window `pct` and `cap` are of — `five_hour` or `weekly` — when a
+    /// wake fired; `None` for the usage line alone (its `pct` is the
+    /// five-hour reading).
     BudgetWake {
         text: String,
         kind: Vec<String>,
         pct: Option<u8>,
         cap: Option<u8>,
+        window: Option<String>,
     },
     /// The Claude Code CLI is retrying a failed API call (nightshift items
     /// 440 + 441, 2026-10-27): its `system/api_retry` line, one per try.
