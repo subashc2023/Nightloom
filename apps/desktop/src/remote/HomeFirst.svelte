@@ -64,6 +64,7 @@
     runningLine,
     saveHomeKept,
     scanText,
+    scanBody,
     scanWhen,
     stopWords,
     setFold,
@@ -688,7 +689,7 @@
       {:else if !scan}
         <p class="h-empty">No scan yet{scanJob ? ` · runs ${scanJob.every_words.replace(/^every day at /, "every day at ")}` : ""}.</p>
       {:else}
-        {@const body = scanText(scan.text)}
+        {@const body = scanText(scanBody(scan))}
         {#if scan.skipped}<p class="h-skip">Skipped: {scan.skipped}. This is the code-only page.</p>{/if}
         <!-- eslint-disable-next-line svelte/no-at-html-tags -->
         <div class="h-scan md">{@html renderMarkdown(body.text)}</div>
