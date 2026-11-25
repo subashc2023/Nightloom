@@ -175,7 +175,10 @@ pub(crate) async fn connect_agent_body(
     let active = state.active().await;
     // Everything this connect needs of the open chat, read once and never
     // waiting on its turn (item 220): the log on disk while a turn holds it.
+    let started = std::time::Instant::now();
     let open = open_chat(state, active.as_ref(), stage).await;
+    // Item 978: the chat's reads and its folder check, as one mark.
+    startup_log::mark("connect_open_chat", started);
     let kind = open.kind;
     let declared = open.declared;
     let workspace = match &active {
@@ -306,6 +309,11 @@ pub(crate) async fn connect_agent_body(
     // itself (by version, safe mode, the CLAUDE.md files on the path and
     // his `instructionFiles` setting) gets no second copy from the walk.
     // Its version is asked once per install, off the runtime.
+    // Item 978: what follows was billed to the folder check's stage until
+    // now (the launch's 1.6 s median read as "a slow disk"); each piece
+    // gets its own stage here and its own startup-log mark.
+    let started = std::time::Instant::now();
+    stage.set("whether the CLI reads AGENTS.md (its `--version`, once per install)");
     let cli_agents_md = if preamble && !incognito {
         let (bin, safe, cwd) = (spec.binary.clone(), spec.safe_mode, workspace.clone());
         tokio::task::spawn_blocking(move || {
@@ -316,6 +324,9 @@ pub(crate) async fn connect_agent_body(
     } else {
         false
     };
+    startup_log::mark("connect_agents_md", started);
+    let started = std::time::Instant::now();
+    stage.set("the built prompt (the instruction files and the notes' gists on disk)");
     let config = PromptConfig {
         identity: false,
         environment: false,
@@ -401,6 +412,7 @@ pub(crate) async fn connect_agent_body(
     );
     // A changed layer waits for the chat's cold moment (nightshift backlog
     // 174, `prompt_hold`): the held text goes out while the cache is warm.
+    startup_log::mark("connect_prompt", started);
     let prompt = {
         stage.set("the chats folder (the workspaces lock)");
         let log_dir = state.log_dir().await;

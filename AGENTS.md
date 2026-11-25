@@ -80,7 +80,7 @@ The event log is the source of truth. The provider message list
   body JSON rather than hitting the network; service tests drive `Chat` against
   the scripted `Provider` impls in `turn.rs`'s test module. Reach for those
   shapes instead of adding a mocking layer.
-- **Front-end tests:** new tests call the logic (`.ts` modules) and assert behaviour; do not import a component's source as text (`?raw`) — 622 found 31% of test files do, which makes refactors costly.
+- **Front-end tests:** new tests call the logic (`.ts` modules) and assert behaviour; do not import a component's source as text (`?raw`) — 622 found 31% of test files do, which makes refactors costly. Enforced since item 980: `apps/desktop/src/lib/sourceTextTests980.test.ts` fails on a new test file that reads `.svelte` source; a test about markup itself goes in `MARKUP_TESTS` (`sourceTextTests980.allow.ts`) with its reason.
 - **Tool descriptions and error strings are prompt text, not documentation.**
   A description is the only instruction the model gets about when to reach for a
   tool; an `Err` comes back to it as an `is_error` result it must act on. Write

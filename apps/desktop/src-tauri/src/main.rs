@@ -1507,6 +1507,9 @@ fn main() {
             // Continue anyway at the 85 % line after 10 minutes away
             // (nightshift backlog 192).
             nightloom_service::agent::brief::spawn_activity_watch();
+            // Item 978: the notes' gists survive a launch, so the first
+            // connect's prompt opens only the notes that changed.
+            nightloom_service::note_summaries::keep_on_disk();
             // Item 231: pay the OS's first run of the CLI now, in the
             // background, rather than inside the window's first connect.
             tauri::async_runtime::spawn(connect_deadline::warm(
