@@ -20,7 +20,31 @@
  */
 import { ASIDE_HIDDEN } from "./asideControls";
 
-export type AppCommandName = "handoff" | "aside" | "model" | "effort" | "rename" | "rewind" | "context" | "new" | "search";
+export type AppCommandName =
+  | "handoff"
+  | "aside"
+  | "model"
+  | "effort"
+  | "rename"
+  | "rewind"
+  | "context"
+  | "new"
+  | "search"
+  // Item 967 (916's item B, blocker 2285: his "add all the 19").
+  | "fork"
+  | "schedule"
+  | "council"
+  | "keepwarm"
+  | "thinking"
+  | "tools"
+  | "remember"
+  | "project"
+  | "note"
+  | "terminal"
+  | "commands"
+  | "makemain"
+  | "settings"
+  | "feedback";
 
 /** Where a box is: the main chat's, an aside's, or the phone page's chat box. */
 export type CommandSurface = "chat" | "aside" | "phone";
@@ -49,6 +73,25 @@ export const APP_COMMANDS: readonly AppCommand[] = [
   { name: "context", args: "", what: "open the Context panel", notInAside: null, phone: true },
   { name: "new", args: "[code|chat|incognito|ephemeral]", what: "a new chat of that kind (alone: the project's kind)", notInAside: null, phone: true },
   { name: "search", args: "<words>", what: "search chats and notes", notInAside: null, phone: true },
+  // Item 967: the second batch, in 916's table order. Chat-only where the
+  // table says so — `ASIDE_HIDDEN`'s words where the control is listed
+  // there, else the reason in the same voice. The phone has those its page
+  // can already run: the message menu's checkpoint, the council sheet, the
+  // projects page.
+  { name: "fork", args: "", what: "helpers fork from the end of the last exchange", notInAside: ASIDE_HIDDEN.fork, phone: true },
+  { name: "schedule", args: "<time> <message>", what: "send the message later — a time (9:30pm, 21:30), reset or week", notInAside: ASIDE_HIDDEN.schedule, phone: false },
+  { name: "council", args: "<message>", what: "send the message to the council (alone: open its roster)", notInAside: ASIDE_HIDDEN.council, phone: true },
+  { name: "keepwarm", args: "[on|off]", what: "the keep-warm switch (alone: flip it)", notInAside: null, phone: false },
+  { name: "thinking", args: "[on|off]", what: "show or fold thinking in every reply", notInAside: null, phone: false },
+  { name: "tools", args: "[on|off]", what: "show or fold tool calls in every reply", notInAside: null, phone: false },
+  { name: "remember", args: "", what: "save memory from this chat", notInAside: "Save memory reads the chat's log; an aside is recorded nowhere", phone: false },
+  { name: "project", args: "<name>", what: "switch project (alone: the projects list)", notInAside: null, phone: true },
+  { name: "note", args: "<title>", what: "a new note in this project (or the vault)", notInAside: null, phone: false },
+  { name: "terminal", args: "", what: "a new terminal in the project folder", notInAside: null, phone: false },
+  { name: "commands", args: "", what: "this chat's agent commands, view only", notInAside: null, phone: false },
+  { name: "makemain", args: "", what: "make this version the main chat", notInAside: "Make main moves the chat's row; an aside has no row", phone: false },
+  { name: "settings", args: "", what: "open Settings", notInAside: null, phone: false },
+  { name: "feedback", args: "", what: "open the feedback box", notInAside: null, phone: false },
 ];
 
 /** Whether `cmd` runs from a box on `surface`. */
@@ -156,3 +199,60 @@ export function newKind(arg: string): NewKind | null {
 
 /** The sentence for a word `/new` does not know. */
 export const NEW_KINDS_HINT = "/new takes code, chat, incognito or ephemeral";
+
+/** `[on|off]`'s word: true, false, null for none (a flip), or "bad". */
+export function onOff(arg: string): boolean | null | "bad" {
+  const a = arg.trim().toLowerCase();
+  if (!a) return null;
+  if (a === "on" || a === "show" || a === "yes") return true;
+  if (a === "off" || a === "fold" || a === "hide" || a === "no") return false;
+  return "bad";
+}
+
+/** What `/schedule` read: when, and the message to send then. */
+export type ScheduleArg =
+  | { kind: "five_hour" | "seven_day"; words: string }
+  | { kind: "time"; hhmm: string; words: string }
+  | { error: string };
+
+/** The sentence for a `/schedule` it cannot read. */
+export const SCHEDULE_HINT = "Type a time and the message: /schedule 9:30pm …, /schedule reset …, /schedule week …";
+
+/**
+ * `/schedule`'s words: the first is when — `reset` (or `5h`) for the
+ * five-hour reset, `week` for the weekly one, or a clock time (`21:30`,
+ * `9:30pm`, `9pm`) — and the rest, any length, is the message. A bare
+ * hour with no am/pm (`9`) is not read: it could be either.
+ */
+export function scheduleArg(arg: string): ScheduleArg {
+  const m = /^(\S+)(?:\s+([\s\S]*))?$/.exec(arg.trim());
+  if (!m) return { error: SCHEDULE_HINT };
+  const when = m[1].toLowerCase();
+  const words = (m[2] ?? "").trim();
+  let out: ScheduleArg | null = null;
+  if (when === "reset" || when === "5h" || when === "5-hour") out = { kind: "five_hour", words };
+  else if (when === "week" || when === "weekly") out = { kind: "seven_day", words };
+  else {
+    const t = /^(\d{1,2})(?::(\d{2}))?(am|pm)?$/.exec(when);
+    if (t && (t[2] !== undefined || t[3] !== undefined)) {
+      let h = Number(t[1]);
+      const min = Number(t[2] ?? "0");
+      if (t[3]) {
+        if (h < 1 || h > 12) return { error: `No time “${m[1]}” — ${SCHEDULE_HINT}` };
+        h = (h % 12) + (t[3] === "pm" ? 12 : 0);
+      }
+      if (h > 23 || min > 59) return { error: `No time “${m[1]}” — ${SCHEDULE_HINT}` };
+      out = { kind: "time", hhmm: `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`, words };
+    }
+  }
+  if (!out) return { error: `No time “${m[1]}” — ${SCHEDULE_HINT}` };
+  if (!out.words) return { error: "Type the message after the time" };
+  return out;
+}
+
+/** A note's file name from `/note`'s title: `.md` added when it has no
+ *  extension, as the Notes panel's New note does. */
+export function noteFileName(title: string): string {
+  const name = title.trim();
+  return /\.[a-z0-9]+$/i.test(name) ? name : `${name}.md`;
+}

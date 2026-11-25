@@ -101,7 +101,7 @@
   import { keyPicks } from "../lib/cardKeys";
   import { filterToolRows, phoneTools } from "./toolView.svelte";
   // Wave 8B F2 (item 300): replies in order, code blocks, the keyboard.
-  import { aimAction, liveSegments, retryStopping, sentOf } from "./client";
+  import { aimAction, checkpointAction, liveSegments, retryStopping, sentOf } from "./client";
   // Item 966: the app's slash commands, the table the Mac's boxes read.
   import { effortLevel, newKind, parseCommand, pickRow, type TypedCommand } from "../lib/appCommands";
   import { retryText } from "../lib/retryLine";
@@ -1905,7 +1905,7 @@
    * when the command goes; a refusal says why and leaves it as typed.
    */
   async function runCommand({ cmd, arg }: TypedCommand): Promise<void> {
-    const needsChat = cmd.name === "aside" || cmd.name === "rename" || cmd.name === "rewind" || cmd.name === "context";
+    const needsChat = cmd.name === "aside" || cmd.name === "rename" || cmd.name === "rewind" || cmd.name === "context" || cmd.name === "fork" || cmd.name === "council";
     if (needsChat && !chatId) {
       note(`Open a chat first — /${cmd.name} acts on the chat on screen`);
       return;
@@ -1993,6 +1993,39 @@
           search = arg;
           searchTyped();
         }
+        return;
+      }
+      // Item 967: the second batch's rows the page can run.
+      case "fork": {
+        // The message menu's "Checkpoint here", on the last exchange.
+        if (!opOk("checkpoint")) return note(missingSentence((chatState ?? remote).host, "This Mac's Nightloom is older than the phone page."));
+        const flags = liveFlags(events);
+        let at = -1;
+        for (let i = events.length - 1; i >= 0; i--) {
+          if (events[i].event === "user_message" && flags[i]) {
+            at = i;
+            break;
+          }
+        }
+        if (at < 0) return note("Nothing to fork from yet — send a message first");
+        if (await act([checkpointAction(at)], "Checkpoint set — helpers fork from here")) setDraft("");
+        return;
+      }
+      case "council": {
+        // The council sheet, with the message in the box: its Send asks.
+        setDraft(arg);
+        await openCouncil();
+        return;
+      }
+      case "project": {
+        if (!arg) {
+          setDraft("");
+          return openProjects(null);
+        }
+        const row = pickRow(arg, projects.map((p) => ({ id: p.id, label: p.name })));
+        if (!row) return note(`No project “${arg}” — try ${projects.map((p) => p.name).join(", ")}`);
+        setDraft("");
+        openProjects(row.id);
         return;
       }
     }

@@ -77,9 +77,14 @@
 
   let starting = $state(false);
 
-  async function pick(kind: ScheduleKind, at: number | null): Promise<void> {
-    if (at === null || allOff || starting) return;
-    const words = text;
+  /** Item 967: `/schedule <time> <message>` runs this same pick, with the
+   *  message its words gave (the box holds the command). True once held. */
+  export function scheduleWords(words: string, kind: ScheduleKind, at: number): Promise<boolean> {
+    return pick(kind, at, words);
+  }
+
+  async function pick(kind: ScheduleKind, at: number | null, words: string = text): Promise<boolean> {
+    if (at === null || allOff || starting) return false;
     const chips = $state.snapshot(attachments) as Attachment[];
     let to = key;
     starting = true;
@@ -89,7 +94,7 @@
       kept = await stashChips(chips);
       if (key.startsWith(NEW_DRAFT_PREFIX)) {
         const id = await startPendingChat();
-        if (id === null) return; // refused, toasted; the words stay in the box
+        if (id === null) return false; // refused, toasted; the words stay in the box
         to = id;
       }
     } finally {
@@ -115,7 +120,9 @@
       } else addToast(`Scheduled for ${clockText(due)}`);
       // The row is named by the scheduled message now (backlog 532).
       void refreshSessions();
+      return true;
     }
+    return false;
   }
 
   function onDoc(e: MouseEvent): void {

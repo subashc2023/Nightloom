@@ -253,6 +253,14 @@
   import { handOffBlock, handOffNow, isHandoffCommand } from "./manualHandoff.svelte";
   // Item 966: the app's slash commands, one table for every box.
   import { commandKind, commandMatches, newKind, NEW_KINDS_HINT, parseCommand, pickRow } from "./appCommands";
+  // Item 967: the second batch's actions, each its control's own function.
+  import { runBatch2, type BoxActions } from "./appCommands967";
+  import { newNoteOrOpen } from "./newNoteOrOpen";
+  import { atTime, resetTime } from "./schedule";
+  import { canMakeMain } from "./versions";
+  import { makeMainChat, versions } from "./versions.svelte";
+  import { openAgentTab, openTerminalFromBar, terminalCwd } from "./terminal.svelte";
+  import { canLeaveProject, councilFor, saveMemoryFromChat, setCheckpoint, useProject } from "./state.svelte";
   import { rewindAsideWithUndo } from "./asideRewind.svelte";
   import { renameAside } from "./asides.svelte";
   import { liveFlags, renameSession, rewindTo, runMenuCommand, toggleSidebar } from "./state.svelte";
@@ -977,7 +985,9 @@
       .map((s) => ({ ...s, ...none }));
     // ~~.slice(0, 12)~~ — item 966: nine app rows and six inserts on a bare
     // `/` left Claude Code's own names no room; the list scrolls (16rem).
-    return [...mine, ...ours, ...cmd, ...theirs].slice(0, 24);
+    // ~~.slice(0, 24)~~ — item 967: 23 app rows now; 48 keeps room for
+    // Claude Code's names under them.
+    return [...mine, ...ours, ...cmd, ...theirs].slice(0, 48);
   });
   /** Put an insert in place of its token, one undo step; a table goes in
    *  through the grid editor (the box a table is drawn in), its first cell
@@ -2792,9 +2802,12 @@
     if (!typed) return false;
     const { cmd, arg } = typed;
     // Files or comments in the box: it is a message about them, not a command
-    // — except /aside, which asks with the box's chips as its button does.
-    if (cmd.name !== "aside" && (attachments.length > 0 || comments.length > 0)) return false;
+    // — except /aside, which asks with the box's chips as its button does,
+    // and /schedule and /council (item 967), which send them as theirs do.
+    if (!["aside", "schedule", "council"].includes(cmd.name) && (attachments.length > 0 || comments.length > 0)) return false;
     const clear = () => setDraftText(key, "");
+    // Item 967: the second batch (`appCommands967.ts`).
+    if (await runBatch2(typed, boxActions(clear))) return true;
     switch (cmd.name) {
       case "handoff": {
         // Item 915: `/handoff` alone is the hand-off-now path, not text to send.
@@ -2940,6 +2953,61 @@
     return false;
   }
 
+  /** Item 967: what the second batch's commands run, from this box. */
+  function boxActions(clear: () => void): BoxActions {
+    return {
+      aside: !!aside,
+      toast: (m) => addToast(m),
+      clear,
+      engine: () => app.connection?.engine ?? null,
+      busy: () => app.busy,
+      sessionId: () => app.activeSessionId,
+      lastLiveUser: () => {
+        const live = liveFlags(app.events);
+        for (let i = app.events.length - 1; i >= 0; i--) if (app.events[i].event === "user_message" && live[i]) return i;
+        return -1;
+      },
+      setCheckpoint: (i) => setCheckpoint(i),
+      scheduleBlocked: () => scheduleBlocked ?? (scheduledFor(key) !== null ? "this chat already has a scheduled message — Edit or Cancel it first" : null),
+      scheduleTime: (kind, hhmm) =>
+        kind === "five_hour"
+          ? resetTime(app.planUsage?.five_hour_resets_at, Date.now())
+          : kind === "seven_day"
+            ? resetTime(app.planUsage?.seven_day_resets_at, Date.now())
+            : (atTime(hhmm, Date.now())?.at ?? null),
+      schedule: async (words, kind, at) => (scheduleMenu ? scheduleMenu.scheduleWords(words, kind, at) : false),
+      openCouncil: () => (councilOpen = true),
+      sendCouncil: async (words) => {
+        // The message alone in the box, then the popover's own send with
+        // this chat's roster (the one the popover opens with).
+        setDraftText(key, words);
+        await tick();
+        await submitCouncil(councilFor(app.activeSessionId));
+      },
+      keepWarmChat: () => kwChat,
+      keepWarmOn: () => isOn(kw),
+      setKeepWarm: (mode) => flipKeepWarm(mode),
+      transcriptOn: (w) => (w === "thinking" ? transcript.thinking : transcript.tools),
+      thinkingDead: () => thinkingDead,
+      toggleTranscript: (w) => toggleTranscriptPref(w),
+      capturing: () => app.capturing,
+      saveMemory: (id) => saveMemoryFromChat(id),
+      projects: () => app.projects,
+      currentProject: () => app.project?.id ?? null,
+      canLeaveProject: () => canLeaveProject(),
+      useProject: async (id) => void (await useProject(id)),
+      openProjects: () => runMenuCommand("projects"),
+      noteScope: () => (app.project ? "project" : app.knowledge ? "knowledge" : null),
+      newNote: (scope, name) => newNoteOrOpen(scope, name),
+      terminalCwd: () => terminalCwd(),
+      openTerminal: () => openTerminalFromBar(),
+      openAgentTab: async (id) => void openAgentTab(id),
+      canMakeMain: (id) => canMakeMain(app.sessions, versions.map, id),
+      makeMain: (id) => makeMainChat(id),
+      menu: (id) => runMenuCommand(id),
+    };
+  }
+
   async function submit() {
     // Item 966: an app command typed alone runs instead of going as text.
     if (await runTypedCommand()) return;
@@ -2998,6 +3066,8 @@
    * plain messages only).
    */
   let councilOpen = $state(false);
+  /** Item 967: Send's ▾, whose pick `/schedule` runs. */
+  let scheduleMenu = $state<ReturnType<typeof ScheduleMenu> | null>(null);
   let councilBtn = $state<HTMLElement | null>(null);
   let councilWrap = $state<HTMLElement | null>(null);
   async function submitCouncil(prefs: CouncilPrefs) {
@@ -4780,7 +4850,7 @@
             disabled={!app.connection || sendHeld() || boxEmpty}
           >
             <span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span><FilamentMark kind="send" />Send
-          </button><ScheduleMenu {key} {text} {attachments} blocked={scheduleBlocked} onscheduled={scheduled} />
+          </button><ScheduleMenu {key} {text} {attachments} blocked={scheduleBlocked} onscheduled={scheduled} bind:this={scheduleMenu} />
         </span>
       {/if}
     </div>

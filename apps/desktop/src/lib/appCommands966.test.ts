@@ -20,17 +20,18 @@ const names = (list: { name: string }[]) => list.map((c) => c.name);
 
 describe("966: one table of app commands", () => {
   it("holds /handoff and blocker 2285's first batch", () => {
-    expect(names([...APP_COMMANDS])).toEqual(["handoff", "aside", "model", "effort", "rename", "rewind", "context", "new", "search"]);
+    // Item 967 appended the second batch after these nine (appCommands967.test.ts).
+    expect(names([...APP_COMMANDS]).slice(0, 9)).toEqual(["handoff", "aside", "model", "effort", "rename", "rewind", "context", "new", "search"]);
   });
 
   it("an aside lists all but the chat's own (ASIDE_HIDDEN's words)", () => {
-    expect(names(commandsOn("aside"))).toEqual(["model", "effort", "rename", "rewind", "context", "new", "search"]);
+    expect(names(commandsOn("aside")).slice(0, 7)).toEqual(["model", "effort", "rename", "rewind", "context", "new", "search"]);
     expect(APP_COMMANDS.find((c) => c.name === "handoff")!.notInAside).toBe(ASIDE_HIDDEN.handoff);
     expect(APP_COMMANDS.find((c) => c.name === "aside")!.notInAside).toBe(ASIDE_HIDDEN.askAside);
   });
 
   it("the phone lists the ones its page can run (no hand-off there)", () => {
-    expect(names(commandsOn("phone"))).toEqual(["aside", "model", "effort", "rename", "rewind", "context", "new", "search"]);
+    expect(names(commandsOn("phone")).slice(0, 8)).toEqual(["aside", "model", "effort", "rename", "rewind", "context", "new", "search"]);
   });
 
   it("rows say app", () => {
@@ -40,8 +41,9 @@ describe("966: one table of app commands", () => {
 
 describe("966: the menu's matches", () => {
   it("only while the whole box is a /word", () => {
-    expect(names(commandMatches("/", "chat"))).toHaveLength(9);
-    expect(names(commandMatches("/re", "chat"))).toEqual(["rename", "rewind"]);
+    // Item 967: 9 + 14 rows, and /remember starts with "re" too.
+    expect(names(commandMatches("/", "chat"))).toHaveLength(23);
+    expect(names(commandMatches("/re", "chat"))).toEqual(["rename", "rewind", "remember"]);
     expect(names(commandMatches("/MO", "chat"))).toEqual(["model"]);
     expect(commandMatches("/model ", "chat")).toEqual([]);
     expect(commandMatches("hi /model", "chat")).toEqual([]);
