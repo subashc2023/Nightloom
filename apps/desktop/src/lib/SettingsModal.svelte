@@ -3436,12 +3436,18 @@
            removable; and the session he pasted, forgettable now. -->
       <SettingsGroup fold="subscription/bitwarden" title={subTitle("bitwarden")} summary={subSummaries.bitwarden} filtering={subFiltering} matches={subMatches("bitwarden")}>
         <SettingRow fold="subscription/bitwarden-always" shown={subShown("bitwarden-always")} stack>
-          {#snippet label()}<span>Always allowed</span>{/snippet}
+          <!-- Item 917: a heading that says what the list is (his "Always
+               allowed" read like a switch), and an empty state that says how
+               a rule gets here. -->
+          {#snippet label()}<span>Secrets given without asking</span>{/snippet}
           {#snippet control()}
             {#if bwRules === null}
               <p class="note small">Reading…</p>
             {:else if bwRules.length === 0}
-              <p class="note small">None yet. “Always for this command” on a secret card adds one.</p>
+              <p class="note small bw-empty">
+                None yet. Each rule here gives one Bitwarden secret to one command without showing its card. When a
+                chat asks for a secret, the card's <b>Always for this command</b> adds the rule.
+              </p>
             {:else}
               <ul class="bw-rules" aria-label="Bitwarden always rules">
                 {#each bwRules as r (r.id)}
@@ -3475,7 +3481,7 @@
         </SettingRow>
         <!-- Item 826: Touch ID unlock, and the pre-arm card for a run. -->
         <SettingRow fold="subscription/bitwarden-touch" shown={subShown("bitwarden-touch")} stack>
-          {#snippet label()}<span>Touch ID unlock</span>{/snippet}
+          {#snippet label()}<span>Unlocking with Touch ID</span>{/snippet}
           {#snippet control()}
             <BitwardenTouch status={bwTouch} onchange={loadBwTouch} />
           {/snippet}
@@ -3488,7 +3494,7 @@
           {/snippet}
         </SettingRow>
         <SettingRow fold="subscription/bitwarden-prearm" shown={subShown("bitwarden-prearm")} stack>
-          {#snippet label()}<span>Pre-arm for a run</span>{/snippet}
+          {#snippet label()}<span>Secrets for an away run</span>{/snippet}
           {#snippet control()}
             <BitwardenPreArm rules={bwRules} status={bwTouch} onchange={loadBwTouch} />
           {/snippet}
@@ -3501,12 +3507,13 @@
           {/snippet}
         </SettingRow>
         <SettingRow fold="subscription/bitwarden-session" shown={subShown("bitwarden-session")}>
-          {#snippet label()}<span>Session {bwSession ? "held" : "not held"}</span>{/snippet}
+          {#snippet label()}<span>Bitwarden is {bwSession ? "unlocked" : "locked"} for Nightloom</span>{/snippet}
           {#snippet control()}
-            <button class="ns-btn ghost small" disabled={!bwSession} onclick={() => void forgetBwSession()}>Forget now</button>
+            <button class="ns-btn ghost small" disabled={!bwSession} onclick={() => void forgetBwSession()}>Lock now</button>
           {/snippet}
           {#snippet help()}
-            The open session, kept in Nightloom's memory only — never on disk.
+            {bwSession ? "" : "Locked: every secret a chat asks for shows its card first. "}The open session is
+            kept in Nightloom's memory only — never on disk.
             One opened by Touch ID lasts until quit, sleep or screen lock; a key
             you pasted from bw unlock --raw is forgotten after 30 idle minutes
             or when Nightloom quits.

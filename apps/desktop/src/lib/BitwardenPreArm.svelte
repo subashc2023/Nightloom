@@ -66,7 +66,11 @@
   {:else if rules === null}
     <p class="note small">Reading…</p>
   {:else if rules.length === 0}
-    <p class="note small">No Always rules yet: a run can only use secrets an Always rule names, so there is nothing to pre-arm.</p>
+    <!-- Item 917: says what pre-arming is for and where its list comes from. -->
+    <p class="note small">
+      Nothing to pre-arm yet. Before an overnight or away run, you pick here which secrets it may use — only the secrets
+      given without asking (above) can be picked, and there are none yet.
+    </p>
   {:else}
     <ul class="picks">
       {#each rules as r (r.id)}
@@ -113,5 +117,19 @@
     gap: 6px;
     align-items: center;
     font-size: 13px;
+  }
+  /* Item 917: Settings' `.note.small` is scoped to SettingsModal, so this
+     part's notes and empty state drew at the body size; the same look here. */
+  .note {
+    margin: 0;
+    color: var(--dim);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note {
+    font-size: 12.5px;
+  }
+  .note.err {
+    color: var(--failed);
   }
 </style>

@@ -70,7 +70,8 @@
         <button class="ns-btn ghost small" disabled={busy} onclick={() => void run(() => api.bitwardenTouchForget(), "The stored master password is gone from the Keychain.")}>Forget the password</button>
       </div>
     {/if}
-    <p class="note small">{status.stored ? (status.session ? "Unlocked for Nightloom." : "Set up · locked.") : "Not set up."} {BW_MASTER_WHERE}</p>
+    <!-- Item 917: the not-set-up state says what setting up gives. -->
+    <p class="note small">{status.stored ? (status.session ? "Unlocked for Nightloom." : "Set up · locked.") : "Not set up. Type the master password once; after that one Touch ID press unlocks Bitwarden for Nightloom."} {BW_MASTER_WHERE}</p>
     {#if note}<p class="note small" role="status">{note}</p>{/if}
   {/if}
 </div>
@@ -90,5 +91,16 @@
   .row input {
     flex: 1;
     min-width: 180px;
+  }
+  /* Item 917: Settings' `.note.small` is scoped to SettingsModal, so this
+     part's notes and empty state drew at the body size; the same look here. */
+  .note {
+    margin: 0;
+    color: var(--dim);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note {
+    font-size: 12.5px;
   }
 </style>
