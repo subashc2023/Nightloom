@@ -53,7 +53,7 @@ describe("845 batch 3: the phone's stage", () => {
     const all = { ...views, ...parts };
     expect(Object.keys(views).length).toBe(8);
     for (const [path, src] of Object.entries(all)) {
-      if (path.endsWith("Watch.svelte") || path.endsWith("Stage.svelte")) continue; // the Mac's Watch and its stage
+      if (path.endsWith("Watch.svelte") || path.endsWith("Stage.svelte") || path.endsWith("HandledMenu.svelte")) continue; // the Mac's Watch, its stage and its Handled button (item 946; the phone has its own in HomeFirst)
       expect(src, path).not.toMatch(/from "\.\.\/(\.\.\/)?(api|state\.svelte|home\.svelte|claudeBrowser\.svelte|ClaudeBrowserView\.svelte)"/);
     }
     for (const v of ["Brief", "Timeline", "Todo", "Triage", "Browse", "Run", "Research"]) expect(homeStageSrc).toContain(`import ${v} from "../lib/homeStage/views/${v}.svelte"`);

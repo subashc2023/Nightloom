@@ -5,6 +5,14 @@
  * (scroll and folds). Pure apart from `loadHomeKept`/`saveHomeKept`, so
  * all of it is under `homeFirst.test.ts`.
  *
+ * Item 945: Nightshift's held blockers are not Needs-you rows (he answers
+ * those where he runs Nightshift): they are one folded line under the
+ * list, not counted in the header, each still answerable when opened.
+ *
+ * Item 946: "Done since you looked" is no longer a section of the column:
+ * it is the Handled button in the header's corner, which opens the list
+ * downward under the header; a row can be marked seen on its own.
+ *
  * Order (design §7, the default until he picks a layout — blocker 2084):
  * header, Needs you, today's scan, Done since you looked, Running, the
  * Tell Home box and the Jobs row, Home on this Mac.
@@ -128,6 +136,12 @@ export function doneRows(rows: HomeFeedRowWire[], seenAt: string | null): HomeFe
     .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
 }
 
+/** Item 946: every news row of the feed (seen or not), for the Handled list; `handledRows` (watch.ts) says which
+ *  are unseen. */
+export function newsRows(rows: HomeFeedRowWire[]): HomeFeedRowWire[] {
+  return rows.filter((r) => DONE_KINDS.has(r.kind));
+}
+
 /** A done row's mark, in words a screen reader says too. */
 export function doneMark(kind: string): { mark: string; tone: "ok" | "bad" | "plain" } {
   if (kind === "failed" || kind === "job_failed") return { mark: "Failed", tone: "bad" };
@@ -202,7 +216,8 @@ export function jobsWords(jobs: Job[], clock: (ms: number) => string): string {
 export const HOME_KEPT_KEY = "nightloom.remote.home";
 
 /** The sections he can fold. */
-export type HomeSection = "needs" | "scan" | "done" | "running" | "sources";
+/** `held` (item 945): Nightshift's held blockers under Needs you — one line, folded unless he opens it. */
+export type HomeSection = "needs" | "scan" | "done" | "running" | "sources" | "held";
 
 export interface HomeKept {
   /** His scroll, in CSS pixels from the top. */
@@ -214,13 +229,17 @@ export interface HomeKept {
   /** The scan date his hand-set fold on the scan card was for: a new day's
    *  page opens again even when he folded yesterday's. */
   scanFoldFor: string | null;
+  /** Item 946: the Handled list (the header's corner button) is open. */
+  handledOpen: boolean;
+  /** Item 946: rows he marked seen one at a time, by key (`handledRows`); "Mark all seen" clears what it covers. */
+  marked: Record<string, number>;
 }
 
 export function emptyHomeKept(): HomeKept {
-  return { scroll: 0, folds: {}, scanRead: null, scanFoldFor: null };
+  return { scroll: 0, folds: {}, scanRead: null, scanFoldFor: null, handledOpen: false, marked: {} };
 }
 
-const SECTIONS: HomeSection[] = ["needs", "scan", "done", "running", "sources"];
+const SECTIONS: HomeSection[] = ["needs", "scan", "done", "running", "sources", "held"];
 
 /** A kept place read back, field by field. */
 export function readHomeKept(v: unknown): HomeKept {
@@ -234,6 +253,8 @@ export function readHomeKept(v: unknown): HomeKept {
   }
   if (typeof o.scanRead === "string" && o.scanRead) out.scanRead = o.scanRead;
   if (typeof o.scanFoldFor === "string" && o.scanFoldFor) out.scanFoldFor = o.scanFoldFor;
+  if (o.handledOpen === true) out.handledOpen = true;
+  if (o.marked && typeof o.marked === "object" && !Array.isArray(o.marked)) for (const k of Object.keys(o.marked as object).slice(0, 400)) out.marked[k] = 1;
   return out;
 }
 
@@ -245,7 +266,12 @@ export function isFolded(k: HomeKept, section: HomeSection, scanDate: string | n
     if (k.folds.scan !== undefined && k.scanFoldFor === scanDate) return k.folds.scan;
     return scanDate !== null && k.scanRead === scanDate;
   }
-  return k.folds[section] ?? false;
+  return k.folds[section] ?? section === "held";
+}
+
+/** Item 945: the folded line's words — "Nightshift · 3 held blockers". */
+export function heldWords(n: number): string {
+  return `Nightshift · ${n === 1 ? "1 held blocker" : `${n} held blockers`}`;
 }
 
 /** His tap on a section's head. */

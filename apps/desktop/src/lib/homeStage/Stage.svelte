@@ -14,8 +14,9 @@
   import { classic } from "../layout.svelte";
   import { home, refreshHome, refreshReach, refreshSources, refreshRoutes } from "../home.svelte";
   import { isScanMessage } from "../home";
-  import { needsNow } from "../needsBoard.svelte";
+  import { homeNeedsNow } from "../needsBoard.svelte";
   import Btn from "./Btn.svelte";
+  import HandledMenu from "./HandledMenu.svelte";
   import Watch from "./views/Watch.svelte";
   import Brief from "./views/Brief.svelte";
   import Timeline from "./views/Timeline.svelte";
@@ -38,7 +39,8 @@
 
   let { blank, children }: { blank: boolean; children: Snippet } = $props();
 
-  const needs = $derived(needsNow().filter((r) => r.state !== "working").length + home.cards.length);
+  // Item 945: Home's own rows (Nightshift's blockers and shipped items are not counted on the tab).
+  const needs = $derived(homeNeedsNow().rows.length + home.cards.length);
   const brief = $derived(briefOf(app.events as unknown as Ev[], isScanMessage, app.busy));
   // The views a task of Home's may be drawn in.
   // Item 898: "brief" too — a page Home wrote with update_task, drawn by the Brief view.
@@ -215,6 +217,8 @@
     <!-- Item 874: Split needs a second task to put beside this one; dimmed, and saying so, until there is one. -->
     {#if roomy}<Btn small icon="cols" on={fk.split && canSplit} waits={!canSplit} tip={canSplit ? "Two live tasks side by side\nThe newest beside the one in focus" : "Needs a second task\nSplit wakes once Home starts one"} onclick={() => (fk.split = !fk.split)}>Split</Btn>{/if}
     {#if home.info?.scan_words}<span class="h9-ms ns-mono" use:tip={"The morning scan's schedule\nChange it in Settings → Home"}>scan {home.info.scan_words.toLowerCase()}</span>{/if}
+    <!-- Item 946: Handled — the feed as a notification list, behind one button in the bar's corner. -->
+    <HandledMenu />
   </div>
   <div class="h9-tabs" role="tablist">
     {#each row as t (t.id)}

@@ -139,3 +139,55 @@ export function feedKeys(rows: readonly { at: string; line: string }[]): string[
     return n ? `${base}#${n}` : base;
   });
 }
+
+// ---- Handled, as a notification list (item 946) ----
+
+export interface HandledRow<T> {
+  row: T;
+  /** Stable while older rows stay: `feedKeys` over the rows oldest first. */
+  key: string;
+  /** Newer than his last "Mark all seen" and not marked seen on its own. */
+  unseen: boolean;
+}
+export interface Handled<T> {
+  /** Newest first: every unseen row, then seen ones up to `cap` rows in all. */
+  list: HandledRow<T>[];
+  unseen: number;
+  /** Seen rows past the cap, not drawn. */
+  more: number;
+}
+
+/**
+ * Item 946: Home's feed as the Handled button shows it. A row is unseen while it is newer than `seenAt` (the feed's
+ * own seen time, moved by "Mark all seen") and its key is not in `marked` (rows he marked one at a time, kept with
+ * the view's state). Nothing is dropped for being seen: seen rows stay listed, dimmed, up to `cap`.
+ */
+export function handledRows<T extends { at: string; line: string }>(rows: readonly T[], seenAt: string | null, marked: Readonly<Record<string, unknown>>, cap = 60): Handled<T> {
+  const seen = seenAt ? Date.parse(seenAt) : NaN;
+  const old = [...rows].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const keys = feedKeys(old);
+  const all = old.map((row, i): HandledRow<T> => ({ row, key: keys[i], unseen: (Number.isNaN(seen) || Date.parse(row.at) > seen) && !marked[keys[i]] })).reverse();
+  const unseen = all.filter((r) => r.unseen).length;
+  let room = Math.max(0, cap - unseen);
+  const list = all.filter((r) => r.unseen || room-- > 0);
+  return { list, unseen, more: all.length - list.length };
+}
+
+/** The one-at-a-time marks still worth keeping: rows still in the feed and newer than `seenAt`. Returns `marked`
+ *  itself when nothing goes, so a caller can tell. */
+export function pruneMarked(marked: Readonly<Record<string, number>>, rows: readonly { at: string; line: string }[], seenAt: string | null): Record<string, number> {
+  const seen = seenAt ? Date.parse(seenAt) : NaN;
+  const old = [...rows].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const keys = feedKeys(old);
+  const live = new Set(keys.filter((_, i) => Number.isNaN(seen) || Date.parse(old[i].at) > seen));
+  const out: Record<string, number> = {};
+  let gone = false;
+  for (const k of Object.keys(marked)) {
+    if (live.has(k)) out[k] = 1;
+    else gone = true;
+  }
+  return gone ? out : (marked as Record<string, number>);
+}
+
+/** The button's count: "7", "99+"; empty with none. */
+export const unseenWords = (n: number) => (n <= 0 ? "" : n > 99 ? "99+" : String(n));

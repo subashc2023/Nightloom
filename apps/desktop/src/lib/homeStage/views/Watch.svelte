@@ -5,24 +5,31 @@
   //               "Check all": asks Claude Code what Home reaches now — no model request (A). Each row's own
   //               Check now asks about that source alone: a connector through `claude mcp get`, a Mac source by
   //               re-reading its macOS permission (never a dialog) — A.
-  //   Needs you — the app's own needs-you rows (item 753), every project. "Answer" opens the Needs-you view (A; the
+  //   Needs you — the app's own needs-you rows (item 753) that wait on him in his chats, every project; Nightshift's
+  //               blockers and shipped items are one quiet line (item 945). "Answer" opens the Needs-you view (A; the
   //               answer itself is that view's card, kind C).
-  //   Handled   — Home's feed since he last looked. "Mark all seen" moves the seen time (A).
+  //   Handled   — item 946: no longer a panel here; it is the Handled button in the stage bar's corner
+  //               (`HandledMenu.svelte`), so Needs you has the column.
   import Icon from "../../Icon.svelte";
   import { app, openRun } from "../../state.svelte";
-  import { home, homeDone, markHomeSeen, checkReach, refreshSources, checkingOne, checkSource } from "../../home.svelte";
-  import { clock, dateLabel, feedTag, reachName, reachStatusWords, type FeedRow } from "../../home";
-  import { needsNow, needs as board, replyTo, setDraft, dropEnded } from "../../needsBoard.svelte";
+  import { home, checkReach, refreshSources, checkingOne, checkSource } from "../../home.svelte";
+  import { clock, reachName, reachStatusWords } from "../../home";
+  import { homeNeedsNow, needs as board, replyTo, setDraft, dropEnded } from "../../needsBoard.svelte";
   import { withNote } from "../../askQuestions";
-  import type { NeedRow } from "../../needsYou";
+  import { nightshiftWords, type NeedRow } from "../../needsYou";
   import Panel from "../Panel.svelte";
   import Steps from "../Steps.svelte";
   import Btn from "../Btn.svelte";
   import Detail from "../Detail.svelte";
   import Loading from "../Loading.svelte";
   import { bag } from "../stageState.svelte";
-  import { sourceRows, sourceGroups, feedKeys } from "../watch";
+  import { sourceRows, sourceGroups } from "../watch";
   import { tip } from "../../tip";
+  import { classic } from "../../layout.svelte";
+  import { isScanMessage } from "../../home";
+  import { stageHost } from "../host";
+  import { stepsOf } from "../steps";
+  import { arriveWhen, watchShape } from "../arrive";
   import { nudge } from "../tasks.svelte";
   import MathText from "../../MathText.svelte";
 
@@ -48,15 +55,21 @@
 
   const sources = $derived(sourceRows(home.reach, home.sources, reachName, reachStatusWords, clock));
   const groups = $derived(sourceGroups(sources));
-  const needs = $derived(needsNow().filter((r) => r.state !== "working"));
-  const since = $derived(homeDone());
-  const handled = $derived<FeedRow[]>((since.length ? since : home.rows.slice(-12)).slice().reverse());
-  // Item 896: two identical rows in one millisecond must not share a key.
-  const handledKeys = $derived(feedKeys(handled));
-  /** Item 873: a feed row's project is its id; his name for it, "Home" when none. */
-  const placeName = (id: string | null) => (id ? (app.projects.find((p) => p.id === id)?.name ?? (app.project?.id === id ? app.project.name : id)) : "Home");
-  const feedLight = (kind: string) =>
-    /failed|stuck/.test(kind) ? "bad" : /question|approval|limit|waiting|hand_off/.test(kind) ? "warn" : /changes|started/.test(kind) ? "live" : "ok";
+  // Item 945: Home lists what waits on him in his chats; Nightshift's blockers and shipped items are one quiet line.
+  const mine = $derived(homeNeedsNow());
+  const needs = $derived(mine.rows);
+  const elsewhere = $derived(nightshiftWords(mine));
+  // Item 944: Home starts simple and grows — a section with nothing in it is not drawn (no empty board, no bare
+  // heading); it arrives the first time it has something. While nothing needs him, one calm line says so.
+  const stepCount = $derived(stepsOf(stageHost.now.events(), 3, isScanMessage).length);
+  const shape = $derived(watchShape({ sources: sources.length, reading: home.reach === null, needs: needs.length, steps: stepCount, busy: app.busy }));
+  // A section arrives only when it appears after the view is drawn (not at every open of Watching).
+  let drawn = false;
+  $effect(() => {
+    const t = setTimeout(() => (drawn = true), 700);
+    return () => clearTimeout(t);
+  });
+  const late = arriveWhen(() => drawn && !classic());
   const checked = $derived(home.reach?.checked_at ? `checked ${clock(home.reach.checked_at)}` : "not checked yet");
   // Check now on one source is one of the four that start a short Home turn (846 §2, blocker 2143): the check itself
   // is code (no model); once it is back, Home is told what it found and may act on it.
@@ -70,9 +83,19 @@
   }
 </script>
 
-<div class="h9-grid">
-  <div class="h9-row">
-    <div class="h9-col h9-fill">
+<div class="w-watch" class:bare={shape.bare}>
+{#if shape.calm}
+  <div class="w-calm" use:late>
+    <i class="w-light ok" aria-hidden="true"></i><span class="w-calm-t">{shape.calm}</span>
+    {#if elsewhere}<button class="w-else inline" use:tip={"Not listed on Home\nOpens the Needs-you view"} onclick={() => (app.showNeeds = true)}><span class="w-else-t">Nightshift · {elsewhere}</span><span class="w-else-go">in Needs you →</span></button>{/if}
+  </div>
+{/if}
+{#if !shape.bare}
+<div class="h9-grid" class:nosteps={!shape.steps} class:onlysteps={!shape.sources && !shape.needs}>
+  {#if shape.sources || shape.needs}
+  <div class="h9-row" class:w-lone={!shape.needs}>
+    {#if shape.sources}
+    <div class="h9-col h9-fill" use:late>
       <Panel title="Sources" sub={checked} live={home.checking}>
         {#snippet tools()}<Btn small icon="refresh" disabled={home.checking} tip={"Ask Claude Code what Home reaches now\nNo model request"} onclick={() => void check()}>{home.checking ? "Checking…" : "Check all"}</Btn>{/snippet}
         <!-- Item 873: each service one group with its own mark and tint (sourceLook.ts) — a service with several
@@ -111,7 +134,9 @@
         {#if sources.length === 0}<Loading label={home.reach === null ? "Reading what Home can reach" : "No sources yet — connect one in Settings → Home"} lines={2} />{/if}
       </Panel>
     </div>
-    <div class="h9-col h9-fill">
+    {/if}
+    {#if shape.needs}
+    <div class="h9-col h9-fill" use:late>
       <Panel title="Needs you" sub={String(needs.length)} lock={needs.length > 0}>
         <div class="w-needs">
           {#each needs as n (n.id)}
@@ -150,36 +175,18 @@
               </span>
             </div>
           {/each}
-          {#if needs.length === 0}<Loading label="Nothing needs you — Home is watching" lines={2} />{/if}
+          <!-- Item 945: Nightshift's open blockers and shipped items are not listed here (he answers those where he
+               runs Nightshift); one quiet line says how many, and opens the Needs-you view, which lists every one. -->
+          {#if elsewhere}<button class="w-else" use:tip={"Not listed on Home\nOpens the Needs-you view"} onclick={() => (app.showNeeds = true)}><span class="w-else-t">Nightshift · {elsewhere}</span><span class="w-else-go">in Needs you →</span></button>{/if}
         </div>
       </Panel>
-      <Panel title="Handled" sub={since.length ? `${since.length} since you looked` : "latest"}>
-        {#snippet tools()}{#if since.length}<Btn small icon="check" disabled={home.marking} onclick={() => void markHomeSeen()}>Mark all seen</Btn>{/if}{/snippet}
-        {#each handled as f, i (handledKeys[i])}
-          {@const k = "f" + handledKeys[i]}
-          {@const where = placeName(f.project)}
-          <!-- Item 873: what each one was — its chat's title (the row's label) and where — not "Finished" alone. -->
-          <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-          <div class="h9-item h9-open h9-stagein w-feed" class:isopen={ui.open === k} onclick={() => toggle(k)}>
-            <i class="w-light {feedLight(f.kind)}"></i>
-            <span class="w-main">
-              <span class="w-ft">{f.label ?? f.line}</span>
-              <span class="w-fsub">{f.label ? f.line : feedTag(f.kind)} · {where}</span>
-            </span>
-            <span class="h9-mono h9-dim w-fat">{clock(f.at)}</span>
-            <span class="h9-chev">▸</span>
-          </div>
-          {#if ui.open === k}
-            <Detail rows={[["When", `${dateLabel(f.at)}, ${clock(f.at)}`], ["What", `${feedTag(f.kind)} — ${f.line}`], ["Where", where], ...(f.label ? ([["From", f.label]] as [string, string][]) : [])]}>
-              {#if f.chat}<Btn small icon="chat" onclick={() => void openRun({ session: f.chat!, project: f.project, onScreen: false })}>Open chat</Btn>{/if}
-            </Detail>
-          {/if}
-        {/each}
-        {#if handled.length === 0}<span class="h9-dim w-none">Nothing handled yet — what Home files lands here</span>{/if}
-      </Panel>
     </div>
+    {/if}
   </div>
-  <div class="h9-col h9-wide"><Panel title="Home's steps" live={app.busy} flush><Steps id="watch" /></Panel></div>
+  {/if}
+  {#if shape.steps}<div class="h9-col h9-wide" use:late><Panel title="Home's steps" live={app.busy} flush><Steps id="watch" /></Panel></div>{/if}
+</div>
+{/if}
 </div>
 
 <style>
@@ -210,20 +217,32 @@
   .w-light.off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--line2); }
   .w-light.warn { background: var(--partial); box-shadow: 0 0 7px color-mix(in srgb, var(--partial) 70%, transparent); }
   .w-light.bad { background: var(--failed); box-shadow: 0 0 7px color-mix(in srgb, var(--failed) 70%, transparent); }
-  .w-light.live { background: var(--signal); box-shadow: 0 0 6px color-mix(in srgb, var(--signal) 65%, transparent); }
   .w-chk { flex: none; opacity: 0.55; transition: opacity 120ms; }
   .w-src:hover .w-chk, .w-src.isopen .w-chk, .w-chk:focus-within { opacity: 1; }
   .w-needs { display: flex; flex-direction: column; gap: 8px; }
+  /* Item 944: the view is the calm line (while nothing needs him) over whichever sections have something. */
+  .w-watch { height: 100%; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .w-watch > :global(.h9-grid) { flex: 1; min-height: 0; height: auto; }
+  .w-watch :global(.h9-grid.nosteps), .w-watch :global(.h9-grid.onlysteps) { grid-template-columns: minmax(0, 1fr); }
+  .w-lone { max-width: 720px; }
+  .w-calm { flex: none; display: flex; align-items: baseline; gap: 10px; padding: 4px 6px 0; font-size: 13px; color: var(--ink2); }
+  .w-calm > .w-light { align-self: center; }
+  .w-calm-t { min-width: 0; }
+  .w-watch.bare { justify-content: center; align-items: center; }
+  .w-watch.bare .w-calm { max-width: 520px; flex-wrap: wrap; font-size: 14px; line-height: 1.5; }
+  /* The light stays beside the first line of the sentence (it wrapped onto a line of its own). */
+  .w-watch.bare .w-calm > .w-light { align-self: flex-start; margin-top: 0.55em; }
+  .w-watch.bare .w-calm-t { flex: 1 1 calc(100% - 24px); }
+  .w-else.inline { width: auto; flex: none; margin-left: auto; padding: 0; }
+  .w-watch.bare .w-else.inline { margin-left: 17px; }
+  .w-else { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 6px 4px 2px; border: 0; background: none; color: var(--dim); font: 11.5px var(--sans); text-align: left; cursor: pointer; }
+  .w-else-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .w-else-go { flex: none; margin-left: auto; font: 10.5px var(--mono); letter-spacing: 0.04em; opacity: 0.75; }
+  .w-else:hover, .w-else:focus-visible { color: var(--ink2); }
   .w-answer { display: flex; flex-direction: column; gap: 6px; cursor: default; }
   .w-answer :global(.nd-reply) { flex-wrap: wrap; }
   .w-answer :global(.nd-reply input) { flex: 1 1 140px; }
   .h9-acts .nd-hint { align-self: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .w-feed { align-items: center; }
-  .w-feed .w-main { gap: 2px; }
-  .w-ft { min-width: 0; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .w-fsub { min-width: 0; font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .w-fat { flex: none; font-size: 11px; }
-  .w-none { display: block; padding: 6px 2px; font-size: 12px; }
   /* Classic and calm: the same marks and lights, plain — the tint on the mark, no fill, no glow. */
   :global([data-layout="classic"]) .w-ico, :global([data-light="calm"]) .w-ico { background: var(--well); border-color: var(--line2); box-shadow: none; }
   :global([data-layout="classic"]) .w-grp:hover .w-ico, :global([data-light="calm"]) .w-grp:hover .w-ico { box-shadow: none; border-color: var(--line2); }

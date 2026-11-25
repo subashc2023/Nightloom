@@ -7,8 +7,8 @@
 //! | `GET /home/feed` | Home's feed (the newest [`FEED_ROWS`]) (`home/feed.jsonl`) newest first, his last look (`seen.json`), when the feed was last written, and Home's project and chat |
 //! | `POST /home/seen` | mark the feed seen now → `{seen_at}` |
 //! | `GET /home/scan` | today's scan page (`home/scans/<date>.md`), else the newest, with when it ran and, for a skipped scan, why |
-//! | `GET /home/held` | the held blockers of every Nightshift project (status `open`, `default: held`) |
-//! | `GET /shortcut/needs` | one plain sentence for Siri: "Three things need you: …" |
+//! | `GET /home/held` | the held blockers of every Nightshift project (status `open`, `default: held`) — the phone's Home shows them as one folded line, not as Needs-you rows (item 945) |
+//! | `GET /shortcut/needs` | one plain sentence for Siri: "Three things need you: …" (approvals, questions, stuck chats, jobs; never Nightshift's blockers — item 945) |
 //! | `GET /home/tasks` | the tasks on Home's stage (item 845: `home/tasks/<id>.json`, what Home's `update_task` wrote), oldest first |
 //! | `POST /home/tasks/event` | one click of his on a task view, `{task, view, line}`, for Home's next look (the Mac only) |
 //! | `POST /home/tasks/{id}/close` | his × on a task's tab: the tab goes, the work is not stopped (the Mac only) |
@@ -548,7 +548,10 @@ async fn needs(State(shared): State<Arc<Shared>>) -> Response {
     let state = shared.host.state().await;
     let feed = shared.host.push().map(|p| p.feed()).unwrap_or_default();
     let jobs = shared.host.jobs().map(|j| j.list()).unwrap_or_default();
-    let blockers = held_blockers(&shared).await.len();
+    // Item 945: Nightshift's held blockers are not Home's to announce (he
+    // answers those where he runs Nightshift); `/home/held` still lists
+    // them for the phone page's one folded line.
+    let blockers = 0;
     let active_label = match state.active_chat.as_deref() {
         Some(id) => shared
             .host

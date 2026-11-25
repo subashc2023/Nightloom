@@ -167,12 +167,14 @@ describe("the place kept: scroll and folds", () => {
     const store = { getItem: (k: string) => mem.get(k) ?? null, setItem: (k: string, v: string) => void mem.set(k, v) };
     const k = withScroll(toggleFold(markScanRead(emptyHomeKept(), "2026-11-17"), "running", null), 412.6);
     saveHomeKept(k, store);
-    expect(loadHomeKept(store)).toEqual({ scroll: 413, folds: { running: true }, scanRead: "2026-11-17", scanFoldFor: null });
+    expect(loadHomeKept(store)).toEqual({ scroll: 413, folds: { running: true }, scanRead: "2026-11-17", scanFoldFor: null, handledOpen: false, marked: {} });
     expect(readHomeKept({ scroll: -3, folds: { needs: "yes", done: true, bogus: true }, scanRead: 4 })).toEqual({
       scroll: 0,
       folds: { done: true },
       scanRead: null,
       scanFoldFor: null,
+      handledOpen: false,
+      marked: {},
     });
     expect(loadHomeKept({ getItem: () => "{not json" })).toEqual(emptyHomeKept());
   });
@@ -187,5 +189,22 @@ describe("Tell Home", () => {
   it("shares its draft with the Home chat's own composer", () => {
     expect(homeDraftKey({ project: "home", chat: "c1" })).toBe(draftKey("c1", null));
     expect(homeDraftKey({ project: "home", chat: null })).toBe(draftKey(null, "home"));
+  });
+});
+
+// Item 945: Nightshift's held blockers are one folded line under Needs you, not rows of it.
+import { heldWords as heldWords945, isFolded as isFolded945, emptyHomeKept as emptyKept945, toggleFold as toggleFold945, readHomeKept as readKept945 } from "./homeFirst";
+describe("held blockers on the phone's Home (item 945)", () => {
+  it("is folded until he opens it, and the fold is kept", () => {
+    const k = emptyKept945();
+    expect(isFolded945(k, "held", null)).toBe(true);
+    expect(isFolded945(k, "needs", null)).toBe(false);
+    const open = toggleFold945(k, "held", null);
+    expect(isFolded945(open, "held", null)).toBe(false);
+    expect(isFolded945(readKept945(JSON.parse(JSON.stringify(open))), "held", null)).toBe(false);
+  });
+  it("says how many in plain words", () => {
+    expect(heldWords945(1)).toBe("Nightshift · 1 held blocker");
+    expect(heldWords945(3)).toBe("Nightshift · 3 held blockers");
   });
 });

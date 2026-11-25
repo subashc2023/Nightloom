@@ -46,11 +46,11 @@
   import JobApproval from "./JobApproval.svelte";
   import JobRunConfirm from "./JobRunConfirm.svelte";
   import BlockerAnswer from "./BlockerAnswer.svelte";
+  import { handledRows, pruneMarked, unseenWords } from "../lib/homeStage/watch";
   import { NightshiftClient, type NsBlocker } from "./nightshiftClient";
   import {
     asOfWords,
     doneMark,
-    doneRows,
     headerWords,
     homeDraftKey,
     homeTarget,
@@ -59,6 +59,8 @@
     loadHomeKept,
     markScanRead,
     needRows,
+    newsRows,
+    heldWords,
     runningLine,
     saveHomeKept,
     scanText,
@@ -161,8 +163,9 @@
     const h = feed?.home ?? { project: null, chat: null };
     return { project: h.project, chat: h.chat ?? homeChat };
   });
-  const needs = $derived(needRows(pushRows, jobs, held, { chat: remote.active_chat, label: openLabel, pending: remote.pending.length }));
-  const done = $derived(doneRows(feed?.rows ?? [], feed?.seen_at ?? null));
+  // Item 945: Nightshift's held blockers are not Needs-you rows — one folded line under the list, not counted.
+  const needs = $derived(needRows(pushRows, jobs, [], { chat: remote.active_chat, label: openLabel, pending: remote.pending.length }));
+  const heldRows = $derived(needRows([], [], held, { chat: null, label: null, pending: 0 }));
   const header = $derived(headerWords(needs.length + cards.length, today));
   const headParts = $derived(header.split(" · "));
   const stop = $derived(stopWords(today));
@@ -197,6 +200,15 @@
       if (c !== client) return;
       today = t;
       feed = f;
+      // Item 946: per-row marks the feed no longer holds, or that a "Mark all seen" (here or on the Mac) covered,
+      // are let go, so the kept place does not grow for ever.
+      if (f?.rows?.length) {
+        const pruned = pruneMarked(kept.marked, newsRows(f.rows), f.seen_at ?? null);
+        if (pruned !== kept.marked) {
+          kept = { ...kept, marked: pruned };
+          saveHomeKept(kept);
+        }
+      }
       scan = s.scan;
       scanLoaded = true;
       pushRows = p.rows;
@@ -221,7 +233,21 @@
   }
 
   // ---- the place kept: scroll and folds ----
+  // Item 944: whether Needs you has anything to draw, and whether the whole of Home's own column is empty.
+  const anyNeeds = $derived(needs.length + cards.length + heldRoutes.length + heldRows.length > 0);
+  const bareHome = $derived(!anyNeeds && !scan && !(running?.chats.length));
   let kept = $state(loadHomeKept());
+  // Item 946: the same feed as a notification list — every news row, the unseen ones marked.
+  const handled = $derived(handledRows(newsRows(feed?.rows ?? []), feed?.seen_at ?? null, kept.marked));
+  function toggleHandled() {
+    kept = { ...kept, handledOpen: !kept.handledOpen };
+    saveHomeKept(kept);
+  }
+  function markOne(key: string) {
+    if (kept.marked[key]) return;
+    kept = { ...kept, marked: { ...kept.marked, [key]: 1 } };
+    saveHomeKept(kept);
+  }
   let scroller = $state<HTMLElement | null>(null);
   let restored = false;
   /** The scan page this visit opened on: it stays open until he leaves,
@@ -473,6 +499,8 @@
     try {
       const r = await client.homeSeen();
       if (feed) feed = { ...feed, seen_at: r.seen_at };
+      kept = { ...kept, marked: pruneMarked(kept.marked, newsRows(feed?.rows ?? []), r.seen_at) };
+      saveHomeKept(kept);
     } catch {
       onnote("Could not mark it seen — try again");
     }
@@ -497,8 +525,40 @@
       <span class="h-name">{headParts[0]}</span>
       {#each headParts.slice(1) as part (part)}<span class="h-dot" aria-hidden="true">·</span><span class="h-part">{part}</span>{/each}
     </h1>
+    <!-- Item 946: Handled — what was "Done since you looked", behind one button; it opens downward under the header. -->
+    <button class="h-icon h-hbtn" class:on={kept.handledOpen} class:has={handled.unseen > 0} onclick={toggleHandled} aria-expanded={kept.handledOpen} aria-label={handled.unseen ? `Handled — ${handled.unseen} not seen` : "Handled"} data-home-handled>
+      <span aria-hidden="true">✓</span>{#if handled.unseen > 0}<span class="h-hn" aria-hidden="true">{unseenWords(handled.unseen)}</span>{/if}
+    </button>
     <button class="h-icon" onclick={onnew} aria-label="New chat">＋</button>
   </header>
+  {#if kept.handledOpen}
+    <div class="h-handled" class:fil role="region" aria-label="Handled" data-home-section="done">
+      <div class="h-hhead">
+        <span class="h-label">Handled</span>
+        <span class="h-extra">{handled.unseen ? `${handled.unseen} not seen` : handled.list.length ? "all seen" : ""}</span>
+        {#if handled.unseen}<button class="h-btn quiet" onclick={markSeen}>Mark all seen</button>{/if}
+      </div>
+      {#if handled.list.length === 0}
+        <p class="h-empty">Nothing handled yet.</p>
+      {/if}
+      {#each handled.list as h, i (h.key)}
+        {@const r = h.row}
+        {@const m = doneMark(r.kind)}
+        <div class="h-hrow" class:seen={!h.unseen} style:--i={Math.min(i, 8)}>
+          <button class="h-row link" disabled={!r.chat} onclick={() => { markOne(h.key); if (r.chat) onopen(r.chat, r.project ?? null); }}>
+            <span class="h-row-top">
+              <span class="h-kind {m.tone}">{m.mark}</span>
+              <span class="h-row-title">{r.label ?? "A chat"}</span>
+              <span class="h-when">{shortWhen(r.at)}</span>
+            </span>
+            <span class="h-line">{r.line}</span>
+          </button>
+          {#if h.unseen}<button class="h-hseen" onclick={() => markOne(h.key)} aria-label={`Mark seen — ${r.label ?? r.line}`}>✓</button>{/if}
+        </div>
+      {/each}
+      {#if handled.more > 0}<p class="h-empty">{handled.more} older, seen — not shown.</p>{/if}
+    </div>
+  {/if}
   {#if stop}<p class="h-stop" role="status">{stop}</p>{/if}
   {#if asOf}<p class="h-asof">{asOf}</p>{/if}
   {#if problem}<p class="h-asof">{problem}</p>{/if}
@@ -513,8 +573,14 @@
   <HomeStage {client} {home} {scan} needs={needs.length + cards.length} {fil} tick={bump} bind:watching bind:where={stageWhere} onopen={(c, p) => onopen(c, p)} {onnote} />
 
   {#if watching}
+  <!-- Item 944: Home starts simple and grows — a section with nothing in it is not drawn; the first time it has
+       something it arrives. While nothing needs him, one calm line says so. -->
+  {#if !anyNeeds}
+    <p class="h-calm" class:fil>{loading ? "Reading…" : bareHome ? "Nothing needs you. Home is watching — what needs you, today's scan and what is running show up here as they happen." : "Nothing needs you — Home is watching."}</p>
+  {/if}
   <!-- 1. Needs you -->
-  <div class="h-sec" data-home-section="needs">
+  {#if anyNeeds}
+  <div class="h-sec arrive" class:fil data-home-section="needs">
     {@render head("needs", "Needs you", needs.length + cards.length)}
     {#if !folded("needs")}
       {#each cards as route (route.id)}
@@ -584,11 +650,37 @@
           {/if}
         </div>
       {/each}
+      {#if heldRows.length}
+        <button class="h-else" onclick={() => fold("held")} aria-expanded={!folded("held")} data-home-head="held">
+          <span class="h-chev" class:shut={folded("held")} aria-hidden="true">›</span>
+          <span class="h-else-t">{heldWords(heldRows.length)}</span>
+          <span class="h-else-n">not counted above</span>
+        </button>
+        {#if !folded("held")}
+          {#each heldRows as row (row.key)}
+            {#if row.blocker}
+              {@const b = row.blocker}
+              {@const k = `${b.project}:${b.id}`}
+              <div class="h-row need" data-need="blocker">
+                <div class="h-row-top"><span class="h-kind blocker">Blocker</span><span class="h-row-title">{row.title}</span></div>
+                <p class="h-line">{row.line}</p>
+                {#if openBlocker === k && blockerViews[k]}
+                  <BlockerAnswer {ns} project={b.project} blocker={blockerViews[k]!} live={false} onanswered={() => { openBlocker = null; void load(); }} />
+                {:else}
+                  <div class="h-acts"><button class="h-btn primary" onclick={() => showBlocker(b)}>Answer</button></div>
+                {/if}
+              </div>
+            {/if}
+          {/each}
+        {/if}
+      {/if}
     {/if}
   </div>
+  {/if}
 
   <!-- 2. Today's scan -->
-  <div class="h-sec" data-home-section="scan">
+  {#if scan}
+  <div class="h-sec arrive" class:fil data-home-section="scan">
     {@render head("scan", scan && !scan.today ? "Last scan" : "Today's scan", null, scan ? scanWhen(scan, (ms) => clock12(ms)) : null)}
     {#if !folded("scan")}
       {#if !scanLoaded}
@@ -604,32 +696,13 @@
       {/if}
     {/if}
   </div>
+  {/if}
 
-  <!-- 3. Done since you looked -->
-  <div class="h-sec" data-home-section="done">
-    {@render head("done", "Done since you looked", done.length)}
-    {#if !folded("done")}
-      {#if done.length === 0}
-        <p class="h-empty">Nothing new since you looked.</p>
-      {:else}
-        {#each done as r (r.at + r.kind + (r.chat ?? ""))}
-          {@const m = doneMark(r.kind)}
-          <button class="h-row link" disabled={!r.chat} onclick={() => r.chat && onopen(r.chat, r.project ?? null)}>
-            <span class="h-row-top">
-              <span class="h-kind {m.tone}">{m.mark}</span>
-              <span class="h-row-title">{r.label ?? "A chat"}</span>
-              <span class="h-when">{shortWhen(r.at)}</span>
-            </span>
-            <span class="h-line">{r.line}</span>
-          </button>
-        {/each}
-        <div class="h-acts"><button class="h-btn quiet" onclick={markSeen}>Mark all seen</button></div>
-      {/if}
-    {/if}
-  </div>
+  <!-- 3. Done since you looked: item 946 — the Handled button in the header's corner (above). -->
 
   <!-- 4. Running -->
-  <div class="h-sec" data-home-section="running">
+  {#if running?.chats.length}
+  <div class="h-sec arrive" class:fil data-home-section="running">
     {@render head("running", "Running", running?.chats.length ?? 0)}
     {#if !folded("running")}
       {#if !running || running.chats.length === 0}
@@ -647,7 +720,7 @@
       {/if}
     {/if}
   </div>
-
+  {/if}
   {/if}
 
   <!-- 5. Tell Home, and the Jobs row -->
@@ -823,6 +896,139 @@
     font-size: 12px;
     font-weight: 400;
     white-space: nowrap;
+  }
+  /* Item 944: the calm line, and a section's arrival (Jarvis; plain otherwise). */
+  .h-calm {
+    max-width: 760px;
+    margin: 14px auto 6px;
+    padding: 0 2px;
+    color: var(--dim);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .h-sec.arrive.fil {
+    animation: h-arrive 380ms cubic-bezier(0.2, 0.9, 0.25, 1.05) backwards;
+  }
+  @keyframes h-arrive {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .h-sec.arrive.fil {
+      animation: none;
+    }
+  }
+  /* Item 946: the Handled button and the list it opens downward under the header. */
+  .h-hbtn {
+    position: relative;
+  }
+  .h-hbtn.on {
+    color: var(--accent);
+  }
+  .h-hn {
+    position: absolute;
+    top: -2px;
+    right: -4px;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 3px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #1a1205;
+    font: 600 10px/15px var(--mono, ui-monospace, monospace);
+    text-align: center;
+  }
+  .h-handled {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 6px 0 10px;
+    border-bottom: 1px solid var(--line);
+    transform-origin: top;
+    animation: h-handled-down 220ms cubic-bezier(0.2, 0.9, 0.25, 1.05);
+  }
+  .h-handled.fil {
+    border-bottom-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+    box-shadow: 0 10px 18px -14px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  @keyframes h-handled-down {
+    from {
+      opacity: 0;
+      clip-path: inset(0 0 100% 0);
+      transform: translateY(-6px);
+    }
+    to {
+      opacity: 1;
+      clip-path: inset(0 0 0 0);
+      transform: none;
+    }
+  }
+  .h-hhead {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 4px 2px 6px;
+  }
+  .h-hhead .h-extra {
+    flex: 1;
+  }
+  .h-hrow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .h-handled.fil .h-hrow {
+    animation: h-hrow-in 240ms ease-out backwards;
+    animation-delay: calc(var(--i, 0) * 28ms + 80ms);
+  }
+  @keyframes h-hrow-in {
+    from {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+  }
+  .h-hrow > .h-row {
+    flex: 1;
+    min-width: 0;
+  }
+  .h-hrow.seen > .h-row {
+    opacity: 0.6;
+  }
+  .h-hseen {
+    flex: none;
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: none;
+    color: var(--dim);
+    font-size: 15px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .h-handled,
+    .h-handled.fil .h-hrow {
+      animation: none;
+    }
+  }
+  /* Item 945: Nightshift's held blockers — one quiet line under Needs you. */
+  .h-else {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 2px 4px;
+    border: 0;
+    background: none;
+    color: var(--dim);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+  }
+  .h-else-n {
+    margin-left: auto;
+    font-size: 11px;
+    opacity: 0.75;
   }
   .h-empty {
     margin: 2px 0 6px 18px;

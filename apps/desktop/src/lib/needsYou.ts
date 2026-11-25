@@ -273,3 +273,47 @@ export function parseEnded(raw: string | null): EndedTurn[] {
     return [];
   }
 }
+
+// ---- Home's own list (item 945) ----
+
+/** The rows Nightshift's files put on the board: a project's open blockers and its shipped items. */
+const NIGHTSHIFT_KINDS: readonly NeedKind[] = ["blocker", "shipped"];
+
+export interface HomeNeeds {
+  /** What Home lists under Needs you: questions, cards, and turns that finished unseen — never what is running. */
+  rows: NeedRow[];
+  /** Left to the Needs-you view (he answers these where he runs Nightshift): how many of each. */
+  blockers: number;
+  shipped: number;
+}
+
+/**
+ * Item 945: Home's Needs you is what waits on him in his chats. Nightshift's open blockers and shipped items are
+ * not Home's to announce — he manages those where he runs Nightshift (his words) — so they are counted, not
+ * listed; the Needs-you view still shows and answers every one.
+ */
+export function homeNeeds(rows: readonly NeedRow[]): HomeNeeds {
+  const mine = rows.filter((r) => r.state !== "working");
+  return {
+    rows: mine.filter((r) => !NIGHTSHIFT_KINDS.includes(r.kind)),
+    blockers: mine.filter((r) => r.kind === "blocker").length,
+    shipped: mine.filter((r) => r.kind === "shipped").length,
+  };
+}
+
+/** The one quiet line under Home's list: "15 blockers · 24 shipped items"; empty with neither. */
+export function nightshiftWords(n: { blockers: number; shipped: number }): string {
+  const parts: string[] = [];
+  if (n.blockers > 0) parts.push(n.blockers === 1 ? "1 blocker" : `${n.blockers} blockers`);
+  if (n.shipped > 0) parts.push(n.shipped === 1 ? "1 shipped item" : `${n.shipped} shipped items`);
+  return parts.join(" · ");
+}
+
+/**
+ * Item 945: a kept turn he has now seen — its chat is the one on screen, in the chat view, with the window in
+ * front. A finish is dropped; a question stays until the log shows it answered (`answered`).
+ */
+export function seenNow(kept: EndedTurn | undefined, o: { onScreen: boolean; focused: boolean; answered: boolean }): boolean {
+  if (!kept || !o.onScreen || !o.focused) return false;
+  return !kept.ask || o.answered;
+}

@@ -15,7 +15,7 @@ import { railFold } from "../src/lib/railFold.svelte";
 import { setLayout } from "../src/lib/layout.svelte";
 import { stage as kept, keep, readKept, STAGE_KEY } from "../src/lib/homeStage/stageState.svelte";
 import { installErrorWatch } from "../src/lib/errorWatch.svelte";
-import { needs as board } from "../src/lib/needsBoard.svelte";
+import { needs as board, refreshBoard } from "../src/lib/needsBoard.svelte";
 // Item 874: as main.ts — the Reload view bar if the runtime stops drawing.
 installErrorWatch();
 
@@ -23,6 +23,10 @@ const q = new URLSearchParams((window as unknown as { __h9q?: string }).__h9q ??
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
 const s = q.get("s") ?? "new";
+// Items 944–946: real944=1 draws Home on data put on the page as window.__real (his own feed, blockers, shipped items
+// and kept turns, read from copies — never committed); empty944=1 is a Home with nothing in it yet (a first run).
+const real = q.get("real944") === "1" ? ((window as unknown as { __real?: { feed: unknown[]; seen_at: string | null; blockers: unknown[]; items: unknown[]; ended: unknown[] } }).__real ?? null) : null;
+const empty = q.get("empty944") === "1";
 
 const home = { id: "home", name: "Home", root: "/Users/you/.nightloom/home", notes_dir: "/Users/you/.nightloom/home/notes", chats: 12, notes: 5, exists: true, source: "nightloom:home" };
 const projects = [home, { id: "nl", name: "Nightloom", root: "/Users/you/code/nightloom", notes_dir: "/Users/you/code/nightloom/.agents/notes", chats: 48, notes: 21, exists: true }];
@@ -46,6 +50,8 @@ const feed = [
   { at: ago(140), kind: "failed", label: "Lecture activities — answers check", chat: "c3", project: "nl", line: "Failed" },
   { at: ago(200), kind: "done", label: null, chat: null, project: "nightshift-code", line: "Research on cache pricing finished — 1 page" },
 ];
+// click946=1 (items 944–946 review): thirty more handled rows, so the Handled list scrolls.
+if (q.get("click946") === "1") for (let i = 0; i < 30; i++) feed.push({ at: ago(300 + i * 20), kind: "done", label: `Fixture chat ${i + 1}`, chat: `x${i}`, project: "nl", line: "Finished" });
 const acct = (service: string, kind: string, nth: number | null, extra: Record<string, unknown> = {}) => ({ connector: `claude.ai ${service}${nth ? ` ${nth}` : ""}`, service, kind, address: null, nth, status: "connected", on: true, claude_ai: true, in_scan: true, ...extra });
 const reach = { checked_at: ago(12), error: null, locals: [], accounts: [
   acct("Gmail", "mail", 1), acct("Gmail", "mail", 2), acct("Gmail", "mail", 3),
@@ -77,22 +83,26 @@ const notes: string[] = [];
     case "providers": return [{ kind: "anthropic", available: true, default_model: "claude-opus-5-5", key_source: "stored" }];
     case "schedule_probe": return { due_ms: [], limit_ms: null };
     case "home_info": return { project_id: "home", chat_id: s === "new" ? null : "h-today", folder: home.root, brief: "", scan_words: "Every day at 8:00 AM", scan_job_id: null };
-    case "home_feed": return { rows: feed, seen_at: ago(120) };
-    case "home_reach": case "home_reach_check": return reach;
+    case "home_feed": return real ? { rows: real.feed, seen_at: real.seen_at } : empty ? { rows: [], seen_at: null } : { rows: feed, seen_at: ago(120) };
+    case "home_mark_seen": return new Date().toISOString();
+    case "nightshift_projects": return real ? [{ id: "ns", name: "Nightshift (value generalization)", nightshift: true, exists: true }] : [];
+    case "nightshift_blockers": return { blockers: real?.blockers ?? [] };
+    case "nightshift_items": return { items: real?.items ?? [] };
+    case "home_reach": case "home_reach_check": return empty ? { checked_at: ago(1), error: null, locals: [], accounts: [] } : reach;
     // Held for the shot: the row stays "checking" while the shot is taken.
     case "home_reach_check_one": await wait(20_000); return reach;
     case "list_notes": return notes.map((name) => ({ name, bytes: 1, modified: ago(0), summary: "", kind: "markdown" }));
     case "save_note": notes.push(String((a as { name?: string })?.name ?? "")); return { name: (a as { name?: string })?.name, bytes: 1, modified: ago(0), summary: "", kind: "markdown" };
     case "claude_browser_status": return null;
-    case "home_sources": return macSources;
+    case "home_sources": return empty ? [] : macSources;
     case "home_routes": return { cards: [], held: [], started: [] };
     // Item 874: lists the app reads after a send; a null froze the harness page (Palette reads their length).
     case "list_proposals":
       return [];
-    case "named_files": case "for_you_files": case "search_backends": case "centre_proposals": case "centre_dream_commits": case "turn_usage": case "list_threads": case "nightshift_projects": case "tidy_memory": case "tidy_threads":
+    case "named_files": case "for_you_files": case "search_backends": case "centre_proposals": case "centre_dream_commits": case "turn_usage": case "list_threads": case "tidy_memory": case "tidy_threads":
       return [];
     // stale847=1 (item 894): Home's tasks cannot be read.
-    case "home_tasks": if (q.get("stale847") === "1") throw new Error("the service is not answering"); return homeTasks;
+    case "home_tasks": if (q.get("stale847") === "1") throw new Error("the service is not answering"); return real || empty ? [] : homeTasks;
     case "home_task_event": told.push(String((a as { line?: string })?.line ?? "")); return null;
     case "home_task_close": return null;
     case "home_stage_focus": return null;
@@ -121,6 +131,8 @@ async function run() {
   }
   // runctl=1 (item 872): Run after Stop now (its chat stopped, Resume shown) with a done step open (Run this step again).
   if (q.get("runctl") === "1") kept.ui["task:merge-round-t"] = { stop: false, halted: true, open: "r:merge", again: ["r:merge"] };
+  // handled=1 (item 946): the Handled list open, as he left it.
+  if (q.get("handled") === "1") kept.ui["handled"] = { open: true, scroll: 0, row: null, marked: {} };
   if (q.get("classic") === "1") setLayout("classic");
   // dup847=1 (item 847, scenario C3): Home's to-do list carries two items with one id, as a model could write it;
   // the title then says whether the window still answers a click (alive=) and how many errors were logged (errs=).
@@ -188,6 +200,11 @@ async function run() {
     await wait(900);
     restart = ` restart=${saved.length}B told=${told.length} notes=${notes.length}`;
   }
+  if (real) {
+    board.ended = real.ended as typeof board.ended;
+    await refreshBoard(true);
+    await wait(300);
+  }
   // needs=1 (item 874): two Needs-you cards as his 12:19 PM shot had them — a question with a long text in another
   // project, and a finished turn — for the click test of Answer / Open chat / Mark seen and the card's full text.
   if (q.get("needs") === "1") {
@@ -235,6 +252,115 @@ async function run() {
       split.click();
     }
     clicks = ` clicks=${fails.length ? `FAIL(${fails.join(",")})` : "PASS"}`;
+  }
+  // click946=1 (items 944–946 review): the Handled button's click test. Read off the title as `h946=PASS` or
+  // `h946=FAIL(<which>)` with the figures it saw; run with s=watch.
+  let h946 = "";
+  const fails: string[] = [];
+  const facts: string[] = [];
+  const banner = document.createElement("pre");
+  if (q.get("click946") === "1") {
+    banner.style.cssText = "position:fixed;z-index:999999;left:0;top:0;right:0;margin:0;padding:6px;background:#000;color:#6f6;font:13px monospace;white-space:pre-wrap";
+    document.body.appendChild(banner);
+    addEventListener("error", (e) => (banner.textContent += ` ERR(${e.message} ${(e as ErrorEvent).filename ?? ""}:${(e as ErrorEvent).lineno ?? ""})`));
+    addEventListener("unhandledrejection", (e) => (banner.textContent += ` REJ(${String((e as PromiseRejectionEvent).reason?.message ?? (e as PromiseRejectionEvent).reason)})`));
+  }
+  const step = (n: string) => (banner.textContent = `h946 step ${n} fails=${fails.join(",")}`);
+  if (q.get("click946") === "1") try {
+    const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T & HTMLElement>(sel);
+    const unseen = () => Number(($(".hm-n")?.textContent ?? "0").replace("+", "")) || 0;
+    // Open or shut by the button's own state: a shut list's outro can stay in the page in bin/snap's hidden window.
+    const menu = () => ($(".hm-btn")?.getAttribute("aria-expanded") === "true" ? $(".hm-menu") : null);
+    const list = () => $(".hm-list");
+    if (!$("[data-handled] .hm-btn")) fails.push("nobutton");
+    $(".hm-btn")?.click();
+    await wait(250);
+    if (!menu()) fails.push("open");
+    const u0 = unseen();
+    const rows0 = document.querySelectorAll(".hm-row").length;
+    facts.push(`u0=${u0} rows=${rows0}`);
+    step("1");
+
+    // A row's own check marks that one seen; it stays listed.
+    $<HTMLButtonElement>("button.hm-seen")?.click();
+    await wait(200);
+    if (unseen() !== u0 - 1) fails.push(`rowcheck(${unseen()})`);
+    if (document.querySelectorAll(".hm-row").length !== rows0) fails.push("rowcheck-dropped");
+    step("2");
+
+    // A row opens for its detail, and opening an unseen one marks it seen.
+    const firstUnseen = [...document.querySelectorAll<HTMLElement>(".hm-row:not(.seen)")][0];
+    firstUnseen?.click();
+    await wait(200);
+    if (!$(".hm-row.isopen")) fails.push("rowopen");
+    if (unseen() !== u0 - 2) fails.push(`rowopen-mark(${unseen()})`);
+    step("3");
+
+    // The menu stays inside Home's stage (it was cut by the stage's foot in a short window).
+    const st = $("[data-home-stage]")?.getBoundingClientRect();
+    const mr = menu()?.getBoundingClientRect();
+    if (st && mr && mr.bottom > st.bottom + 1) fails.push(`pastfoot(${Math.round(mr.bottom - st.bottom)})`);
+    facts.push(`menu=${mr ? Math.round(mr.height) : 0}`);
+    step("4");
+
+    // Scroll kept across leaving Home and coming back.
+    const l = list();
+    if (l) l.scrollTop = 240;
+    await wait(400);
+    const want = list()?.scrollTop ?? 0;
+    app.project = projects[1] as unknown as typeof app.project;
+    await wait(400);
+    const gone = !$(".hm-menu");
+    app.project = home as unknown as typeof app.project;
+    await wait(700);
+    flushSync();
+    if (!gone) facts.push("stayed-mounted");
+    if (!menu()) fails.push("reopen-after-leave");
+    const back = list()?.scrollTop ?? -1;
+    facts.push(`scroll=${want}->${back}`);
+    if (want < 50 || Math.abs(back - want) > 2) fails.push("scrollkept");
+    if (!$(".hm-row.isopen")) fails.push("openrow-kept");
+    step("5");
+
+    // Mark all seen: the count goes, every row stays (dimmed).
+    const mark = [...document.querySelectorAll<HTMLButtonElement>(".hm-head button")].find((b) => /Mark all seen/.test(b.textContent ?? ""));
+    if (!mark) fails.push("nomarkall");
+    mark?.click();
+    await wait(400);
+    if ($(".hm-n")) fails.push(`markall(${unseen()})`);
+    if (document.querySelectorAll(".hm-row").length !== rows0) fails.push(`markall-dropped(${document.querySelectorAll(".hm-row").length})`);
+    if (document.querySelectorAll(".hm-row:not(.seen)").length) fails.push("markall-undimmed");
+    step("6");
+
+    // A click outside shuts it.
+    $(".w-watch")?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    await wait(250);
+    if (menu()) fails.push("outside");
+    step("7");
+
+    // Escape shuts it, and the key is not passed on.
+    $(".hm-btn")?.click();
+    await wait(250);
+    if (!menu()) fails.push("reopen");
+    const esc = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    document.body.dispatchEvent(esc);
+    await wait(250);
+    if (menu()) fails.push("escape");
+    if (!esc.defaultPrevented) fails.push("escape-passed-on");
+    step("8");
+
+    // Open again for the shot when shot=open.
+    if (q.get("shot") === "open") {
+      $(".hm-btn")?.click();
+      await wait(300);
+    }
+  } catch (e) {
+    fails.push(`threw(${String((e as Error)?.message ?? e)})`);
+  }
+  if (q.get("click946") === "1") {
+    h946 = ` h946=${fails.length ? `FAIL(${fails.join(",")})` : "PASS"} ${facts.join(" ")}`;
+    // Drawn at once, at the top, so a shot shows it whatever the later checks do.
+    banner.textContent = h946;
   }
   // checkone=1: one source's own Check now pressed (the stub holds it, so the row shows it checking).
   if (q.get("checkone") === "1") {
@@ -311,7 +437,7 @@ async function run() {
     moreAt = ` more="${m?.textContent ?? "MISSING"}"@${mr ? `${Math.round(mr.top)}+${Math.round(mr.height)}` : "-"}`;
   }
   const r = stage?.getBoundingClientRect();
-  document.title = `845 s=${s}${moreAt} stage=${r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} views=${g0}→${g1} welcome=${document.querySelector(".welcome") ? "yes" : "no"} composer=${document.querySelector(".composer") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""} ell=${ell.length}${ell.length ? ` (${ell.slice(0, 4).join(", ")})` : ""} out=${out.length}${out.length ? ` (${out.slice(0, 4).join(", ")})` : ""} sideways=${sideways}${restart}${clicks}${alive} cq=${(() => { const v = document.querySelector<HTMLElement>(".h9-view"); const wd = document.querySelector<HTMLElement>(".h9-wide"); return `${v ? Math.round(v.getBoundingClientRect().width) : 0}/${wd ? getComputedStyle(wd).display : "-"}/vw${innerWidth}/dpr${devicePixelRatio}`; })()}`;
+  document.title = `845 s=${s}${moreAt} stage=${r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "MISSING"} tabs=${[...document.querySelectorAll(".h9-tab .tn")].map((n) => n.textContent).join("|")} views=${g0}→${g1} welcome=${document.querySelector(".welcome") ? "yes" : "no"} composer=${document.querySelector(".composer") ? "yes" : "no"} cut=${bad.length}${bad.length ? ` (${bad.slice(0, 4).join(", ")})` : ""} ell=${ell.length}${ell.length ? ` (${ell.slice(0, 4).join(", ")})` : ""} out=${out.length}${out.length ? ` (${out.slice(0, 4).join(", ")})` : ""} sideways=${sideways}${restart}${clicks}${h946}${alive} cq=${(() => { const v = document.querySelector<HTMLElement>(".h9-view"); const wd = document.querySelector<HTMLElement>(".h9-wide"); return `${v ? Math.round(v.getBoundingClientRect().width) : 0}/${wd ? getComputedStyle(wd).display : "-"}/vw${innerWidth}/dpr${devicePixelRatio}`; })()}`;
   if (q.get("cap") === "1") (window as unknown as { __capset: (m: string) => void }).__capset(document.title);
 }
 if (document.readyState === "loading") addEventListener("DOMContentLoaded", () => void run());
