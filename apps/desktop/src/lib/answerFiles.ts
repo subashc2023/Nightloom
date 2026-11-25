@@ -16,6 +16,23 @@ export function answerFilesKey(reqId: string, i: number): string {
   return `ask-answer:${reqId}:${i}`;
 }
 
+/**
+ * Item 983: the drafts-store key of the files on a turn-end question card's answer (`TurnAsk`, by its
+ * `idBase`, chat + reply) and on a Needs-you row's reply box (by row id). Those answers go as his next
+ * message, so the chips ride that message as the composer's attachments do — nothing is saved first.
+ */
+export function turnAskFilesKey(idBase: string): string {
+  return `turn-ask:${idBase}`;
+}
+export function needsReplyFilesKey(rowId: string): string {
+  return `needs-reply:${rowId}`;
+}
+
+/** Item 983: whether a message answer may go with these chips — none still converting. */
+export function chipsReady(chips: readonly Attachment[]): boolean {
+  return chips.every((c) => !c.pending);
+}
+
 /** What `save_answer_files` writes: every chip's name and bytes, whatever
  *  its kind (an image or a PDF too — the model reads them by path). */
 export function filesToSave(chips: readonly Attachment[]): { name: string; data: string }[] {

@@ -11,6 +11,7 @@
  */
 import { untrack } from "svelte";
 import { app, sendInChat, chatRuns, injectIntoTurn } from "./state.svelte";
+import type { Attachment } from "./types";
 import { enqueueMessage, readDraft } from "./drafts.svelte";
 import { addToast } from "./state/toasts.svelte";
 import { allRunning } from "./running.svelte";
@@ -221,9 +222,14 @@ export function queuedAnswerOf(chat: string | null): QueuedAnswer | null {
 
 /** Send `text` as his next message in `chat`: sent, or queued when the chat runs (it goes when the running
  *  work allows, as a Queue click does); false (and a toast) when it could not go. */
-function sendTo(t: { chat: string; project: string | null; projectName: string | null }, text: string): { queued: number | null } | false {
+function sendTo(
+  t: { chat: string; project: string | null; projectName: string | null },
+  text: string,
+  /** Item 983: files on the answer, sent with the message as the composer's are. */
+  attachments: Attachment[] = [],
+): { queued: number | null } | false {
   if (chatRuns(t.chat)) {
-    const row = enqueueMessage(t.chat, text, []);
+    const row = enqueueMessage(t.chat, text, attachments);
     // Into the running turn at its next step when it is the chat on screen (the composer's own rule); a row
     // the turn does not take goes as the next message, off screen too (takeQueuedFor).
     if (t.chat === app.activeSessionId && app.busy && !app.parked) void injectIntoTurn(t.chat, row);
@@ -231,7 +237,7 @@ function sendTo(t: { chat: string; project: string | null; projectName: string |
     return { queued: row.id };
   }
   let refused = false;
-  sendInChat(t.chat, { id: t.project, name: t.projectName }, text, [], (why) => {
+  sendInChat(t.chat, { id: t.project, name: t.projectName }, text, attachments, (why) => {
     refused = true;
     addToast(`Not sent: ${why}`);
   });
@@ -248,10 +254,12 @@ export async function answerAsk(
   t: { chat: string; name: string; project: string | null; projectName: string | null } | null,
   ask: Ask,
   answer: string,
+  /** Item 983: files on the answer (the card's or the row's chips). */
+  attachments: Attachment[] = [],
 ): Promise<boolean> {
   const text = answer.trim();
   if (!t || !text) return false;
-  const how = sendTo(t, text);
+  const how = sendTo(t, text, attachments);
   if (!how) return false;
   if (how.queued !== null) {
     const index = (t.chat === app.activeSessionId ? pendingAsk(app.events)?.index : undefined) ?? -1;
@@ -271,15 +279,20 @@ export async function answerAsk(
 
 /** What a row's reply box (or one of its answer buttons) does. True when
  *  taken — the caller clears the draft. */
-export async function replyTo(row: NeedRow, words: string): Promise<boolean> {
+export async function replyTo(
+  row: NeedRow,
+  words: string,
+  /** Item 983: files on the reply — only an answer or a message to a chat carries them. */
+  attachments: Attachment[] = [],
+): Promise<boolean> {
   const text = words.trim();
   if (!text || needs.sending[row.id]) return false;
   needs.sending[row.id] = true;
   try {
     const target = row.chat ? { chat: row.chat, name: row.title, project: row.project, projectName: projectName(row.project) } : null;
-    if (row.reply === "answer-ask" && row.ask) return await answerAsk(target, row.ask, text);
+    if (row.reply === "answer-ask" && row.ask) return await answerAsk(target, row.ask, text, attachments);
     if (row.reply === "message" && target) {
-      if (!sendTo(target, text)) return false;
+      if (!sendTo(target, text, attachments)) return false;
       dropEnded(target.chat);
       return true;
     }
@@ -301,4 +314,9 @@ export async function replyTo(row: NeedRow, words: string): Promise<boolean> {
   } finally {
     delete needs.sending[row.id];
   }
+}
+
+/** Item 983: the rows whose reply goes to a chat as his message, so files can ride it. */
+export function replyTakesFiles(row: Pick<NeedRow, "reply">): boolean {
+  return row.reply === "answer-ask" || row.reply === "message";
 }

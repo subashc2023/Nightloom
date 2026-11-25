@@ -17,7 +17,12 @@
   import { relativeTime, relativeTimeLong } from "./time";
   import { withNote } from "./askQuestions";
   import { NEED_EMPTY, groupNeeds, type NeedRow } from "./needsYou";
-  import { needs, needsNow, refreshBoard, replyTo, setDraft, setFold } from "./needsBoard.svelte";
+  import { needs, needsNow, refreshBoard, replyTakesFiles, replyTo, setDraft, setFold } from "./needsBoard.svelte";
+  // Item 983: files on a reply that goes to a chat as his message (an answer, a message) ride that message.
+  import { readDraft, removeAttachment, setDraftAttachments } from "./drafts.svelte";
+  import { acceptFiles } from "./attachFiles.svelte";
+  import { addToast } from "./state/toasts.svelte";
+  import { chipsReady, needsReplyFilesKey } from "./answerFiles";
   import AskLock from "./AskLock.svelte";
   import StartCards from "./StartCards.svelte";
   import { look } from "./askMotion";
@@ -67,7 +72,23 @@
     await openRun({ session: row.chat, project: row.project, onScreen: false });
   }
   async function send(row: NeedRow, words: string): Promise<void> {
-    if (await replyTo(row, words)) setDraft(row.id, "");
+    const key = needsReplyFilesKey(row.id);
+    const files = replyTakesFiles(row) ? readDraft(key).attachments : [];
+    if (!chipsReady(files)) {
+      addToast("A file is still converting — send when it is ready");
+      return;
+    }
+    if (await replyTo(row, words, [...files])) {
+      setDraft(row.id, "");
+      if (files.length) setDraftAttachments(key, []);
+    }
+  }
+  /** Item 983: files dropped or pasted on a row's reply box (a text paste stays text). */
+  function takeFiles(row: NeedRow, list: FileList | null | undefined, e: Event): void {
+    const got = Array.from(list ?? []);
+    if (!replyTakesFiles(row) || got.length === 0) return;
+    e.preventDefault();
+    void acceptFiles(needsReplyFilesKey(row.id), got);
   }
   /** An answer button: the label, with whatever he typed in the row's box as his comment on it (712's form). */
   function pick(row: NeedRow, label: string): void {
@@ -142,7 +163,10 @@
                       rows="1"
                       data-undo-key={`needs:${row.id}`}
                       value={needs.drafts[row.id] ?? ""}
-                      placeholder={row.replyHint}
+                      placeholder={replyTakesFiles(row) ? `${row.replyHint} — or drop files` : row.replyHint}
+                      ondragover={(e) => replyTakesFiles(row) && e.dataTransfer?.types.includes("Files") && e.preventDefault()}
+                      ondrop={(e) => takeFiles(row, e.dataTransfer?.files, e)}
+                      onpaste={(e) => takeFiles(row, e.clipboardData?.files, e)}
                       aria-label={`${row.replyHint} — ${row.title}`}
                       disabled={busy}
                       oninput={(e) => {
@@ -160,6 +184,21 @@
                       >{busy ? "Sending…" : "Send"}</button
                     >
                   </div>
+                  {@const chips = replyTakesFiles(row) ? readDraft(needsReplyFilesKey(row.id)).attachments : []}
+                  {#if chips.length > 0}
+                    <div class="reply-files" aria-label="files on this reply">
+                      {#each chips as f (f.id)}
+                        <span class="reply-file" class:pending={f.pending}
+                          >{f.name}{#if f.pending}<span class="rf-dim">(converting)</span>{/if}<button
+                            type="button"
+                            class="rf-x"
+                            aria-label="remove {f.name}"
+                            onclick={() => removeAttachment(needsReplyFilesKey(row.id), f.id)}>×</button
+                          ></span
+                        >
+                      {/each}
+                    </div>
+                  {/if}
                 {/if}
               </div>
               <span class="where" use:tip={row.where}>{row.where}</span>
@@ -402,6 +441,41 @@
   .reply textarea:focus {
     outline: none;
     border-color: var(--accent-ink);
+  }
+  /* Item 983: files on a reply, as small chips under its box (975's question-card chips). */
+  .reply-files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .reply-file {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    padding: 2px 4px 2px 8px;
+    border: 1px solid var(--line2, var(--line));
+    border-radius: 6px;
+    max-width: 22rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .reply-file.pending,
+  .rf-dim {
+    color: var(--dim);
+  }
+  .rf-x {
+    border: none;
+    background: none;
+    color: var(--dim);
+    cursor: pointer;
+    padding: 0 4px;
+    font: inherit;
+  }
+  .rf-x:hover {
+    color: var(--ink);
   }
   .where,
   .when {

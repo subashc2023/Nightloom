@@ -34,6 +34,9 @@
     sending = false,
     note = "",
     queued = null,
+    files = [],
+    onfiles,
+    onunfile,
   }: {
     ask: Ask;
     /** Unique per card (chat + reply): element ids, and the key his unsent words are kept under. */
@@ -46,6 +49,10 @@
     /** Item 922: his answer is held in the chat's queue (the chat is running): the card shows the pick as
      *  chosen and "queued", and takes no second answer until the row is sent or removed. */
     queued?: string | null;
+    /** Item 983: files on the answer (the host's chips) — dropped or pasted on Other; without `onfiles` none attach. */
+    files?: { id: number; name: string; pending?: boolean }[];
+    onfiles?: (list: File[]) => void;
+    onunfile?: (id: number) => void;
   } = $props();
 
   // (Read once, at mount: a function, so the prop is not captured as a stale value.)
@@ -123,6 +130,9 @@
     {notes}
     onnote={(i, label, value) => (notes[i] = { ...(notes[i] ?? {}), [label]: value })}
     {onquick}
+    files={{ 0: files }}
+    onfiles={onfiles ? (_i, list) => onfiles(list) : undefined}
+    onunfile={(_i, id) => onunfile?.(id)}
   />
   {#if queued !== null}
     <div class="ta-foot"><div class="ta-note">Queued — it goes when the running work allows. Remove it from the queue under the message box to answer differently.</div></div>
