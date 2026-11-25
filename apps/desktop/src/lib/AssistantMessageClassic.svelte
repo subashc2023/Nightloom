@@ -35,7 +35,7 @@
   import type { Segment } from "./state.svelte";
   import { fmtSecs } from "./turnTiming";
   import { displayPath, extOf, fmtSize } from "./cards";
-  import { app, endContentDrag, openContent } from "./state.svelte";
+  import { app, openContent } from "./state.svelte";
   import { agentRowLine, isAgentCall } from "./subagentRows";
   // Item 718: a helper row says whether it is a new helper or a continued one.
   import { helperMark } from "./helperMark";
@@ -80,7 +80,14 @@
   {@const boxOpen = T.softOpen(key)}
   <button class="tool-result soft soft-line" class:open={boxOpen} aria-expanded={boxOpen}
     use:tip={boxOpen ? "Fold the notice to one line" : "Show the notice whole"}
-    onclick={() => T.setOverride(key, { open: !boxOpen, rev: transcript.rev.tool })}
+    onpointerdown={(e) => {
+      // Item 920: on the press, as the rows (backlog 052) — while a reply
+      // streams the box moves under the pointer and a click never lands.
+      if (e.button === 0) T.setOverride(key, { open: !boxOpen, rev: transcript.rev.tool });
+    }}
+    onclick={(e) => {
+      if (e.detail === 0) T.setOverride(key, { open: !boxOpen, rev: transcript.rev.tool });
+    }}
     >{#if boxOpen}<span class="soft-full">{content}</span>{:else}<span class="soft-sum">{softLine(content, retried)}</span>{/if}</button>
 {/snippet}
 {#snippet subagent(children: Segment[], parent: string)}
@@ -292,7 +299,7 @@
                       : "Expand this call"}
                   draggable={agentTab ? "true" : undefined}
                   ondragstart={agentTab ? (e) => T.dragAgent(e, i, seg, agentTab) : undefined}
-                  ondragend={agentTab ? () => endContentDrag() : undefined}
+                  ondragend={agentTab ? (e) => T.dragAgentEnd(e) : undefined}
                   onpointerdown={(e) => T.press(e, i, seg)}
                   onclick={(e) => T.keyClick(e, i, seg)}
                 >
