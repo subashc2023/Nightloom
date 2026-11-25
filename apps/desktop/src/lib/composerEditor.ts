@@ -16,12 +16,13 @@
  * Off (the default), the composer is the textarea it always was; this file
  * is not loaded into the box at all.
  */
-import { EditorSelection, EditorState, Facet, Prec, StateEffect, StateField, type Extension, type Range } from "@codemirror/state";
+import { EditorSelection, EditorState, Facet, Prec, StateEffect, StateField, Transaction, type Extension, type Range } from "@codemirror/state";
 import { Decoration, EditorView, RectangleMarker, WidgetType, drawSelection, keymap, layer, type DecorationSet } from "@codemirror/view";
 import { LanguageSupport, ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { history, historyKeymap, insertNewline, isolateHistory, standardKeymap } from "@codemirror/commands";
 import { findFences } from "./codeDetect";
+import { keptEditorState } from "./editorHistory";
 import { LANGUAGES, segments } from "./codeHighlight";
 import { findMath, typedMathOk, type MathSpan } from "./math";
 import { renderMathHtml, renderReply } from "./markdown";
@@ -618,17 +619,43 @@ export function composerState(
   return EditorState.create({
     doc: text,
     selection: EditorSelection.cursor(at),
-    extensions: [
-      new LanguageSupport(markdownLanguage),
-      ...(hasFocus === null ? [] : [focusField.init(() => hasFocus), focusChange]),
-      tableGridSupport(),
-      livePreview,
-      ...extensions,
-      // After the caller's `drawSelection` (in `composerKeymap`): a later
-      // layer sits lower, so the selection is drawn over the code grounds.
-      codeGroundLayer,
-    ],
+    extensions: composerStateExtensions(extensions, hasFocus),
   });
+}
+
+/** `composerState`'s extensions: the box's own round the caller's. */
+function composerStateExtensions(extensions: Extension[], hasFocus: boolean | null): Extension[] {
+  return [
+    new LanguageSupport(markdownLanguage),
+    ...(hasFocus === null ? [] : [focusField.init(() => hasFocus), focusChange]),
+    tableGridSupport(),
+    livePreview,
+    ...extensions,
+    // After the caller's `drawSelection` (in `composerKeymap`): a later
+    // layer sits lower, so the selection is drawn over the code grounds.
+    codeGroundLayer,
+  ];
+}
+
+/**
+ * Item 934: the box's state for draft `key` — the one kept when a box last
+ * left that draft (`keepEditorHistory`), its undo history with it, when the
+ * draft's text is still what that box held; else `composerState`'s fresh
+ * one. `cursor` null keeps the kept caret.
+ */
+export function composerStateFor(
+  key: string | null,
+  text: string,
+  extensions: Extension[] = [],
+  cursor: number | null = null,
+  hasFocus: boolean | null = null,
+): EditorState {
+  const doc = text.replace(/\r\n?/g, "\n");
+  const back = key === null ? null : keptEditorState(key, doc, composerStateExtensions(extensions, hasFocus));
+  if (!back) return composerState(text, extensions, cursor ?? text.length, hasFocus);
+  if (cursor === null) return back;
+  const at = Math.max(0, Math.min(cursor, back.doc.length));
+  return back.update({ selection: EditorSelection.cursor(at), annotations: Transaction.addToHistory.of(false) }).state;
 }
 
 /**

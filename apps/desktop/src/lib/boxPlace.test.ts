@@ -151,7 +151,10 @@ describe("355: the wiring", () => {
     expect(transcriptSrc).toContain("use:trackPlace={(pl) => (editPlaces[p + 1] = pl)}");
     // Item 399: through `editBoxPlaces`, which reads the formatted box's
     // place first (it has no `trackPlace`) and returns the same slice.
-    expect([...transcriptSrc.matchAll(/boxes: editBoxPlaces\(\)/g)].length).toBe(3);
+    // Item 934: the three stashes go through `editStash`, which adds the
+    // edit's undo history; ~~three `boxes: editBoxPlaces()`~~.
+    expect([...transcriptSrc.matchAll(/boxes: editBoxPlaces\(\)/g)].length).toBe(1);
+    expect([...transcriptSrc.matchAll(/stashEdit\(\w+, editStash\(editing\)\)/g)].length).toBe(3);
     expect(transcriptSrc).toMatch(/function editBoxPlaces\(\)[^]*?return editPlaces\.slice\(\);/);
     expect([...transcriptSrc.matchAll(/placeBack\(back/g)].length).toBe(2);
   });

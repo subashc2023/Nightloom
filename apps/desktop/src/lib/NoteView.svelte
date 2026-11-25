@@ -1341,6 +1341,7 @@
       <NoteEditor
         bind:this={formatted}
         bind:value={text}
+        historyKey={bufferKey === null ? null : `note:${bufferKey}`}
         {caret}
         {markdown}
         {imageSource}

@@ -19,7 +19,8 @@
    */
   import { onMount } from "svelte";
   import { EditorView } from "@codemirror/view";
-  import { isMarkdown, noteExtensions, noteState, runCommand, setMarkdown } from "./noteEditor";
+  import { isMarkdown, noteExtensions, noteStateFor, runCommand, setMarkdown } from "./noteEditor";
+  import { keepEditorHistory } from "./editorHistory";
   import type { Command } from "./noteFormat";
   import type { EditorState } from "@codemirror/state";
   import { clampCaret, minimalChange } from "./noteMode";
@@ -33,6 +34,7 @@
     markdown = false,
     imageSource,
     onpaste,
+    historyKey = null,
   }: {
     value?: string;
     caret?: number;
@@ -45,6 +47,10 @@
     imageSource?: (src: string) => Promise<string | null>;
     /** Item 860: a paste, before the editor's own; true when it took it. */
     onpaste?: (e: ClipboardEvent) => boolean;
+    /** Item 934: the note buffer this editor shows; its undo history is the
+     *  buffer's (`editorHistory.ts`), kept when this editor goes and back
+     *  when one shows the buffer again with the same text. */
+    historyKey?: string | null;
   } = $props();
 
   let host: HTMLDivElement;
@@ -52,9 +58,11 @@
 
   onMount(() => {
     const at = clampCaret(caret, value);
+    const mountedKey = historyKey;
     view = new EditorView({
       parent: host,
-      state: noteState(
+      state: noteStateFor(
+        mountedKey,
         value,
         at,
         noteExtensions({
@@ -73,6 +81,8 @@
     view.dispatch({ effects: EditorView.scrollIntoView(at, { y: "center" }) });
     view.focus();
     return () => {
+      // Item 934: the history goes with the buffer, not with this editor.
+      if (view && mountedKey !== null) keepEditorHistory(mountedKey, view.state);
       view?.destroy();
       view = null;
     };

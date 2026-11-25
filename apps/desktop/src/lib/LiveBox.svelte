@@ -17,7 +17,8 @@
   import { EditorView, placeholder as placeholderExt } from "@codemirror/view";
   import { isMac } from "./platform";
   import { routeLink } from "./webtabs.svelte";
-  import { boxDrawing, boxLinkClicks, composerKeymap, composerState, composerTheme, LiveBoxHandle, type BoxDrawing, type ComposerBox } from "./composerEditor";
+  import { boxDrawing, boxLinkClicks, composerKeymap, composerState, composerStateFor, composerTheme, LiveBoxHandle, type BoxDrawing, type ComposerBox } from "./composerEditor";
+  import { keepEditorHistory } from "./editorHistory";
 
   interface Props {
     value: string;
@@ -39,6 +40,14 @@
     /** Item 689: "plain" — the plain box while it holds a table: the grid
      *  (and quote / code lines) drawn, the text round them plain. */
     drawing?: BoxDrawing;
+    /**
+     * Item 934: the draft this box shows — a chat's or an aside's draft key,
+     * an edit box's. The undo history is that draft's (`editorHistory.ts`):
+     * kept when the key changes or the box unmounts, back when a box shows
+     * the draft again, so ⌘Z after a chat or tab switch and back still
+     * undoes. Null keeps none (a fresh history per text set, as before).
+     */
+    historyKey?: string | null;
   }
   let {
     value,
@@ -55,10 +64,13 @@
     onresize,
     handle = $bindable(null),
     drawing = "all",
+    historyKey = null,
   }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let view: EditorView | null = null;
+  /** The draft whose text and history `view` holds now (item 934). */
+  let boxKey: string | null = untrack(() => historyKey);
   const editable = new Compartment();
   const hint = new Compartment();
   const draws = new Compartment();
@@ -153,7 +165,7 @@
   onMount(() => {
     if (!host) return;
     const v = new EditorView({
-      state: composerState(value, extensions(), initialCaret ?? value.length, false),
+      state: composerStateFor(boxKey, value, extensions(), initialCaret, false),
       parent: host,
     });
     view = v;
@@ -163,6 +175,8 @@
     handle = mine;
     return () => {
       v.dom.removeEventListener("mousedown", onDown);
+      // Item 934: the history goes with the draft, not with this box.
+      if (boxKey !== null) keepEditorHistory(boxKey, v.state);
       v.destroy();
       view = null;
       // Only if the composer still points here: on a toggle the textarea
@@ -172,10 +186,21 @@
   });
 
   // A text set from outside. Our own changes come back equal and stop here.
+  // Item 934: another draft arriving (a chat switch) is not a text set: the
+  // draft left keeps its history and the one arriving gets its own back.
   $effect(() => {
     const next = value;
+    const k = historyKey;
     untrack(() => {
       if (!view) return;
+      const from = boxKey;
+      boxKey = k;
+      if (k !== from) {
+        if (from !== null) keepEditorHistory(from, view.state);
+        view.setState(composerStateFor(k, next, extensions(), null, view.hasFocus));
+        resizeAfterLayout(view);
+        return;
+      }
       if (next.replace(/\r\n?/g, "\n") === view.state.doc.toString()) return;
       view.setState(composerState(next, extensions(), next.length, view.hasFocus));
       resizeAfterLayout(view);

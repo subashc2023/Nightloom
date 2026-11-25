@@ -36,9 +36,33 @@ export default defineConfig({
   // than a DOM. `setup.ts` supplies the one browser global those modules
   // reach for (localStorage); anything that needs a real document belongs in
   // a different kind of test than this file configures.
+  //
+  // Item 934: the one exception is `*.dom.test.ts` — a real component
+  // mounted in happy-dom (the message box's ⌘Z across a chat switch, which
+  // no pure test saw). Its own project, because mounting needs Svelte's
+  // browser build (`conditions: ["browser"]`); the node suite keeps the
+  // server build it has always run on.
   test: {
-    environment: "node",
-    include: ["src/**/*.test.ts"],
-    setupFiles: ["src/test/setup.ts"],
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "node",
+          environment: "node",
+          include: ["src/**/*.test.ts"],
+          exclude: ["src/**/*.dom.test.ts"],
+          setupFiles: ["src/test/setup.ts"],
+        },
+      },
+      {
+        extends: true,
+        resolve: { conditions: ["browser"] },
+        test: {
+          name: "dom",
+          environment: "happy-dom",
+          include: ["src/**/*.dom.test.ts"],
+        },
+      },
+    ],
   },
 });

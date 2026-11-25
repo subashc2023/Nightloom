@@ -44,6 +44,42 @@ export function plainField(el: EventTarget | Element | null): Field | null {
 }
 
 const histories = new WeakMap<Field, BoxHistory>();
+
+/**
+ * Item 934: a field that shows a kept draft names it (`data-undo-key`) and
+ * its history is the draft's, not the element's — the comment box
+ * (`comment:<chat>:<id>`), a Needs-you reply (`needs:<row>`). Such a field
+ * unmounts on a chat or tab switch and its text comes back from the draft;
+ * by element (the WeakMap above) the history went with the element and ⌘Z
+ * did nothing on return — or, where one element is reused for the next
+ * draft (the comment box), ⌘Z put the other comment's words in this one.
+ * Memory only, the last `KEPT_FIELDS` keys, as the message box's
+ * (`boxHistoryFor`).
+ */
+export const UNDO_KEY = "data-undo-key";
+export const KEPT_FIELDS = 64;
+const keyed = new Map<string, BoxHistory>();
+
+function kept(f: Field): BoxHistory | undefined {
+  const k = f.getAttribute(UNDO_KEY);
+  return k ? keyed.get(k) : histories.get(f);
+}
+
+function keep(f: Field, h: BoxHistory): void {
+  const k = f.getAttribute(UNDO_KEY);
+  if (!k) {
+    histories.set(f, h);
+    return;
+  }
+  keyed.delete(k);
+  keyed.set(k, h);
+  while (keyed.size > KEPT_FIELDS) keyed.delete(keyed.keys().next().value as string);
+}
+
+/** Tests: forget every keyed field's history. */
+export function forgetFieldHistories(): void {
+  keyed.clear();
+}
 /** An undo or redo is being put in a field: its own `input` is not an edit. */
 let applying = false;
 
@@ -56,10 +92,10 @@ function snap(f: Field): Snap {
  *  rename field filled with the old name, a Svelte binding): that is a
  *  step of its own, as in the message box. */
 function historyOf(f: Field): BoxHistory {
-  let h = histories.get(f);
+  let h = kept(f);
   if (!h) {
     h = new BoxHistory(f.value);
-    histories.set(f, h);
+    keep(f, h);
   } else if (h.current.text !== f.value) h.external(f.value);
   return h;
 }
@@ -83,7 +119,7 @@ export function stepFocusedField(dir: "undo" | "redo"): boolean {
   }
   const f = plainField(el);
   if (!f) return false;
-  const h = histories.get(f);
+  const h = kept(f);
   // Nothing typed here yet: nothing to undo, and never another box's step.
   if (!h) return true;
   if (h.current.text !== f.value) h.external(f.value);
@@ -128,10 +164,10 @@ function onInput(e: Event): void {
   if (applying) return;
   const f = plainField(e.target);
   if (!f) return;
-  const h = histories.get(f);
+  const h = kept(f);
   if (!h) {
     // No `beforeinput` seen (a script's synthetic input): start from here.
-    histories.set(f, new BoxHistory(f.value));
+    keep(f, new BoxHistory(f.value));
     return;
   }
   h.input(editKind((e as InputEvent).inputType ?? ""), snap(f));
@@ -140,13 +176,13 @@ function onInput(e: Event): void {
 /** A caret move ends a run of typing, as in the message box. */
 function onCaret(e: Event): void {
   const f = plainField(e.target);
-  const h = f ? histories.get(f) : undefined;
+  const h = f ? kept(f) : undefined;
   if (f && h && h.current.text === f.value) h.select(f.selectionStart ?? 0, f.selectionEnd ?? 0);
 }
 
 function onCompositionEnd(e: Event): void {
   const f = plainField(e.target);
-  if (f) histories.get(f)?.close();
+  if (f) kept(f)?.close();
 }
 
 /** Listen on the whole page, in the capture phase (main.ts, once). */

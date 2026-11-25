@@ -35,6 +35,7 @@ import {
   EditorState,
   Facet,
   StateField,
+  Transaction,
   type Extension,
   type Range,
   type StateEffect,
@@ -43,6 +44,7 @@ import { Decoration, EditorView, WidgetType, keymap, placeholder, type Decoratio
 import { LanguageSupport, ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { keptEditorState } from "./editorHistory";
 import { findMath, type MathSpan } from "./math";
 import { toggleInline, toggleTaskAt, type Command } from "./noteFormat";
 import { renderMarkdown, renderMathHtml } from "./markdown";
@@ -752,15 +754,39 @@ export function noteState(
   return EditorState.create({
     doc: text,
     selection: EditorSelection.cursor(at),
-    extensions: [
-      // Split on "\n" only and join with "\n": a `\r` is a character, so
-      // CRLF and lone-CR text survives untouched.
-      EditorState.lineSeparator.of("\n"),
-      new LanguageSupport(markdownLanguage),
-      drawing.of(drawingFor(!!opts.markdown)),
-      ...extensions,
-    ],
+    extensions: noteStateExtensions(extensions, opts),
   });
+}
+
+/** `noteState`'s extensions: the editor's own round the caller's. */
+function noteStateExtensions(extensions: Extension[], opts: { markdown?: boolean }): Extension[] {
+  return [
+    // Split on "\n" only and join with "\n": a `\r` is a character, so
+    // CRLF and lone-CR text survives untouched.
+    EditorState.lineSeparator.of("\n"),
+    new LanguageSupport(markdownLanguage),
+    drawing.of(drawingFor(!!opts.markdown)),
+    ...extensions,
+  ];
+}
+
+/**
+ * Item 934: the editor's state for note buffer `key` — the one kept when an
+ * editor last left that buffer (`keepEditorHistory`), its undo history with
+ * it, when the buffer's text is still what that editor held; else
+ * `noteState`'s fresh one. The cursor goes to `cursor` either way.
+ */
+export function noteStateFor(
+  key: string | null,
+  text: string,
+  cursor: number,
+  extensions: Extension[] = [],
+  opts: { markdown?: boolean } = {},
+): EditorState {
+  const back = key === null ? null : keptEditorState(key, text, noteStateExtensions(extensions, opts));
+  if (!back) return noteState(text, cursor, extensions, opts);
+  const at = Math.max(0, Math.min(cursor, text.length));
+  return back.update({ selection: EditorSelection.cursor(at), annotations: Transaction.addToHistory.of(false) }).state;
 }
 
 /** Run a toolbar command on a view: true when it applied. */

@@ -135,8 +135,10 @@
                 {/if}
                 {#if row.reply}
                   <div class="reply">
+                    <!-- Item 934: its undo history is the reply's (`fieldUndo.ts`), kept while the board is away. -->
                     <textarea
                       rows="1"
+                      data-undo-key={`needs:${row.id}`}
                       value={needs.drafts[row.id] ?? ""}
                       placeholder={row.replyHint}
                       aria-label={`${row.replyHint} — ${row.title}`}

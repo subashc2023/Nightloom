@@ -1184,6 +1184,9 @@ export interface EditStash {
    *  turn's one box, or a reply's blocks (backlog 355); absent when none
    *  was recorded. */
   boxes?: (BoxPlace | null)[];
+  /** Item 934: the plain edit box's undo history (a `BoxHistory`), so ⌘Z
+   *  still undoes when the editor comes back. Opaque here. */
+  hist?: unknown;
 }
 
 const edits = new Map<string, EditStash>();

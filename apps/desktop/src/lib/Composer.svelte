@@ -4176,6 +4176,7 @@
           {/if}
           <textarea
             bind:this={commentTa}
+            data-undo-key={`comment:${key}:${oc.id}`}
             class="comment-ta"
             rows="2"
             autocomplete="off"
@@ -4281,6 +4282,7 @@
       <LiveBox
         bind:handle={ta}
         value={text}
+        historyKey={key}
         onchange={(v) => setDraftText(key, v)}
         placeholder={app.connection ? boxPlaceholder : ""}
         disabled={boxIsLocked}

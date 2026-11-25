@@ -29,7 +29,7 @@ import { parseSubagentBlock, placeSubagentBlock } from "../subagent";
 import { continuedFlags } from "../runs";
 import { samePassage, selectionText, type AsideQuote } from "../asideQuote";
 import { requestReply } from "../replyQuote.svelte";
-import { addComment, addAttachment, editDraftKey, nextAttachmentId, readDraft, removeAttachment, setDraftAttachments, stashEdit, takeEdit, updateAttachment, draftKey } from "../drafts.svelte";
+import { addComment, addAttachment, editDraftKey, nextAttachmentId, readDraft, removeAttachment, setDraftAttachments, stashEdit, takeEdit, updateAttachment, draftKey, type EditStash } from "../drafts.svelte";
 import { requestCommentFocus } from "../commentRequest.svelte";
 import { type CommentSource } from "../passageComments";
 import { diffPassage } from "../diffPassage";
@@ -1109,9 +1109,27 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
    * are recorded from `beforeinput` / `input`; every other change to the
    * draft (a fence, a relabel, a marker rewritten) is seen by the effect
    * and recorded as a step of its own. Opening an editor starts afresh.
+   *
+   * Item 934: an open edit is stashed on a chat or tab switch and comes
+   * back (`stashEdit` / `takeEdit`); its history goes into the stash with
+   * it (`editStash`) and comes back with it (`takeEditHist`), so ⌘Z still
+   * undoes after the switch. ~~One `editHist`, `reset` for each editor~~:
+   * a history per opened editor, since a stashed one must not be reset by
+   * the next chat's editor.
    */
-  const editHist = new BoxHistory("");
+  let editHist = new BoxHistory("");
   let editHistAt: number | null = null;
+  /** The open editor as the stash keeps it, its undo history with it. */
+  function editStash(e: NonNullable<EditState>): EditStash {
+    return { editing: e, line: editCacheLine, boxes: editBoxPlaces(), hist: editHist };
+  }
+  /** A stashed editor coming back: its history with it. */
+  function takeEditHist(back: EditStash | null): void {
+    if (!back || !(back.hist instanceof BoxHistory)) return;
+    editHist = back.hist;
+    editHistAt = back.editing.index;
+  }
+
   let editComposing = false;
   let editNativeStepped = false;
   $effect(() => {
@@ -1124,7 +1142,7 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
       }
       if (e.index !== editHistAt) {
         editHistAt = e.index;
-        editHist.reset(t);
+        editHist = new BoxHistory(t);
         editComposing = false;
       } else if (t !== editHist.current.text) editHist.external(t);
     });
@@ -1403,11 +1421,12 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
     if (inPane) return;
     untrack(() => {
       if (busy) {
-        if (editing) stashEdit(sessionKey, { editing, line: editCacheLine, boxes: editBoxPlaces() });
+        if (editing) stashEdit(sessionKey, editStash(editing));
         editing = editReduce(editing, { type: "busy" });
       } else if (!editing) {
         const back = takeEdit(sessionKey);
         if (back) {
+          takeEditHist(back);
           editing = back.editing;
           editCacheLine = back.line;
           placeBack(back.boxes);
@@ -1723,8 +1742,9 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
       // editor must not re-run the scroll restore below. (A pane's
       // transcript leaves the chat's stashed edit for the open one.)
       untrack(() => {
-        if (from !== null && editing) stashEdit(from, { editing, line: editCacheLine, boxes: editBoxPlaces() });
+        if (from !== null && editing) stashEdit(from, editStash(editing));
         const back = takeEdit(key);
+        takeEditHist(back);
         editing = back?.editing ?? null;
         editCacheLine = back?.line ?? "";
         placeBack(back?.boxes);
@@ -1794,7 +1814,7 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
   // next mount on this chat (backlog 137).
   onDestroy(() => {
     if (!inPane && editing && lastKey !== null)
-      stashEdit(lastKey, { editing, line: editCacheLine, boxes: editBoxPlaces() });
+      stashEdit(lastKey, editStash(editing));
   });
 
   // ---- The sent message's entrance (nightshift backlog 095, 2026-09-16) ----
@@ -2673,6 +2693,10 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
     editConvert,
     get editGrid() {
       return editGrid;
+    },
+    /** Item 934: the formatted edit box's history key (`LiveBox`'s `historyKey`). */
+    get editHistoryKey() {
+      return editing ? `edit:${sessionKey}:${editing.index}` : null;
     },
     get editHist() {
       return editHist;

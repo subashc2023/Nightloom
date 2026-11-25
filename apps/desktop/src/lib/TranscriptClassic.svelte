@@ -198,6 +198,7 @@
                     bind:handle={T.editorLive}
                     drawing={composerFormat.on ? "all" : "plain"}
                     value={T.editing.draft}
+                    historyKey={T.editHistoryKey}
                     label="Edit this message"
                     onchange={(v) => {
                       if (T.editing && !T.editing.parts) T.editing = editReduce(T.editing, { type: "draft", text: v });
