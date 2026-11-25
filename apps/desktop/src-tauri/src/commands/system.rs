@@ -342,48 +342,55 @@ pub(crate) fn notify_usage_refreshed(
 #[cfg(target_os = "macos")]
 pub(crate) const APPROVAL_BANNER_ANSWERED: &str = "approval-banner-answered";
 
-/// The needs-you banner's Allow button (item 973). Its title is what the
-/// response carries back, so it is matched by this one constant.
+/// The needs-you banner's one button (item 973): Allow on a banner that
+/// shows the whole call, else Deny. Its title is what the response carries
+/// back, so it is matched by these constants.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) const BANNER_ALLOW: &str = "Allow";
-/// Its Deny button (the banner's close/other button).
 #[cfg(any(target_os = "macos", test))]
 pub(crate) const BANNER_DENY: &str = "Deny";
+/// The close button's label. Closing answers nothing: it is not known
+/// whether clearing or swiping a banner also reports as this button, and a
+/// silent Deny while he is away would derail the chat (coordinator's call,
+/// 2026-11-25).
+#[cfg(target_os = "macos")]
+pub(crate) const BANNER_LATER: &str = "Later";
 
-/// What a press on the needs-you banner answers (item 973): `allow` only
-/// from the Allow button of a banner that offered it, `deny` only from
-/// the Deny button, `open` for a click on the banner's body, and nothing at
-/// all for a banner cleared, timed out or never acted on — never an allow
-/// by default. `action` is the action button's title, `close` the close
-/// button's; both arrive verbatim from the notification centre.
+/// What a press on the needs-you banner answers (item 973). `offered` is
+/// the one button the banner carried; `action` the title the notification
+/// centre reported for an action-button press. `allow` only from the
+/// offered Allow button, `deny` only from the offered Deny button, `open`
+/// for a click on the body (or an action title the banner did not offer),
+/// and nothing for the close button, a clear, a time-out — never an answer
+/// by default.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn banner_answer(
-    offered_allow: bool,
+    offered: &str,
     action: Option<&str>,
-    close: Option<&str>,
+    closed: bool,
     clicked: bool,
 ) -> Option<&'static str> {
-    match (action, close) {
-        (Some(a), _) if offered_allow && a == BANNER_ALLOW => Some("allow"),
-        // An action this banner did not offer (it cannot happen; were it to,
-        // it is no answer) is treated as a look, never an allow.
-        (Some(_), _) => Some("open"),
-        (None, Some(c)) if c == BANNER_DENY => Some("deny"),
-        (None, Some(_)) => None,
-        (None, None) if clicked => Some("open"),
-        (None, None) => None,
+    match action {
+        Some(a) if a == offered && a == BANNER_ALLOW => Some("allow"),
+        Some(a) if a == offered && a == BANNER_DENY => Some("deny"),
+        Some(_) => Some("open"),
+        None if closed => None,
+        None if clicked => Some("open"),
+        None => None,
     }
 }
 
-/// The needs-you banner with its buttons (item 973, from Caprock's
-/// notification, report 762): Deny always, Allow only when the frontend
-/// judged the banner shows the whole call (`allow`, `notify.ts
-/// bannerAllows`). Posted like the Refresh-now banner, through
-/// `mac-notification-sys` on a thread of its own that waits for the press;
-/// the press is emitted as `approval-banner-answered` with the call's `id`
-/// and the frontend answers that call, and only that one. Allow and Deny
-/// answer without bringing the window forward; a click on the body does.
-/// Off macOS it is `notify`, no buttons.
+/// The needs-you banner with its button (item 973, from Caprock's
+/// notification, report 762). macOS gives a banner one action button (the
+/// crate's multi-action dropdown rides on private keys, unverified), so:
+/// **Allow** when the frontend judged the banner shows the whole call
+/// (`allow`, `bannerAnswer.ts bannerAllows`) — Deny for that call is on its
+/// card — else **Deny**. The close button is "Later" and answers nothing.
+/// Posted like the Refresh-now banner, through `mac-notification-sys` on a
+/// thread of its own that waits for the press; the press is emitted as
+/// `approval-banner-answered` with the call's `id` and the frontend answers
+/// that call, and only that one. A button answers without bringing the
+/// window forward; a click on the body does. Off macOS it is `notify`.
 #[tauri::command]
 pub(crate) fn notify_approval(
     app: AppHandle,
@@ -400,17 +407,18 @@ pub(crate) fn notify_approval(
                 // See `notify_usage_refreshed`: without it macOS asks
                 // "Where is use_default?".
                 let _ = mac_notification_sys::set_application("app.nightloom.desktop");
+                let offered = if allow { BANNER_ALLOW } else { BANNER_DENY };
                 let mut n = mac_notification_sys::Notification::new();
-                n.title(&title).message(&body).close_button(BANNER_DENY);
-                if allow {
-                    n.main_button(mac_notification_sys::MainButton::SingleAction(BANNER_ALLOW));
-                }
-                n.wait_for_click(true);
+                n.title(&title)
+                    .message(&body)
+                    .main_button(mac_notification_sys::MainButton::SingleAction(offered))
+                    .close_button(BANNER_LATER)
+                    .wait_for_click(true);
                 use mac_notification_sys::NotificationResponse as R;
                 let answer = match n.send() {
-                    Ok(R::ActionButton(a)) => banner_answer(allow, Some(&a), None, false),
-                    Ok(R::CloseButton(c)) => banner_answer(allow, None, Some(&c), false),
-                    Ok(R::Click) => banner_answer(allow, None, None, true),
+                    Ok(R::ActionButton(a)) => banner_answer(offered, Some(&a), false, false),
+                    Ok(R::CloseButton(_)) => banner_answer(offered, None, true, false),
+                    Ok(R::Click) => banner_answer(offered, None, false, true),
                     _ => None,
                 };
                 let Some(answer) = answer else { return };
@@ -441,34 +449,41 @@ mod banner_answer_tests {
     use super::*;
 
     #[test]
-    fn allow_comes_only_from_the_offered_allow_button() {
+    fn allow_comes_only_from_an_offered_allow_button() {
         assert_eq!(
-            banner_answer(true, Some("Allow"), None, false),
+            banner_answer("Allow", Some("Allow"), false, false),
             Some("allow")
         );
-        // A banner that did not offer Allow never allows.
+        // A Deny banner never allows, whatever title comes back.
         assert_eq!(
-            banner_answer(false, Some("Allow"), None, false),
+            banner_answer("Deny", Some("Allow"), false, false),
             Some("open")
         );
-        // Another action title is a look, not an allow.
-        assert_eq!(banner_answer(true, Some("Show"), None, false), Some("open"));
+        assert_eq!(
+            banner_answer("Allow", Some("Show"), false, false),
+            Some("open")
+        );
     }
 
     #[test]
-    fn deny_comes_only_from_the_deny_button() {
-        assert_eq!(banner_answer(true, None, Some("Deny"), false), Some("deny"));
+    fn deny_comes_only_from_an_offered_deny_button() {
         assert_eq!(
-            banner_answer(false, None, Some("Deny"), false),
+            banner_answer("Deny", Some("Deny"), false, false),
             Some("deny")
         );
-        assert_eq!(banner_answer(true, None, Some("Close"), false), None);
+        // An Allow banner never denies.
+        assert_eq!(
+            banner_answer("Allow", Some("Deny"), false, false),
+            Some("open")
+        );
     }
 
     #[test]
-    fn a_click_opens_and_a_clear_answers_nothing() {
-        assert_eq!(banner_answer(true, None, None, true), Some("open"));
-        assert_eq!(banner_answer(true, None, None, false), None);
+    fn close_clear_and_time_out_answer_nothing_and_a_click_opens() {
+        assert_eq!(banner_answer("Allow", None, true, false), None);
+        assert_eq!(banner_answer("Deny", None, true, false), None);
+        assert_eq!(banner_answer("Allow", None, false, false), None);
+        assert_eq!(banner_answer("Deny", None, false, true), Some("open"));
     }
 }
 

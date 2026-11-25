@@ -56,7 +56,7 @@ describe("the banner posted", () => {
   });
   const on = { turnEnd: true, needsYou: true, usageRefresh: true };
 
-  it("a short call: Allow and Deny, its command whole, under its own id", async () => {
+  it("a short call: the Allow button, its command whole, under its own id", async () => {
     await notifyNeedsYou("Builds", bash("t1", "rm -rf build"), on);
     expect(plain).not.toHaveBeenCalled();
     expect(withButtons).toHaveBeenCalledTimes(1);
@@ -68,7 +68,7 @@ describe("the banner posted", () => {
     expect(postedBanner("t1")).toEqual({ chat: "Builds", name: "Bash" });
   });
 
-  it("an Edit: Deny only, with the card's summary", async () => {
+  it("an Edit: the Deny button, with the card's summary", async () => {
     await notifyNeedsYou("Builds", call("t2", "Edit", { file_path: "/a.ts", old_string: "a", new_string: "b" }), on);
     expect(withButtons.mock.calls[0][0]).toBe("t2");
     expect(withButtons.mock.calls[0][3]).toBe(false);
@@ -90,9 +90,13 @@ describe("where a press goes", () => {
     const r = routeBannerPress("s2", "allow", screen, background);
     expect(r).toMatchObject({ act: "answer", decision: "allow", background: null });
     expect(r.act === "answer" && r.req.id).toBe("s2");
-    const b = routeBannerPress("b1", "deny", screen, background);
-    expect(b).toMatchObject({ act: "answer", decision: "deny", background: "chatB" });
+    const b = routeBannerPress("b1", "allow", screen, background);
+    expect(b).toMatchObject({ act: "answer", decision: "allow", background: "chatB" });
     expect(b.act === "answer" && b.req.id).toBe("b1");
+    const long = { chatB: { approvals: [bash("b2", "y".repeat(BANNER_ALLOW_CHARS + 1))] } };
+    const d = routeBannerPress("b2", "deny", screen, long);
+    expect(d).toMatchObject({ act: "answer", decision: "deny", background: "chatB" });
+    expect(d.act === "answer" && d.req.id).toBe("b2");
   });
 
   it("a banner whose call no longer waits does nothing", () => {
@@ -111,6 +115,10 @@ describe("where a press goes", () => {
     const q = [call("q1", "AskUserQuestion", { questions: [] })];
     expect(routeBannerPress("q1", "allow", q, {})).toEqual({ act: "open" });
     expect(routeBannerPress("q1", "deny", q, {})).toEqual({ act: "open" });
+  });
+
+  it("a Deny on an Allow banner was never offered: a look, never a deny", () => {
+    expect(routeBannerPress("s1", "deny", screen, background)).toEqual({ act: "open" });
   });
 
   it("a click on the body answers nothing", () => {

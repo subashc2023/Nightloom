@@ -12,6 +12,11 @@
  * - Allow is as deliberate as the card's: offered only when the banner
  *   shows the whole of what would run (`bannerAllows`), checked again at
  *   the press, and never the answer to a click, a clear or a time-out.
+ *
+ * One button per banner (coordinator's call, 2026-11-25): Allow on a
+ * banner that shows the whole call (its Deny is on the card), else Deny.
+ * The close button is "Later" and answers nothing — it is not known
+ * whether clearing a banner reports as that button.
  */
 import type { ApprovalRequest } from "./types";
 import { isStuck } from "./stuck";
@@ -60,7 +65,7 @@ export function bannerAllows(req: Req): string | null {
 /** The banner's two lines when it offers Allow: the call by name, and what
  *  it runs, whole. */
 export function allowBannerBody(shown: string): string {
-  return `${shown} · Allow or Deny here, or click to open`;
+  return `${shown} · Allow here, or open the card to Deny`;
 }
 
 /** What the banner reported: a button, or a click on its body. */
@@ -106,9 +111,13 @@ export function routeBannerPress(
   if (!req) return { act: "stale" };
   if (press === "open") return { act: "open" };
   if (press === "allow" && bannerAllows(req) === null) return { act: "open" };
-  // Deny is offered on every banner with buttons — the plain tool calls;
-  // a question, a plan or the guard is answered on its card.
-  if (press === "deny" && (req.name === "AskUserQuestion" || req.name === "ExitPlanMode" || isStuck(req.name))) {
+  // A banner has one button (coordinator's call, 2026-11-25): Allow where
+  // the banner shows the whole call, else Deny — so a Deny on an Allow
+  // banner, or on a question, a plan or the guard, was never offered.
+  if (
+    press === "deny" &&
+    (bannerAllows(req) !== null || req.name === "AskUserQuestion" || req.name === "ExitPlanMode" || isStuck(req.name))
+  ) {
     return { act: "open" };
   }
   return { act: "answer", decision: press, req, background: where };

@@ -330,9 +330,9 @@ export function postedBanner(id: string): { chat: string; name: string } | null 
 }
 
 /**
- * The banner's two lines and whether it offers Allow (item 973). A plain
- * tool call gets Deny always, and Allow only when the banner shows the
- * whole call (`bannerAllows`); a question, a plan or the guard no buttons.
+ * The banner's two lines and its one button (item 973): a plain tool call
+ * gets Allow when the banner shows the whole call (`bannerAllows`), else
+ * Deny; a question, a plan or the guard no button. Close answers nothing.
  */
 export function needsYouBanner(chat: string, req: ApprovalRequest): { title: string; body: string; buttons: boolean; allow: boolean } {
   const title = needsYouTitle(chat, req);
