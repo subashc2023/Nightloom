@@ -46,11 +46,11 @@
   import JobApproval from "./JobApproval.svelte";
   import JobRunConfirm from "./JobRunConfirm.svelte";
   import BlockerAnswer from "./BlockerAnswer.svelte";
+  import { handledRows, pruneMarked, unseenWords } from "../lib/homeStage/watch";
   import { NightshiftClient, type NsBlocker } from "./nightshiftClient";
   import {
     asOfWords,
     doneMark,
-    doneRows,
     headerWords,
     homeDraftKey,
     homeTarget,
@@ -59,6 +59,7 @@
     loadHomeKept,
     markScanRead,
     needRows,
+    newsRows,
     heldWords,
     runningLine,
     saveHomeKept,
@@ -165,7 +166,6 @@
   // Item 945: Nightshift's held blockers are not Needs-you rows — one folded line under the list, not counted.
   const needs = $derived(needRows(pushRows, jobs, [], { chat: remote.active_chat, label: openLabel, pending: remote.pending.length }));
   const heldRows = $derived(needRows([], [], held, { chat: null, label: null, pending: 0 }));
-  const done = $derived(doneRows(feed?.rows ?? [], feed?.seen_at ?? null));
   const header = $derived(headerWords(needs.length + cards.length, today));
   const headParts = $derived(header.split(" · "));
   const stop = $derived(stopWords(today));
@@ -225,6 +225,17 @@
 
   // ---- the place kept: scroll and folds ----
   let kept = $state(loadHomeKept());
+  // Item 946: the same feed as a notification list — every news row, the unseen ones marked.
+  const handled = $derived(handledRows(newsRows(feed?.rows ?? []), feed?.seen_at ?? null, kept.marked));
+  function toggleHandled() {
+    kept = { ...kept, handledOpen: !kept.handledOpen };
+    saveHomeKept(kept);
+  }
+  function markOne(key: string) {
+    if (kept.marked[key]) return;
+    kept = { ...kept, marked: { ...kept.marked, [key]: 1 } };
+    saveHomeKept(kept);
+  }
   let scroller = $state<HTMLElement | null>(null);
   let restored = false;
   /** The scan page this visit opened on: it stays open until he leaves,
@@ -476,6 +487,8 @@
     try {
       const r = await client.homeSeen();
       if (feed) feed = { ...feed, seen_at: r.seen_at };
+      kept = { ...kept, marked: pruneMarked(kept.marked, newsRows(feed?.rows ?? []), r.seen_at) };
+      saveHomeKept(kept);
     } catch {
       onnote("Could not mark it seen — try again");
     }
@@ -500,8 +513,40 @@
       <span class="h-name">{headParts[0]}</span>
       {#each headParts.slice(1) as part (part)}<span class="h-dot" aria-hidden="true">·</span><span class="h-part">{part}</span>{/each}
     </h1>
+    <!-- Item 946: Handled — what was "Done since you looked", behind one button; it opens downward under the header. -->
+    <button class="h-icon h-hbtn" class:on={kept.handledOpen} class:has={handled.unseen > 0} onclick={toggleHandled} aria-expanded={kept.handledOpen} aria-label={handled.unseen ? `Handled — ${handled.unseen} not seen` : "Handled"} data-home-handled>
+      <span aria-hidden="true">✓</span>{#if handled.unseen > 0}<span class="h-hn" aria-hidden="true">{unseenWords(handled.unseen)}</span>{/if}
+    </button>
     <button class="h-icon" onclick={onnew} aria-label="New chat">＋</button>
   </header>
+  {#if kept.handledOpen}
+    <div class="h-handled" class:fil role="region" aria-label="Handled" data-home-section="done">
+      <div class="h-hhead">
+        <span class="h-label">Handled</span>
+        <span class="h-extra">{handled.unseen ? `${handled.unseen} not seen` : handled.list.length ? "all seen" : ""}</span>
+        {#if handled.unseen}<button class="h-btn quiet" onclick={markSeen}>Mark all seen</button>{/if}
+      </div>
+      {#if handled.list.length === 0}
+        <p class="h-empty">Nothing handled yet.</p>
+      {/if}
+      {#each handled.list as h, i (h.key)}
+        {@const r = h.row}
+        {@const m = doneMark(r.kind)}
+        <div class="h-hrow" class:seen={!h.unseen} style:--i={Math.min(i, 8)}>
+          <button class="h-row link" disabled={!r.chat} onclick={() => { markOne(h.key); if (r.chat) onopen(r.chat, r.project ?? null); }}>
+            <span class="h-row-top">
+              <span class="h-kind {m.tone}">{m.mark}</span>
+              <span class="h-row-title">{r.label ?? "A chat"}</span>
+              <span class="h-when">{shortWhen(r.at)}</span>
+            </span>
+            <span class="h-line">{r.line}</span>
+          </button>
+          {#if h.unseen}<button class="h-hseen" onclick={() => markOne(h.key)} aria-label={`Mark seen — ${r.label ?? r.line}`}>✓</button>{/if}
+        </div>
+      {/each}
+      {#if handled.more > 0}<p class="h-empty">{handled.more} older, seen — not shown.</p>{/if}
+    </div>
+  {/if}
   {#if stop}<p class="h-stop" role="status">{stop}</p>{/if}
   {#if asOf}<p class="h-asof">{asOf}</p>{/if}
   {#if problem}<p class="h-asof">{problem}</p>{/if}
@@ -632,28 +677,7 @@
     {/if}
   </div>
 
-  <!-- 3. Done since you looked -->
-  <div class="h-sec" data-home-section="done">
-    {@render head("done", "Done since you looked", done.length)}
-    {#if !folded("done")}
-      {#if done.length === 0}
-        <p class="h-empty">Nothing new since you looked.</p>
-      {:else}
-        {#each done as r (r.at + r.kind + (r.chat ?? ""))}
-          {@const m = doneMark(r.kind)}
-          <button class="h-row link" disabled={!r.chat} onclick={() => r.chat && onopen(r.chat, r.project ?? null)}>
-            <span class="h-row-top">
-              <span class="h-kind {m.tone}">{m.mark}</span>
-              <span class="h-row-title">{r.label ?? "A chat"}</span>
-              <span class="h-when">{shortWhen(r.at)}</span>
-            </span>
-            <span class="h-line">{r.line}</span>
-          </button>
-        {/each}
-        <div class="h-acts"><button class="h-btn quiet" onclick={markSeen}>Mark all seen</button></div>
-      {/if}
-    {/if}
-  </div>
+  <!-- 3. Done since you looked: item 946 — the Handled button in the header's corner (above). -->
 
   <!-- 4. Running -->
   <div class="h-sec" data-home-section="running">
@@ -850,6 +874,97 @@
     font-size: 12px;
     font-weight: 400;
     white-space: nowrap;
+  }
+  /* Item 946: the Handled button and the list it opens downward under the header. */
+  .h-hbtn {
+    position: relative;
+  }
+  .h-hbtn.on {
+    color: var(--accent);
+  }
+  .h-hn {
+    position: absolute;
+    top: -2px;
+    right: -4px;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 3px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #1a1205;
+    font: 600 10px/15px var(--mono, ui-monospace, monospace);
+    text-align: center;
+  }
+  .h-handled {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 6px 0 10px;
+    border-bottom: 1px solid var(--line);
+    transform-origin: top;
+    animation: h-handled-down 220ms cubic-bezier(0.2, 0.9, 0.25, 1.05);
+  }
+  .h-handled.fil {
+    border-bottom-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+    box-shadow: 0 10px 18px -14px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  @keyframes h-handled-down {
+    from {
+      opacity: 0;
+      clip-path: inset(0 0 100% 0);
+      transform: translateY(-6px);
+    }
+    to {
+      opacity: 1;
+      clip-path: inset(0 0 0 0);
+      transform: none;
+    }
+  }
+  .h-hhead {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 4px 2px 6px;
+  }
+  .h-hhead .h-extra {
+    flex: 1;
+  }
+  .h-hrow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .h-handled.fil .h-hrow {
+    animation: h-hrow-in 240ms ease-out backwards;
+    animation-delay: calc(var(--i, 0) * 28ms + 80ms);
+  }
+  @keyframes h-hrow-in {
+    from {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+  }
+  .h-hrow > .h-row {
+    flex: 1;
+    min-width: 0;
+  }
+  .h-hrow.seen > .h-row {
+    opacity: 0.6;
+  }
+  .h-hseen {
+    flex: none;
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: none;
+    color: var(--dim);
+    font-size: 15px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .h-handled,
+    .h-handled.fil .h-hrow {
+      animation: none;
+    }
   }
   /* Item 945: Nightshift's held blockers — one quiet line under Needs you. */
   .h-else {

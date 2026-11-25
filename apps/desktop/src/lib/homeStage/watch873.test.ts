@@ -1,5 +1,6 @@
 // Item 873: Home's Sources get a look per service, a status light per row, and one group per service.
 import { describe, expect, it } from "vitest";
+import handledSrc from "./HandledMenu.svelte?raw";
 import { sourceGroups, sourceRows } from "./watch";
 import { connectorLook, hueFor, macLook } from "./sourceLook";
 import { reachName } from "../home";
@@ -77,7 +78,8 @@ describe("the Watch view (item 873)", () => {
     expect(src).toContain("checkOne(s.id)");
   });
   it("shows what each handled row was, not only its state", () => {
-    expect(src).toContain("{f.label ?? f.line}");
-    expect(src).toContain("placeName(f.project)");
+    // Item 946: the Handled rows are drawn by the bar's Handled button now.
+    expect(handledSrc).toContain("{f.label ?? f.line}");
+    expect(handledSrc).toContain("placeName(f.project)");
   });
 });

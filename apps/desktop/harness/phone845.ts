@@ -18,6 +18,12 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ago = (min: number) => Date.now() - min * 60_000;
 const s = q.get("s") ?? "watch";
 const away = q.get("away") === "1";
+// Items 944–946: real944=1 draws the page on data put on it as window.__real (his own feed and held blockers, read
+// from copies — never committed); empty944=1 is a Home with nothing in it yet; handled=1 opens the Handled list.
+const real = q.get("real944") === "1" ? ((window as unknown as { __real?: { feed: unknown[]; seen_at: string | null; blockers: { id: string; question: string; fields?: Record<string, string> }[] } }).__real ?? null) : null;
+const empty = q.get("empty944") === "1";
+if (q.get("handled") === "1") localStorage.setItem("nightloom.remote.home", JSON.stringify({ handledOpen: true }));
+else localStorage.removeItem("nightloom.remote.home");
 
 // The phone's :root token blocks, verbatim from Remote.svelte (`:global(:root…) { … }`).
 {
@@ -47,6 +53,13 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const p = url.pathname.replace(/^.*\/api/, "");
   const method = init?.method ?? "GET";
   if (p === "/home/today") return json({ points: 0.3, cap: 5, week: 41, five_hour: 12, stopped: null });
+  if (p === "/home/feed" && (real || empty)) return json({ rows: real ? [...real.feed].reverse() : [], seen_at: real ? real.seen_at : null, as_of: ago(1), home: { project: "home", chat: empty ? null : "h-today" } });
+  if (p === "/home/held" && real) return json({ blockers: real.blockers.filter((b) => b.fields?.default === "held").map((b) => ({ project: "ns", project_name: "Nightshift (value generalization)", id: b.id, item: null, question: b.question })) });
+  if ((real || empty) && p === "/home/scan") return json({ scan: null });
+  if ((real || empty) && p === "/push/feed") return json({ rows: [] });
+  if ((real || empty) && p === "/home/tasks") return json([]);
+  if ((real || empty) && p === "/home/steps") return json([]);
+  if (empty && p === "/home/sources") return json([]);
   if (p === "/home/feed") return json({ rows: [
     { at: new Date(ago(50)).toISOString(), kind: "done", label: null, chat: null, project: "Nightloom", line: "Night run finished — 2 fixes merged, CI passed" },
     { at: new Date(ago(90)).toISOString(), kind: "done", label: "Weekly backup", chat: null, project: null, line: "Weekly backup ran on time" },

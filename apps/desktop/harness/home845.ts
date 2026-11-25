@@ -129,6 +129,8 @@ async function run() {
   }
   // runctl=1 (item 872): Run after Stop now (its chat stopped, Resume shown) with a done step open (Run this step again).
   if (q.get("runctl") === "1") kept.ui["task:merge-round-t"] = { stop: false, halted: true, open: "r:merge", again: ["r:merge"] };
+  // handled=1 (item 946): the Handled list open, as he left it.
+  if (q.get("handled") === "1") kept.ui["handled"] = { open: true, scroll: 0, row: null, marked: {} };
   if (q.get("classic") === "1") setLayout("classic");
   // dup847=1 (item 847, scenario C3): Home's to-do list carries two items with one id, as a model could write it;
   // the title then says whether the window still answers a click (alive=) and how many errors were logged (errs=).

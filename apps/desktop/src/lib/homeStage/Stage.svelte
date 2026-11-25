@@ -16,6 +16,7 @@
   import { isScanMessage } from "../home";
   import { homeNeedsNow } from "../needsBoard.svelte";
   import Btn from "./Btn.svelte";
+  import HandledMenu from "./HandledMenu.svelte";
   import Watch from "./views/Watch.svelte";
   import Brief from "./views/Brief.svelte";
   import Timeline from "./views/Timeline.svelte";
@@ -216,6 +217,8 @@
     <!-- Item 874: Split needs a second task to put beside this one; dimmed, and saying so, until there is one. -->
     {#if roomy}<Btn small icon="cols" on={fk.split && canSplit} waits={!canSplit} tip={canSplit ? "Two live tasks side by side\nThe newest beside the one in focus" : "Needs a second task\nSplit wakes once Home starts one"} onclick={() => (fk.split = !fk.split)}>Split</Btn>{/if}
     {#if home.info?.scan_words}<span class="h9-ms ns-mono" use:tip={"The morning scan's schedule\nChange it in Settings → Home"}>scan {home.info.scan_words.toLowerCase()}</span>{/if}
+    <!-- Item 946: Handled — the feed as a notification list, behind one button in the bar's corner. -->
+    <HandledMenu />
   </div>
   <div class="h9-tabs" role="tablist">
     {#each row as t (t.id)}

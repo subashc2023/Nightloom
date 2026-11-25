@@ -167,12 +167,14 @@ describe("the place kept: scroll and folds", () => {
     const store = { getItem: (k: string) => mem.get(k) ?? null, setItem: (k: string, v: string) => void mem.set(k, v) };
     const k = withScroll(toggleFold(markScanRead(emptyHomeKept(), "2026-11-17"), "running", null), 412.6);
     saveHomeKept(k, store);
-    expect(loadHomeKept(store)).toEqual({ scroll: 413, folds: { running: true }, scanRead: "2026-11-17", scanFoldFor: null });
+    expect(loadHomeKept(store)).toEqual({ scroll: 413, folds: { running: true }, scanRead: "2026-11-17", scanFoldFor: null, handledOpen: false, marked: {} });
     expect(readHomeKept({ scroll: -3, folds: { needs: "yes", done: true, bogus: true }, scanRead: 4 })).toEqual({
       scroll: 0,
       folds: { done: true },
       scanRead: null,
       scanFoldFor: null,
+      handledOpen: false,
+      marked: {},
     });
     expect(loadHomeKept({ getItem: () => "{not json" })).toEqual(emptyHomeKept());
   });
