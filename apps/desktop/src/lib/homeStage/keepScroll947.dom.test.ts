@@ -43,6 +43,10 @@ describe("947: the place of a view's scrolling boxes", () => {
     b.scrollTop = 140;
     expect(placeOf(b)).toEqual({ top: 140, end: false });
     expect(placeOf(box("c", 100, 400))).toEqual({ top: 0, end: false });
+    // A box with little to scroll, halfway down, is not at its end (Run's panels at 960 x 600).
+    const little = box("e", 100, 147);
+    little.scrollTop = 24;
+    expect(placeOf(little)).toEqual({ top: 24, end: false });
     (a as unknown as { grow: (n: number) => void }).grow(600);
     a.scrollTop = 0;
     expect(putBack(a, { top: 290, end: true })).toBe(true);
@@ -60,7 +64,7 @@ describe("947: the place of a view's scrolling boxes", () => {
     v.append(p);
     document.body.append(v);
     const first = keepPlace(v, place);
-    vi.advanceTimersByTime(3100);
+    vi.advanceTimersByTime(8100);
     p.dispatchEvent(new Event("wheel"));
     p.scrollTop = 140;
     p.dispatchEvent(new Event("scroll"));
@@ -106,7 +110,7 @@ describe("947: the place of a view's scrolling boxes", () => {
     v.append(p);
     document.body.append(v);
     const k = keepPlace(v, place);
-    vi.advanceTimersByTime(3100);
+    vi.advanceTimersByTime(8100);
     p.dispatchEvent(new Event("wheel"));
     p.scrollTop = 140;
     p.dispatchEvent(new Event("scroll"));

@@ -270,7 +270,7 @@ async function stateCheck(): Promise<string> {
   flushSync();
   const unmounted = !document.contains(st0);
   app.project = home as unknown as typeof app.project;
-  await wait(2000);
+  await wait(4000);
   flushSync();
   sigs.leave = sig();
   document.title = "947 step d-leave";
@@ -302,6 +302,7 @@ async function growCheck(): Promise<string> {
     for (const h of want.not ?? []) if (has[h]) fails.push(`${name}:unwanted-${h}`);
     if (lay !== "ok") fails.push(`${name}:${lay}`);
     steps.push(`${name}: ${Object.entries(has).filter(([, b]) => b).map(([k]) => k).join(",") || "-"} tabs=${tabs} focus=${kept.focus} arrive=[${arrived}] layout=${lay}`);
+    document.title = `947 grow at ${name} fails=${fails.join(";")}`;
   };
   look("0-empty", { has: ["calm", "bare"], not: ["sources", "needs", "steps", "handled"] });
   // 1. Home handled something.

@@ -9,16 +9,16 @@
  * - A box he left at its end (a log, Home's steps) goes back to its end, so new lines still show; any other box goes
  *   back to the same distance from its top.
  * - The view's content may arrive late (tasks are read, panels arrive), so each box is put back as soon as its content allows, over the
- *   first 3 s — and no more once he scrolls or touches the view himself.
+ *   first 8 s — and no more once he scrolls or touches the view himself.
  */
 import { bag } from "./stageState.svelte";
 
 export type Place = Record<string, { top: number; end: boolean }>;
 
 const END = 28;
-// Tried at once, then every 100 ms for 3 s (a view's data is read again when it is drawn).
+// Tried at once, then every 100 ms for 8 s (a view's data is read again when it is drawn).
 const EVERY = 100;
-const FOR = 3000;
+const FOR = 8000;
 
 export const scrolls = (el: Element): boolean => /(auto|scroll)/.test(getComputedStyle(el).overflowY);
 
@@ -38,7 +38,8 @@ export function named(root: HTMLElement): [string, HTMLElement][] {
 /** Where a box is: its top, and whether it sits at its end (scrolled, and within a line of it). */
 export function placeOf(el: HTMLElement): { top: number; end: boolean } {
   const room = el.scrollHeight - el.clientHeight;
-  return { top: Math.round(el.scrollTop), end: el.scrollTop > 0 && room - el.scrollTop < END };
+  // Within a line of its end — or a quarter of its room, for a box with little to scroll (half of 47 px is not "the end").
+  return { top: Math.round(el.scrollTop), end: el.scrollTop > 0 && room - el.scrollTop < Math.min(END, room / 4) };
 }
 
 /** Put a box back where it was; false when it cannot be yet (its content is not there). */
@@ -64,7 +65,7 @@ export function keepScroll(node: HTMLElement, id: string) {
 /** The same on a record of the caller's own (tests). */
 export function keepPlace(node: HTMLElement, place: Place) {
   const mine = place;
-  // Putting the place back: over the view's first 3 s, each box once it can be, until he scrolls or touches it himself.
+  // Putting the place back: over the view's first 8 s, each box once it can be, until he scrolls or touches it himself.
   let restoring = true;
   const timers: ReturnType<typeof setTimeout>[] = [];
   let save: ReturnType<typeof setTimeout> | null = null;
