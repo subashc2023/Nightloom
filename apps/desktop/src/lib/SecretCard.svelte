@@ -5,6 +5,8 @@
   // localStorage — goes to the host's private store (`store_secret`), and
   // the card then answers a bare Allow. The field is emptied on submit and
   // when the card goes. Shaped like the Playwright and stuck cards beside it.
+  // Item 974: a digit focuses button n; Enter presses it.
+  import { keyPicks } from "./cardKeys";
   import { tip } from "./tip";
   import { app, resolveApproval } from "./state.svelte";
   import {
@@ -111,7 +113,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="ask" use:trackCard={req.id} role="group" aria-label="Claude asks for a secret" onkeydown={onKey}>
+<div class="ask" use:trackCard={req.id} use:keyPicks role="group" aria-label="Claude asks for a secret" onkeydown={onKey}>
   <div class="head">
     <span class="mark" aria-hidden="true">✱</span>
     <span>Claude needs <b class="name">{view.name}</b></span>
@@ -156,8 +158,8 @@
   {#if error}<div class="line err">{error}</div>{/if}
 
   <div class="actions">
-    <button class="ns-btn accent" disabled={done || !value} use:tip={USE_TIP} onclick={() => void use()}>Use it</button>
-    <button class="ns-btn" disabled={done} use:tip={DECLINE_TIP} onclick={decline}>Decline</button>
+    <button class="ns-btn accent" data-pick disabled={done || !value} use:tip={USE_TIP} onclick={() => void use()}>Use it</button>
+    <button class="ns-btn" data-pick disabled={done} use:tip={DECLINE_TIP} onclick={decline}>Decline</button>
     <span class="keys">⏎ use · esc decline</span>
   </div>
 

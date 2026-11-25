@@ -53,6 +53,7 @@
  * Enter, ⌘V from outside (`pasteToCompose.ts`) and ⌘L all ask it.
  */
 import { AUTO_FOCUS_BLOCKERS, CMD_L_BLOCKERS, isEditable, type ElLike } from "./composerCaret";
+import { cardOwnsKey } from "./cardKeys";
 
 /** Where the focus is, as the rule reads it. */
 export type FocusKind =
@@ -380,8 +381,10 @@ export function typeToComposeKeydown(
   const enter = e.key === "Enter";
   if (!enter && !isPrintable(e.key)) return;
   const doc = document;
-  const found = composerTarget(doc);
   const active = doc.activeElement as (HTMLElement & FocusEl) | null;
+  // Item 974: a digit or Enter with the focus on a waiting card (its box, a button, a radio) answers the card.
+  if (cardOwnsKey(e, active)) return;
+  const found = composerTarget(doc);
   const isRoot = active === doc.body || active === doc.documentElement;
   const ctx: ComposeContext = {
     composer: found !== null && found.inPane,

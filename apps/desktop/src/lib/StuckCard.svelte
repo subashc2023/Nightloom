@@ -6,6 +6,8 @@
   // the Playwright card beside it, so it reads as one of the turn's
   // interruptions, not a dialog. Nothing is one stray Enter away: focus
   // lands on the card, and Enter is Continue only from the card itself.
+  // Item 974: a digit focuses button n; Enter presses it.
+  import { keyPicks } from "./cardKeys";
   import { tip } from "./tip";
   import { resolveApproval } from "./state.svelte";
   import { trackCard } from "./waitingNotice.svelte";
@@ -44,7 +46,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-<div class="ask" bind:this={box} use:trackCard={req.id} tabindex="-1" role="group" aria-label="the run looks stuck" onkeydown={onKey}>
+<div class="ask" bind:this={box} use:trackCard={req.id} use:keyPicks tabindex="-1" role="group" aria-label="the run looks stuck" onkeydown={onKey}>
   <div class="head">
     <span class="mark" aria-hidden="true">↻</span>
     <span>{view.sentence}</span>
@@ -72,8 +74,8 @@
   {/if}
 
   <div class="actions">
-    <button class="ns-btn accent" disabled={done} use:tip={view.then} onclick={() => decide("allow")}>Continue</button>
-    <button class="ns-btn danger" disabled={done} use:tip={"Stop: the run ends; what it did stays in the chat."} onclick={() => decide("deny")}
+    <button class="ns-btn accent" data-pick disabled={done} use:tip={view.then} onclick={() => decide("allow")}>Continue</button>
+    <button class="ns-btn danger" data-pick disabled={done} use:tip={"Stop: the run ends; what it did stays in the chat."} onclick={() => decide("deny")}
       >Stop</button
     >
     <span class="keys">⏎ continue · esc stop</span>

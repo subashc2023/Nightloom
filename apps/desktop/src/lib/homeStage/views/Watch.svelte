@@ -20,6 +20,8 @@
   import Panel from "../Panel.svelte";
   import Steps from "../Steps.svelte";
   import Btn from "../Btn.svelte";
+  // Item 974: on a Needs-you card, a digit focuses answer n; Enter sends it.
+  import { keyPicks } from "../../cardKeys";
   import Detail from "../Detail.svelte";
   import Loading from "../Loading.svelte";
   import { bag } from "../stageState.svelte";
@@ -143,7 +145,7 @@
             {@const busy = !!board.sending[n.id]}
             {@const draft = board.drafts[n.id] ?? ""}
             <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-            <div class="nd h9-open" class:isopen={ui.open === "n" + n.id} onclick={() => toggle("n" + n.id)}>
+            <div class="nd h9-open" class:isopen={ui.open === "n" + n.id} use:keyPicks={{ pick: ".nd-opts button" }} onclick={() => toggle("n" + n.id)}>
               <span class="nd-who"><span class="nd-wh">{n.tag} · {n.where}</span><span class="g"></span><span class="h9-chev">▸</span></span>
               <p class="nd-q"><MathText text={n.title} /></p>
               {#if ui.open === "n" + n.id}

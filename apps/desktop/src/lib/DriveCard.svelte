@@ -7,6 +7,8 @@
   // (`driveAsk.svelte.ts`), so leaving for the browser tab and coming back
   // — which draws this card afresh — loses nothing. Shaped like the
   // Playwright and secret cards beside it.
+  // Item 974: a digit focuses button n; Enter presses it.
+  import { keyPicks } from "./cardKeys";
   import { tip } from "./tip";
   import { resolveApproval } from "./state.svelte";
   import { browsers, readStatus } from "./claudeBrowser.svelte";
@@ -94,7 +96,7 @@
   }
 </script>
 
-<div class="ask" use:trackCard={req.id} role="group" aria-label={DRIVE_HEAD} data-card-kind="drive" data-took={took}>
+<div class="ask" use:trackCard={req.id} use:keyPicks role="group" aria-label={DRIVE_HEAD} data-card-kind="drive" data-took={took}>
   <div class="head">
     <span class="mark" aria-hidden="true">◎</span>
     <span>{DRIVE_HEAD}</span>
@@ -135,13 +137,13 @@
 
   <div class="actions">
     {#if took}
-      <button class="ns-btn accent" data-act="hand-back" disabled={done} use:tip={HAND_BACK_TIP} onclick={() => void back()}>Hand back</button>
-      <button class="ns-btn" data-act="take" disabled={done || !live} use:tip={TAKE_TIP} onclick={() => void take()}>Open the page again</button>
+      <button class="ns-btn accent" data-act="hand-back" data-pick disabled={done} use:tip={HAND_BACK_TIP} onclick={() => void back()}>Hand back</button>
+      <button class="ns-btn" data-act="take" data-pick disabled={done || !live} use:tip={TAKE_TIP} onclick={() => void take()}>Open the page again</button>
     {:else}
-      <button class="ns-btn accent" data-act="take" disabled={done || !live} use:tip={TAKE_TIP} onclick={() => void take()}>Take control</button>
+      <button class="ns-btn accent" data-act="take" data-pick disabled={done || !live} use:tip={TAKE_TIP} onclick={() => void take()}>Take control</button>
     {/if}
-    <button class="ns-btn" data-act="later" disabled={done} use:tip={DRIVE_LATER_TIP} onclick={() => void later()}>Not now — carry on</button>
-    <button class="ns-btn danger" data-act="decline" disabled={done} use:tip={DRIVE_DECLINE_TIP} onclick={() => void decline()}>Decline</button>
+    <button class="ns-btn" data-act="later" data-pick disabled={done} use:tip={DRIVE_LATER_TIP} onclick={() => void later()}>Not now — carry on</button>
+    <button class="ns-btn danger" data-act="decline" data-pick disabled={done} use:tip={DRIVE_DECLINE_TIP} onclick={() => void decline()}>Decline</button>
   </div>
 </div>
 

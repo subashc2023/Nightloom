@@ -22,6 +22,7 @@
     notes = {},
     onnote,
     onquick,
+    onenter,
     folded = false,
     tail,
   }: {
@@ -38,6 +39,8 @@
     /** Item 753: the turn-end card. A click on an option answers at once — the option is picked (with
      *  his comment on it, if any) and the host sends; Enter on a picked option or in Other sends too. */
     onquick?: (i: number) => void;
+    /** Item 974: Enter with the focus on the card (not in Other or a comment) — the host sends if it can. */
+    onenter?: () => void;
     folded?: boolean;
     tail?: Snippet;
   } = $props();
@@ -140,6 +143,12 @@
       onquick(i);
       return;
     }
+    // Item 974: Enter on the card answers it, when the host says it can (every question answered).
+    if (!onquick && onenter && e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      onenter();
+      return;
+    }
     const p = keyPick(e.key, q.options.length);
     if (!p) return;
     e.preventDefault();
@@ -150,6 +159,17 @@
     } else {
       otherEls[i]?.focus();
     }
+  }
+
+  /**
+   * Item 974: a key that reached the host's box (the card focused on arrival, no question focused yet) is
+   * the active question's — a digit picks its option, Enter sends. Returns whether it was taken.
+   */
+  export function hostKey(e: KeyboardEvent): boolean {
+    if (folded || questions.length === 0) return false;
+    if (e.key !== "Enter" && keyPick(e.key, questions[active]?.options.length ?? 0) === null) return false;
+    onKey(e, Math.min(active, questions.length - 1));
+    return e.defaultPrevented;
   }
 </script>
 
@@ -166,7 +186,7 @@
   >
 {/snippet}
 
-<div class="aq" class:folded bind:this={root}>
+<div class="aq" class:folded bind:this={root} data-keycard>
   <div class="aq-strip" bind:this={strip}>
     {#if many}
       <div class="aq-tabs" role="tablist" aria-label="the model's questions">

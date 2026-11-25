@@ -21,6 +21,8 @@
   import AskLock from "./AskLock.svelte";
   import StartCards from "./StartCards.svelte";
   import { look } from "./askMotion";
+  // Item 974: in a row, a digit focuses its answer n; Enter sends it.
+  import { keyPicks } from "./cardKeys";
   import { clock, feedTag, type FeedRow } from "./home";
   import { home, homeDone, homeProject, markHomeSeen, refreshHome } from "./home.svelte";
 
@@ -104,7 +106,7 @@
     <button class="ns-btn ghost small" aria-label="Close" onclick={() => (app.showNeeds = false)}>×</button>
   </header>
   {#if needs.problem}<div class="problem">Some projects could not be read — {needs.problem}</div>{/if}
-  <div class="list" bind:this={listEl} onscroll={(e) => (needs.scroll = e.currentTarget.scrollTop)}>
+  <div class="list" bind:this={listEl} use:keyPicks={{ scope: ".row", pick: ".answer" }} onscroll={(e) => (needs.scroll = e.currentTarget.scrollTop)}>
     <!-- Item 763 H5: Home's Start cards wait on him first. -->
     {#if hasHome}<div class="start-cards"><StartCards /></div>{/if}
     {#each groups as g (g.state)}
@@ -121,7 +123,7 @@
           {/if}
           {#each g.rows as row, k (row.id)}
             {@const busy = !!needs.sending[row.id]}
-            <div class="row" class:busy class:asks={!!row.ask} data-kind={row.kind} style:--i={k} out:rowOut>
+            <div class="row" class:busy class:asks={!!row.ask} data-kind={row.kind} style:--i={k} tabindex="-1" out:rowOut>
               <span class="tag">{row.tag}</span>
               <div class="main">
                 <div class="title">{row.title}</div>
@@ -306,6 +308,9 @@
     padding: 4px 8px 8px 28px;
     font-size: 13px;
     color: var(--dim);
+  }
+  .row:focus {
+    outline: none;
   }
   .row {
     display: grid;

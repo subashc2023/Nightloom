@@ -197,7 +197,7 @@
           >
         </button>
         {#if !folded}
-          {#each g.rows as { seg, i } (T.ids[i] || i)}
+          {#each T.shownRows(g.key, g.rows) as { seg, i } (T.ids[i] || i)}
             {#if seg.kind === "thinking"}
               {#if thinkingHidden(seg)}
                 <!-- The model thought and returned nothing of it (backlog
@@ -417,6 +417,13 @@
               </div>
             {/if}
           {/each}
+          {#if T.hiddenTools(g.key, g.rows) > 0}
+            {@const n = T.hiddenTools(g.key, g.rows)}
+            <!-- Item 977: the calls the tool view leaves out, counted; a click shows this block's. -->
+            <button class="tools-hidden" type="button" data-tools-hidden={n} use:tip={"Hidden by your tool-call view\nShows this block's calls"} onclick={() => T.revealTools(g.key)}
+              >{n} tool call{n === 1 ? "" : "s"} hidden · Show</button
+            >
+          {/if}
         {:else}
           <!-- A parked prompt still shows through a folded block. -->
           {#each g.rows as { seg, i } (i)}
