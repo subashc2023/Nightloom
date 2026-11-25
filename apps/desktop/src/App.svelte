@@ -90,7 +90,7 @@
   import RightRail from "./lib/RightRail.svelte";
   // Item 856: Classic's aside-tab column (605).
   import RightRailClassic from "./lib/RightRailClassic.svelte";
-  import { railFold, RAIL_SLIDE_MS } from "./lib/railFold.svelte";
+  import { railFold, RAIL_SLIDE_MS, toggleRailFold } from "./lib/railFold.svelte";
   import PromptLibrary from "./lib/PromptLibrary.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import Composer from "./lib/Composer.svelte";
@@ -1086,6 +1086,22 @@
             <RightRail column />
           {/if}
         {/if}
+        {#if railColumn && !app.asidePanel && !railFold.folded && !railFold.sliding}
+          <!-- Item 931: the right column's close button is the sidebar's
+               (.side-toggle): round, on the column's edge, apart from the
+               model name in the column's heading, and drawn here, outside
+               the column's scroll, so it stays put while the column scrolls. -->
+          <button
+            class="side-toggle rail-toggle"
+            style:right="{railPx - 11}px"
+            aria-expanded="true"
+            aria-label="Hide the right column"
+            use:tip={"Hide the context column"}
+            onclick={toggleRailFold}
+          >
+            <Icon name="chevr" size={12} />
+          </button>
+        {/if}
         {#if asideDragging}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
@@ -1283,6 +1299,10 @@
   .side-toggle:hover {
     color: var(--ink);
     border-color: var(--dim);
+  }
+  /* Item 931: the right column's twin of the sidebar's button. */
+  .rail-toggle {
+    left: auto;
   }
   .side-grip {
     position: absolute;
