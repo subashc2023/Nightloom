@@ -1347,6 +1347,7 @@ pub fn list_notes(dir: &Path) -> Vec<Note> {
         read: true,
     };
     walk_notes(dir, dir, 0, bounds, &mut out, &mut None);
+    crate::note_summaries::flush();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out.truncate(NOTE_LIMIT);
     out
@@ -1414,6 +1415,7 @@ pub fn list_note_tree(dir: &Path) -> NoteTree {
         read: true,
     };
     let complete = walk_notes(dir, dir, 0, bounds, &mut notes, &mut folders);
+    crate::note_summaries::flush();
     notes.sort_by(|a, b| a.name.cmp(&b.name));
     let mut folders = folders.unwrap_or_default();
     folders.sort();
@@ -1578,7 +1580,8 @@ fn walk_notes(
         let (summary, kind) = if !bounds.read || dataless(&meta) {
             (None, None)
         } else {
-            summarize(&path)
+            // Item 978: opened only when it changed since it was last read.
+            crate::note_summaries::summary(&path, &meta, summarize)
         };
         out.push(Note {
             name: relative.to_string_lossy().replace('\\', "/"),
