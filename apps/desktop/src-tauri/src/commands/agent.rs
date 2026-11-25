@@ -743,9 +743,15 @@ pub(crate) async fn connect_agent_body(
     // The window, from the id the CLI last reported for this chat when the
     // alias names that family (nightshift backlog 216): every reconnect —
     // a chat reopened, a note saved, a pick — used to reset it to unknown.
+    // Item 941: never waits on the open chat's lock. A running turn holds
+    // it for the whole turn, so `lock_focused().await` here held a connect
+    // made mid-turn until the 20 s deadline — under the probe's stage
+    // label, the last one set, which read as a slow `--version` probe
+    // (3:41 PM 2026-11-24). While the turn runs, the model is the one read
+    // from the log at the connect's start (`open.last_model`).
+    stage.set("the open chat's last reported model (its lock, without waiting)");
     let window = {
-        let focused = state.chats.lock_focused().await;
-        let reported = focused.as_ref().and_then(last_model);
+        let reported = reported_model(&state.chats, open.last_model.as_deref());
         nightloom_service::claude_code_window(spec.model.as_deref(), reported.as_deref())
     };
 
@@ -867,6 +873,10 @@ pub(crate) struct OpenChat {
     ask_dir: Option<PathBuf>,
     /// The Claude Code session to `--resume`.
     pub(crate) resume: Option<String>,
+    /// The model the chat's last reply reported ([`last_model`]), read
+    /// with the rest so the connect's window never waits on the chat's
+    /// lock while its turn runs (item 941).
+    pub(crate) last_model: Option<String>,
 }
 
 /// The pure half of [`open_chat`]: the same answers `session_kind`,
@@ -913,6 +923,7 @@ pub(crate) fn open_chat_of(
                 .map(|d| d.join("ask").join(&s.id))
         }),
         resume: session.and_then(resume_of),
+        last_model: session.and_then(last_model),
     }
 }
 
@@ -1044,6 +1055,19 @@ pub(crate) fn pass_spec(
 /// Read off the whole log rather than the live projection: a compaction or a
 /// rewind changes what the next request carries and says nothing about which
 /// snapshot the CLI resolves an alias to.
+/// The model the open chat last reported, for a connect's window (item
+/// 941): from its log when the chat is free, else `read_at_start` — what
+/// the connect read at its start — never waiting on a running turn's lock.
+pub(crate) fn reported_model(
+    chats: &crate::chats::Chats,
+    read_at_start: Option<&str>,
+) -> Option<String> {
+    match chats.try_lock_focused() {
+        Ok(focused) => focused.as_ref().and_then(last_model),
+        Err(_) => read_at_start.map(str::to_string),
+    }
+}
+
 pub(crate) fn last_model(session: &Session) -> Option<String> {
     session.events().iter().rev().find_map(|e| match e {
         SessionEvent::AssistantMessage { model, .. } if !model.is_empty() => Some(model.clone()),
@@ -1078,4 +1102,30 @@ pub(crate) async fn agent_version(binary: &str) -> Result<(String, Option<String
         })?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Ok((resolved, (!text.is_empty()).then_some(text)))
+}
+
+#[cfg(test)]
+mod connect_941_tests {
+    use super::reported_model;
+    use crate::chats::Chats;
+    use nightloom_core::Session;
+
+    /// Item 941: a connect made while the open chat's turn runs (the turn
+    /// holds its lock) reads the chat's model without waiting — the 3:41 PM
+    /// connect sat on `lock_focused().await` until the 20 s deadline.
+    #[test]
+    fn a_running_turn_s_lock_never_holds_the_connect_s_window() {
+        let chats = Chats::default();
+        let log = chats.open(Session::new());
+        let turn = log.try_lock().expect("free before the turn");
+        let t = std::time::Instant::now();
+        assert_eq!(
+            reported_model(&chats, Some("claude-opus-5-5")).as_deref(),
+            Some("claude-opus-5-5")
+        );
+        assert!(t.elapsed() < std::time::Duration::from_millis(100));
+        drop(turn);
+        // Free again: read from the held log (a new chat has reported none).
+        assert_eq!(reported_model(&chats, Some("stale")), None);
+    }
 }

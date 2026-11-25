@@ -472,6 +472,10 @@ export const app = $state({
   applyPending: false,
   /** Last connect failure, shown in the rail until the next attempt. */
   connectError: null as string | null,
+  /** Item 941: Retry pressed on the "not connected" card while a turn ran
+   *  — owed a connect the moment the turn ends (`syncPromptLayers`), and
+   *  the card says so instead of doing nothing. */
+  retryAfterTurn: false,
   /** The files the last rewind's turns wrote, offered to be set aside
    *  (item 259); null when it removed none, or once he chose. */
   rewoundWrites: null as import("./rewoundFiles").RewoundWrites | null,

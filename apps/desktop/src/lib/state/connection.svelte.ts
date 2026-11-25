@@ -421,7 +421,13 @@ export async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true
     // PATH this process inherited. The rail shows the message, which names
     // both possibilities.
     app.connectError = String(e);
-    app.connection = null;
+    // Item 941: ~~`app.connection = null` on every failure~~ — a failed
+    // RE-connect left a working chat "not connected" (3:41 PM 2026-11-24,
+    // mid-turn): the backend changes nothing when connect_agent fails (its
+    // engine is swapped only at the end, `Agents::connect`), so the agent
+    // connection on screen still works. Only a connect with no agent
+    // connection before it reads as not connected.
+    if (app.connection?.engine !== "claude-code") app.connection = null;
   } finally {
     app.connecting = false;
   }

@@ -29,6 +29,12 @@ export function retryDelay(attempt: number): number {
 export function makeConnectRetry(opts: {
   due: () => boolean;
   run: () => Promise<void> | void;
+  /** Item 941: still not connected — the chain arms its next wait itself,
+   *  after a retry that failed or a firing that was not due (a turn or a
+   *  connect in flight). Without it the chain lived only on the effect
+   *  that re-runs `syncPromptLayers`, and after the 3:42 PM failure no
+   *  connect ran at all until a relaunch. */
+  again?: () => boolean;
   setTimer?: (f: () => void, ms: number) => unknown;
   clearTimer?: (t: unknown) => void;
 }) {
@@ -36,17 +42,28 @@ export function makeConnectRetry(opts: {
   const clearT = opts.clearTimer ?? ((t) => clearTimeout(t as ReturnType<typeof setTimeout>));
   let timer: unknown = null;
   let attempt = 0;
+  const arm = (): void => {
+    if (timer !== null) return;
+    const ms = retryDelay(attempt);
+    attempt += 1;
+    timer = setT(() => {
+      timer = null;
+      const rearm = () => {
+        if (opts.again?.()) arm();
+      };
+      if (!opts.due()) return rearm();
+      let ran: Promise<void> | void;
+      try {
+        ran = opts.run();
+      } catch {
+        ran = undefined;
+      }
+      void Promise.resolve(ran).catch(() => {}).finally(rearm);
+    }, ms);
+  };
   return {
     /** Arm the next retry unless one is pending. */
-    arm(): void {
-      if (timer !== null) return;
-      const ms = retryDelay(attempt);
-      attempt += 1;
-      timer = setT(() => {
-        timer = null;
-        if (opts.due()) void opts.run();
-      }, ms);
-    },
+    arm,
     /** Connected (or retried by hand): drop the pending retry, start the waits over. */
     reset(): void {
       if (timer !== null) clearT(timer);

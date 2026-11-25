@@ -306,7 +306,21 @@ export async function syncPromptLayers(): Promise<void> {
   // builds the layers. The reconnect waits while a turn or a connect is
   // in flight, so a running turn keeps the model it started with.
   if (restoreChatChoice()) chatChoice.reconnect = true;
+  // Item 941: a connect that failed while a turn ran is retried on its
+  // own from here too — this returned before arming while busy.
+  if (!app.connection && app.connectError && !app.connecting) connectRetry.arm();
   if (app.busy || app.connecting) return;
+  // Item 941: a Retry pressed during the turn connects now that it ended,
+  // whatever the same chat's last failed connect recorded.
+  if (app.retryAfterTurn) {
+    app.retryAfterTurn = false;
+    lastFailedSync = null;
+    lastAutoRetry = null;
+    connectRetry.reset();
+    app.connectError = null;
+    await applyDraft();
+    return;
+  }
   if (chatChoice.reconnect) {
     chatChoice.reconnect = false;
     // Only when the draft moved on from what the last connect sent (item
@@ -383,9 +397,19 @@ let lastFailedSync: string | null = null;
 let lastAutoRetry: string | null = null;
 /** Item 888: the timed retry of a failed connect; see `connectRetry.ts`. */
 export const connectRetry = makeConnectRetry({
-  due: () => !app.connection && !!app.connectError && !app.connecting && !app.busy,
-  run: () => applyDraft(),
+  // Item 941: during a turn too on the agent engine — `Agents::connect`
+  // leaves a running turn its own agent, so the connect cannot touch it.
+  due: () => !app.connection && !!app.connectError && !app.connecting && (!app.busy || agentMidTurnOk()),
+  run: () => (app.busy ? applyAgentDraft() : applyDraft()),
+  again: () => !app.connection && !!app.connectError,
 });
+
+/** Item 941: a connect may run under a running turn on the agent engine —
+ *  the backend keeps the turn's agent (`Agents::connect`) and reads the
+ *  chat without its lock (`read_open_chat`, `reported_model`). */
+function agentMidTurnOk(): boolean {
+  return app.draft.engine === "claude-code";
+}
 
 /**
  * Try the connection again after it failed (item 261): the Retry on the
@@ -393,10 +417,22 @@ export const connectRetry = makeConnectRetry({
  * chat; a turn or a connect in flight defers it as any rail change is.
  */
 export async function retryConnect(): Promise<void> {
+  // Item 941: ~~deferred silently~~ — during a turn `applyDraft` defers, and
+  // nothing connected after (the same chat's failure guards held it), so
+  // Retry did nothing. Now it is owed: the card says it connects when the
+  // turn ends, and `syncPromptLayers` runs it then.
   if (app.connecting) return;
+  if (app.busy && !agentMidTurnOk()) {
+    // A provider engine's connect would swap the running turn's chat: owed.
+    app.retryAfterTurn = true;
+    return;
+  }
   app.connectError = null;
   lastFailedSync = null;
   lastAutoRetry = null;
   connectRetry.reset();
-  await applyDraft();
+  // Mid-turn on the agent engine: now, past `applyDraft`'s turn deferral.
+  if (app.busy) await applyAgentDraft();
+  else await applyDraft();
+  if (!app.connection && app.connectError) connectRetry.arm();
 }
