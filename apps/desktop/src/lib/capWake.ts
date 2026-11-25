@@ -9,6 +9,8 @@ export function wakeNotice(kind: string[], pct: number | null, cap: number | nul
   if (kind.includes("at_cap")) return `${usage} reached ${theCap} — Nightloom told the main agent to have its helpers wrap up`;
   if (kind.includes("hard")) return `${usage} is close to the plan's limit — Nightloom told the main agent to have its helpers save their work`;
   if (kind.includes("near")) return `${usage} is near ${theCap} — Nightloom told the main agent to have its helpers wrap up`;
+  // Item 938: only the usage line, sent to a main agent idle on its helpers.
+  if (kind.length === 1 && kind[0] === "usage") return `${usage} — Nightloom sent the main agent the usage line while it waits on its helpers`;
   if (kind.includes("reserved")) return `the running helpers are expected to reach ${theCap} — Nightloom told the main agent to launch no more`;
   return `${usage}, ${theCap} — Nightloom gave the main agent a pacing update`;
 }

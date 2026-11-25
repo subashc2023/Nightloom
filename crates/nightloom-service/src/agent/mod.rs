@@ -2992,34 +2992,68 @@ impl ClaudeCodeAgent {
                         let d = dir.clone();
                         // The wakes, and the chat's helpers when one is
                         // still warm (item 693), by the main transcript
-                        // the hook recorded.
-                        let (wakes, earlier) = tokio::task::spawn_blocking(move || {
+                        // the hook recorded; and the usage line, once per
+                        // band crossed, to a main thread idle on helpers
+                        // (938).
+                        let listed = helpers.clone();
+                        let (wakes, earlier, usage) = tokio::task::spawn_blocking(move || {
                             let wakes = budget::take_wakes(&d, now_ms, running, idle);
                             let earlier = (!wakes.is_empty())
                                 .then(|| brief::read_turn_budget(&d).and_then(|b| b.main_transcript))
                                 .flatten()
                                 .and_then(|t| brief::continuable_agents_lines(&t, now_ms));
-                            (wakes, earlier)
+                            let week = (running && idle)
+                                .then(|| brief::week_on_hand(now_ms))
+                                .flatten();
+                            let usage = budget::take_usage_line(
+                                &d,
+                                now_ms,
+                                running,
+                                idle,
+                                week,
+                                Some(&listed),
+                            );
+                            (wakes, earlier, usage)
                         })
                         .await
                         .unwrap_or_default();
-                        if let Some(text) =
-                            budget::with_earlier(budget::wake_text(&wakes, Some(&helpers)), earlier)
-                        {
+                        let wake =
+                            budget::with_earlier(budget::wake_text(&wakes, Some(&helpers)), earlier);
+                        let text = match (wake, &usage) {
+                            (Some(w), Some(u)) => Some(format!("{w}\n{}", u.text)),
+                            (w, u) => w.or_else(|| u.as_ref().map(|u| u.text.clone())),
+                        };
+                        if let Some(text) = text {
                             if inbox.note_if_idle(&text) {
+                                if let Some(u) = &usage {
+                                    let d = dir.clone();
+                                    let u = u.clone();
+                                    let _ = tokio::task::spawn_blocking(move || {
+                                        budget::record_idle_usage(&d, &u)
+                                    })
+                                    .await;
+                                }
                                 let top = wakes.iter().max_by_key(|w| w.at_ms);
+                                let mut kind: Vec<String> =
+                                    wakes.iter().map(|w| w.kind.as_str().to_string()).collect();
+                                if usage.is_some() {
+                                    kind.push("usage".to_string());
+                                }
                                 on_event(TurnEvent::BudgetWake {
                                     text,
-                                    kind: wakes
-                                        .iter()
-                                        .map(|w| w.kind.as_str().to_string())
-                                        .collect(),
-                                    pct: top.map(|w| w.pct),
-                                    cap: top.and_then(|w| w.cap),
+                                    kind,
+                                    pct: top
+                                        .map(|w| w.pct)
+                                        .or(usage.as_ref().and_then(|u| u.pct)),
+                                    cap: top
+                                        .and_then(|w| w.cap)
+                                        .or(usage.as_ref().and_then(|u| u.cap)),
                                 });
                             } else {
                                 // Not idle after all: back for the main
-                                // thread's next call, or the next look.
+                                // thread's next call, or the next look; the
+                                // usage line is not recorded, so the next
+                                // look finds it due again.
                                 budget::put_back(&dir, wakes);
                             }
                         }

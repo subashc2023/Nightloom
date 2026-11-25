@@ -541,6 +541,116 @@ pub fn put_back(dir: &Path, wakes: Vec<Wake>) {
     });
 }
 
+// ---- the usage line to an idle main thread (item 938) -------------------------
+
+/// The usage line for a main thread that sits idle while its helpers run
+/// (938): the hook shows the line only on a call, so a main thread waiting
+/// on helpers saw no figure until one reported. The drive loop writes this
+/// to its stdin, as it writes a wake, once per band crossed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdleUsage {
+    /// Nightloom's line, in its own words and saying so.
+    pub text: String,
+    /// The five-hour reading it shows, and the cap when one is set.
+    pub pct: Option<u8>,
+    pub cap: Option<u8>,
+    /// The main thread's key, and the bands to record once it is written.
+    who: String,
+    band: Option<u8>,
+    week_band: Option<u8>,
+}
+
+/// Pure: the bands an idle main thread is due a line for — `Some` when
+/// this message's 5-hour spend has crossed into a higher
+/// [`brief::USAGE_BAND`] than the main thread was last shown, or the
+/// weekly figure into a higher [`brief::week_band`]. The bands returned
+/// are the ones to record: (5-hour, weekly).
+pub fn idle_usage_due(
+    b: &TurnBudget,
+    pct: Option<u8>,
+    week: Option<u8>,
+) -> Option<(Option<u8>, Option<u8>)> {
+    let who = b.main_who.clone().unwrap_or_default();
+    let last = b.usage_shown.get(&who).copied().unwrap_or(0);
+    let band = pct
+        .zip(b.start_pct)
+        .map(|(p, s)| p.saturating_sub(s) / brief::USAGE_BAND);
+    let five = band.is_some_and(|n| n > last);
+    let wband = week.map(brief::week_band);
+    let weekly = wband.zip(b.week_shown).is_some_and(|(n, s)| n > s);
+    (five || weekly).then_some((band.map(|n| n.max(last)), wband))
+}
+
+/// The drive loop's look for the line (938), under the ledger's lock:
+/// nothing unless helpers run and the main thread can take a line now
+/// (`deliver`). `week` is the weekly figure on hand
+/// ([`brief::week_on_hand`]); a first one is taken as the baseline, not
+/// shown. Nothing is recorded as shown here — [`record_idle_usage`] does
+/// that once the line is written.
+pub fn take_usage_line(
+    dir: &Path,
+    now_ms: i64,
+    running: bool,
+    deliver: bool,
+    week: Option<u8>,
+    helpers: Option<&[(String, String)]>,
+) -> Option<IdleUsage> {
+    if dir.as_os_str().is_empty() || !running || !deliver {
+        return None;
+    }
+    let reading = brief::reading_on_hand(dir, now_ms);
+    brief::with_ledger(dir, |b| {
+        if b.week_shown.is_none() {
+            b.week_shown = week.map(brief::week_band);
+        }
+        // The fresher of the look's reading and the ledger's latest.
+        let r = match reading {
+            Some(r) if b.latest_at_ms.is_none_or(|t| r.sampled_at_ms >= t) => Some(r),
+            _ => b.latest_pct.map(|p| WindowReading {
+                five_hour_pct: p,
+                resets_at: b.resets_at,
+                sampled_at_ms: b.latest_at_ms.unwrap_or(0),
+            }),
+        };
+        let pct = r.map(|r| r.five_hour_pct);
+        let (band, week_band) = idle_usage_due(b, pct, week)?;
+        let mut shown = b.clone();
+        shown.latest_pct = pct.or(b.latest_pct);
+        let line = brief::usage_line(Some(&shown), r, week, None)?;
+        let text = format!(
+            "[Nightloom, not from Swaraag: {line}. Sent while you wait on your helpers. {} If \
+             Swaraag's message named a usage line (a percent of the 5-hour window unless he \
+             said the week) and this has reached it or is within a few points, start nothing \
+             new and have each helper save its state and report now; otherwise nothing to do — \
+             keep waiting, and pass no usage figure to a helper.]",
+            helper_list(helpers)
+        );
+        Some(IdleUsage {
+            text,
+            pct,
+            cap: b.cap.as_ref().map(|c| c.percent),
+            who: b.main_who.clone().unwrap_or_default(),
+            band,
+            week_band,
+        })
+    })
+    .flatten()
+}
+
+/// The line was written (938): its bands count as the main thread's
+/// showing, so neither the next look nor its next call repeats it.
+pub fn record_idle_usage(dir: &Path, u: &IdleUsage) {
+    brief::with_ledger(dir, |b| {
+        if let Some(n) = u.band {
+            let have = b.usage_shown.get(&u.who).copied().unwrap_or(0);
+            b.usage_shown.insert(u.who.clone(), n.max(have));
+        }
+        if let Some(n) = u.week_band {
+            b.week_shown = Some(n.max(b.week_shown.unwrap_or(0)));
+        }
+    });
+}
+
 // ---- the wrap-up's grace (539 pieces 4 and 5) --------------------------------
 
 /// Whether helpers are kept from every usage figure under this ledger:
@@ -1976,6 +2086,77 @@ mod tests {
         for d in [dir, dir2, dir3] {
             let _ = std::fs::remove_dir_all(&d);
         }
+    }
+
+    /// Item 938: a main thread idle on its helpers is sent the usage line
+    /// when this message's 5-hour spend or the week crosses into a higher
+    /// band — one line each, none repeated (by the look or by the main
+    /// thread's own next call), none while it is busy or no helper runs.
+    #[test]
+    fn an_idle_main_thread_gets_the_usage_line_once_per_band() {
+        let dir = temp("idle-usage");
+        start(&dir, 40);
+        // His message's line was shown at 40%, the week at 92%.
+        brief::with_ledger(&dir, |b| {
+            b.main_who = Some(String::new());
+            b.usage_shown.insert(String::new(), 0);
+            b.week_shown = Some(brief::week_band(92));
+        });
+        let now = chrono::Utc::now().timestamp_millis();
+        at(&dir, 42);
+        assert!(take_usage_line(&dir, now, true, true, Some(92), None).is_none());
+        // The 5-hour spend crosses a band: one line, recorded once written.
+        at(&dir, 46);
+        let u = take_usage_line(&dir, now, true, true, Some(92), None).unwrap();
+        assert!(
+            u.text
+                .starts_with("[Nightloom, not from Swaraag: Usage: this message 6%")
+                && u.text.contains("5-hour 46%")
+                && u.text.contains("week 92%"),
+            "{}",
+            u.text
+        );
+        assert_eq!((u.pct, u.cap), (Some(46), None));
+        assert!(take_usage_line(&dir, now, true, true, Some(92), None).is_some());
+        record_idle_usage(&dir, &u);
+        assert!(take_usage_line(&dir, now, true, true, Some(92), None).is_none());
+        // The week crosses a band (one point wide past 90): busy, or no
+        // helper running, nothing; idle with helpers, one line.
+        assert!(take_usage_line(&dir, now, true, false, Some(93), None).is_none());
+        assert!(take_usage_line(&dir, now, false, true, Some(93), None).is_none());
+        let w = take_usage_line(&dir, now, true, true, Some(93), None).unwrap();
+        assert!(w.text.contains("week 93%"), "{}", w.text);
+        record_idle_usage(&dir, &w);
+        assert!(take_usage_line(&dir, now, true, true, Some(93), None).is_none());
+        // The main thread's own call shows the next crossing (the week to
+        // 94); the look then does not repeat it.
+        let senses = brief::Senses {
+            idle_ms: &no_idle,
+            activity: None,
+        };
+        let reply = brief::decide_holding(&dir, MAIN_READ, at(&dir, 47), Some(94), 50, 10, &senses);
+        let line = reply.additional_context().unwrap_or_default();
+        assert!(line.contains("week 94%"), "{line}");
+        assert!(take_usage_line(&dir, now, true, true, Some(94), None).is_none());
+        // And a band the look showed is not shown again by the main
+        // thread's next call.
+        at(&dir, 51);
+        let u = take_usage_line(&dir, now, true, true, Some(94), None).unwrap();
+        record_idle_usage(&dir, &u);
+        let reply = brief::decide_holding(&dir, MAIN_READ, at(&dir, 52), Some(94), 50, 10, &senses);
+        assert!(
+            !reply
+                .additional_context()
+                .unwrap_or_default()
+                .contains("Usage:"),
+            "{reply:?}"
+        );
+        // The bands: 5 points of the week below 90, one point from 90.
+        assert_eq!(
+            [85, 89, 90, 91, 97, 100].map(brief::week_band),
+            [17, 17, 18, 19, 25, 28]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A subagent may not set the budget: the brief hook refuses its call.

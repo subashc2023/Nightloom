@@ -150,6 +150,9 @@ describe("the wake notice and the composer's slot", () => {
     expect(wakeNotice(["near", "at_cap"], 51, 50)).toContain("usage at 51% reached the 50% cap");
     expect(wakeNotice(["reserved"], 30, 50)).toContain("launch no more");
     expect(wakeNotice(["hard"], 96, null)).toContain("plan's limit");
+    // Item 938: the usage line alone, and riding a wake.
+    expect(wakeNotice(["usage"], 47, null)).toBe("usage at 47% — Nightloom sent the main agent the usage line while it waits on its helpers");
+    expect(wakeNotice(["near", "usage"], 46, 50)).toContain("is near the 50% cap");
     // Item 693: his raise outranks the wrap-up it undoes.
     expect(wakeNotice(["near", "raised"], 49, 75)).toBe(
       "cap raised to 75% — Nightloom told the main agent to stop wrapping up and continue, reusing helpers still warm",

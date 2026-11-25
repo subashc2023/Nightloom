@@ -645,6 +645,28 @@ pub fn budget_spent_reason(spent: u8, budget: u8, pct: u8, start: u8) -> String 
 /// The band width, in window points, between two showings of the line.
 pub const USAGE_BAND: u8 = 5;
 
+/// From this weekly figure up, the week's band is one point wide (938):
+/// near the plan's weekly stop each point is worth a line to a main
+/// thread that waits on helpers; below it, [`USAGE_BAND`] points.
+pub const WEEK_FINE_FROM: u8 = 90;
+
+/// The weekly figure's band (938): `w / 5` below [`WEEK_FINE_FROM`], then
+/// one per point — 85 → 17, 90 → 18, 97 → 25.
+pub fn week_band(w: u8) -> u8 {
+    if w < WEEK_FINE_FROM {
+        w / USAGE_BAND
+    } else {
+        WEEK_FINE_FROM / USAGE_BAND + (w - WEEK_FINE_FROM)
+    }
+}
+
+/// The weekly figure on hand from the gauge's files (938: the drive loop's
+/// line to an idle main thread), as the hook reads it: younger than a
+/// five-hour window and its week not reset since. No refresh.
+pub fn week_on_hand(now_ms: i64) -> Option<u8> {
+    week_of(&crate::plan_usage::read(), now_ms)
+}
+
 /// Whether the line is due on this call, pure: `Some(band)` to show it and
 /// record `band` for `who` (`""` the main thread, else the `agent_id`).
 pub fn usage_due(b: &TurnBudget, who: &str, spawn: bool) -> Option<u8> {
@@ -1594,6 +1616,15 @@ pub struct TurnBudget {
     /// (538, 537's fix 1); dropped when no helper runs.
     #[serde(default)]
     pub reserved: Vec<super::budget::Reservation>,
+    /// The main thread's key in `usage_shown` (its `session_id`, `""` when
+    /// the hook's input has none), as its calls name it (938): the line
+    /// the drive loop writes to an idle main thread counts as its showing.
+    #[serde(default)]
+    pub main_who: Option<String>,
+    /// The weekly band ([`week_band`]) last shown to the main thread (938):
+    /// the line goes again when the week crosses into a higher one.
+    #[serde(default)]
+    pub week_shown: Option<u8>,
 }
 
 impl TurnBudget {
@@ -1696,6 +1727,8 @@ pub fn start_turn_budget(
         main_transcript: None,
         wrap_calls: Default::default(),
         reserved: Vec::new(),
+        main_who: None,
+        week_shown: None,
     }
 }
 
@@ -2422,7 +2455,13 @@ fn take_reading(b: &mut TurnBudget, reading: Option<WindowReading>) {
 /// its band and its context band recorded, so the message's first tool
 /// call does not repeat it unless a band is crossed. No call is counted;
 /// no ledger, nothing recorded.
-fn note_prompt(dir: &Path, reading: Option<WindowReading>, who: &str, context: Option<u64>) {
+fn note_prompt(
+    dir: &Path,
+    reading: Option<WindowReading>,
+    week: Option<u8>,
+    who: &str,
+    context: Option<u64>,
+) {
     use std::io::{Read as _, Seek as _, Write as _};
     let Ok(mut file) = std::fs::OpenOptions::new()
         .read(true)
@@ -2443,6 +2482,10 @@ fn note_prompt(dir: &Path, reading: Option<WindowReading>, who: &str, context: O
     let band = b.spent_pct().map_or(0, |s| s / USAGE_BAND);
     let last = b.usage_shown.get(who).copied().unwrap_or(0);
     b.usage_shown.insert(who.to_string(), band.max(last));
+    // The week the line shows him is the main thread's baseline (938).
+    if let Some(w) = week {
+        b.week_shown = Some(week_band(w).max(b.week_shown.unwrap_or(0)));
+    }
     if let Some(band) = context_due(b.context_shown.get(who).copied(), context, false) {
         b.context_shown.insert(who.to_string(), band);
     }
@@ -2455,11 +2498,12 @@ fn note_prompt(dir: &Path, reading: Option<WindowReading>, who: &str, context: O
     );
 }
 
-// One call site; the nine are the hook's separate readings, kept flat rather than bundled for it.
+// One call site; the ten are the hook's separate readings, kept flat rather than bundled for it.
 #[allow(clippy::too_many_arguments)]
 fn note_reading(
     dir: &Path,
     reading: Option<WindowReading>,
+    week: Option<u8>,
     subagent: bool,
     who: &str,
     spawn: bool,
@@ -2531,6 +2575,18 @@ fn note_reading(
     {
         b.usage_shown.insert(who.to_string(), band);
         show = true;
+    }
+    // The week (938): the main thread's line goes again when the week
+    // crosses into a higher band, and a line shown records the week's.
+    if matches!(verdict, CallVerdict::Allow { .. })
+        && !subagent
+        && let Some(w) = week
+    {
+        let band = week_band(w);
+        show |= b.week_shown.is_some_and(|s| band > s);
+        if show {
+            b.week_shown = Some(band.max(b.week_shown.unwrap_or(0)));
+        }
     }
     // Its own context (553): each 50k band, and every call of a helper
     // past the split mark.
@@ -2995,14 +3051,23 @@ fn decide_holding_unheld(
     // message's reading — never only an older message's — recorded as its
     // first showing. Nothing is refused here; the calls are judged as ever.
     // The main thread's transcript, kept for the drive loop's wakes (693).
-    if !subagent && let Some(t) = input.transcript_path.as_deref() {
-        let known = read_turn_budget(dir).and_then(|b| b.main_transcript);
-        if known.as_deref() != Some(t) {
-            with_ledger(dir, |b| b.main_transcript = Some(t.to_path_buf()));
+    // Its key too (938), so the drive loop's line counts as its showing.
+    if !subagent && let Some(have) = read_turn_budget(dir) {
+        let t = input
+            .transcript_path
+            .as_deref()
+            .filter(|t| have.main_transcript.as_deref() != Some(*t));
+        if t.is_some() || have.main_who.as_deref() != Some(who) {
+            with_ledger(dir, |b| {
+                if let Some(t) = t {
+                    b.main_transcript = Some(t.to_path_buf());
+                }
+                b.main_who = Some(who.to_string());
+            });
         }
     }
     if input.hook_event_name == PROMPT_EVENT {
-        note_prompt(dir, reading, who, context);
+        note_prompt(dir, reading, week, who, context);
         let line = usage_line(read_turn_budget(dir).as_ref(), reading, week, context);
         // A helper still warm beside his message (693): "go on", "another
         // 25%" — the main agent can continue it rather than start afresh.
@@ -3021,7 +3086,7 @@ fn decide_holding_unheld(
         return reply;
     }
     let (mut verdict, turn, deadline, show, wake) = note_reading(
-        dir, reading, subagent, who, spawn, context, now_ms, hold_ms, senses,
+        dir, reading, week, subagent, who, spawn, context, now_ms, hold_ms, senses,
     );
     // Under a mode-B cap a helper is shown no usage figure (538): not the
     // line, not the weekly figure, not a refusal that quotes the window.

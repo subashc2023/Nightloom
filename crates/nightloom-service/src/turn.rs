@@ -165,8 +165,10 @@ pub enum TurnEvent {
     /// Nightloom woke an idle main thread for the message's usage cap
     /// (item 538): `text` is the Nightloom-authored line written to the
     /// chat (not his words); `kind` the thresholds it was for (`reserved`,
-    /// `near`, `at_cap`, `pace`, `hard`); `pct` the five-hour reading and
-    /// `cap` the cap, when one is set. Claude Code engine only.
+    /// `near`, `at_cap`, `pace`, `hard`, `raised`), and `usage` when the
+    /// usage line rode it (item 938: a band crossed while the main thread
+    /// waits on helpers); `pct` the five-hour reading and `cap` the cap,
+    /// when one is set. Claude Code engine only.
     BudgetWake {
         text: String,
         kind: Vec<String>,
