@@ -1925,6 +1925,10 @@ export interface ThreadUpkeep {
   over_cap?: boolean;
   /** The id of the "trim thread.md" Queue row this run added, if any. */
   trim_queued?: string | null;
+  /** Lines the last .agents commit had in thread.md that no archive line repeats; upkeep archived them (item 909). */
+  lost_lines?: string[];
+  /** The old Start here was rewritten and archived whole (item 909). */
+  start_here_archived?: boolean;
 }
 
 /** The daily pass's thread step in one project (backlog 271). */

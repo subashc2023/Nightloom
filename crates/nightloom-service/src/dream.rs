@@ -1413,7 +1413,13 @@ pub fn tidy_threads(
         let (threads, errors) = crate::thread::tidy_threads(&notes, today, apply);
         let changed: usize = threads
             .iter()
-            .map(|u| u.struck_moved + u.merged.len() + usize::from(u.trim_queued.is_some()))
+            .map(|u| {
+                u.struck_moved
+                    + u.merged.len()
+                    + u.lost_lines.len()
+                    + usize::from(u.start_here_archived)
+                    + usize::from(u.trim_queued.is_some())
+            })
             .sum();
         let git = if apply && changed > 0 {
             snapshot_target(
