@@ -230,6 +230,9 @@
   .w-calm-t { min-width: 0; }
   .w-watch.bare { justify-content: center; align-items: center; }
   .w-watch.bare .w-calm { max-width: 520px; flex-wrap: wrap; font-size: 14px; line-height: 1.5; }
+  /* The light stays beside the first line of the sentence (it wrapped onto a line of its own). */
+  .w-watch.bare .w-calm > .w-light { align-self: flex-start; margin-top: 0.55em; }
+  .w-watch.bare .w-calm-t { flex: 1 1 calc(100% - 24px); }
   .w-else.inline { width: auto; flex: none; margin-left: auto; padding: 0; }
   .w-watch.bare .w-else.inline { margin-left: 17px; }
   .w-else { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 6px 4px 2px; border: 0; background: none; color: var(--dim); font: 11.5px var(--sans); text-align: left; cursor: pointer; }
