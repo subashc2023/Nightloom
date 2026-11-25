@@ -3142,7 +3142,9 @@ mod tests {
                 .starts_with("text/plain")
         );
         let said = r.text().await.unwrap();
-        assert!(said.contains("one held blocker"), "{said}");
+        // Item 945: Nightshift's held blockers are not in Home's sentence;
+        // `/home/held` (below) still lists them.
+        assert!(!said.contains("held blocker"), "{said}");
         assert!(said.ends_with('.'), "{said}");
         let held: serde_json::Value = c
             .get(format!("{base}/api/home/held"))
