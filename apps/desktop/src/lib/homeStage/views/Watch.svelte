@@ -144,7 +144,7 @@
             {@const draft = board.drafts[n.id] ?? ""}
             <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
             <div class="nd h9-open" class:isopen={ui.open === "n" + n.id} onclick={() => toggle("n" + n.id)}>
-              <span class="nd-who">{n.tag} · {n.where}<span class="g"></span><span class="h9-chev">▸</span></span>
+              <span class="nd-who"><span class="nd-wh">{n.tag} · {n.where}</span><span class="g"></span><span class="h9-chev">▸</span></span>
               <p class="nd-q"><MathText text={n.title} /></p>
               {#if ui.open === "n" + n.id}
                 <Detail rows={[["What", n.detail || n.title], ...(n.detail && n.detail !== n.title ? ([["Chat", n.title]] as [string, string][]) : []), ["Where", n.where]]} />

@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- Item 947: Home's stage in the real App over a stubbed backend, for bin/snap shots. The query is read from
+     window.__h9q: s=new|watch|chat|brief (which state), classic=1 (the Classic layout). Not shipped. -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Home's stage — 845</title>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      try { localStorage.removeItem("nightloom.tabs"); } catch {}
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => (window.__stub ? window.__stub(cmd, args) : Promise.resolve(null)),
+        transformCallback: () => 0,
+        unregisterCallback: () => {},
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+      if (/(^|[?&])(s)=/.test(window.__h9q ?? location.search)) {
+        window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+        window.cancelAnimationFrame = (id) => clearTimeout(id);
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="cap" style="position:fixed;left:0;bottom:0;right:0;font:11px/1.4 ui-monospace,monospace;color:#ddd;background:#000c;padding:4px 8px;white-space:pre-wrap;z-index:99999;display:none"></div>
+    <script>
+      // Errors show only on a held page (?t=), where nobody is watching a console.
+      window.__cap = (m) => { if (!/(^|[?&])cap=1/.test(window.__h9q ?? location.search)) return; const c = document.getElementById("cap"); c.style.display = "block"; c.textContent += m + "\n"; };
+      window.__capset = (m) => { const c = document.getElementById("cap"); c.style.display = "block"; c.textContent = m; };
+      window.addEventListener("error", (e) => __cap("error: " + e.message + " @ " + String((e.error && e.error.stack) || "").split("\n").slice(0, 3).map((l) => l.replace(/@.*:(\d+:\d+)$/, "@$1")).join(" < ")));
+      window.addEventListener("unhandledrejection", (e) => __cap("rejection: " + String(e.reason) + " @ " + String(e.reason && e.reason.stack || "").split("\n").slice(0, 2).map((l) => l.replace(/@.*:(\d+:\d+)$/, "@$1")).join(" < ")));
+    </script>
+    <script type="module" src="./needs947.ts"></script>
+  </body>
+</html>
