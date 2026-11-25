@@ -983,6 +983,11 @@ export function keepWarmStop(chat: string): Promise<boolean> {
   return invoke("keep_warm_stop", { chat });
 }
 
+/** Item 913: every chat the backend holds a keep-warm entry for, with its status. */
+export function keepWarmList(): Promise<import("./keepWarm").KeepWarmStatus[]> {
+  return invoke("keep_warm_list");
+}
+
 /** Item 608: his Settings default for every chat without its own switch. */
 export function keepWarmDefault(): Promise<boolean> {
   return invoke("keep_warm_default");

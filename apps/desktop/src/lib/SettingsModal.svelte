@@ -35,6 +35,7 @@
   import { ASK_CARD_LOOKS, askCardLook, setAskCardLook } from "./askCardLook.svelte";
   import { CACHE_LOOKS, cacheLook, setCacheLook } from "./cacheLook.svelte";
   // Item 826: Touch ID unlock and the pre-arm card.
+  import KeepersList from "./KeepersList.svelte";
   import BitwardenTouch from "./BitwardenTouch.svelte";
   import BitwardenPreArm from "./BitwardenPreArm.svelte";
   import CacheLookPreview from "./CacheLookPreview.svelte";
@@ -212,7 +213,7 @@
   } from "./settings/subscriptionPane";
   import { keepWarm, loadHold, loadKeepWarmDefault, rescoreHold, setHoldRule, setHoldSleep, setKeepWarmDefault } from "./keepWarm.svelte";
   import { boardWords, liveOvertake, nameIn, overtakeWords, ruleWords, sleepSource } from "./holdRule";
-  import { hourWords } from "./keepWarm";
+  import { hourWords, keeperRows } from "./keepWarm";
   import { paneFilter, setPaneFilter, setOpen } from "./settings/paneState.svelte";
   // Item 844: the search box at the top of the nav.
   import { paneTitle, searchSettings, settingsIndex, type SettingHit } from "./settings/searchIndex";
@@ -1215,7 +1216,7 @@
       auto: cli.prefs.auto,
       layersAtCold: app.layerPrefs.autoAtCold,
     }),
-    cache: cacheSummary(keepWarm.defaultOn),
+    cache: cacheSummary(keepWarm.defaultOn, keeperRows(keepWarm.byChat, Date.now()).length),
     bitwarden: bitwardenSummary(bwRules?.length ?? null, bwSession),
   });
   // Item 766 part 2: the secret card's "always" rules, read once the pane
@@ -3349,6 +3350,17 @@
       </SettingsGroup>
       <!-- Item 608: keep-warm is automatic — on by default for every chat. -->
       <SettingsGroup fold="subscription/cache" title={subTitle("cache")} summary={subSummaries.cache} filtering={subFiltering} matches={subMatches("cache")}>
+        <!-- Item 913: every chat kept warm now, each with Extend and Stop. -->
+        <SettingRow fold="subscription/cache-keepers" shown={subShown("cache-keepers")} stack>
+          {#snippet label()}<span>Chats kept warm now</span>{/snippet}
+          {#snippet control()}<KeepersList />{/snippet}
+          {#snippet help()}
+            Every chat whose cache the pings are keeping warm right now, soonest
+            to go cold first. Extend holds it 12 h, then 24 h, after its last
+            reply; Stop ends the pings now (its switch stays as it is; showing
+            the chat again starts them, as reopening its tab does).
+          {/snippet}
+        </SettingRow>
         <SettingRow fold="subscription/cache-keepwarm" shown={subShown("cache-keepwarm")}>
           {#snippet label()}
             <label class="dream-auto cli-auto">

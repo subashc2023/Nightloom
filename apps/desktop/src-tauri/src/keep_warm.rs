@@ -428,6 +428,22 @@ pub fn keep_warm_stop(app: AppHandle, holder: State<'_, Holder>, chat: String) -
     was_on
 }
 
+/// Item 913: every chat this run holds a keep-warm entry for, with its
+/// status — the list Settings shows ("Chats kept warm now"), each row's
+/// Extend and Stop going through `keep_warm_hold` and `keep_warm_stop`.
+/// The window keeps only the rows that are keeping now.
+#[tauri::command]
+pub fn keep_warm_list(holder: State<'_, Holder>) -> Vec<Status> {
+    let policy = policy();
+    let now = now_ms();
+    holder
+        .0
+        .known()
+        .iter()
+        .map(|chat| holder.0.status(chat, None, &policy, now))
+        .collect()
+}
+
 // ---------- item 878: the hold rule's scoreboard ----------
 
 use nightloom_service::hold_policy::{self, Sleep, sim};
