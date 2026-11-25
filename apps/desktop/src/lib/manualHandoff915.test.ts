@@ -57,11 +57,13 @@ describe("item 915: hand off now", () => {
 
   it("the composer and both rails call the shared path, not a copy", () => {
     const c = composerSrc;
-    expect(c).toContain("handOffNow((t) => dispatch(t, [], true))");
+    // Item 926: with where the words leave from (was `handOffNow((t) => dispatch(t, [], true))`).
+    expect(c).toContain("handOffNow((t) => dispatch(t, [], true), from)");
     expect(c).toContain("isHandoffCommand(text)");
     expect(c).not.toContain("requestWrapUp(");
     for (const r of [railSrc, classicSrc]) {
-      expect(r).toContain("handOffNow()");
+      // Item 926: launched from the button (was `handOffNow()`).
+      expect(r).toContain("T.handOff(e.currentTarget)");
       expect(r).toContain("!T.aside && app.activeSessionId");
     }
   });

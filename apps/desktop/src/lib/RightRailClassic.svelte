@@ -12,7 +12,7 @@
   import { tip } from "./tip";
   import { railFold, toggleRailFold } from "./railFold.svelte";
   import { liveLegend, liveTip } from "./liveContext";
-  import { handOffBlock, handOffNow } from "./manualHandoff.svelte";
+  import { handOffBlock } from "./manualHandoff.svelte";
   import { rightRailLogic, type RightRailLogicProps } from "./rightRail/logic.svelte";
 
   // Item 856: the behaviour lives once, in `rightRail/logic.svelte.ts`; this file is the look.
@@ -118,10 +118,11 @@
           {@const block = handOffBlock()}
           <button
             class="hand"
+            class:sending={T.handing && !app.busy}
             type="button"
             disabled={!!block}
             use:tip={block ?? "Send the wrap-up now, at any fill.\nThe next chat starts small."}
-            onclick={() => void handOffNow()}>Hand off now</button
+            onclick={(e) => T.handOff(e.currentTarget)}>Hand off now</button
           >
         {/if}
         {#if T.cache}

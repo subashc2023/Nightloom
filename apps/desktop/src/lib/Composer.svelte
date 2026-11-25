@@ -1135,9 +1135,21 @@
   /** **Wrap up now**: the message as it stands, as a turn of its own.
    *  Item 915: the path is `manualHandoff.svelte.ts`'s, shared with the
    *  right panel's *Hand off now* and `/handoff`; only the send is ours. */
-  async function sendWrapUpNow(): Promise<void> {
-    await handOffNow((t) => dispatch(t, [], true));
+  async function sendWrapUpNow(from: Element | null = null): Promise<void> {
+    wrapSending = from !== null;
+    try {
+      await handOffNow((t) => dispatch(t, [], true), from);
+    } finally {
+      wrapSending = false;
+    }
   }
+  /** Item 926: Wrap up now's Send look — the edge trace from the click
+   *  until the wrap-up's turn starts (Send's item 606), the scan on hover
+   *  and the charge on the press (`.fil-go`, composerControls.css). */
+  let wrapSending = $state(false);
+  $effect(() => {
+    if (app.busy) wrapSending = false;
+  });
 
   /** The per-chat mark on the notice: raising it above the fill puts the notice away. */
   function setChatThreshold(v: string): void {
@@ -2761,8 +2773,10 @@
         addToast(block);
         return;
       }
+      // Item 926: the words fly from the box, as Send's do.
+      const box = boxElement(ta);
       setDraftText(key, "");
-      await sendWrapUpNow();
+      await sendWrapUpNow(box);
       return;
     }
     // Item 694: a plain turn does not take the held passage; Send drops it.
@@ -3947,7 +3961,7 @@
       <strong class="handoff-min-title">{warmTitle(cache.remainingMs, wwContext, switchName)}</strong>
       <span class="mono handoff-fill" use:tip={coldTip(wwCosts, targetRates)}>{warmDetail(wwCosts)}</span>
       <span class="spacer"></span>
-      <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up now, while the cache is warm"} onclick={() => { markActed(wwChat, cache?.warmUntil ?? null); void sendWrapUpNow(); }}>Wrap up now</button>
+      <button class="ns-btn accent small fil-go" class:sending={wrapSending} disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up now, while the cache is warm"} onclick={(e) => { markActed(wwChat, cache?.warmUntil ?? null); void sendWrapUpNow(e.currentTarget); }}><span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span>Wrap up now</button>
       <button class="ns-btn ghost small" use:tip={"Not this hour; the cold chip offers it again"} onclick={() => markActed(wwChat, cache?.warmUntil ?? null)}>Not now</button>
     </div>
   {:else if coldChip && cache}
@@ -3956,7 +3970,7 @@
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
       <strong class="handoff-min-title" use:tip={coldTip(wwCosts, targetRates)}>{coldTitle(wwContext, switchName)}</strong>
       <span class="spacer"></span>
-      <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up; the next chat starts small"} onclick={() => void sendWrapUpNow()}>{coldWords.handoff}</button>
+      <button class="ns-btn accent small fil-go" class:sending={wrapSending} disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up; the next chat starts small"} onclick={(e) => void sendWrapUpNow(e.currentTarget)}><span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span>{coldWords.handoff}</button>
       <button class="ns-btn ghost small" use:tip={"Go on here; hidden until the next reply"} onclick={() => keepCold(wwChat, cache?.warmUntil ?? null)}>{coldWords.keep}</button>
     </div>
   {/if}
@@ -3978,7 +3992,7 @@
       <span class="hc-gauge hc-gauge-mini" aria-hidden="true"><i style:width={`${Math.min(100, handoffPct)}%`}></i><b style:left={`${Math.min(100, handoffThresholdPct)}%`}></b></span>
       <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)}</span>
       <span class="spacer"></span>
-      {#if !wrapUpQueued}<button class="ns-btn accent small hc-go" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>{/if}
+      {#if !wrapUpQueued}<button class="ns-btn accent small hc-go fil-go" class:sending={wrapSending} disabled={app.busy || !wrapUpText.trim()} onclick={(e) => void sendWrapUpNow(e.currentTarget)}><span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span>Wrap up now</button>{/if}
       <button class="hc-ico" aria-label="Expand" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>▴</button>
     </div>
   {:else if handoffCardUp}
@@ -4073,7 +4087,7 @@
         {#if full}<HandoffGoal chat={app.activeSessionId} />{/if}
         <div class="handoff-acts">
           {#if !wrapUpQueued}
-            <button class="ns-btn accent hc-go" class:small={!full} disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>
+            <button class="ns-btn accent hc-go fil-go" class:small={!full} class:sending={wrapSending} disabled={app.busy || !wrapUpText.trim()} onclick={(e) => void sendWrapUpNow(e.currentTarget)}><span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span>Wrap up now</button>
           {/if}
           <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId); stayHere(); }}>Stay here</button>
           {#if hasOwnMessage(app.activeSessionId)}

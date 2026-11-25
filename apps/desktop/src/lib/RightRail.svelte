@@ -12,7 +12,7 @@
   import { tip } from "./tip";
   import { railFold, toggleRailFold } from "./railFold.svelte";
   import { liveLegend, liveTip } from "./liveContext";
-  import { handOffBlock, handOffNow } from "./manualHandoff.svelte";
+  import { handOffBlock } from "./manualHandoff.svelte";
   import { rightRailLogic, type RightRailLogicProps } from "./rightRail/logic.svelte";
 
   // Item 856: the behaviour lives once, in `rightRail/logic.svelte.ts`; this file is the look.
@@ -117,11 +117,12 @@
           <!-- Item 915: the hand-off whenever he wants, at any fill. Not for asides: an aside has no hand-off. -->
           {@const block = handOffBlock()}
           <button
-            class="hand"
+            class="hand fil-go"
+            class:sending={T.handing && !app.busy}
             type="button"
             disabled={!!block}
             use:tip={block ?? "Send the wrap-up now, at any fill.\nThe next chat starts small."}
-            onclick={() => void handOffNow()}>Hand off now</button
+            onclick={(e) => T.handOff(e.currentTarget)}><span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span>Hand off now</button
           >
         {/if}
         {#if T.cache}
