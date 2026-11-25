@@ -9,6 +9,8 @@ import {
   segmentIds,
   setTranscriptPref,
   toggleTranscriptPref,
+  nextToolView,
+  toolHidden,
   toolInputSummary,
   toolResultSummary,
   toolSummary,
@@ -30,6 +32,7 @@ function view(over: Partial<TranscriptView> = {}): TranscriptView {
     tools: true,
     font: "plex",
     size: 16,
+    toolView: "all",
     rev: { thinking: 0, tool: 0 },
     ...over,
   };
@@ -184,7 +187,7 @@ describe("prefs storage", () => {
   beforeEach(() => localStorage.clear());
 
   // Plex at 16 px, tools on, and thinking open (item 674, his ask).
-  const defaults = { thinking: true, tools: true, font: "plex", size: 16 };
+  const defaults = { thinking: true, tools: true, font: "plex", size: 16, toolView: "all" };
 
   it("defaults to thinking open and tools on, Plex at 16 px", () => {
     expect(DEFAULT_TRANSCRIPT_PREFS).toEqual(defaults);
@@ -192,12 +195,13 @@ describe("prefs storage", () => {
   });
 
   it("round-trips through localStorage", () => {
-    saveTranscriptPrefs({ thinking: true, tools: false, font: "newsreader", size: 17 });
+    saveTranscriptPrefs({ thinking: true, tools: false, font: "newsreader", size: 17, toolView: "failed" });
     expect(loadTranscriptPrefs()).toEqual({
       thinking: true,
       tools: false,
       font: "newsreader",
       size: 17,
+      toolView: "failed",
     });
   });
 
@@ -208,7 +212,7 @@ describe("prefs storage", () => {
     );
     expect(loadTranscriptPrefs()).toEqual({ ...defaults, tools: false });
     // A choice made after the change is kept.
-    saveTranscriptPrefs({ thinking: false, tools: true, font: "plex", size: 16 });
+    saveTranscriptPrefs({ thinking: false, tools: true, font: "plex", size: 16, toolView: "all" });
     expect(loadTranscriptPrefs().thinking).toBe(false);
   });
 
@@ -251,5 +255,45 @@ describe("prefs storage", () => {
     setTranscriptSize(17);
     expect(loadTranscriptPrefs().font).toBe("newsreader");
     expect(loadTranscriptPrefs().size).toBe(17);
+  });
+});
+
+// Item 977: which tool calls the trace lists.
+describe("tool view (item 977)", () => {
+  const call = (more: Partial<{ name: string; result: { is_error: boolean } | null; denied: boolean }> = {}) => ({
+    id: "t1",
+    name: "Bash",
+    result: { is_error: false },
+    ...more,
+  });
+  it("Show all hides nothing", () => {
+    expect(toolHidden(call(), "all", false)).toBe(false);
+  });
+  it("Hide successful hides a finished success, keeps a failure, a refusal and a running call", () => {
+    expect(toolHidden(call(), "failed", false)).toBe(true);
+    expect(toolHidden(call({ result: { is_error: true } }), "failed", false)).toBe(false);
+    expect(toolHidden(call({ denied: true }), "failed", false)).toBe(false);
+    expect(toolHidden(call({ result: null }), "failed", false)).toBe(false);
+  });
+  it("Hide all hides every call but one waiting on him and the model's question", () => {
+    expect(toolHidden(call({ result: { is_error: true } }), "none", false)).toBe(true);
+    expect(toolHidden(call({ result: null }), "none", true)).toBe(false);
+    expect(toolHidden(call({ name: "AskUserQuestion" }), "none", false)).toBe(false);
+  });
+  it("the palette steps all → failed → none → all; a bad stored value reads as all", () => {
+    expect(nextToolView("all")).toBe("failed");
+    expect(nextToolView("failed")).toBe("none");
+    expect(nextToolView("none")).toBe("all");
+    localStorage.setItem("nightloom.transcript", JSON.stringify({ toolView: "zen" }));
+    expect(loadTranscriptPrefs().toolView).toBe("all");
+    localStorage.clear();
+  });
+  it("both message looks list the trace through the view and count what it hides", async () => {
+    const { readFileSync } = await import("node:fs");
+    for (const f of ["./AssistantMessage.svelte", "./AssistantMessageClassic.svelte"]) {
+      const s = readFileSync(new URL(f, import.meta.url), "utf8");
+      expect(s, f).toContain("T.shownRows(g.key, g.rows)");
+      expect(s, f).toContain("T.hiddenTools(g.key, g.rows)");
+    }
   });
 });

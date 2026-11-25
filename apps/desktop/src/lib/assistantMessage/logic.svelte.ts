@@ -14,7 +14,7 @@ import { shownHandoffTexts } from "../handoffTag";
 import { renderReply } from "../markdown";
 import { renderStreamingParts } from "../streamBlocks";
 import { runBlock, type RunFrom } from "../shellRun.svelte";
-import { flipOverride, resolveOpen, segmentIds, transcript, type BlockKind, type Override } from "../transcriptPrefs.svelte";
+import { flipOverride, resolveOpen, segmentIds, toolHidden, transcript, type BlockKind, type Override } from "../transcriptPrefs.svelte";
 import { groupSegments, modelOmitsThinking, resolveFolded, waitingLabel } from "../activity";
 import { type IconName } from "../icons";
 import { fmtTokens, sizeTitle, type TurnSize } from "../tokens";
@@ -335,6 +335,30 @@ export function assistantMessageLogic(props: () => AssistantMessageLogicProps) {
   const standIn = $derived(
     segs.length === 1 && segs[0].kind === "text" && isStandIn([segs[0].text], footer?.stop_reason),
   );
+
+  // ---- Item 977: which tool calls the trace lists (Settings → Transcript, the palette) ----------------
+  // A block whose hidden calls he asked to see ("N hidden · Show") shows them all; kept for the message's
+  // life on screen (a toggle of the setting is the lasting choice).
+  let revealedTools = $state<Record<string, boolean>>({});
+  function askingAbout(id: string): boolean {
+    return approvals.some((a) => a.id === id);
+  }
+  function hidesTool(seg: Segment): boolean {
+    return seg.kind === "tool" && toolHidden(seg.call, transcript.toolView, askingAbout(seg.call.id));
+  }
+  /** The block's rows as the trace lists them under the tool view. */
+  function shownRows<R extends { seg: Segment }>(key: string, rows: readonly R[]): R[] {
+    if (transcript.toolView === "all" || revealedTools[key]) return [...rows];
+    return rows.filter((r) => !hidesTool(r.seg));
+  }
+  /** How many of the block's calls the view leaves out (0 once he showed them). */
+  function hiddenTools(key: string, rows: readonly { seg: Segment }[]): number {
+    if (transcript.toolView === "all" || revealedTools[key]) return 0;
+    return rows.filter((r) => hidesTool(r.seg)).length;
+  }
+  function revealTools(key: string): void {
+    revealedTools[key] = true;
+  }
 
   function kindOf(seg: Segment): BlockKind {
     return seg.kind === "thinking" ? "thinking" : "tool";
@@ -849,6 +873,9 @@ export function assistantMessageLogic(props: () => AssistantMessageLogicProps) {
     },
     isFolded,
     isOpen,
+    shownRows,
+    hiddenTools,
+    revealTools,
     keyClick,
     keyFold,
     get lastGroup() {

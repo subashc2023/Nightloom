@@ -15,7 +15,7 @@
     usable,
     useProject,
   } from "./state.svelte";
-  import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
+  import { TOOL_VIEWS, nextToolView, setToolView, toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { thinkingToggleDead } from "./activity";
   import { MODEL_KEYS, providerLabel } from "./catalog";
   import { cli } from "./cliUpdate.svelte";
@@ -293,6 +293,16 @@
         key: `${mod}${shift}B`,
         group: "Panels",
         run: () => go(() => toggleTranscriptPref("tool")),
+      },
+      {
+        // Item 977: step the tool-call view; the label names the view the row switches to.
+        id: "tool_view",
+        label: `Tool calls: ${TOOL_VIEWS.find((t) => t.id === nextToolView(transcript.toolView))?.name ?? "Show all"}`,
+        meta: `now ${TOOL_VIEWS.find((t) => t.id === transcript.toolView)?.name ?? "Show all"} · Settings → Appearance → Transcript type`,
+        icon: "term",
+        key: "",
+        group: "Panels",
+        run: () => go(() => setToolView(nextToolView(transcript.toolView))),
       },
       {
         id: "projects",

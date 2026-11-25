@@ -113,8 +113,10 @@
   import { parseBackfillCap } from "./state/prefs.svelte";
   import { backfillSentence } from "./backfill";
   import {
+    TOOL_VIEWS,
     TRANSCRIPT_FONTS,
     TRANSCRIPT_SIZES,
+    setToolView,
     setTranscriptFont,
     setTranscriptSize,
     transcript,
@@ -2232,9 +2234,9 @@
       <section class="card">
         <div class="ch"><span class="t">Transcript type</span></div>
         <p class="note small">
-          The face and size of replies and your own messages. Applies at once
-          to the transcript behind this window and is remembered. The rest of
-          the interface stays in Plex Sans.
+          The face and size of replies and your own messages, and which tool
+          calls a reply lists. Applies at once to the transcript behind this
+          window and is remembered. The rest of the interface stays in Plex Sans.
         </p>
         <div class="type-rows">
           <div class="type-row">
@@ -2261,6 +2263,23 @@
                   aria-checked={transcript.size === n}
                   onclick={() => setTranscriptSize(n)}
                 >{n} px</button>
+              {/each}
+            </div>
+          </div>
+          <!-- Item 977: which tool calls a reply's trace lists. A call waiting on you and the model's
+               question always show; a hidden run leaves a line that counts it. -->
+          <div class="type-row">
+            <span class="type-label">Tool calls</span>
+            <div class="seg" role="radiogroup" aria-label="Tool calls in replies">
+              {#each TOOL_VIEWS as t (t.id)}
+                <button
+                  class:on={transcript.toolView === t.id}
+                  role="radio"
+                  aria-checked={transcript.toolView === t.id}
+                  data-tool-view={t.id}
+                  use:tip={t.id === "failed" ? "Lists only calls that failed, were refused or still run" : t.id === "none" ? "Lists no calls; one line counts them" : "Lists every call"}
+                  onclick={() => setToolView(t.id)}
+                >{t.name}</button>
               {/each}
             </div>
           </div>
