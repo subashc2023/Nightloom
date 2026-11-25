@@ -24,6 +24,9 @@
     onquick,
     folded = false,
     tail,
+    files = {},
+    onfiles,
+    onunfile,
   }: {
     questions: AskQuestion[];
     idBase: string;
@@ -40,7 +43,19 @@
     onquick?: (i: number) => void;
     folded?: boolean;
     tail?: Snippet;
+    /** Item 975: files on each question's free-text answer (the host's chips); without `onfiles` none attach. */
+    files?: Record<number, { id: number; name: string; pending?: boolean }[]>;
+    onfiles?: (i: number, list: File[]) => void;
+    onunfile?: (i: number, id: number) => void;
   } = $props();
+
+  /** Item 975: files dropped or pasted on Other go to the host; text pastes stay text. */
+  function takeFiles(i: number, list: FileList | null | undefined, e: Event): void {
+    const got = Array.from(list ?? []);
+    if (!onfiles || got.length === 0) return;
+    e.preventDefault();
+    onfiles(i, got);
+  }
 
   const many = $derived(questions.length > 1);
   let active = $state(0);
@@ -310,13 +325,30 @@
                     onother(i, el.value);
                   }}
                   bind:this={otherEls[i]}
-                  placeholder="Other — type an answer"
+                  ondragover={(e) => onfiles && e.dataTransfer?.types.includes("Files") && e.preventDefault()}
+                  ondrop={(e) => takeFiles(i, e.dataTransfer?.files, e)}
+                  onpaste={(e) => takeFiles(i, e.clipboardData?.files, e)}
+                  placeholder={onfiles ? "Other — type an answer, or drop files" : "Other — type an answer"}
                   aria-label="other answer"
                   autocomplete="off"
                 ></textarea>
               </span>
               <kbd class="aq-k" aria-hidden="true">{q.options.length + 1}</kbd>
             </label>
+            {#if (files[i]?.length ?? 0) > 0}
+              <div class="aq-files" aria-label="files on this answer">
+                {#each files[i] as f (f.id)}
+                  <span class="aq-file" class:pending={f.pending}
+                    >{f.name}{#if f.pending}<span class="aq-fdim">(converting)</span>{/if}<button
+                      type="button"
+                      class="aq-fx"
+                      aria-label="remove {f.name}"
+                      onclick={() => onunfile?.(i, f.id)}>×</button
+                    ></span
+                  >
+                {/each}
+              </div>
+            {/if}
           </div>
           {#if prev}
             {@const p = previewOption(q, picks[i] ?? [], hover[i] ?? null)}
@@ -873,5 +905,40 @@
       transform: none;
       box-shadow: 0 0 0 8px transparent;
     }
+  }
+  /* Item 975: files on a free-text answer, as small chips under Other. */
+  .aq-files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 4px 0 2px 28px;
+  }
+  .aq-file {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    padding: 2px 4px 2px 8px;
+    border: 1px solid var(--line2, var(--line));
+    border-radius: 6px;
+    max-width: 22rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .aq-file.pending,
+  .aq-fdim {
+    color: var(--dim);
+  }
+  .aq-fx {
+    border: none;
+    background: none;
+    color: var(--dim);
+    cursor: pointer;
+    padding: 0 4px;
+    font: inherit;
+  }
+  .aq-fx:hover {
+    color: var(--ink);
   }
 </style>

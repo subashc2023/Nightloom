@@ -27,6 +27,12 @@
   import DriveCard from "./DriveCard.svelte";
   import { isDriveRequest } from "./drive";
   import { trackCard } from "./waitingNotice.svelte";
+  // Item 975: files on a question's free-text answer.
+  import { addToast } from "./state.svelte";
+  import { readDraft, removeAttachment, setDraftAttachments } from "./drafts.svelte";
+  import { acceptFiles } from "./attachFiles.svelte";
+  import { saveAnswerFiles } from "./api";
+  import { answerFilesKey, filesToSave, withFilesNote } from "./answerFiles";
 
   let { req }: { req: ApprovalRequest } = $props();
 
@@ -300,16 +306,57 @@
     }
   }
 
+  /*
+   * Item 975: files dropped or pasted on a question's Other — chips in the drafts store under this card's key
+   * per question, so they outlast a chat switch; the composer's routes and caps. Not on an aside's card: an
+   * aside's answer is an allow or a deny only (`resolveAsideApproval`), so nothing it carries would arrive.
+   */
+  const takesFiles = $derived(req.aside === undefined);
+  const fileChips = $derived(
+    Object.fromEntries(questions.map((_, i) => [i, readDraft(answerFilesKey(req.id, i)).attachments])),
+  );
+  function addFiles(i: number, list: File[]): void {
+    void acceptFiles(answerFilesKey(req.id, i), list);
+  }
+  const hasFiles = (i: number) => (fileChips[i]?.length ?? 0) > 0;
   const openCount = $derived(
-    questions.filter((_, i) => (picks[i]?.length ?? 0) === 0 && (others[i] ?? "").trim() === "").length,
+    questions.filter((_, i) => (picks[i]?.length ?? 0) === 0 && (others[i] ?? "").trim() === "" && !hasFiles(i)).length,
   );
   const answered = $derived(questions.length > 0 && openCount === 0);
   const questionStatus = $derived(
     openCount > 0 ? `${openCount} of ${questions.length} still open` : `all ${questions.length} answered`,
   );
 
-  function answerQuestions() {
+  let saving = $state(false);
+  async function answerQuestions() {
     const payload = buildAnswer(req.input, questions, picks, others, notes) as { answers: Record<string, string> };
+    // Item 975: each question's files saved in the chat's folder first; its answer names their paths.
+    if (questions.some((_, i) => hasFiles(i))) {
+      if (fileChips && Object.values(fileChips).some((l) => l.some((c) => c.pending))) {
+        addToast("A file is still converting — answer when it is ready");
+        return;
+      }
+      const ws = app.connection?.workspace;
+      const chat = req.chat ?? app.activeSessionId;
+      if (!ws || !chat) {
+        addToast("This chat has no folder to put the files in — remove them, or answer in words");
+        return;
+      }
+      saving = true;
+      try {
+        for (const [i, q] of questions.entries()) {
+          if (!hasFiles(i)) continue;
+          const note = await saveAnswerFiles(ws, chat, filesToSave(fileChips[i]));
+          payload.answers[q.question] = withFilesNote(payload.answers[q.question] ?? "", note);
+        }
+      } catch (e) {
+        addToast(`The files were not saved, so nothing was sent: ${String(e)}`);
+        return;
+      } finally {
+        saving = false;
+      }
+      questions.forEach((_, i) => setDraftAttachments(answerFilesKey(req.id, i), []));
+    }
     // Kept by call id for the answered table under the call (354).
     recordAnswers(req.id, answeredRows(questions, payload.answers));
     // Wave K (his pick, blocker 2031): the thread carries the answer down into the message box and the card
@@ -445,6 +492,9 @@
       {notes}
       onnote={(i, label, v) => (notes[i] = { ...(notes[i] ?? {}), [label]: v })}
       {folded}
+      files={takesFiles ? fileChips : {}}
+      onfiles={takesFiles ? addFiles : undefined}
+      onunfile={(i, id) => removeAttachment(answerFilesKey(req.id, i), id)}
     >
       {#snippet tail()}
         {#if folded}<span class="st">{questionStatus} · waits until you answer</span>{/if}
@@ -455,10 +505,14 @@
     {#if !folded}
       {@render noteField()}
       <div class="actions">
-        <button class="ns-btn accent" disabled={!answered} onclick={answerQuestions}>Answer</button>
+        <button class="ns-btn accent" disabled={!answered || saving} onclick={() => void answerQuestions()}>Answer</button>
         <button
           class="ns-btn ghost"
-          onclick={() => decide("deny", undefined, undefined, "the user skipped the question; decide yourself")}
+          onclick={() => {
+            // Item 975: a skipped card's files go with it.
+            questions.forEach((_, i) => setDraftAttachments(answerFilesKey(req.id, i), []));
+            decide("deny", undefined, undefined, "the user skipped the question; decide yourself");
+          }}
         >
           Skip — let it decide
         </button>
