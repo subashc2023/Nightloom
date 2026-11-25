@@ -475,6 +475,11 @@ pub struct RunConfirm {
     /// The usage reading was old (or missing) at the press.
     #[serde(default)]
     pub stale: bool,
+    /// Item 910: no press — its scheduled run skipped itself to save his
+    /// limits, and the card asks Run it now / Keep skipping (answered
+    /// once, on any surface; Keep skipping holds for the rest of his day).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scheduled: bool,
 }
 
 /// What a job has cost of the weekly window since it last reset.
@@ -583,6 +588,10 @@ pub struct Job {
     /// guard once (a scheduled start never does).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub force_once: bool,
+    /// Item 910: the local day he answered Keep skipping on the card a
+    /// scheduled skip raised; later skips that day do not ask again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_skipping: Option<NaiveDate>,
     /// Item 781: the away server's copy of one of the Mac's jobs (the Mac
     /// sends its away jobs with each sync, [`Jobs::take_mac_jobs`]). Run
     /// only under the lease ([`crate::sync::lease`]); never listed to the
@@ -1013,6 +1022,7 @@ pub fn run_confirm(
         five_hour: plan.and_then(|p| p.five_hour),
         week: plan.and_then(|p| p.seven_day),
         stale: plan.is_none_or(|p| p.stale),
+        scheduled: false,
     }
 }
 
@@ -1243,6 +1253,7 @@ impl Jobs {
             recent_cost: Vec::new(),
             confirm: None,
             force_once: false,
+            keep_skipping: None,
             stand_in: false,
             watch,
         };
@@ -1364,6 +1375,11 @@ impl Jobs {
                 job.wanted = None;
             }
             if patch.dismiss_confirm == Some(true) {
+                // Item 910: Keep skipping holds for the rest of his day.
+                if job.confirm.as_ref().is_some_and(|c| c.scheduled) {
+                    job.keep_skipping =
+                        Some(local_date(now, &job.zone()).unwrap_or_else(|| now.date_naive()));
+                }
                 job.confirm = None;
             }
             // A second press (or the other device's) while the forced run
@@ -1386,7 +1402,38 @@ impl Jobs {
                 }
             }
         })
-        .map(JobView::from)
+        .map(|job| {
+            // Item 910: his answer to a scheduled skip's card is a line in
+            // Home's feed, whichever surface he answered on.
+            let asked = current.confirm.as_ref().is_some_and(|c| c.scheduled);
+            let answer = if !asked {
+                None
+            } else if patch.run_anyway == Some(true) && current.running.is_none() {
+                Some("you answered Run it now; it runs within 30 s")
+            } else if patch.dismiss_confirm == Some(true) {
+                Some("you answered Keep skipping; it will not ask again today")
+            } else {
+                None
+            };
+            if let (Some(answer), Some(config)) = (answer, self.config_dir()) {
+                crate::home::append(
+                    &config,
+                    &crate::home::FeedRow {
+                        at: now,
+                        kind: "scan".into(),
+                        label: Some(crate::home::NAME.into()),
+                        chat: None,
+                        project: None,
+                        line: if current.id == crate::home::SCAN_JOB_ID {
+                            format!("Morning scan: {answer}")
+                        } else {
+                            format!("{}: {answer}", current.title)
+                        },
+                    },
+                );
+            }
+            JobView::from(job)
+        })
     }
 
     /// One run at the next tick, whatever its schedule says.
@@ -1570,6 +1617,7 @@ impl Jobs {
                         note: None,
                         confirm: None,
                         force_once: false,
+                        keep_skipping: None,
                         // The Mac's chat: mirrored, so the first run here
                         // forks it into a chat of the server's own.
                         chat,
@@ -1766,6 +1814,7 @@ impl Jobs {
         now: DateTime<Utc>,
     ) {
         let summary = format!("skipped — {why}");
+        let today = local_date(now, &job.zone()).unwrap_or_else(|| now.date_naive());
         let _ = self.change(&job.id, |j| {
             j.last = Some(LastRun {
                 started: now,
@@ -1781,6 +1830,11 @@ impl Jobs {
             });
             if pressed {
                 j.confirm = Some(run_confirm(j, why, plan, now));
+            } else if j.keep_skipping != Some(today) {
+                // Item 910: never skip silently — the card asks him.
+                let mut c = run_confirm(j, why, plan, now);
+                c.scheduled = true;
+                j.confirm = Some(c);
             }
             j.note = Some(summary.clone());
             j.run_now = false;

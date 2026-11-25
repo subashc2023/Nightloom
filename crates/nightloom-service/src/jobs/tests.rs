@@ -1431,7 +1431,11 @@ async fn a_scheduled_home_run_is_still_refused_after_run_anyway() {
     assert_eq!(last.outcome, Outcome::Skipped);
     assert_eq!(last.summary, "skipped — the 5-hour window was at 85%");
     assert!(!last.forced);
-    assert!(j.confirm.is_none(), "a scheduled skip does not ask");
+    // Item 910 (was: "a scheduled skip does not ask"): it asks, as its own card.
+    assert!(
+        j.confirm.as_ref().is_some_and(|c| c.scheduled),
+        "a scheduled skip asks Run it now / Keep skipping"
+    );
     // That day's page is the forced run's (never written over); the next
     // scheduled skip, on a day with no page, writes its code-only page.
     let page = |at: DateTime<Utc>| {
@@ -1448,7 +1452,7 @@ async fn a_scheduled_home_run_is_still_refused_after_run_anyway() {
     assert!(next > due);
     h.jobs.tick(h.as_ref(), next + Duration::minutes(1)).await;
     assert!(page(next).contains("Skipped: the 5-hour window was at 85%\n"));
-    assert!(home_row(&h, scan).confirm.is_none());
+    assert!(home_row(&h, scan).confirm.is_some_and(|c| c.scheduled));
     assert_eq!(
         h.preps.lock().unwrap().len(),
         1,
@@ -1765,5 +1769,84 @@ async fn the_no_reading_note_goes_when_its_run_ends() {
     assert!(j.running.is_none());
     assert_eq!(j.note, None);
     assert_eq!(j.last.unwrap().reading.unwrap().source, "none");
+    let _ = std::fs::remove_dir_all(&cfg);
+}
+
+/// Item 910: a scheduled skip never goes by silently — the scan's row
+/// carries the card (Run it now / Keep skipping), Siri and the phone count
+/// it, his answer is one feed line, Keep skipping holds for the rest of
+/// that day, the next day asks again, and Run it now runs it once.
+#[tokio::test]
+async fn a_scheduled_skip_asks_and_his_answer_holds_for_the_day() {
+    let (h, cfg) = home_host();
+    let scan = crate::home::SCAN_JOB_ID;
+    assert!(h.jobs.ensure_home_scan("home-p", at(2026, 11, 25, 5, 0)));
+    *h.week.lock().unwrap() = Some(85);
+    let due = home_row(&h, scan).next_run;
+    h.jobs.tick(h.as_ref(), due + Duration::minutes(1)).await;
+    let j = home_row(&h, scan);
+    let c = j.confirm.clone().expect("the skip asks");
+    assert!(c.scheduled && c.why.contains("85%"), "{c:?}");
+    assert_eq!(c.week, Some(85));
+
+    // Keep skipping: the card goes, the day is kept, one feed line says so.
+    let t1 = due + Duration::minutes(5);
+    h.jobs
+        .patch(
+            scan,
+            JobPatch {
+                dismiss_confirm: Some(true),
+                ..JobPatch::default()
+            },
+            t1,
+        )
+        .unwrap();
+    let j = home_row(&h, scan);
+    assert!(j.confirm.is_none());
+    assert_eq!(j.keep_skipping, super::local_date(t1, &j.zone()));
+    let feed = crate::home::read_feed(&cfg);
+    assert!(
+        feed.iter()
+            .any(|r| r.line
+                == "Morning scan: you answered Keep skipping; it will not ask again today"),
+        "{feed:?}"
+    );
+    // Another skip that day does not ask again; the row still says why.
+    h.jobs.skip(
+        &j,
+        "the weekly window was at 86%",
+        None,
+        false,
+        t1 + Duration::hours(1),
+    );
+    let j = home_row(&h, scan);
+    assert!(j.confirm.is_none());
+    assert!(j.note.as_deref().is_some_and(|n| n.contains("86%")));
+
+    // The next day's skip asks again; Run it now runs it once, past the guard.
+    let next = j.next_run;
+    h.jobs.tick(h.as_ref(), next + Duration::minutes(1)).await;
+    assert!(home_row(&h, scan).confirm.is_some_and(|c| c.scheduled));
+    let t2 = next + Duration::minutes(3);
+    let v = h
+        .jobs
+        .patch(
+            scan,
+            JobPatch {
+                run_anyway: Some(true),
+                ..JobPatch::default()
+            },
+            t2,
+        )
+        .unwrap();
+    assert!(v.job.confirm.is_none() && v.job.run_now && v.job.force_once);
+    assert!(
+        crate::home::read_feed(&cfg)
+            .iter()
+            .any(|r| r.line == "Morning scan: you answered Run it now; it runs within 30 s")
+    );
+    assert_eq!(h.preps.lock().unwrap().len(), 0);
+    h.jobs.tick(h.as_ref(), t2 + Duration::minutes(1)).await;
+    assert_eq!(h.preps.lock().unwrap().len(), 1, "the answered run started");
     let _ = std::fs::remove_dir_all(&cfg);
 }

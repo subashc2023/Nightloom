@@ -7,6 +7,7 @@
 import type { Component } from "svelte";
 import type { Brief } from "./brief";
 import type { Ev } from "./steps";
+import type { Job, JobPatch } from "../../remote/jobs";
 
 /** One task on Home's stage, as Home's `update_task` wrote it (`data` is the view's own payload). */
 export interface HomeTask {
@@ -35,6 +36,11 @@ export interface StageHost {
   scanWords(): string | null;
   /** Item 947: today's scan was skipped (the feed row's reason and time); null when it ran or has not come. */
   skippedScan(): { why: string; at: string } | null;
+  /** Item 910: the morning scan's job, for the card a scheduled skip raises (Run it now / Keep skipping). The Mac
+   *  only — the phone's Home lists the same card in its Needs you. */
+  scanJob?(): Promise<Job | null>;
+  /** Item 910: his answer on that card (the job's patch, the phone's `POST /jobs/{id}`). */
+  answerJob?(id: string, patch: JobPatch): Promise<unknown>;
   /** The tasks on the stage, oldest first. */
   homeTasks(): Promise<HomeTask[]>;
   /** One click of his Home reads at its next look (kind B). */
