@@ -34,18 +34,10 @@ export type TranscriptFont = (typeof TRANSCRIPT_FONTS)[number]["id"];
 export const TRANSCRIPT_SIZES = [15, 16, 17] as const;
 export type TranscriptSize = (typeof TRANSCRIPT_SIZES)[number];
 
-/**
- * Which tool calls a reply's trace lists (nightshift item 977, from 762's survey: T3 Code's "Tool calls in
- * chat"): every call; only those that failed, were refused or are still running; or none. A call waiting on
- * his answer and the model's own question are always shown, and a hidden run leaves one line that counts it
- * and shows it for that block.
- */
-export const TOOL_VIEWS = [
-  { id: "all", name: "Show all" },
-  { id: "failed", name: "Hide successful" },
-  { id: "none", name: "Hide all" },
-] as const;
-export type ToolView = (typeof TOOL_VIEWS)[number]["id"];
+// Item 977: the tool-call view's pure parts live in `toolView.ts` (the phone page reads them too, without
+// this module's side effect on the root's type properties).
+import { TOOL_VIEWS, isToolView, nextToolView, toolHidden, type ToolLike, type ToolView } from "./toolView";
+export { TOOL_VIEWS, nextToolView, toolHidden, type ToolLike, type ToolView };
 
 export interface TranscriptPrefs {
   /** Every thinking block open, not just the one still streaming. */
@@ -80,9 +72,6 @@ const THINKING_DEFAULT_V = 2;
 
 function isFont(v: unknown): v is TranscriptFont {
   return TRANSCRIPT_FONTS.some((f) => f.id === v);
-}
-function isToolView(v: unknown): v is ToolView {
-  return TOOL_VIEWS.some((t) => t.id === v);
 }
 function isSize(v: unknown): v is TranscriptSize {
   return (TRANSCRIPT_SIZES as readonly number[]).includes(v as number);
@@ -213,33 +202,6 @@ export function setTranscriptFont(font: TranscriptFont): void {
 export function setToolView(view: ToolView): void {
   transcript.toolView = view;
   saveTranscriptPrefs(transcript);
-}
-
-/** The palette's step: Show all → Hide successful → Hide all → Show all. */
-export function nextToolView(view: ToolView): ToolView {
-  const i = TOOL_VIEWS.findIndex((t) => t.id === view);
-  return TOOL_VIEWS[(i + 1) % TOOL_VIEWS.length].id;
-}
-
-/** The slice of a call `toolHidden` reads. */
-export interface ToolLike {
-  id: string;
-  name: string;
-  result: { is_error: boolean } | null;
-  denied?: boolean;
-}
-
-/**
- * Whether the trace leaves this call out under `view`. Never a call waiting on him (`waiting`), never the
- * model's question (AskUserQuestion: his answer is the conversation, not the model's working). Under
- * "failed" a call shows while it runs and when it failed or was refused.
- */
-export function toolHidden(call: ToolLike, view: ToolView, waiting: boolean): boolean {
-  if (view === "all" || waiting || call.name === "AskUserQuestion") return false;
-  if (view === "none") return true;
-  // Still running: shown, so he sees what the turn is doing now.
-  if (call.result === null) return false;
-  return !call.result.is_error && !call.denied;
 }
 
 export function setTranscriptSize(size: TranscriptSize): void {

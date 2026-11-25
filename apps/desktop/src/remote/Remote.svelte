@@ -97,6 +97,8 @@
   import { replyMediaInline, stripMedia } from "../lib/replyMediaInline";
   import { setMediaLoader } from "../lib/replyMediaStore.svelte";
   import AskQuestions from "../lib/AskQuestions.svelte";
+  // Item 977: the tool-call view.
+  import { filterToolRows, phoneTools } from "./toolView.svelte";
   // Wave 8B F2 (item 300): replies in order, code blocks, the keyboard.
   import { aimAction, liveSegments, retryStopping, sentOf } from "./client";
   import { retryText } from "../lib/retryLine";
@@ -458,6 +460,8 @@
   let trashed = $state<{ id: string; label: string; project: string | null; host: HostRole | null } | null>(null);
   let renameText = $state("");
   let openTools = $state<Record<string, boolean>>({});
+  // Item 977: boxes whose hidden calls he asked to see.
+  let revealedTools = $state<Record<string, boolean>>({});
   /** The gap the chat's pull opens above the first message (300 A6). */
   const pullGap = $derived(pullWhere === "chat" ? (refreshing ? 52 : Math.round(pullBy)) : 0);
   /** Agent cards whose subagent steps are open (300 A1), by call id. */
@@ -3202,9 +3206,15 @@
   {/if}
 {/snippet}
 
-{#snippet toolBox(tools: ToolRow[], key: string, running: boolean, row: Row | null = null)}
+{#snippet toolBox(all: ToolRow[], key: string, running: boolean, row: Row | null = null)}
+  <!-- Item 977: the tool-call view (the chat menu sets it, kept across reloads) leaves calls out; a box with
+       hidden calls says how many, and a tap shows this box's. -->
+  {@const tools = revealedTools[key] ? all : filterToolRows(all, phoneTools.view)}
+  {@const hidden = toolCount(all) - toolCount(tools)}
   {@const n = toolCount(tools)}
-  {#if n <= 3 || openTools[key]}
+  {#if tools.length === 0}
+    <!-- every call hidden: only the line -->
+  {:else if n <= 3 || openTools[key]}
     <div class="tools" class:t4run={running}>
       {@render toolRows(tools, 0, row)}
       {#if n > 3}<button class="tools-toggle" onclick={() => (openTools = { ...openTools, [key]: false })}>Hide steps</button>{/if}
@@ -3216,6 +3226,11 @@
       <span class="spacer"></span>
       {@render icon("chev")}
     </button>
+  {/if}
+  {#if hidden > 0}
+    <button class="tools-hidden" data-tools-hidden={hidden} onclick={() => (revealedTools = { ...revealedTools, [key]: true })}
+      >{hidden} tool call{hidden === 1 ? "" : "s"} hidden · Show</button
+    >
   {/if}
 {/snippet}
 
@@ -6237,6 +6252,19 @@
     }
   }
 
+  /* Item 977: the line for the calls the tool-call view hides. */
+  .tools-hidden {
+    display: block;
+    margin: 4px 0;
+    padding: 6px 2px;
+    min-height: 32px;
+    background: none;
+    border: none;
+    font: inherit;
+    font-size: 0.82em;
+    color: var(--dim, var(--muted));
+    text-align: left;
+  }
   /* ==== Filament IV on the phone (item 572, stage 11; 521 report §2,
      mockups f4-phone-390, f4x-phone-390, f4-phonenew-390) ==============
      Every rule below is behind `:where(:root:not([data-layout="classic"]))`
