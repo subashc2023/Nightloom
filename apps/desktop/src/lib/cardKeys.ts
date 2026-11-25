@@ -79,7 +79,8 @@ export function keyPicks(node: HTMLElement, opts: KeyPickOpts = {}) {
   const onFocus = (e: FocusEvent) => numberButtons(node, within(e.target as HTMLElement), pick);
   const onKey = (e: KeyboardEvent) => {
     const t = e.target as HTMLElement;
-    if (isEditable(t)) return;
+    // A key the card's own question already took (AskQuestions picks an option with it).
+    if (e.defaultPrevented || isEditable(t)) return;
     const n = cardDigit(e);
     if (n === null) return;
     const live = numberButtons(node, within(t), pick);
