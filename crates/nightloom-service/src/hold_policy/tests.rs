@@ -214,6 +214,23 @@ fn money_matches_items_541_and_579() {
 }
 
 #[test]
+fn a_return_before_the_cap_is_charged_only_the_pings_it_needed() {
+    // Item 961: back after 2 of 8 allowed pings (gap 160 min needs ceil(100/55) = 2); pinging stopped there.
+    let g = gap(at(1, 12, 0), 160.0, 200_000);
+    assert_eq!(g.need(), 2);
+    assert_eq!(money(&g, 8), money(&g, 2));
+    let (_, read, other, save) = money(&g, 8);
+    assert!((read - 2.0 * 200_000.0 * 0.2 / 1e6).abs() < 1e-12);
+    assert!((other - 2.0 * (300.0 * 8.0 + 100.0 * 20.0) / 1e6).abs() < 1e-12);
+    assert!(save > 0.0);
+    assert_eq!(score(&[&g], &[8]).pings, 2);
+    // A gap he never came back to still pays for every ping allowed.
+    let mut never = gap(at(1, 12, 0), 600.0, 200_000);
+    never.censored = true;
+    assert_eq!(score(&[&never], &[8]).pings, 8);
+}
+
+#[test]
 fn gaps_are_the_idle_hours_between_requests() {
     let t = 1_764_000_000.0;
     let reqs = [
@@ -300,7 +317,9 @@ fn the_active_rule_defaults_to_the_sleep_cut_and_switches_only_by_hand() {
 #[test]
 fn the_scoreboard_scores_every_rule_and_writes_an_overtake_once() {
     // Four weeks of a made-up life: replies through the day, returns
-    // after 2 h by day and the next morning by night.
+    // after 2 h by day and the next morning by night, and one chat a day
+    // he never comes back to (since item 961 a rule pays only for the
+    // pings before his return, so only these make 24 h holds waste).
     let mut rows = Vec::new();
     for d in 0..35u32 {
         let day = |h| {
@@ -315,14 +334,19 @@ fn the_scoreboard_scores_every_rule_and_writes_an_overtake_once() {
             let back = if h == 22 { 11.0 * 60.0 } else { 130.0 };
             rows.push(gap(day(h), back, 150_000));
         }
+        let mut never = gap(day(16), 20.0 * 60.0, 150_000);
+        never.censored = true;
+        rows.push(never);
     }
+    rows.sort_by_key(|g| g.t0);
     let now = rows.last().unwrap().t0 * 1000 + 12 * H;
     let b = sim::scoreboard(&rows, now, "flat-24", None, None);
     assert_eq!(b.table.len(), sim::POLICIES.len());
     assert!(b.weeks.len() >= 3);
     // His sleep is learned where nothing happens.
     assert!(b.learned_sleep.contains(3));
-    // Flat 24 h pings all night: something beats it, once.
+    // Flat 24 h pings the never-back chat all day and night: something
+    // beats it, once.
     let o = b.overtake.clone().expect("an overtake");
     assert!(b.overtake_new && o.challenger_usd > o.active_usd);
     let again = sim::scoreboard(&rows, now, "flat-24", None, Some(&b));
