@@ -54,6 +54,7 @@ export const CONTROLS: readonly Control[] = [
   { id: "updates-binary", group: "updates", label: "Claude Code binary", terms: "binary path cli claude executable program location which" },
   { id: "updates-auto", group: "updates", label: "Keep Claude Code up to date", terms: "auto update automatic cold moment claude update" },
   { id: "updates-layers", group: "updates", label: "Changed memory or instructions files", terms: "memory instructions claude.md layer file cold running chats" },
+  { id: "cache-keepers", group: "cache", label: "Chats kept warm now", terms: "keep warm cache keepers list open running extend stop hold ping all chats screen" },
   { id: "cache-keepwarm", group: "cache", label: "Keep chats' caches warm automatically", terms: "keep warm cache ping 1-hour hour 6 h six automatic default every chat cold" },
   { id: "cache-holdrule", group: "cache", label: "When pinging stops", terms: "sleep asleep night stop rule policy 8 h eight scoreboard score overtake beats switch hours learned" },
   { id: "bitwarden-always", group: "bitwarden", label: "Secrets given without asking", terms: "bitwarden password manager secret token vault always allowed rule command remove revoke" },
@@ -126,9 +127,11 @@ export function updatesSummary(o: {
 }
 
 /** Item 608: the keep-warm group's header. */
-export function cacheSummary(on: boolean | null): string {
+export function cacheSummary(on: boolean | null, keeping?: number): string {
   if (on === null) return "not read yet";
-  return on ? "every chat kept warm, up to the cap" : "off unless a chat's switch is on";
+  const base = on ? "every chat kept warm, up to the cap" : "off unless a chat's switch is on";
+  // Item 913: how many are kept warm now, first.
+  return keeping == null ? base : `${keeping === 0 ? "none" : keeping} warm now · ${base}`;
 }
 
 /** Item 766 part 2: the Bitwarden group's header. */

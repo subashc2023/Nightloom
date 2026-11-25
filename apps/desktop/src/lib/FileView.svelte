@@ -30,6 +30,8 @@
   // Item 885: a click zooms in at that spot (again: back to fit), pinch / ctrl-wheel zoom, a drag pans; kept per file.
   import { zoomable } from "./pictureZoomAction";
   import { readKitTheme } from "./pageTheme";
+  import { fileChanged, fileFollow } from "./fileFollow.svelte";
+  import { coalesced } from "./notesFollow";
 
   let { content }: { content: Extract<TabContent, { kind: "file" }> } = $props();
 
@@ -66,6 +68,34 @@
     return () => {
       stale = true;
     };
+  });
+
+  // Item 928: the tab follows its file — it read it once on mount, so edits a
+  // chat made (or another editor saved) showed only after leaving and coming
+  // back. A follow read keeps what is shown until the new text arrives and
+  // redraws only when it changed (no blank flash, the scroll stays).
+  const follow = coalesced(async () => {
+    const path = content.path;
+    const chat = content.session ?? app.activeSessionId;
+    try {
+      const f = await api.readFileTab(path, chat);
+      if (path !== content.path) return;
+      if (fileChanged(untrack(() => file), f)) file = f;
+      error = null;
+    } catch {
+      // A failed follow says nothing; Reload shows the error in its words.
+    }
+  });
+  let seenTools = fileFollow.tools;
+  let seenTurns = fileFollow.turns;
+  $effect(() => {
+    const tools = fileFollow.tools;
+    const turns = fileFollow.turns;
+    const text = untrack(() => file?.kind === "text" || file?.kind === "markdown" || file?.kind === "html");
+    const due = turns !== seenTurns || (tools !== seenTools && text);
+    seenTools = tools;
+    seenTurns = turns;
+    if (due && untrack(() => file !== null)) void follow();
   });
 
   // Item 567: the path as folder (dim under Filament IV) + name; drawn as
@@ -197,6 +227,8 @@
   }
 </script>
 
+<!-- Item 928: back to the window — an outside editor may have saved the file. -->
+<svelte:window onfocus={() => { if (file) void follow(); }} />
 <div class="file-view">
   <header class="head">
     <span class="path mono" use:tip={content.path}
