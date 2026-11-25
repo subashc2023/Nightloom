@@ -920,11 +920,34 @@ fn limited(plan: &PlanUsage) -> bool {
         && (plan.five_hour.is_some_and(|p| p >= 100) || plan.seven_day.is_some_and(|p| p >= 100))
 }
 
+/// Item 952: two readings' reset times name the same window. The CLI
+/// cache writes them with microseconds that change on every fetch
+/// (`…09:59:59.974583+00:00`, then `…10:00:00.120000+00:00`), so they are
+/// compared parsed, to within [`SAME_RESET_SECS`]; text that is not a
+/// time (or one side missing) is compared as text. Pure.
+pub fn same_reset(a: Option<&str>, b: Option<&str>) -> bool {
+    let parse = |t: &str| chrono::DateTime::parse_from_rfc3339(t).ok();
+    match (a, b) {
+        (Some(x), Some(y)) => match (parse(x), parse(y)) {
+            (Some(x), Some(y)) => (x - y).num_seconds().abs() <= SAME_RESET_SECS,
+            _ => x == y,
+        },
+        (x, y) => x == y,
+    }
+}
+
+/// How far apart two readings' reset times may be and still name one window.
+pub const SAME_RESET_SECS: i64 = 60;
+
 /// The run's cost in whole percents of the weekly window: the figure after
 /// less the figure before, when both were read in the same window. Pure.
 pub fn week_points(mark: &RunMark, after: &PlanUsage) -> Option<u8> {
     let (before, now) = (mark.week_before?, after.seven_day?);
-    if mark.resets_at != after.seven_day_resets_at || now < before {
+    if !same_reset(
+        mark.resets_at.as_deref(),
+        after.seven_day_resets_at.as_deref(),
+    ) || now < before
+    {
         return None;
     }
     Some(now - before)
@@ -934,7 +957,11 @@ pub fn week_points(mark: &RunMark, after: &PlanUsage) -> Option<u8> {
 /// [`week_points`] reads the week. Pure.
 pub fn five_points(mark: &RunMark, after: &PlanUsage) -> Option<u8> {
     let (before, now) = (mark.five_before?, after.five_hour?);
-    if mark.five_resets_at != after.five_hour_resets_at || now < before {
+    if !same_reset(
+        mark.five_resets_at.as_deref(),
+        after.five_hour_resets_at.as_deref(),
+    ) || now < before
+    {
         return None;
     }
     Some(now - before)

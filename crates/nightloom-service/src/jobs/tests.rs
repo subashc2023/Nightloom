@@ -158,6 +158,49 @@ fn the_cost_is_the_weekly_figures_move_within_one_window() {
     assert_eq!(week_points(&mark, &plan(None, "w1")), None);
 }
 
+/// Item 952: two fetches of the same week carry reset times a fraction
+/// of a second apart (microseconds change on every fetch, measured in
+/// `~/.claude.json` on 2026-11-24); the run's points are the real move,
+/// not the 0 a string compare gave. A different week is still unknown.
+#[test]
+fn the_cost_counts_across_two_fetches_of_the_same_week() {
+    let mark = RunMark {
+        started: at(2026, 11, 24, 16, 0),
+        writable: false,
+        week_before: Some(91),
+        resets_at: Some("2026-11-25T09:59:59.974567+00:00".into()),
+        five_before: Some(2),
+        five_resets_at: Some("2026-11-24T20:00:00.000001+00:00".into()),
+        forced: false,
+        reading: None,
+    };
+    let after = |week_reset: &str, five_reset: &str| PlanUsage {
+        seven_day: Some(93),
+        five_hour: Some(7),
+        seven_day_resets_at: Some(week_reset.into()),
+        five_hour_resets_at: Some(five_reset.into()),
+        ..PlanUsage::default()
+    };
+    let same = after(
+        "2026-11-25T10:00:00.120000+00:00",
+        "2026-11-24T19:59:59.880000+00:00",
+    );
+    assert_eq!(week_points(&mark, &same), Some(2));
+    assert_eq!(five_points(&mark, &same), Some(5));
+    let next = after(
+        "2026-12-02T10:00:00.120000+00:00",
+        "2026-11-25T01:00:00.000000+00:00",
+    );
+    assert_eq!(week_points(&mark, &next), None);
+    assert_eq!(five_points(&mark, &next), None);
+    assert!(same_reset(None, None));
+    assert!(!same_reset(Some("2026-11-25T10:00:00Z"), None));
+    assert!(!same_reset(
+        Some("2026-11-25T10:00:00Z"),
+        Some("2026-11-25T10:01:01Z")
+    ));
+}
+
 /// A host that records what the clock asks of it.
 struct FakeHost {
     jobs: Arc<Jobs>,
