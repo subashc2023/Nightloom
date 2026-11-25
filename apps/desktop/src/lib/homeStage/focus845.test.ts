@@ -75,3 +75,31 @@ describe("845 focus rules (809 round 6's engine on live tabs)", () => {
     expect(secondOf(k, [W, tab("task:a", "run"), tab("task:b", "triage")])).toBeUndefined();
   });
 });
+
+describe("947: the Chat or brief tab he left is kept while the chat is read", () => {
+  it("tasks read before the chat (a start, a return to Home): focus stays on Chat, not the task that needs him", () => {
+    const k = freshFocus();
+    k.focus = "chat";
+    k.seen = { "task:a": 3 };
+    // The chat is not read yet: no Chat tab in the row.
+    step(k, [W, tab("task:a", "timeline", 3)], away(IDLE_MS), () => true, true);
+    expect(k.focus).toBe("chat");
+    // The chat is read: its tab is back and in focus.
+    step(k, [W, tab("task:a", "timeline", 3), C], away(IDLE_MS + 1), () => true, true);
+    expect(k.focus).toBe("chat");
+  });
+  it("the same for the morning brief", () => {
+    const k = freshFocus();
+    k.focus = "brief";
+    k.seen = { "task:a": 1 };
+    step(k, [W, tab("task:a", "todo", 1)], away(IDLE_MS), none, true);
+    expect(k.focus).toBe("brief");
+  });
+  it("a task that is gone still hands focus on", () => {
+    const k = freshFocus();
+    k.focus = "task:gone";
+    k.seen = { "task:a": 0 };
+    step(k, [W, tab("task:a", "todo")], away(IDLE_MS), none, true);
+    expect(k.focus).toBe("task:a");
+  });
+});
