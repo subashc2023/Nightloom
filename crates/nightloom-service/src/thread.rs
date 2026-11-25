@@ -246,14 +246,20 @@ pub fn trim_method() -> String {
          Start here or a live or open Queue row cites them; (b) Claims from earlier rounds, \
          oldest id first, that neither Start here nor a live or open Queue row cites; (c) last \
          of all, the oldest \"## His view\" quotes, never the newest. Never move Start here, a \
-         live or open Queue row, this round's claims or How to edit.\n\
+         live or open Queue row, this round's claims or How to edit. A \"## His view\" quote \
+         over the cap moves whole to {ARCHIVE_FILE}, never shortened in place.\n\
          3. Move, don't paraphrase: each row goes verbatim to {ARCHIVE_FILE} under one \"## trim \
          <date>\" heading, by section, under its table header, with the line it stood on. Under \
          each section's heading in {THREAD_FILE} leave one line, \"Moved <date> to \
          {ARCHIVE_FILE} (## trim <date>), verbatim: <ids>.\", so every id still resolves.\n\
          4. Account for every row: append a dated paragraph to {LOG_FILE} with the tokens \
          before and after, each moved id with its section, and the kept ids, none missing.\n\
-         5. Mark the \"{TRIM_ITEM}\" Queue row done, with the date and the tokens after.\n",
+         5. Mark the \"{TRIM_ITEM}\" Queue row done, with the date and the tokens after.\n\
+         6. Check: copy {THREAD_FILE} before you start; at the end diff the copy against the \
+         new {THREAD_FILE} and {ARCHIVE_FILE}. Every removed line must be in {ARCHIVE_FILE} \
+         word for word (or be a row edited in place). Nightloom's next upkeep re-checks this \
+         against the last .agents commit and archives anything missing.\n\
+         7. Tell him what moved and where, one line each, in your reply.\n",
         cap = THREAD_CAP_TOKENS / 1000
     )
 }
@@ -495,6 +501,13 @@ pub struct Upkeep {
     /// The id of the [`TRIM_ITEM`] row this run put at the top of the Queue
     /// (on a dry run, would put); `None` when none was needed or one waits.
     pub trim_queued: Option<String>,
+    /// Item 909: non-blank lines the last `.agents` commit had in `thread.md`
+    /// that are gone from it, are in no archive line and are not a row
+    /// edited in place; each is (on apply) appended to `archive.md`.
+    pub lost_lines: Vec<String>,
+    /// The old `## Start here` was rewritten since the last commit and has
+    /// been (on a dry run, would be) archived whole.
+    pub start_here_archived: bool,
 }
 
 /// The newest `YYYY-MM-DD` in `log.md`: the date of the last round. An
@@ -568,6 +581,62 @@ pub fn append_log(dir: &Path, entry: &str) -> Result<usize, String> {
     Ok(text.len())
 }
 
+/// `thread.md` as the last commit of the repo holding `dir` (the `.agents`
+/// git repo) had it; `None` without git, a repo or a committed copy.
+fn committed_thread(dir: &Path) -> Option<String> {
+    let rel = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--show-prefix"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let prefix = String::from_utf8_lossy(&rel.stdout).trim().to_string();
+    let spec = format!("HEAD:{prefix}{THREAD_FILE}");
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["show", &spec])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    String::from_utf8(out.stdout).ok()
+}
+
+/// The first cell of a table row (its id), when the line is one.
+fn row_id(line: &str) -> Option<String> {
+    let c = cells(line)?;
+    let id = c.first()?.trim().to_string();
+    (!id.is_empty() && !id.chars().all(|ch| ch == '-' || ch == ':')).then_some(id)
+}
+
+/// Item 909, mechanical: the non-blank lines of `before` that `after` no
+/// longer holds, minus those a line of `archive` repeats whole and those a
+/// row of the same id still stands for (an edit in place). Counted as a
+/// multiset, so a line that stood twice and now stands once is not lost.
+pub fn lost_lines(before: &str, after: &str, archive: &str) -> Vec<String> {
+    use std::collections::{HashMap, HashSet};
+    let mut now: HashMap<&str, usize> = HashMap::new();
+    for l in after.lines().filter(|l| !l.trim().is_empty()) {
+        *now.entry(l.trim_end()).or_default() += 1;
+    }
+    let archived: HashSet<&str> = archive.lines().map(str::trim_end).collect();
+    let ids: HashSet<String> = after.lines().filter_map(row_id).collect();
+    let mut lost = Vec::new();
+    for l in before.lines().filter(|l| !l.trim().is_empty()) {
+        let key = l.trim_end();
+        if let Some(n) = now.get_mut(key).filter(|n| **n > 0) {
+            *n -= 1;
+            continue;
+        }
+        if archived.contains(key) || row_id(key).is_some_and(|id| ids.contains(&id)) {
+            continue;
+        }
+        lost.push(key.to_string());
+    }
+    lost
+}
+
 /// The upkeep of one thread folder. A dry run (`apply` false) reports what
 /// would change; an apply rewrites `thread.md` whole (temp file, then a
 /// rename) and appends to `archive.md`. Nothing is deleted.
@@ -625,10 +694,47 @@ pub fn upkeep(dir: &Path, today: NaiveDate, apply: bool) -> Result<Upkeep, Strin
     up.checks = check_text(&out, Some(&log));
     up.flags = up.checks.flags();
 
-    if apply && out != text {
-        if !entries.is_empty() {
-            let apath = dir.join(ARCHIVE_FILE);
-            let mut archive = std::fs::read_to_string(&apath).unwrap_or_default();
+    // 4. The trim check (item 909): what the chat left in `thread.md`
+    // against the last `.agents` commit and `archive.md`. The old Start here
+    // is archived whole when rewritten (the one section a chat may rewrite);
+    // any other removed line no archive line repeats is archived too.
+    let apath = dir.join(ARCHIVE_FILE);
+    let archive_now = std::fs::read_to_string(&apath).unwrap_or_default();
+    let mut recover = String::new();
+    if let Some(before) = committed_thread(dir) {
+        let old_start = start_here(&before).filter(|o| {
+            start_here(&text).as_deref() != Some(o.as_str()) && !archive_now.contains(o.as_str())
+        });
+        let mut skip = String::new();
+        if let Some(old) = &old_start {
+            up.start_here_archived = true;
+            recover.push_str(&format!(
+                "### old Start here (rewritten since the last commit), verbatim\n\n{old}\n\n"
+            ));
+            skip.push_str(old);
+        }
+        up.lost_lines = lost_lines(&before, &text, &format!("{archive_now}\n{skip}"));
+        if !up.lost_lines.is_empty() {
+            recover
+                .push_str("### lines removed from thread.md and in no archive line, verbatim\n\n");
+            for l in &up.lost_lines {
+                recover.push_str(l);
+                recover.push('\n');
+            }
+            recover.push('\n');
+            for l in &up.lost_lines {
+                up.flags.push(format!(
+                    "A line left {THREAD_FILE} since the last commit and was in no archive line; \
+                     Nightloom archived it (## upkeep run {}): {l}",
+                    today.format("%Y-%m-%d")
+                ));
+            }
+        }
+    }
+
+    if apply && (out != text || !recover.is_empty()) {
+        if !entries.is_empty() || !recover.is_empty() {
+            let mut archive = archive_now;
             if archive.is_empty() {
                 archive.push_str(&format!(
                     "# Archive: struck lines from `{THREAD_FILE}`\n\nMoved by Nightloom's thread \
@@ -643,9 +749,15 @@ pub fn upkeep(dir: &Path, today: NaiveDate, apply: bool) -> Result<Upkeep, Strin
                 archive.push_str(e);
                 archive.push('\n');
             }
+            if !entries.is_empty() {
+                archive.push('\n');
+            }
+            archive.push_str(&recover);
             crate::tidy::write_whole(&apath, &archive)?;
         }
-        crate::tidy::write_whole(&path, &out)?;
+        if out != text {
+            crate::tidy::write_whole(&path, &out)?;
+        }
     }
     Ok(up)
 }
@@ -1480,6 +1592,16 @@ The question.
         assert!(seg.text.contains("verbatim to archive.md"));
         assert!(seg.text.contains("Account for every row"));
         assert!(
+            seg.text.contains("6. Check: copy thread.md"),
+            "{}",
+            seg.text
+        );
+        assert!(seg.text.contains("7. Tell him what moved and where"));
+        assert!(
+            seg.text
+                .contains("moves whole to archive.md, never shortened in place")
+        );
+        assert!(
             seg.text.find("Trim first").unwrap() < seg.text.rfind("\n## Start here\n").unwrap(),
             "before Start here"
         );
@@ -1602,6 +1724,167 @@ The question.
                 .struck_moved,
             0
         );
+    }
+
+    // ---- item 909: the mechanical trim check ----
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    /// A docspace repo (`.agents`) with `thread.md` committed as `before`,
+    /// then `after` (and `archive`) left in the working tree.
+    fn committed_fixture(before: &str, after: &str, archive: Option<&str>) -> (PathBuf, PathBuf) {
+        let tmp = scratch();
+        let agents = tmp.join(".agents");
+        let dir = agents.join("threads").join("fx");
+        write_fixture(&dir, before, "2026-10-01\n");
+        git(&agents, &["init", "-q"]);
+        git(&agents, &["add", "-A"]);
+        git(&agents, &["commit", "-q", "-m", "snapshot"]);
+        std::fs::write(dir.join(THREAD_FILE), after).unwrap();
+        if let Some(a) = archive {
+            std::fs::write(dir.join(ARCHIVE_FILE), a).unwrap();
+        }
+        (tmp, dir)
+    }
+
+    const BEFORE: &str = "# Thread: Fixture
+
+## Start here
+Old status line one.
+Old status line two.
+
+## Queue
+| id | Item | Status | Pointer |
+|---|---|---|---|
+| T-01 | first | live | ev 1 |
+| T-02 | second | done | ev 2 |
+| T-03 | third | done | ev 3 |
+
+## His view
+- \"One. Two. Three. Four. Five.\" (`ev 1 ¶1`)
+";
+
+    #[test]
+    fn the_check_finds_lost_lines_by_multiset_archive_and_row_id() {
+        let after = "# Thread: Fixture\n\n## Start here\nOld status line one.\n\n## Queue\n\
+                     | T-01 | first | done 2026-10-02 | ev 1 |\n";
+        let archive = "| T-02 | second | done | ev 2 |\n";
+        let lost = lost_lines(BEFORE, after, archive);
+        // T-01 edited in place and T-02 archived: fine. The rest is lost.
+        assert!(
+            lost.contains(&"| T-03 | third | done | ev 3 |".to_string()),
+            "{lost:?}"
+        );
+        assert!(lost.contains(&"Old status line two.".to_string()));
+        assert!(lost.iter().any(|l| l.contains("Four. Five.")));
+        assert!(
+            !lost
+                .iter()
+                .any(|l| l.contains("T-01") || l.contains("T-02")),
+            "{lost:?}"
+        );
+        // A line that stood twice and still stands once is a loss of one.
+        assert_eq!(lost_lines("a\na\n", "a\n", "").len(), 1);
+        assert!(lost_lines("a\na\n", "a\na\n", "").is_empty());
+        // Nothing changed: nothing lost.
+        assert!(lost_lines(BEFORE, BEFORE, "").is_empty());
+    }
+
+    #[test]
+    fn upkeep_archives_a_rewritten_start_here_and_a_shortened_quote_and_only_once() {
+        let after = BEFORE
+            .replace("Old status line one.\nOld status line two.", "New status.")
+            .replace("One. Two. Three. Four. Five.", "One. Two. Three.");
+        let (tmp, dir) = committed_fixture(BEFORE, &after, None);
+
+        let dry = upkeep(&dir, day("2026-10-02"), false).unwrap();
+        assert!(dry.start_here_archived, "{dry:?}");
+        // The two old Start here lines ride in the whole-section entry; the quote is the one lost line.
+        assert_eq!(dry.lost_lines.len(), 1, "{:?}", dry.lost_lines);
+        assert!(
+            dry.flags.iter().any(|f| f.contains("Four. Five.")),
+            "{:?}",
+            dry.flags
+        );
+        assert!(!dir.join(ARCHIVE_FILE).exists(), "a dry run writes nothing");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(THREAD_FILE)).unwrap(),
+            after
+        );
+
+        let up = upkeep(&dir, day("2026-10-02"), true).unwrap();
+        assert!(up.start_here_archived);
+        let archive = std::fs::read_to_string(dir.join(ARCHIVE_FILE)).unwrap();
+        assert!(archive.contains("## upkeep run 2026-10-02"), "{archive}");
+        assert!(
+            archive.contains("Old status line one.\nOld status line two."),
+            "whole: {archive}"
+        );
+        assert!(
+            archive.contains("- \"One. Two. Three. Four. Five.\" (`ev 1 ¶1`)"),
+            "{archive}"
+        );
+        // The live file is untouched by the check.
+        assert_eq!(
+            std::fs::read_to_string(dir.join(THREAD_FILE)).unwrap(),
+            after
+        );
+
+        // Run again against the same commit: already archived, nothing added.
+        let again = upkeep(&dir, day("2026-10-03"), true).unwrap();
+        assert!(!again.start_here_archived, "{again:?}");
+        assert!(again.lost_lines.is_empty(), "{:?}", again.lost_lines);
+        assert_eq!(
+            std::fs::read_to_string(dir.join(ARCHIVE_FILE)).unwrap(),
+            archive
+        );
+        drop(tmp);
+    }
+
+    #[test]
+    fn a_clean_trim_with_everything_archived_flags_nothing() {
+        // The chat moved T-02 and T-03 verbatim and left Start here alone.
+        let after = BEFORE
+            .replace("| T-02 | second | done | ev 2 |\n", "")
+            .replace("| T-03 | third | done | ev 3 |\n", "");
+        let archive =
+            "## trim 2026-10-02\n| T-02 | second | done | ev 2 |\n| T-03 | third | done | ev 3 |\n";
+        let (tmp, dir) = committed_fixture(BEFORE, &after, Some(archive));
+        let up = upkeep(&dir, day("2026-10-02"), true).unwrap();
+        assert!(up.lost_lines.is_empty(), "{:?}", up.lost_lines);
+        assert!(!up.start_here_archived);
+        assert_eq!(
+            std::fs::read_to_string(dir.join(ARCHIVE_FILE)).unwrap(),
+            archive
+        );
+        drop(tmp);
+    }
+
+    #[test]
+    fn no_repo_or_no_commit_means_no_check() {
+        let tmp = scratch();
+        let dir = tmp.as_path().join("fx");
+        write_fixture(&dir, FIXTURE, "# Log\n");
+        let up = upkeep(&dir, day("2026-10-02"), false).unwrap();
+        assert!(up.lost_lines.is_empty() && !up.start_here_archived);
     }
 
     #[test]
