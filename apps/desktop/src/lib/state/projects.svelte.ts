@@ -3,6 +3,7 @@ import { projectSwitch } from "../projectSwitch.svelte";
 import * as api from "../api";
 import { refreshWithin } from "../afterWrite";
 import { watchWhenMoved } from "../notesFollow";
+import { followFileTurns } from "../fileFollow.svelte";
 import { withProject, withoutProject } from "../projectRows";
 import { canDetach } from "../browse";
 import * as tabs from "../tabs";
@@ -67,6 +68,9 @@ export async function refreshProjects(): Promise<void> {
 const followNotes = watchWhenMoved(() => api.watchNotes());
 
 export async function refreshNotes(): Promise<void> {
+  // Item 928: every turn's end re-reads the notes; an open file tab (a file
+  // outside the notes folder, which no watch covers) reads its file again too.
+  followFileTurns();
   // Item 869: the list follows changes made outside Nightloom too.
   try {
     followNotes(`${app.project?.id ?? ""}|${app.knowledge?.dir ?? ""}`);
