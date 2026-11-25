@@ -33,6 +33,8 @@ export interface StageHost {
   brief(): Brief | null;
   /** When the morning scan runs, in words ("Every day at 8:00 AM"), when known. */
   scanWords(): string | null;
+  /** Item 947: today's scan was skipped (the feed row's reason and time); null when it ran or has not come. */
+  skippedScan(): { why: string; at: string } | null;
   /** The tasks on the stage, oldest first. */
   homeTasks(): Promise<HomeTask[]>;
   /** One click of his Home reads at its next look (kind B). */
@@ -72,6 +74,7 @@ const none: StageHost = {
   busy: () => false,
   brief: () => null,
   scanWords: () => null,
+  skippedScan: () => null,
   homeTasks: async () => [],
   taskEvent: async () => null,
   taskClose: async () => null,

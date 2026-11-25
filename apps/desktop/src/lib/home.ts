@@ -430,3 +430,17 @@ export function homeTip(scanWords: string | null | undefined, t: { points: numbe
   const second = t.stop ? `Runs paused: ${t.stop}` : `Today ${pct(t.points)} of the week, cap ${pct(t.cap)}`;
   return `${first}\n${second}`;
 }
+
+/** Item 947: today's skipped morning scan, from Home's feed — its "Morning scan skipped — why" row, local day `now`.
+ *  A skipped scan has no page in Home's chat, so the Brief view says why instead of "No scan in this chat yet". */
+export function skippedScanToday(rows: FeedRow[], now: Date = new Date()): { why: string; at: string } | null {
+  const day = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  let best: FeedRow | null = null;
+  for (const r of rows) {
+    if (r.kind !== "scan" || !/^Morning scan skipped/.test(r.line)) continue;
+    const d = new Date(r.at);
+    if (Number.isNaN(d.getTime()) || day(d) !== day(now)) continue;
+    if (!best || new Date(r.at) > new Date(best.at)) best = r;
+  }
+  return best ? { why: best.line.replace(/^Morning scan skipped\s*—\s*/, ""), at: best.at } : null;
+}

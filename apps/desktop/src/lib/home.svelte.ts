@@ -220,7 +220,17 @@ export async function refreshReach(): Promise<void> {
     // An older backend: the panel says it is not available.
     return;
   }
-  if (home.reach.checked_at === null) await checkReach();
+  // Item 947: the first-ever check runs once per session; a check that fails
+  // (and so leaves `checked_at` null) is not retried, with a toast, at every open.
+  if (home.reach.checked_at === null && !firstCheckTried) {
+    firstCheckTried = true;
+    await checkReach();
+  }
+}
+let firstCheckTried = false;
+/** Tests: forget that the first check was tried. */
+export function resetFirstCheck(): void {
+  firstCheckTried = false;
 }
 
 /** Ask Claude Code what it reaches now. */
@@ -245,7 +255,7 @@ export async function checkSource(row: string): Promise<void> {
   checkingOne[row] = true;
   try {
     if (row.startsWith("c:")) home.reach = await api.homeReachCheckOne(row.slice(2), app.draft.agentBinary.trim() || undefined);
-    else await refreshSources();
+    else home.sources = await api.homeSources();
   } catch (e) {
     addToast(`Could not check it — ${String(e)}`);
   } finally {
