@@ -327,12 +327,17 @@ pub fn collect(
     let mut out = String::new();
     let seen = seen_at(config);
     let rows = since_seen(config);
+    // Item 950: his local 12-hour clock, as the rest of Home writes it.
+    let local = |t: DateTime<Utc>| {
+        t.with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %-I:%M %p")
+            .to_string()
+    };
     out.push_str(&format!(
-        "Now: {} UTC. His last look: {}.\n\n",
-        now.format("%Y-%m-%d %H:%M"),
-        seen.map_or("never".to_string(), |s| s
-            .format("%Y-%m-%d %H:%M UTC")
-            .to_string())
+        "Now: {} ({}). His last look: {}.\n\n",
+        local(now),
+        now.with_timezone(&chrono::Local).format("UTC%:z"),
+        seen.map_or("never".to_string(), local)
     ));
     out.push_str("## His brief\n\n");
     out.push_str(&cut_to(&read_brief(config), 2_000));

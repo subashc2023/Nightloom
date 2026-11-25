@@ -5,6 +5,13 @@
 //! already used today's cap of the week (blocker 2041: 1% a day). Its job
 //! row says why; a skipped scan writes its code-only page.
 //!
+//! Items 950–953 (948's report): the guard decides on a reading refreshed
+//! at the start ([`GUARD_MAX_AGE`]); a reading still stale stops the run
+//! and says how old it was; every skip line names the reading's figure in
+//! the past tense with its sample time on his clock and its source; the
+//! pace skips on its own only when its forecast, within the horizon it
+//! was measured over, clears its own measured error ([`pace_may_skip`]).
+//!
 //! Today's spend is `home/spend.json`: his local date and the points of
 //! the week Home's runs moved the plan's figure by that day (whole
 //! percents, as the jobs list measures each run). The cap is
@@ -12,10 +19,10 @@
 
 use std::path::Path;
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::pace::PlanPace;
+use crate::pace::{PlanPace, WindowPace};
 use crate::plan_usage::PlanUsage;
 
 /// Either window at this percent or more stops unattended Home runs.
@@ -105,27 +112,172 @@ pub fn pace_in(config: &Path, now: chrono::DateTime<chrono::Utc>) -> PlanPace {
     crate::pace::pace_with_fit(&log, ms, tz, fit)
 }
 
+/// Item 951: how old Home's guard lets a reading be before it refreshes
+/// (the shared `/usage` run, at most once a minute machine-wide).
+pub const GUARD_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Item 951: the reading a guard decision used, kept on the job's row
+/// (`{value, sampled_at, source}`), so a skip can be checked later.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GuardReading {
+    pub five_hour: Option<u8>,
+    pub week: Option<u8>,
+    /// When the reading was sampled (not when it was read).
+    pub sampled_at: Option<DateTime<Utc>>,
+    /// `cli-cache`, `cli-usage`, `desktop`, `none` (`plan_usage`'s).
+    pub source: String,
+}
+
+impl GuardReading {
+    pub fn of(plan: Option<&PlanUsage>) -> Self {
+        match plan {
+            Some(p) => Self {
+                five_hour: p.five_hour,
+                week: p.seven_day,
+                sampled_at: p
+                    .sampled_at_ms
+                    .and_then(chrono::DateTime::<Utc>::from_timestamp_millis),
+                source: if p.source.is_empty() {
+                    "none".into()
+                } else {
+                    p.source.clone()
+                },
+            },
+            None => Self {
+                source: "none".into(),
+                ..Self::default()
+            },
+        }
+    }
+}
+
+/// Item 951: no figure at all — no reading on this machine (the away
+/// server: the plan lives on the Mac) or the host did not answer. The
+/// 80% stop cannot be checked; the run says so on its row.
+pub fn reading_missing(plan: Option<&PlanUsage>) -> bool {
+    plan.is_none_or(|p| p.five_hour.is_none() && p.seven_day.is_none())
+}
+
+/// A reading's source in his words.
+pub fn source_words(source: &str) -> Option<&'static str> {
+    match source {
+        "cli-cache" => Some("Claude Code's usage cache"),
+        "cli-usage" => Some("a /usage run"),
+        "desktop" => Some("the Claude app's record"),
+        "turn" => Some("a chat's last reply"),
+        _ => None,
+    }
+}
+
+/// `at` on his clock, 12-hour: "7:55 AM".
+pub fn clock(at: DateTime<Utc>, zone: &jiff::tz::TimeZone) -> String {
+    jiff::Timestamp::from_millisecond(at.timestamp_millis())
+        .map(|ts| ts.to_zoned(zone.clone()).strftime("%-I:%M %p").to_string())
+        .unwrap_or_else(|_| at.format("%H:%M UTC").to_string())
+}
+
+fn same_local_day(a: DateTime<Utc>, b: DateTime<Utc>, zone: &jiff::tz::TimeZone) -> bool {
+    let day = |t: DateTime<Utc>| {
+        jiff::Timestamp::from_millisecond(t.timestamp_millis())
+            .ok()
+            .map(|ts| ts.to_zoned(zone.clone()).date())
+    };
+    day(a) == day(b)
+}
+
+/// "41 min", "3 h".
+fn age_words(secs: f64) -> String {
+    let min = (secs / 60.0).round().max(0.0) as i64;
+    if min < 120 {
+        format!("{min} min")
+    } else {
+        format!("{} h", (min as f64 / 60.0).round() as i64)
+    }
+}
+
+/// Item 950: the reading's past tense with its time and source: "the
+/// weekly window was at 91% at 7:55 AM (Claude Code's usage cache)".
+fn window_words(name: &str, n: u8, p: &PlanUsage, zone: &jiff::tz::TimeZone) -> String {
+    let mut out = format!("the {name} window was at {n}%");
+    if let Some(at) = p
+        .sampled_at_ms
+        .and_then(chrono::DateTime::<Utc>::from_timestamp_millis)
+    {
+        out.push_str(&format!(" at {}", clock(at, zone)));
+    }
+    if let Some(src) = source_words(&p.source) {
+        out.push_str(&format!(" ({src})"));
+    }
+    out
+}
+
+/// Item 953: whether the pace may skip a run on its own. Its forecast is
+/// trusted only as far as it was measured: the 100% crossing must fall
+/// within the horizon its backtest scored (24 h for the week, 1 h for the
+/// 5-hour window), and before the reset by more than its measured mean
+/// miss is worth at the forecast's own rate — `(reset − at100) × rate >
+/// err_pts`. No measured error, no reset time, or not ready: it advises
+/// only. `Some((at100, reset, err))` when it may skip.
+pub fn pace_may_skip(w: &WindowPace, now_ms: i64) -> Option<(i64, i64, f64)> {
+    if !w.ready {
+        return None;
+    }
+    let (at100, reset, err) = (w.at100_ms?, w.resets_at_ms?, w.backtest.err_pts?);
+    let horizon_ms = (w.horizon_hours * 3_600_000.0) as i64;
+    if at100 > now_ms + horizon_ms || at100 >= reset {
+        return None;
+    }
+    let margin = if at100 <= w.at_ms {
+        f64::INFINITY
+    } else {
+        let rate = (100.0 - w.pct).max(0.0) / (at100 - w.at_ms) as f64;
+        (reset - at100) as f64 * rate
+    };
+    (margin > err).then_some((at100, reset, err))
+}
+
 /// Why an unattended Home run must not start now; `None` lets it run.
-/// Checked in order: the windows, the pace, the cap.
+/// Checked in order: the reading (item 951: a stale one stops it), the
+/// windows, the pace (item 953), the cap. Times on `zone`'s clock.
 pub fn stop_reason(
     plan: Option<&PlanUsage>,
     pace: Option<&PlanPace>,
     spent: f64,
     cap: f64,
+    now: DateTime<Utc>,
+    zone: &jiff::tz::TimeZone,
 ) -> Option<String> {
-    if let Some(p) = plan.filter(|p| !p.stale) {
+    if let Some(p) = plan.filter(|_| !reading_missing(plan)) {
+        if p.stale {
+            return Some(match p.age_seconds {
+                Some(a) => format!(
+                    "usage could not be read (last reading {} old)",
+                    age_words(a)
+                ),
+                None => "usage could not be read".into(),
+            });
+        }
         if let Some(n) = p.five_hour.filter(|n| *n >= STOP_AT) {
-            return Some(format!("the 5-hour window is at {n}%"));
+            return Some(window_words("5-hour", n, p, zone));
         }
         if let Some(n) = p.seven_day.filter(|n| *n >= STOP_AT) {
-            return Some(format!("the weekly window is at {n}%"));
+            return Some(window_words("weekly", n, p, zone));
         }
     }
     if let Some(pace) = pace {
         for (w, name) in [(&pace.five_hour, "5-hour"), (&pace.seven_day, "weekly")] {
-            if w.as_ref().is_some_and(|w| w.ready && w.at100_ms.is_some()) {
+            let Some(w) = w.as_ref() else { continue };
+            if let Some((at100, reset, err)) = pace_may_skip(w, now.timestamp_millis()) {
+                let at = chrono::DateTime::<Utc>::from_timestamp_millis(at100).unwrap_or(now);
+                let day = if same_local_day(at, now, zone) {
+                    ""
+                } else {
+                    " tomorrow"
+                };
+                let before = age_words((reset - at100) as f64 / 1000.0);
                 return Some(format!(
-                    "at this pace the {name} window runs out before it resets"
+                    "at this pace the {name} window reaches 100% by {}{day}, {before} before it resets (the forecast misses by {err:.1} points on average)",
+                    clock(at, zone)
                 ));
             }
         }
@@ -163,7 +315,14 @@ pub fn today(
         cap,
         week: plan.and_then(|p| p.seven_day),
         five_hour: plan.and_then(|p| p.five_hour),
-        stop: stop_reason(plan, pace, s.points, cap),
+        stop: stop_reason(
+            plan,
+            pace,
+            s.points,
+            cap,
+            Utc::now(),
+            &jiff::tz::TimeZone::system(),
+        ),
     }
 }
 
@@ -244,34 +403,209 @@ mod tests {
         }
     }
 
+    fn pst() -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::fixed(jiff::tz::Offset::from_hours(-8).unwrap())
+    }
+
+    fn at(rfc: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(rfc)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    /// No reading time or source: the fake reading of the tests.
+    fn stop(plan: Option<&PlanUsage>, pace: Option<&PlanPace>) -> Option<String> {
+        stop_reason(plan, pace, 0.0, 1.0, at("2026-11-24T16:00:14Z"), &pst())
+    }
+
     #[test]
     fn the_five_hour_window_at_80_stops_a_run() {
         assert_eq!(
-            stop_reason(Some(&plan(80, 10)), None, 0.0, 1.0).as_deref(),
-            Some("the 5-hour window is at 80%")
+            stop(Some(&plan(80, 10)), None).as_deref(),
+            Some("the 5-hour window was at 80%")
         );
-        assert_eq!(stop_reason(Some(&plan(79, 10)), None, 0.0, 1.0), None);
+        assert_eq!(stop(Some(&plan(79, 10)), None), None);
     }
 
     #[test]
     fn the_weekly_window_at_80_stops_a_run() {
         assert_eq!(
-            stop_reason(Some(&plan(10, 91)), None, 0.0, 1.0).as_deref(),
-            Some("the weekly window is at 91%")
+            stop(Some(&plan(10, 91)), None).as_deref(),
+            Some("the weekly window was at 91%")
+        );
+    }
+
+    /// Item 950: the Nov 24 skip as it is now worded — past tense, the
+    /// sample's time on his clock, and where it was read.
+    #[test]
+    fn a_skip_says_when_its_reading_was_taken_and_where() {
+        let p = PlanUsage {
+            sampled_at_ms: Some(at("2026-11-24T15:55:34Z").timestamp_millis()),
+            age_seconds: Some(280.0),
+            source: "cli-cache".into(),
+            ..plan(0, 91)
+        };
+        assert_eq!(
+            stop(Some(&p), None).as_deref(),
+            Some("the weekly window was at 91% at 7:55 AM (Claude Code's usage cache)")
+        );
+        let run = PlanUsage {
+            source: "cli-usage".into(),
+            ..p.clone()
+        };
+        assert!(stop(Some(&run), None).unwrap().ends_with("(a /usage run)"));
+    }
+
+    /// Item 951: a stale reading stops the run and says how old it was;
+    /// a missing one (no figure at all) cannot stop it.
+    #[test]
+    fn a_stale_reading_stops_a_run_with_its_age_and_a_missing_one_does_not() {
+        let stale = PlanUsage {
+            stale: true,
+            age_seconds: Some(41.0 * 60.0),
+            ..plan(10, 50)
+        };
+        assert_eq!(
+            stop(Some(&stale), None).as_deref(),
+            Some("usage could not be read (last reading 41 min old)")
+        );
+        let old = PlanUsage {
+            age_seconds: Some(5.0 * 3600.0),
+            ..stale.clone()
+        };
+        assert_eq!(
+            stop(Some(&old), None).as_deref(),
+            Some("usage could not be read (last reading 5 h old)")
+        );
+        let none = PlanUsage {
+            stale: true,
+            source: "none".into(),
+            ..PlanUsage::default()
+        };
+        assert!(reading_missing(Some(&none)) && reading_missing(None));
+        assert_eq!(stop(Some(&none), None), None);
+        assert_eq!(stop(None, None), None);
+        assert_eq!(GuardReading::of(None).source, "none");
+        let r = GuardReading::of(Some(&PlanUsage {
+            sampled_at_ms: Some(at("2026-11-24T15:55:34Z").timestamp_millis()),
+            source: "cli-cache".into(),
+            ..plan(0, 91)
+        }));
+        assert_eq!(
+            (r.week, r.sampled_at, r.source.as_str()),
+            (Some(91), Some(at("2026-11-24T15:55:34Z")), "cli-cache")
         );
     }
 
     #[test]
     fn a_bad_pace_stops_a_run_only_once_the_pace_is_ready() {
-        let bad = pace(None, Some(window("seven_day", Some(5), true)));
+        // At100 5 ms after a reading at 50%, reset at 1 h, error 1 point.
+        let mut w = window("seven_day", Some(5), true);
+        w.resets_at_ms = Some(3_600_000);
+        w.backtest.err_pts = Some(1.0);
+        let now = DateTime::<Utc>::from_timestamp_millis(0).unwrap();
+        let reason = stop_reason(
+            Some(&plan(10, 50)),
+            Some(&pace(None, Some(w.clone()))),
+            0.0,
+            1.0,
+            now,
+            &pst(),
+        );
         assert_eq!(
-            stop_reason(Some(&plan(10, 50)), Some(&bad), 0.0, 1.0).as_deref(),
-            Some("at this pace the weekly window runs out before it resets")
+            reason.as_deref(),
+            Some(
+                "at this pace the weekly window reaches 100% by 4:00 PM, 60 min before it resets (the forecast misses by 1.0 points on average)"
+            )
         );
         let unready = pace(Some(window("five_hour", Some(5), false)), None);
-        assert_eq!(stop_reason(None, Some(&unready), 0.0, 1.0), None);
+        assert_eq!(stop(None, Some(&unready)), None);
         let fine = pace(Some(window("five_hour", None, true)), None);
-        assert_eq!(stop_reason(None, Some(&fine), 0.0, 1.0), None);
+        assert_eq!(stop(None, Some(&fine)), None);
+        // No measured error: the pace advises only.
+        let mut unmeasured = w.clone();
+        unmeasured.backtest.err_pts = None;
+        assert_eq!(pace_may_skip(&unmeasured, 0), None);
+    }
+
+    /// Item 953, from the logged figures: the weekly pace at each morning
+    /// scan's 8:00 AM PST start, Nov 19–23 (the five skipped "at this
+    /// pace the weekly window runs out before it resets"), as
+    /// `pace_with_fit` computes it from `~/.nightloom/plan-readings.jsonl`
+    /// cut at that minute (948's report; err 8.2 points over 66 checks).
+    /// The week ended near 98%, not 100%: none of the five may skip now.
+    #[test]
+    fn the_pace_alone_would_not_have_skipped_the_nov_19_to_23_scans() {
+        const RESET: i64 = 1_795_600_800_000;
+        // (day, now, reading at, pct, at100, err)
+        let days: [(u32, i64, i64, f64, i64, f64); 5] = [
+            (
+                19,
+                1_795_104_014_000,
+                1_795_103_720_892,
+                46.0,
+                1_795_586_869_658,
+                8.220_384_824_089_091,
+            ),
+            (
+                20,
+                1_795_190_414_000,
+                1_795_189_927_652,
+                64.0,
+                1_795_535_710_440,
+                8.220_384_824_089_091,
+            ),
+            (
+                21,
+                1_795_276_814_000,
+                1_795_242_699_284,
+                67.0,
+                1_795_478_708_210,
+                8.230_854_840_702_824,
+            ),
+            (
+                22,
+                1_795_363_214_000,
+                1_795_242_699_284,
+                67.0,
+                1_795_508_937_784,
+                8.230_854_840_702_824,
+            ),
+            (
+                23,
+                1_795_449_614_000,
+                1_795_449_281_246,
+                76.0,
+                1_795_570_157_858,
+                8.230_854_840_702_824,
+            ),
+        ];
+        for (day, now, at_ms, pct, at100, err) in days {
+            let mut w = window("seven_day", Some(at100), true);
+            w.pct = pct;
+            w.at_ms = at_ms;
+            w.resets_at_ms = Some(RESET);
+            w.horizon_hours = 24.0;
+            w.end_pct = 100.0;
+            w.backtest.err_pts = Some(err);
+            w.backtest.checks = 66;
+            assert_eq!(pace_may_skip(&w, now), None, "Nov {day}");
+            let p = pace(None, Some(w));
+            let n = DateTime::<Utc>::from_timestamp_millis(now).unwrap();
+            assert_eq!(
+                stop_reason(Some(&plan(0, pct as u8)), Some(&p), 0.0, 1.0, n, &pst()),
+                None,
+                "Nov {day}"
+            );
+        }
+        // The same week, a crossing 10 h ahead and 14 h before the reset at
+        // 0.9 points an hour: 12.6 points of room, more than its error.
+        let mut w = window("seven_day", None, true);
+        let now = RESET - 24 * 3_600_000;
+        (w.pct, w.at_ms, w.resets_at_ms) = (91.0, now, Some(RESET));
+        w.at100_ms = Some(now + 10 * 3_600_000);
+        (w.horizon_hours, w.backtest.err_pts) = (24.0, Some(8.23));
+        assert!(pace_may_skip(&w, now).is_some());
     }
 
     #[test]
@@ -294,6 +628,38 @@ mod tests {
         std::fs::write(super::super::dir_in(&d).join(GUARD_FILE), r#"{"cap":2.5}"#).unwrap();
         assert_eq!(cap(&d), 2.5);
         assert_eq!(today(&d, None, None, day).stop, None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Item 950: the page, the feed row and the phone's card (the page's
+    /// `Skipped:` line, as `GET /home/scan` reads it) carry the reading's
+    /// value, its time on his clock and its source.
+    #[test]
+    fn a_skipped_scans_page_feed_row_and_phone_card_say_when_and_where() {
+        let d = std::env::temp_dir().join(format!("nl-guard-950-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = PlanUsage {
+            sampled_at_ms: Some(at("2026-11-24T15:55:34Z").timestamp_millis()),
+            source: "cli-cache".into(),
+            ..plan(0, 91)
+        };
+        let why = stop(Some(&p), None).unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 11, 24).unwrap();
+        skipped_scan_page(&d, day, &why, "facts", at("2026-11-24T16:00:14Z")).unwrap();
+        let want = "the weekly window was at 91% at 7:55 AM (Claude Code's usage cache)";
+        let page =
+            std::fs::read_to_string(super::super::dir_in(&d).join("scans/2026-11-24.md")).unwrap();
+        assert!(page.contains(&format!("Skipped: {want}\n")));
+        let feed = super::super::read_feed(&d);
+        assert_eq!(
+            feed.last().map(|r| r.line.as_str()),
+            Some(format!("Morning scan skipped — {want}").as_str())
+        );
+        assert_eq!(
+            crate::remote::skipped_line_for_tests(&page).as_deref(),
+            Some(want)
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

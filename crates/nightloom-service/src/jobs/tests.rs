@@ -144,6 +144,7 @@ fn the_cost_is_the_weekly_figures_move_within_one_window() {
         five_before: None,
         five_resets_at: None,
         forced: false,
+        reading: None,
     };
     let plan = |pct: Option<u8>, resets: &str| PlanUsage {
         seven_day: pct,
@@ -155,6 +156,49 @@ fn the_cost_is_the_weekly_figures_move_within_one_window() {
     // The window reset during the run, or a reading is missing: unknown.
     assert_eq!(week_points(&mark, &plan(Some(1), "w2")), None);
     assert_eq!(week_points(&mark, &plan(None, "w1")), None);
+}
+
+/// Item 952: two fetches of the same week carry reset times a fraction
+/// of a second apart (microseconds change on every fetch, measured in
+/// `~/.claude.json` on 2026-11-24); the run's points are the real move,
+/// not the 0 a string compare gave. A different week is still unknown.
+#[test]
+fn the_cost_counts_across_two_fetches_of_the_same_week() {
+    let mark = RunMark {
+        started: at(2026, 11, 24, 16, 0),
+        writable: false,
+        week_before: Some(91),
+        resets_at: Some("2026-11-25T09:59:59.974567+00:00".into()),
+        five_before: Some(2),
+        five_resets_at: Some("2026-11-24T20:00:00.000001+00:00".into()),
+        forced: false,
+        reading: None,
+    };
+    let after = |week_reset: &str, five_reset: &str| PlanUsage {
+        seven_day: Some(93),
+        five_hour: Some(7),
+        seven_day_resets_at: Some(week_reset.into()),
+        five_hour_resets_at: Some(five_reset.into()),
+        ..PlanUsage::default()
+    };
+    let same = after(
+        "2026-11-25T10:00:00.120000+00:00",
+        "2026-11-24T19:59:59.880000+00:00",
+    );
+    assert_eq!(week_points(&mark, &same), Some(2));
+    assert_eq!(five_points(&mark, &same), Some(5));
+    let next = after(
+        "2026-12-02T10:00:00.120000+00:00",
+        "2026-11-25T01:00:00.000000+00:00",
+    );
+    assert_eq!(week_points(&mark, &next), None);
+    assert_eq!(five_points(&mark, &next), None);
+    assert!(same_reset(None, None));
+    assert!(!same_reset(Some("2026-11-25T10:00:00Z"), None));
+    assert!(!same_reset(
+        Some("2026-11-25T10:00:00Z"),
+        Some("2026-11-25T10:01:01Z")
+    ));
 }
 
 /// A host that records what the clock asks of it.
@@ -171,6 +215,10 @@ struct FakeHost {
     week: Mutex<Option<u8>>,
     five: Mutex<Option<u8>>,
     log: Mutex<Vec<SessionEvent>>,
+    /// Item 951: what `usage_fresh` answers; `None` falls back to `usage`.
+    fresh: Mutex<Option<Result<PlanUsage, String>>>,
+    /// Item 951: how many times the guard asked for a fresh reading.
+    fresh_asks: Mutex<u32>,
 }
 
 fn host() -> Arc<FakeHost> {
@@ -186,6 +234,8 @@ fn host() -> Arc<FakeHost> {
         week: Mutex::new(Some(40)),
         five: Mutex::new(Some(10)),
         log: Mutex::default(),
+        fresh: Mutex::default(),
+        fresh_asks: Mutex::default(),
     })
 }
 
@@ -267,6 +317,15 @@ impl Host for FakeHost {
                 .collect(),
             ..Running::default()
         })
+    }
+    async fn usage_fresh(&self, max_age: std::time::Duration) -> Result<PlanUsage, String> {
+        assert_eq!(max_age, crate::home::guard::GUARD_MAX_AGE);
+        *self.fresh_asks.lock().unwrap() += 1;
+        let set = self.fresh.lock().unwrap().clone();
+        match set {
+            Some(r) => r,
+            None => self.usage().await.map(|u| u.plan),
+        }
     }
     async fn usage(&self) -> Result<UsageReply, String> {
         Ok(UsageReply {
@@ -1007,6 +1066,8 @@ fn home_host() -> (Arc<FakeHost>, PathBuf) {
         week: Mutex::new(Some(40)),
         five: Mutex::new(Some(10)),
         log: Mutex::default(),
+        fresh: Mutex::default(),
+        fresh_asks: Mutex::default(),
     });
     (h, cfg)
 }
@@ -1039,7 +1100,7 @@ async fn homes_scan_stops_at_80_percent_or_the_daily_cap_and_says_why() {
     let j = row(scan);
     let last = j.last.clone().unwrap();
     assert_eq!(last.outcome, Outcome::Skipped);
-    assert_eq!(last.summary, "skipped — the 5-hour window is at 82%");
+    assert_eq!(last.summary, "skipped — the 5-hour window was at 82%");
     assert!(!j.run_now && j.next_run > t1 && j.retry_at.is_none());
     assert_eq!(
         h.preps.lock().unwrap().len(),
@@ -1052,7 +1113,7 @@ async fn homes_scan_stops_at_80_percent_or_the_daily_cap_and_says_why() {
     // `a_scheduled_home_run_is_still_refused_after_run_anyway`).
     assert_eq!(
         j.confirm.as_ref().map(|c| c.why.as_str()),
-        Some("the 5-hour window is at 82%")
+        Some("the 5-hour window was at 82%")
     );
     let date = super::local_date(t1, &j.zone()).unwrap();
     assert!(
@@ -1068,7 +1129,7 @@ async fn homes_scan_stops_at_80_percent_or_the_daily_cap_and_says_why() {
     h.jobs.tick(h.as_ref(), t1 + Duration::minutes(1)).await;
     assert_eq!(
         row(scan).last.unwrap().summary,
-        "skipped — the weekly window is at 80%"
+        "skipped — the weekly window was at 80%"
     );
 
     *h.week.lock().unwrap() = Some(40);
@@ -1087,6 +1148,93 @@ async fn homes_scan_stops_at_80_percent_or_the_daily_cap_and_says_why() {
     h.jobs.tick(h.as_ref(), t1 + Duration::minutes(3)).await;
     assert_eq!(h.preps.lock().unwrap().len(), 2);
     assert!(row(scan).running.is_some());
+    let _ = std::fs::remove_dir_all(&cfg);
+}
+
+/// Item 951: Home's guard decides on a fresh reading (asked for with the
+/// two-minute limit), cites it, and keeps it on the row; a reading still
+/// stale after the refresh skips with its age; no reading at all runs and
+/// says on the row that the 80% stop was not checked. A job outside Home
+/// never asks for the refresh.
+#[tokio::test]
+async fn homes_guard_refreshes_cites_and_keeps_the_reading_it_used() {
+    let (h, cfg) = home_host();
+    let t0 = at(2026, 11, 24, 15, 0);
+    assert!(h.jobs.ensure_home_scan("home-p", t0));
+    let scan = crate::home::SCAN_JOB_ID;
+    let sampled = at(2026, 11, 24, 15, 55);
+    let reading = |week: Option<u8>, stale: bool, age: f64| PlanUsage {
+        five_hour: week.map(|_| 0),
+        seven_day: week,
+        sampled_at_ms: Some(sampled.timestamp_millis()),
+        age_seconds: Some(age),
+        stale,
+        source: "cli-usage".into(),
+        ..PlanUsage::default()
+    };
+
+    // Fresh and over 80: skipped, the reading cited and kept. The files
+    // (`usage`) say 40%: the fresh reading is the one that decides.
+    *h.fresh.lock().unwrap() = Some(Ok(reading(Some(91), false, 20.0)));
+    h.jobs.run_now(scan).unwrap();
+    let t1 = at(2026, 11, 24, 16, 0);
+    h.jobs.tick(h.as_ref(), t1).await;
+    assert_eq!(*h.fresh_asks.lock().unwrap(), 1);
+    let last = home_row(&h, scan).last.unwrap();
+    assert_eq!(last.outcome, Outcome::Skipped);
+    let zone = home_row(&h, scan).zone();
+    let when = crate::home::guard::clock(sampled, &zone);
+    assert_eq!(
+        last.summary,
+        format!("skipped — the weekly window was at 91% at {when} (a /usage run)")
+    );
+    assert_eq!(
+        last.reading,
+        Some(crate::home::guard::GuardReading {
+            five_hour: Some(0),
+            week: Some(91),
+            sampled_at: Some(sampled),
+            source: "cli-usage".into(),
+        })
+    );
+
+    // Still stale after the refresh: skipped with its age.
+    *h.fresh.lock().unwrap() = Some(Ok(reading(Some(50), true, 41.0 * 60.0)));
+    h.jobs.run_now(scan).unwrap();
+    h.jobs.tick(h.as_ref(), t1 + Duration::minutes(1)).await;
+    let last = home_row(&h, scan).last.unwrap();
+    assert_eq!(
+        last.summary,
+        "skipped — usage could not be read (last reading 41 min old)"
+    );
+    assert_eq!(last.reading.unwrap().week, Some(50));
+    assert_eq!(h.preps.lock().unwrap().len(), 0, "never prepared");
+
+    // Missing (no figure from either read): runs, the row says the stop
+    // was not checked, and the run's mark keeps the empty reading.
+    *h.fresh.lock().unwrap() = Some(Err("no reading".into()));
+    *h.week.lock().unwrap() = None;
+    *h.five.lock().unwrap() = None;
+    // A job outside Home, due in the same tick, never refreshes.
+    let other = h.jobs.create(new_job("every hour"), t1).unwrap().job.id;
+    h.jobs.run_now(&other).unwrap();
+    let asks = *h.fresh_asks.lock().unwrap();
+    h.jobs.run_now(scan).unwrap();
+    h.jobs.tick(h.as_ref(), t1 + Duration::minutes(2)).await;
+    assert_eq!(
+        *h.fresh_asks.lock().unwrap(),
+        asks + 1,
+        "the scan's ask alone"
+    );
+    assert!(home_row(&h, &other).running.unwrap().reading.is_none());
+    let j = home_row(&h, scan);
+    let mark = j.running.clone().expect("it runs");
+    assert_eq!(mark.reading.unwrap().source, "none");
+    assert_eq!(
+        j.note.as_deref(),
+        Some("usage could not be read — Home's 80% stop was not checked")
+    );
+
     let _ = std::fs::remove_dir_all(&cfg);
 }
 
@@ -1225,7 +1373,7 @@ async fn cancel_on_the_run_anyway_card_starts_nothing() {
     *h.week.lock().unwrap() = Some(91);
     let v = h.jobs.press_run(h.as_ref(), scan, t0).await.unwrap();
     let c = v.job.confirm.unwrap();
-    assert_eq!(c.why, "the weekly window is at 91%");
+    assert_eq!(c.why, "the weekly window was at 91%");
     assert_eq!((c.est_week, c.est_five, c.est_runs), (None, None, 0));
 
     let v = h
@@ -1242,7 +1390,7 @@ async fn cancel_on_the_run_anyway_card_starts_nothing() {
     assert!(v.job.confirm.is_none() && !v.job.run_now && !v.job.force_once);
     assert_eq!(
         v.job.last.unwrap().summary,
-        "skipped — the weekly window is at 91%"
+        "skipped — the weekly window was at 91%"
     );
     h.jobs.tick(h.as_ref(), t0 + Duration::minutes(1)).await;
     assert!(h.preps.lock().unwrap().is_empty(), "nothing started");
@@ -1281,7 +1429,7 @@ async fn a_scheduled_home_run_is_still_refused_after_run_anyway() {
     let j = home_row(&h, scan);
     let last = j.last.clone().unwrap();
     assert_eq!(last.outcome, Outcome::Skipped);
-    assert_eq!(last.summary, "skipped — the 5-hour window is at 85%");
+    assert_eq!(last.summary, "skipped — the 5-hour window was at 85%");
     assert!(!last.forced);
     assert!(j.confirm.is_none(), "a scheduled skip does not ask");
     // That day's page is the forced run's (never written over); the next
@@ -1299,7 +1447,7 @@ async fn a_scheduled_home_run_is_still_refused_after_run_anyway() {
     let next = j.next_run;
     assert!(next > due);
     h.jobs.tick(h.as_ref(), next + Duration::minutes(1)).await;
-    assert!(page(next).contains("Skipped: the 5-hour window is at 85%\n"));
+    assert!(page(next).contains("Skipped: the 5-hour window was at 85%\n"));
     assert!(home_row(&h, scan).confirm.is_none());
     assert_eq!(
         h.preps.lock().unwrap().len(),
@@ -1346,7 +1494,7 @@ async fn the_macs_home_rows_run_now_starts_under_the_guard_and_asks_past_it() {
         .await
         .unwrap();
     let c = v.job.confirm.clone().expect("the card asks");
-    assert_eq!(c.why, "the 5-hour window is at 82%");
+    assert_eq!(c.why, "the 5-hour window was at 82%");
     assert!(!v.job.run_now);
     assert_eq!(
         h.jobs.home_list()[0]
@@ -1374,6 +1522,8 @@ fn host_with_home() -> (Arc<FakeHost>, std::path::PathBuf) {
         week: Mutex::new(Some(40)),
         five: Mutex::new(Some(10)),
         log: Mutex::default(),
+        fresh: Mutex::default(),
+        fresh_asks: Mutex::default(),
     });
     (h, home)
 }

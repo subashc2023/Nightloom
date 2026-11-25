@@ -433,6 +433,10 @@ pub struct LastRun {
     /// (item 812), like [`week_points`](Self::week_points).
     #[serde(default)]
     pub five_points: Option<u8>,
+    /// Item 951: the plan reading Home's guard used for this run (its
+    /// skip, or its start) — figure, sample time, source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reading: Option<crate::home::guard::GuardReading>,
 }
 
 /// What one finished run cost (item 812): the measure of the next run's
@@ -502,6 +506,9 @@ pub struct RunMark {
     /// Item 812: started by Run anyway, past Home's spend guard.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub forced: bool,
+    /// Item 951: the reading Home's guard let the run start on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reading: Option<crate::home::guard::GuardReading>,
 }
 
 /// One recurring job.
@@ -913,11 +920,34 @@ fn limited(plan: &PlanUsage) -> bool {
         && (plan.five_hour.is_some_and(|p| p >= 100) || plan.seven_day.is_some_and(|p| p >= 100))
 }
 
+/// Item 952: two readings' reset times name the same window. The CLI
+/// cache writes them with microseconds that change on every fetch
+/// (`…09:59:59.974583+00:00`, then `…10:00:00.120000+00:00`), so they are
+/// compared parsed, to within [`SAME_RESET_SECS`]; text that is not a
+/// time (or one side missing) is compared as text. Pure.
+pub fn same_reset(a: Option<&str>, b: Option<&str>) -> bool {
+    let parse = |t: &str| chrono::DateTime::parse_from_rfc3339(t).ok();
+    match (a, b) {
+        (Some(x), Some(y)) => match (parse(x), parse(y)) {
+            (Some(x), Some(y)) => (x - y).num_seconds().abs() <= SAME_RESET_SECS,
+            _ => x == y,
+        },
+        (x, y) => x == y,
+    }
+}
+
+/// How far apart two readings' reset times may be and still name one window.
+pub const SAME_RESET_SECS: i64 = 60;
+
 /// The run's cost in whole percents of the weekly window: the figure after
 /// less the figure before, when both were read in the same window. Pure.
 pub fn week_points(mark: &RunMark, after: &PlanUsage) -> Option<u8> {
     let (before, now) = (mark.week_before?, after.seven_day?);
-    if mark.resets_at != after.seven_day_resets_at || now < before {
+    if !same_reset(
+        mark.resets_at.as_deref(),
+        after.seven_day_resets_at.as_deref(),
+    ) || now < before
+    {
         return None;
     }
     Some(now - before)
@@ -927,7 +957,11 @@ pub fn week_points(mark: &RunMark, after: &PlanUsage) -> Option<u8> {
 /// [`week_points`] reads the week. Pure.
 pub fn five_points(mark: &RunMark, after: &PlanUsage) -> Option<u8> {
     let (before, now) = (mark.five_before?, after.five_hour?);
-    if mark.five_resets_at != after.five_hour_resets_at || now < before {
+    if !same_reset(
+        mark.five_resets_at.as_deref(),
+        after.five_hour_resets_at.as_deref(),
+    ) || now < before
+    {
         return None;
     }
     Some(now - before)
@@ -1561,7 +1595,13 @@ impl Jobs {
                 j.retry_at = Some(now + Duration::seconds(secs));
             });
         };
-        let plan = host.usage().await.ok().map(|u| u.plan);
+        let mut plan = host.usage().await.ok().map(|u| u.plan);
+        // Item 951: Home's guard decides on a reading refreshed now (no
+        // older than two minutes where the host can run `/usage`).
+        let home = self.is_home_job(job);
+        if home && let Ok(fresh) = host.usage_fresh(crate::home::guard::GUARD_MAX_AGE).await {
+            plan = Some(fresh);
+        }
         if plan.as_ref().is_some_and(limited) {
             return wait(
                 "the plan's usage limit is reached; it runs after the reset".into(),
@@ -1629,12 +1669,18 @@ impl Jobs {
                         five_before: plan.as_ref().and_then(|p| p.five_hour),
                         five_resets_at: plan.as_ref().and_then(|p| p.five_hour_resets_at.clone()),
                         forced,
+                        reading: home.then(|| crate::home::guard::GuardReading::of(plan.as_ref())),
                     });
                     j.run_now = false;
                     j.force_once = false;
                     j.confirm = None;
                     j.retry_at = None;
-                    j.note = None;
+                    // Item 951: a Home run with no reading at all (none on
+                    // this machine, or the host did not answer) says so.
+                    j.note =
+                        (home && crate::home::guard::reading_missing(plan.as_ref())).then(|| {
+                            "usage could not be read — Home's 80% stop was not checked".to_string()
+                        });
                     j.runs += 1;
                     // Approve once is used by this run; the next one asks.
                     // (Its chat was set writable just now, by `prepare`.)
@@ -1688,7 +1734,14 @@ impl Jobs {
         let spent = crate::home::guard::spent(&config, date).points;
         // The pace from this home's own usage log (not the process's).
         let pace = crate::home::guard::pace_in(&config, now);
-        crate::home::guard::stop_reason(plan, Some(&pace), spent, crate::home::guard::cap(&config))
+        crate::home::guard::stop_reason(
+            plan,
+            Some(&pace),
+            spent,
+            crate::home::guard::cap(&config),
+            now,
+            &job.zone(),
+        )
     }
 
     /// A Home run the guard stopped: its row says why, its next time is
@@ -1715,6 +1768,7 @@ impl Jobs {
                 calls: None,
                 forced: false,
                 five_points: None,
+                reading: Some(crate::home::guard::GuardReading::of(plan)),
             });
             if pressed {
                 j.confirm = Some(run_confirm(j, why, plan, now));
@@ -1836,7 +1890,14 @@ impl Jobs {
                 Err(err) => format!("its note could not be written: {err}"),
             };
         }
-        let after = host.usage().await.ok().map(|u| u.plan);
+        // Item 951: a Home run's cost is measured on a fresh reading too.
+        let after = if mark.reading.is_some()
+            && let Ok(fresh) = host.usage_fresh(crate::home::guard::GUARD_MAX_AGE).await
+        {
+            Some(fresh)
+        } else {
+            host.usage().await.ok().map(|u| u.plan)
+        };
         let points = after.as_ref().and_then(|a| week_points(mark, a));
         let five = after.as_ref().and_then(|a| five_points(mark, a));
         let wants = !refused.is_empty();
@@ -1871,6 +1932,7 @@ impl Jobs {
                 calls,
                 forced: mark.forced,
                 five_points: five,
+                reading: mark.reading.clone(),
             });
             // Item 812: a finished run's cost is the next estimate's measure.
             if let (Some(week), Outcome::Done) = (points, outcome) {

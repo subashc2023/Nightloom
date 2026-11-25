@@ -68,6 +68,9 @@ use api::{
     ContextReply, LayerChange, LimitPause, NOT_AVAILABLE, NewProjectRequest, NoteText, PassStarted,
     ProjectRenameRequest, Rail, RailPatch, Running, SearchScope, StateReply, UsageReply,
 };
+/// Item 950's test: the phone card's reading of a skipped page.
+#[cfg(test)]
+pub(crate) use home_phone_routes::skipped_line as skipped_line_for_tests;
 pub use home_routes::{RoutesReply, routes_reply};
 pub use nightshift_routes::NightshiftProject;
 use tokio::sync::{broadcast, oneshot};
@@ -554,6 +557,16 @@ pub trait Host: Send + Sync + 'static {
     /// The plan's usage windows and the ledger's summary.
     async fn usage(&self) -> Result<UsageReply, String> {
         Err(NOT_AVAILABLE.into())
+    }
+    /// Item 951: the plan's reading, refreshed first when its newest
+    /// sample is older than `max_age` where this host can (the Mac runs
+    /// the shared `/usage`, at most once a minute); Home's guard asks this
+    /// before it decides. Default: [`usage`](Self::usage)'s, unrefreshed.
+    async fn usage_fresh(
+        &self,
+        _max_age: std::time::Duration,
+    ) -> Result<crate::plan_usage::PlanUsage, String> {
+        self.usage().await.map(|u| u.plan)
     }
     /// The cache chip's rates for `model` (wave O): `usage-rates.json`'s
     /// row, else the fit over the host's keep-warm pings; `None` with no

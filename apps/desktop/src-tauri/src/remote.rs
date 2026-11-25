@@ -941,6 +941,17 @@ impl Host for DesktopHost {
         from_json(DesktopHost::usage(self).await?)
     }
 
+    /// Item 951: Home's guard reads through the shared `/usage` refresh.
+    async fn usage_fresh(
+        &self,
+        max_age: std::time::Duration,
+    ) -> Result<nightloom_service::plan_usage::PlanUsage, String> {
+        crate::blocking(move || {
+            Ok::<_, String>(nightloom_service::plan_usage::read_fresh_shared(max_age))
+        })
+        .await
+    }
+
     /// Wave O: the cache chip's rates, the Mac's own `cache_rates` read.
     async fn cache_rates(
         &self,
