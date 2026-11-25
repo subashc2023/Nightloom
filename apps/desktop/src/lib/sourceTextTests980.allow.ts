@@ -188,6 +188,11 @@ export const BASELINE: readonly string[] = [
   "lib/zoomDefault876.test.ts",
   "remote/homeStage845.test.ts",
   "remote/look.test.ts",
+  // Added the same night as the check (2026-11-25), before it was merged: 966, 974/977 (+ phone).
+  "lib/appCommands966.test.ts",
+  "lib/cardKeys.test.ts",
+  "lib/transcriptPrefs.test.ts",
+  "remote/toolView.test.ts",
 ];
 
 /** Test files added after 2026-11-25 allowed to read `.svelte` source because
