@@ -69,6 +69,13 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     { at: new Date(ago(50)).toISOString(), kind: "done", label: null, chat: null, project: "Nightloom", line: "Night run finished — 2 fixes merged, CI passed" },
     { at: new Date(ago(90)).toISOString(), kind: "done", label: "Weekly backup", chat: null, project: null, line: "Weekly backup ran on time" },
   ], seen_at: new Date(ago(120)).toISOString(), as_of: ago(1), home: { project: "home", chat: "h-today" } });
+  // Item 947: skip947=1 — a skipped scan's code-only page exactly as the host writes it (guard.rs skipped_scan_page),
+  // with the reading cited in its words; skip947=old is yesterday's page (today:false).
+  if (p === "/home/scan" && q.get("skip947")) {
+    const why = "the weekly window was at 91% at 7:55 AM (Claude Code's usage cache)";
+    const text = `Skipped: ${why}\n\nThis page is the facts alone, collected in code — no model read them.\n\n- Needs you: 2 held blockers\n- Calendar: 9:00 AM stand-up\n- Reminders: 1 overdue`;
+    return json({ scan: { date: "2026-11-25", text, ran_at: ago(30), today: q.get("skip947") !== "old", skipped: why } });
+  }
   if (p === "/home/scan") return json({ scan: { date: "2026-11-19", text: SCAN, ran_at: ago(240), today: true, skipped: null } });
   if (p === "/home/held") return json({ blockers: [] });
   if (p === "/home/routes") return json({ cards: [], held: [], started: [] });
