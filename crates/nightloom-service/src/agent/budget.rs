@@ -65,6 +65,14 @@ pub const HARD_WAKE_PCT: u8 = 96;
 /// early.
 pub const WEEK_WAKE_MARGIN: u8 = 2;
 
+/// Mode B under a weekly cap (936): the main agent is woken each time the
+/// message has spent this many more weekly points while helpers run.
+pub const WEEK_PACE_STEP: u8 = 2;
+
+/// With no weekly cap (936): the wake when helpers run this close to the
+/// plan's weekly stop, so they save before it cuts them off.
+pub const WEEK_HARD_WAKE_PCT: u8 = 98;
+
 /// How many calls of a process run with the wrap-up beside them before its
 /// calls are refused (539 piece 4, "~10").
 pub const WRAP_CALLS: u8 = 10;
@@ -427,10 +435,12 @@ pub fn due_wakes(b: &mut TurnBudget, reading: Option<WindowReading>, now_ms: i64
     out
 }
 
-/// The weekly thresholds this weekly figure newly crosses, pure (935):
-/// with a weekly cap, `Near` (cap − [`WEEK_WAKE_MARGIN`]) and `AtCap`,
-/// each once per turn, keyed apart from the 5-hour ones. The ledger
-/// records the week's start and latest figure.
+/// The weekly thresholds this weekly figure newly crosses, pure (935,
+/// 936): with a weekly cap, `Near` (cap − [`WEEK_WAKE_MARGIN`]), `AtCap`,
+/// and in mode B one `Pace` per [`WEEK_PACE_STEP`] weekly points this
+/// message has spent; with none, `Hard` at [`WEEK_HARD_WAKE_PCT`]. Each
+/// once per turn, keyed apart from the 5-hour ones. The ledger records
+/// the week's start and latest figure.
 pub fn due_week_wakes(b: &mut TurnBudget, week: Option<u8>, now_ms: i64) -> Vec<Wake> {
     let Some(w) = week else {
         return Vec::new();
@@ -454,6 +464,9 @@ pub fn due_week_wakes(b: &mut TurnBudget, week: Option<u8>, now_ms: i64) -> Vec<
     };
     let mut out = Vec::new();
     let Some(c) = &cap else {
+        if w >= WEEK_HARD_WAKE_PCT && fire(b, "week-hard") {
+            out.push(wake(WakeKind::Hard));
+        }
         return out;
     };
     let near = c.percent.saturating_sub(WEEK_WAKE_MARGIN);
@@ -465,6 +478,16 @@ pub fn due_week_wakes(b: &mut TurnBudget, week: Option<u8>, now_ms: i64) -> Vec<
         }
     } else if w >= near && fire(b, "week-near") {
         out.push(wake(WakeKind::Near));
+    }
+    if c.mode == BudgetMode::WorkToCapThenContinue && w < near {
+        let step = spent / WEEK_PACE_STEP;
+        let mut new = false;
+        for n in 1..=step {
+            new |= fire(b, &format!("week-pace-{n}"));
+        }
+        if new {
+            out.push(wake(WakeKind::Pace));
+        }
     }
     out
 }
@@ -532,7 +555,7 @@ pub fn wake_text(wakes: &[Wake], helpers: Option<&[(String, String)]>) -> Option
             ))
         ),
         WakeKind::Pace => format!(
-            "usage is at {}% of the 5-hour window; this message has spent {} points and its \
+            "usage is at {}% of {win}; this message has spent {} points of it and its \
              cap is {cap}% ({}). {list} Nothing to do yet unless you want to re-plan; do not \
              pass usage figures to helpers. Nightloom wakes you again near the cap.",
             w.pct,
@@ -548,11 +571,16 @@ pub fn wake_text(wakes: &[Wake], helpers: Option<&[(String, String)]>) -> Option
             w.pct
         ),
         WakeKind::Hard => format!(
-            "usage is at {}% of the 5-hour window, and the plan stops everything at 100%. \
+            "usage is at {}% of {win}, and the plan stops everything at 100% of it. \
              {list} Send each one this with SendMessage now, so it saves before the limit \
              cuts it off: \"{WRAP_UP_HELPER}\" Then save your own state; a turn the limit \
-             cuts off is resumed by Nightloom after the reset.",
-            w.pct
+             cuts off is resumed by Nightloom after the reset{}.",
+            w.pct,
+            match w.window {
+                CapWindow::FiveHour => "",
+                CapWindow::Weekly =>
+                    " (the weekly one: end with <continue-later at=\"weekly\"> if you stop first)",
+            }
         ),
     };
     Some(format!("[Nightloom, not from Swaraag: {body}]"))
@@ -2460,6 +2488,95 @@ mod tests {
         let b = correct(&dir, None, None, 10).unwrap();
         assert!(b.cap.is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 936: a weekly cap's near, at-cap and pace wakes fire once each
+    /// per turn from weekly readings; with no weekly cap, the hard wake at
+    /// [`WEEK_HARD_WAKE_PCT`] reaches an idle main thread through
+    /// `take_wakes`, only while helpers run.
+    #[test]
+    fn the_week_wakes_fire_once_each_and_the_hard_one_reaches_an_idle_main_thread() {
+        let weekly = |percent| StatedCap {
+            percent,
+            mode: B,
+            window: CapWindow::Weekly,
+        };
+        let mut b = ledger(40, None);
+        set_stated(
+            &mut b,
+            weekly(98),
+            "model",
+            "t",
+            1,
+            &SubagentLimits::default(),
+        );
+        let kinds = |b: &mut TurnBudget, w: u8| {
+            due_week_wakes(b, Some(w), 2)
+                .into_iter()
+                .map(|w| (w.kind, w.pct, w.window))
+                .collect::<Vec<_>>()
+        };
+        use CapWindow::Weekly as W;
+        assert!(kinds(&mut b, 90).is_empty());
+        assert_eq!(kinds(&mut b, 92), [(WakeKind::Pace, 92, W)]);
+        assert!(kinds(&mut b, 93).is_empty());
+        assert_eq!(kinds(&mut b, 94), [(WakeKind::Pace, 94, W)]);
+        assert_eq!(kinds(&mut b, 96), [(WakeKind::Near, 96, W)]);
+        assert!(kinds(&mut b, 97).is_empty());
+        assert_eq!(kinds(&mut b, 98), [(WakeKind::AtCap, 98, W)]);
+        assert!(kinds(&mut b, 99).is_empty());
+        // The words are the week's.
+        let mut c = ledger(40, None);
+        set_stated(
+            &mut c,
+            weekly(98),
+            "model",
+            "t",
+            1,
+            &SubagentLimits::default(),
+        );
+        c.start_week = Some(90);
+        let text = wake_text(&due_week_wakes(&mut c, Some(98), 2), None).unwrap();
+        assert!(
+            text.contains("98% of the week (cap 98%") && text.contains(r#"at="weekly""#),
+            "{text}"
+        );
+        // No weekly cap (a 5-hour one, or none): the hard wake at 98, once.
+        let mut h = ledger(40, Some((50, B)));
+        assert!(due_week_wakes(&mut h, Some(97), 2).is_empty());
+        let hard = due_week_wakes(&mut h, Some(98), 2);
+        assert_eq!(
+            hard.iter().map(|w| (w.kind, w.window)).collect::<Vec<_>>(),
+            [(WakeKind::Hard, W)]
+        );
+        assert!(due_week_wakes(&mut h, Some(99), 2).is_empty());
+        assert!(
+            wake_text(&hard, None)
+                .unwrap()
+                .contains("98% of the week, and the plan stops everything at 100% of it")
+        );
+        // Through the drive loop's look: idle with helpers, it is taken once;
+        // with none running it is not a wake at all.
+        let dir = temp("week-hard");
+        start(&dir, 40);
+        let now = chrono::Utc::now().timestamp_millis();
+        at(&dir, 41);
+        assert!(take_wakes(&dir, now, true, true, Some(97)).is_empty());
+        let took = take_wakes(&dir, now, true, true, Some(98));
+        assert_eq!(
+            took.iter()
+                .map(|w| (w.kind, w.pct, w.window))
+                .collect::<Vec<_>>(),
+            [(WakeKind::Hard, 98, W)]
+        );
+        assert!(take_wakes(&dir, now, true, true, Some(98)).is_empty());
+        let dir2 = temp("week-hard-none");
+        start(&dir2, 40);
+        at(&dir2, 41);
+        assert!(take_wakes(&dir2, now, false, true, Some(98)).is_empty());
+        for d in [dir, dir2] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 
     /// A subagent may not set the budget: the brief hook refuses its call.
