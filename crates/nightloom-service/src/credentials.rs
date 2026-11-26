@@ -79,6 +79,13 @@ pub enum CredentialError {
         "this is a dev home (NIGHTLOOM_HOME is set): the phone page needs NIGHTLOOM_REMOTE_TOKEN here, and the keychain's real token is never used"
     )]
     DevHome,
+    /// `NIGHTLOOM_REMOTE_TOKEN` is not 16–128 hex characters: the phone page
+    /// reads only a hex `#token=` (client.ts `tokenFromHash`), so it could
+    /// never pair (item 1014, the 740 Simulator audit).
+    #[error(
+        "NIGHTLOOM_REMOTE_TOKEN must be 16 to 128 hex characters (0-9, a-f) — the phone page reads no other token, so this one could never pair; make one with `openssl rand -hex 32`"
+    )]
+    EnvNotHex,
     /// Built without the `keyring` feature.
     #[error("this build has no credential store (compiled without the `keyring` feature)")]
     Unsupported,
@@ -339,13 +346,23 @@ pub enum RemoteTokenSource {
     /// A set `NIGHTLOOM_HOME` without the env token: a dev build must never
     /// reach the installed app's keychain token, so there is none.
     DevHomeWithoutToken,
+    /// `NIGHTLOOM_REMOTE_TOKEN` is set but not a token the page can read
+    /// (item 1014): refused at the listener's start, never served.
+    EnvNotHex,
+}
+
+/// A token the phone page's `#token=` accepts: 16 to 128 hex characters
+/// (`tokenFromHash` in `apps/desktop/src/remote/client.ts`; item 1014).
+pub fn is_page_token(t: &str) -> bool {
+    (16..=128).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// The pure decision: the env token wins (blank counts as unset); else a
 /// set home refuses; else the keychain.
 pub fn remote_token_source(home_set: bool, env: Option<&str>) -> RemoteTokenSource {
     match env.map(str::trim).filter(|t| !t.is_empty()) {
-        Some(t) => RemoteTokenSource::Env(t.to_string()),
+        Some(t) if is_page_token(t) => RemoteTokenSource::Env(t.to_string()),
+        Some(_) => RemoteTokenSource::EnvNotHex,
         None if home_set => RemoteTokenSource::DevHomeWithoutToken,
         None => RemoteTokenSource::Keychain,
     }
@@ -359,8 +376,11 @@ fn current_remote_source() -> RemoteTokenSource {
 /// The sentence for a dev home with no env token, for the listener's
 /// start; `None` when the phone page may start here.
 pub fn remote_listener_refusal() -> Option<String> {
-    (current_remote_source() == RemoteTokenSource::DevHomeWithoutToken)
-        .then(|| CredentialError::DevHome.to_string())
+    match current_remote_source() {
+        RemoteTokenSource::DevHomeWithoutToken => Some(CredentialError::DevHome.to_string()),
+        RemoteTokenSource::EnvNotHex => Some(CredentialError::EnvNotHex.to_string()),
+        RemoteTokenSource::Env(_) | RemoteTokenSource::Keychain => None,
+    }
 }
 
 /// The token the phone page must present, if one has been generated. No
@@ -371,7 +391,7 @@ pub fn remote_token() -> Option<String> {
     match current_remote_source() {
         RemoteTokenSource::Env(t) => Some(t),
         RemoteTokenSource::Keychain => store::get(REMOTE_TOKEN_ENTRY),
-        RemoteTokenSource::DevHomeWithoutToken => None,
+        RemoteTokenSource::DevHomeWithoutToken | RemoteTokenSource::EnvNotHex => None,
     }
 }
 
@@ -386,6 +406,7 @@ pub fn try_remote_token() -> Result<Option<String>, CredentialError> {
         RemoteTokenSource::Env(t) => Ok(Some(t)),
         RemoteTokenSource::Keychain => store::try_get(REMOTE_TOKEN_ENTRY),
         RemoteTokenSource::DevHomeWithoutToken => Err(CredentialError::DevHome),
+        RemoteTokenSource::EnvNotHex => Err(CredentialError::EnvNotHex),
     }
 }
 
@@ -394,7 +415,9 @@ pub fn try_remote_token() -> Result<Option<String>, CredentialError> {
 /// reached (item 1003).
 pub fn set_remote_token(token: &str) -> Result<(), CredentialError> {
     match current_remote_source() {
-        RemoteTokenSource::Env(_) => return Err(CredentialError::FromEnv),
+        RemoteTokenSource::Env(_) | RemoteTokenSource::EnvNotHex => {
+            return Err(CredentialError::FromEnv);
+        }
         RemoteTokenSource::DevHomeWithoutToken => return Err(CredentialError::DevHome),
         RemoteTokenSource::Keychain => {}
     }
@@ -473,8 +496,32 @@ mod tests {
         assert_eq!(remote_token_source(false, Some("  ")), Keychain);
         assert_eq!(remote_token_source(true, None), DevHomeWithoutToken);
         assert_eq!(remote_token_source(true, Some("")), DevHomeWithoutToken);
-        assert_eq!(remote_token_source(true, Some(" t ")), Env("t".into()));
-        assert_eq!(remote_token_source(false, Some("t")), Env("t".into()));
+        let hex = "0123456789abcdef0123456789ABCDEF";
+        assert_eq!(
+            remote_token_source(true, Some(&format!(" {hex} "))),
+            Env(hex.into())
+        );
+        assert_eq!(remote_token_source(false, Some(hex)), Env(hex.into()));
+    }
+
+    /// Item 1014 (740 audit): a token the phone page cannot read is refused
+    /// at the start, with a sentence that says what shape it must have.
+    #[test]
+    fn a_non_hex_env_token_is_refused_not_served() {
+        use RemoteTokenSource::*;
+        // url-safe base64, as `secrets.token_urlsafe` makes: never pairs.
+        assert_eq!(
+            remote_token_source(true, Some("q3Zx-_8kPq3Zx-_8kPq3Zx-_8kPq3Zx")),
+            EnvNotHex
+        );
+        assert_eq!(remote_token_source(false, Some("t")), EnvNotHex);
+        assert_eq!(remote_token_source(true, Some("abc123")), EnvNotHex); // too short
+        assert_eq!(remote_token_source(true, Some(&"a".repeat(129))), EnvNotHex);
+        assert!(is_page_token(&"a".repeat(16)));
+        assert!(is_page_token(&"F".repeat(128)));
+        assert!(is_page_token(&crate::remote::token::generate()));
+        let why = CredentialError::EnvNotHex.to_string();
+        assert!(why.contains(REMOTE_TOKEN_ENV) && why.contains("hex"));
     }
 
     #[test]

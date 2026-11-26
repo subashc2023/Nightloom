@@ -165,6 +165,13 @@ fn read_token(file: Option<PathBuf>, config: &std::path::Path) -> Result<String>
     if let Ok(t) = std::env::var("NIGHTLOOM_REMOTE_TOKEN")
         && !t.trim().is_empty()
     {
+        // Item 1014: the page reads only a hex token; any other never pairs.
+        if !nightloom_service::credentials::is_page_token(t.trim()) {
+            bail!(
+                "{}",
+                nightloom_service::credentials::CredentialError::EnvNotHex
+            );
+        }
         return Ok(t.trim().to_string());
     }
     let path = file.unwrap_or_else(|| config.join("remote").join("serve-token"));

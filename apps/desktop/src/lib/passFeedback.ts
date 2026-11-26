@@ -75,6 +75,16 @@ export function dreamStartText(pending: number, model: string | null, activity =
   return `dream: ${what}${on(model)}${activity ? ` — ${activity}` : ""}`;
 }
 
+/**
+ * Item 1014 (740 audit): a Dream's error line. An empty memory inbox is not a failure — the backend's
+ * "nothing left to consolidate" (the inbox emptied, or nothing was captured yet) reads as what it is.
+ */
+export function dreamErrorText(e: unknown): string {
+  const why = String(e).replace(/^Error: /, "");
+  if (/nothing left to consolidate/i.test(why)) return "dream: nothing to consolidate — the memory inbox is empty (Capture fills it)";
+  return `dream failed: ${why}`;
+}
+
 /** The kinds of pass that run capture → dream under one toast. */
 export type OuterPass = "daily" | "hand-off" | "compaction" | "nightly" | "reset";
 
