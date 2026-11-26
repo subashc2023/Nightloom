@@ -318,12 +318,15 @@ export async function maybeAutoDream(kind: AutoPassKind = "compaction"): Promise
   const id = outer.id;
   let captured: number | null = null;
   let dreamed: number | null = null;
+  let failed: string | null = null;
   try {
     // Quiet (item 278): a capture that reads nothing — the open chat has one
     // new turn, too little to be worth one — raises no toast of its own.
     if (app.capturePending > 0) {
       lastCapture = null;
       await runCapture(true);
+      // A capture that failed or was stopped says so (its own toast has the why).
+      if (lastCapture === null && !app.capturing) failed = "the capture did not finish";
       captured = lastCapture ?? 0;
     }
     await refreshDreamStatus();
@@ -334,7 +337,7 @@ export async function maybeAutoDream(kind: AutoPassKind = "compaction"): Promise
   } finally {
     outer = null;
   }
-  settleToast(id, autoResultText(kind, captured, dreamed, null));
+  settleToast(id, autoResultText(kind, captured, dreamed, failed));
   return false;
 }
 

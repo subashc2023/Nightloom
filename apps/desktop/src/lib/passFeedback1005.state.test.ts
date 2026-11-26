@@ -247,4 +247,13 @@ describe("1005's class: the Capture and Dream buttons, the daily pass, the autom
     expect(app.toasts).toHaveLength(1);
     expect(app.toasts[0].text).toBe("memory from the chat you handed off: nothing new to keep");
   });
+
+  it("a hand-off capture that fails ends on 'failed', not 'nothing new' (seen in the dev build, killed call)", async () => {
+    vi.mocked(api.captureStatus).mockResolvedValue(1);
+    capture.mockRejectedValue("the capture's Claude Code turn was cut off before its reply ended — nothing was saved");
+    await maybeAutoDream("hand-off");
+    const outerLine = app.toasts.find((t) => t.text.startsWith("saving memory from the chat you handed off"))!;
+    expect(outerLine.text).toBe("saving memory from the chat you handed off failed: the capture did not finish");
+    expect(app.toasts.some((t) => t.text.startsWith("capture failed: "))).toBe(true);
+  });
 });
