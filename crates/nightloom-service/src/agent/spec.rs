@@ -84,6 +84,7 @@ impl AgentSpec {
             claude_ai_connectors: false,
             home_gated_writes: false,
             home_chat: false,
+            ref_pass: None,
             claude_ai_blocked: Vec::new(),
             browser: false,
             playwright: None,
@@ -186,6 +187,30 @@ impl AgentSpec {
     /// a Claude Code declaration, or a born Chat.
     pub fn refuses_mcp_writers(&self) -> bool {
         self.chat_policy || self.born_chat
+    }
+
+    /// Whether a send ([`send_guard`]) reaches the Ask hook's card here:
+    /// the Ask and Plan positions, whose hook sees every MCP call, and an
+    /// aside seated on one (item 919). Everywhere else a send is refused
+    /// outright.
+    pub fn sends_ask_on_a_card(&self) -> bool {
+        self.ask.as_ref().is_some_and(|ask| {
+            !ask.dir.as_os_str().is_empty()
+                && (matches!(ask.mode, AskMode::Ask | AskMode::Plan)
+                    || (ask.mode == AskMode::Aside && self.aside_cards))
+        })
+    }
+
+    /// Whether Home's gated card is registered here (item 845): Home's
+    /// read-only chat with the Ask hook pointed at its directory, not an
+    /// aside — where an invitation answer asks him instead of being refused.
+    pub fn sends_home_card(&self) -> bool {
+        self.home_gated_writes
+            && self.refuses_mcp_writers()
+            && self.ask.as_ref().is_some_and(|ask| {
+                !matches!(ask.mode, AskMode::Aside | AskMode::PlanAside)
+                    && !ask.dir.as_os_str().is_empty()
+            })
     }
 
     /// What the approval switch means on a headless run: `auto` when it is
@@ -964,6 +989,59 @@ impl AgentSpec {
                 if let serde_json::Value::Array(pre) = pre {
                     pre.push(serde_json::json!({
                         "matcher": connector_writes::HOME_OWN_WRITER_MATCHER,
+                        "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
+                    }));
+                }
+            }
+        }
+        // The sends (item 993d, blocker 2304; [`send_guard`]): a mail sent,
+        // replied to or forwarded, an invitation answered — only on his own
+        // click. The card's one-shot process reads its one-time pass; the
+        // Ask hook's card decides where it already sees every MCP call; a
+        // read-only chat refuses them as known writes (above); everywhere
+        // else his connectors are loaded — Auto, bypass, a fork, a job — an
+        // `echo` refusal, so no classifier and no standing rule ever sends
+        // for him. With the connectors off the CLI never loads their tools
+        // (`connectors`: 0 listed), and the settings stay as they were.
+        if let Some(pass) = &self.ref_pass {
+            let hooks = settings
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(hooks) = hooks {
+                let pre = hooks
+                    .entry("PreToolUse")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(pre) = pre {
+                    pre.push(ask::hook_entry(
+                        &pass.hook,
+                        &pass.dir,
+                        crate::ref_action::PASS_MATCHER,
+                        &[crate::ref_action::PASS_ARG],
+                    ));
+                }
+            }
+        } else if self.claude_ai_connectors
+            && !self.refuses_mcp_writers()
+            && !self.sends_ask_on_a_card()
+        {
+            let reply = serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": send_guard::REFUSED,
+                }
+            })
+            .to_string();
+            let hooks = settings
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(hooks) = hooks {
+                let pre = hooks
+                    .entry("PreToolUse")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(pre) = pre {
+                    pre.push(serde_json::json!({
+                        "matcher": send_guard::MATCHER,
                         "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
                     }));
                 }

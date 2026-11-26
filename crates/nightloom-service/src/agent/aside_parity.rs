@@ -89,6 +89,10 @@ const FIELDS: &[(&str, &str)] = &[
     ("claude_ai_connectors", "same"),
     ("home_gated_writes", "same"),
     ("home_chat", "same"),
+    (
+        "ref_pass",
+        "same: never set on a chat or an aside — only the card's one-shot process has one (993d)",
+    ),
     ("claude_ai_blocked", "same"),
     (
         "browser",

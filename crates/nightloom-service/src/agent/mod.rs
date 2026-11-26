@@ -47,6 +47,7 @@ mod process;
 mod protocol;
 mod record;
 mod run;
+pub mod send_guard;
 mod spec;
 pub mod stagger;
 pub mod steer;
@@ -521,6 +522,12 @@ pub struct AgentSpec {
     /// read-only, the tool is refused outright rather than run unasked or
     /// offered a standing allow.
     pub home_chat: bool,
+    /// The card's one-shot process (item 993d; `crate::ref_action`): every
+    /// MCP call goes to the hook with `ref_action::PASS_ARG`, which lets
+    /// through the one call his click in an item's card minted a pass for
+    /// and refuses the rest. `None` everywhere else — where a send is
+    /// refused or asked about by [`send_guard`]'s rule.
+    pub ref_pass: Option<RefPassSpec>,
     /// With [`Self::claude_ai_connectors`] on, the connectors he unticked,
     /// by the init event's server name (`claude.ai Google Drive`): each a
     /// server-level `--disallowedTools` rule. Ignored while off.
@@ -808,6 +815,15 @@ pub struct AskSpec {
     /// ([`ClaudeCodeAgent::set_ask_dir`]), since the hook reads only the
     /// directory. Default on (blocker 247).
     pub subagents_auto: bool,
+}
+
+/// The hook that reads a card's one-time pass (item 993d).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefPassSpec {
+    /// The hook program and its leading arguments, as [`AskSpec::hook`].
+    pub hook: Vec<String>,
+    /// The action's own directory, where the pass is.
+    pub dir: PathBuf,
 }
 
 /// Where an aside sits (nightshift item 919; [`AgentSpec::seat_aside`]).

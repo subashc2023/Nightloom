@@ -1056,6 +1056,12 @@ pub fn decide_under(dir: &Path, home: Option<&Path>, stdin_json: &str, side: boo
     if super::own_browser::is_playwright(&input.tool_name) {
         return decide_playwright(dir, &input, side);
     }
+    // The sends (item 993d, blocker 2304): a mail sent, replied to or
+    // forwarded, an invitation answered — only his answer on this very
+    // call's card, before any rule: no standing allow sends for him.
+    if super::send_guard::sends(&input.tool_name) {
+        return decide_send(dir, &input, side);
+    }
     // Before the rules on purpose: plan mode's promise is that nothing is
     // edited until the plan is approved, and a rule granted in an earlier
     // Ask turn must not be the thing that breaks it.
@@ -1252,6 +1258,38 @@ pub fn decide_read_only(
         }
         _ => HookReply::defer(),
     }
+}
+
+/// A send (item 993d; [`super::send_guard`]), in order: this call's own
+/// answer (consumed) — his click on its card; a subagent's or a side
+/// process's call refused in words (no card can wait on either); anything
+/// else deferred for the card. The rules are never read: neither *Allow
+/// for this chat*, an every-chat allow nor *subagents run on auto* may
+/// send mail or answer an invitation for him (blocker 2304).
+fn decide_send(dir: &Path, input: &HookInput, side: bool) -> HookReply {
+    let path = dir.join(DECISION_FILE);
+    let decision: Option<Decision> = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    if let Some(d) = decision
+        && d.tool_use_id == input.tool_use_id
+        && !input.tool_use_id.is_empty()
+    {
+        let _ = std::fs::remove_file(&path);
+        return if d.decision == "allow" {
+            HookReply::allow(d.updated_input)
+        } else {
+            HookReply::deny(
+                d.reason
+                    .filter(|r| !r.trim().is_empty())
+                    .unwrap_or_else(|| "the user declined this call".into()),
+            )
+        };
+    }
+    if side || input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+        return HookReply::deny(super::send_guard::NO_CARD.into());
+    }
+    HookReply::defer()
 }
 
 /// An `add_folder` call (nightshift item 613), in order: this call's own
@@ -1597,6 +1635,14 @@ pub fn run_hook(args: &[String]) -> std::io::Result<()> {
             std::time::Duration::from_secs(WAIT_TIMEOUT_SECS),
             &alive,
         )
+    } else if args
+        .iter()
+        .skip(1)
+        .any(|a| a == crate::ref_action::PASS_ARG)
+    {
+        // The card's one-shot process (item 993d): the one call his click
+        // minted a pass for, and nothing else.
+        crate::ref_action::decide(&dir, &input, chrono::Utc::now())
     } else if args.iter().skip(1).any(|a| a == READ_ONLY_ARG) {
         decide_read_only(&dir, home.as_deref(), &input, side)
     } else {
