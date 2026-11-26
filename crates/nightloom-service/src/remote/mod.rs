@@ -3142,9 +3142,9 @@ mod tests {
                 .starts_with("text/plain")
         );
         let said = r.text().await.unwrap();
-        // Item 945: Nightshift's held blockers are not in Home's sentence;
-        // `/home/held` (below) still lists them.
-        assert!(!said.contains("held blocker"), "{said}");
+        // Item 995: the sentence counts what the Mac's pill counts — the
+        // held blocker included (before 995 it was left out, item 945).
+        assert!(said.contains("one held blocker"), "{said}");
         assert!(said.ends_with('.'), "{said}");
         let held: serde_json::Value = c
             .get(format!("{base}/api/home/held"))
@@ -3156,6 +3156,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(held["blockers"][0]["id"], "9990", "{held}");
+        // Item 995: the pending proposals' count rides along (none here).
+        assert_eq!(held["proposals"], 0, "{held}");
         assert_eq!(
             held["blockers"][0]["question"],
             "Which first-screen layout?"

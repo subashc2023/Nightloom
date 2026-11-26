@@ -290,6 +290,20 @@ export function isFolded(k: HomeKept, section: HomeSection, scanDate: string | n
   return k.folds[section] ?? section === "held";
 }
 
+/**
+ * Item 995: the phone's one Needs-you number — the Mac pill's: the rows that wait on him, the Start cards, the held
+ * blockers (listed in their own fold) and the pending proposals (reviewed on the Mac). The header, the Needs-you
+ * section's count and the Watching tab all show this.
+ */
+export function needTotal(o: { needs: number; cards: number; held: number; proposals: number }): number {
+  return Math.max(0, o.needs) + Math.max(0, o.cards) + Math.max(0, o.held) + Math.max(0, o.proposals);
+}
+
+/** Item 995: the quiet line for proposals the phone counts but cannot review. */
+export function proposalWords(n: number): string {
+  return n === 1 ? "1 proposal to review — on the Mac, in Needs you" : `${n} proposals to review — on the Mac, in Needs you`;
+}
+
 /** Item 945: the folded line's words — "Nightshift · 3 held blockers". */
 export function heldWords(n: number): string {
   return `Nightshift · ${n === 1 ? "1 held blocker" : `${n} held blockers`}`;

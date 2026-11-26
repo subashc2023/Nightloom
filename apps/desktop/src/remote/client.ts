@@ -1047,7 +1047,8 @@ export class Client {
     return (await this.call("/home/scan")).json();
   }
 
-  async homeHeld(): Promise<{ blockers: HeldBlockerWire[] }> {
+  /** Item 995: `proposals` — pending proposals, in the Mac pill's one number (absent from an older host). */
+  async homeHeld(): Promise<{ blockers: HeldBlockerWire[]; proposals?: number }> {
     return (await this.call("/home/held")).json();
   }
 

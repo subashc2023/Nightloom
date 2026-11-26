@@ -7,8 +7,8 @@
 //! | `GET /home/feed` | Home's feed (the newest [`FEED_ROWS`]) (`home/feed.jsonl`) newest first, his last look (`seen.json`), when the feed was last written, and Home's project and chat |
 //! | `POST /home/seen` | mark the feed seen now → `{seen_at}` |
 //! | `GET /home/scan` | today's scan page (`home/scans/<date>.md`), else the newest, with when it ran and, for a skipped scan, why |
-//! | `GET /home/held` | the held blockers of every Nightshift project (status `open`, `default: held`) — the phone's Home shows them as one folded line, not as Needs-you rows (item 945) |
-//! | `GET /shortcut/needs` | one plain sentence for Siri: "Three things need you: …" (approvals, questions, stuck chats, jobs; never Nightshift's blockers — item 945) |
+//! | `GET /home/held` | the held blockers of every Nightshift project (status `open`, `default: held`) — the phone's Home shows them as one folded line, not as Needs-you rows (item 945) — and (item 995) how many proposals are pending, so the phone's count is the Mac's |
+//! | `GET /shortcut/needs` | one plain sentence for Siri: "Three things need you: …" (approvals, questions, stuck chats, jobs, and since item 995 held blockers and proposals — the Mac pill's number) |
 //! | `GET /home/tasks` | the tasks on Home's stage (item 845: `home/tasks/<id>.json`, what Home's `update_task` wrote), oldest first |
 //! | `POST /home/tasks/event` | one click of his on a task view, `{task, view, line}`, for Home's next look (the Mac only) |
 //! | `POST /home/tasks/{id}/close` | his × on a task's tab: the tab goes, the work is not stopped (the Mac only) |
@@ -168,6 +168,11 @@ pub struct HeldBlocker {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HeldReply {
     pub blockers: Vec<HeldBlocker>,
+    /// Item 995: how many proposed changes to instructions or memory wait
+    /// on his review — in the one Needs-you number the Mac's pill shows, so
+    /// the phone's count agrees. Reviewed on the Mac (no route here).
+    #[serde(default)]
+    pub proposals: usize,
 }
 
 fn config(shared: &Shared) -> Result<PathBuf, Box<Response>> {
@@ -425,9 +430,21 @@ async fn held_blockers(shared: &Shared) -> Vec<HeldBlocker> {
     .unwrap_or_default()
 }
 
+/// Item 995: the proposals pending under this host's config folder (the
+/// Mac's bell and Needs-you view read the same `centre::proposals_in`).
+async fn pending_proposals(shared: &Shared) -> usize {
+    let Some(config) = shared.host.home_config() else {
+        return 0;
+    };
+    tokio::task::spawn_blocking(move || crate::centre::proposals_in(&config).len())
+        .await
+        .unwrap_or_default()
+}
+
 async fn held(State(shared): State<Arc<Shared>>) -> Response {
     answer(Ok::<_, String>(HeldReply {
         blockers: held_blockers(&shared).await,
+        proposals: pending_proposals(&shared).await,
     }))
 }
 
@@ -451,6 +468,8 @@ pub enum Need {
     JobSkipped(String),
     /// A held blocker.
     Blocker,
+    /// Item 995: a proposed change to instructions or memory, pending his review.
+    Proposal,
 }
 
 fn number_word(n: usize) -> String {
@@ -475,6 +494,7 @@ pub fn needs_sentence(needs: &[Need]) -> String {
         return "Nothing needs you.".into();
     }
     let blockers = needs.iter().filter(|n| **n == Need::Blocker).count();
+    let proposals = needs.iter().filter(|n| **n == Need::Proposal).count();
     let mut parts: Vec<String> = needs
         .iter()
         .filter_map(|n| match n {
@@ -490,7 +510,7 @@ pub fn needs_sentence(needs: &[Need]) -> String {
                 "{} skipped itself to save your limits and asks whether to run it",
                 named(j)
             )),
-            Need::Blocker => None,
+            Need::Blocker | Need::Proposal => None,
         })
         .collect();
     if blockers > 0 {
@@ -499,6 +519,14 @@ pub fn needs_sentence(needs: &[Need]) -> String {
             "one held blocker".into()
         } else {
             format!("{w} held blockers")
+        });
+    }
+    if proposals > 0 {
+        let w = number_word(proposals).to_lowercase();
+        parts.push(if proposals == 1 {
+            "one proposal to review".into()
+        } else {
+            format!("{w} proposals to review")
         });
     }
     let total = needs.len();
@@ -565,10 +593,12 @@ async fn needs(State(shared): State<Arc<Shared>>) -> Response {
     let state = shared.host.state().await;
     let feed = shared.host.push().map(|p| p.feed()).unwrap_or_default();
     let jobs = shared.host.jobs().map(|j| j.list()).unwrap_or_default();
-    // Item 945: Nightshift's held blockers are not Home's to announce (he
-    // answers those where he runs Nightshift); `/home/held` still lists
-    // them for the phone page's one folded line.
-    let blockers = 0;
+    // Item 995: the sentence counts what the Mac's pill counts — held
+    // blockers and pending proposals included (item 968's one number); before
+    // 995 it left them out (item 945) and said "Nothing needs you" beside a
+    // pill that said 5.
+    let blockers = held_blockers(&shared).await.len();
+    let proposals = pending_proposals(&shared).await;
     let active_label = match state.active_chat.as_deref() {
         Some(id) => shared
             .host
@@ -583,7 +613,8 @@ async fn needs(State(shared): State<Arc<Shared>>) -> Response {
         .active_chat
         .as_deref()
         .map(|id| (id, active_label.as_deref().unwrap_or("")));
-    let list = needs_from(&feed, &jobs, blockers, state.pending.len(), active);
+    let mut list = needs_from(&feed, &jobs, blockers, state.pending.len(), active);
+    list.extend(std::iter::repeat_n(Need::Proposal, proposals));
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
@@ -639,6 +670,11 @@ mod tests {
     #[test]
     fn the_needs_sentence_names_each_thing_and_counts_the_blockers() {
         assert_eq!(needs_sentence(&[]), "Nothing needs you.");
+        // Item 995: proposals are in the count, named after the blockers.
+        assert_eq!(
+            needs_sentence(&[Need::Blocker, Need::Blocker, Need::Proposal]),
+            "Three things need you: two held blockers, one proposal to review."
+        );
         assert_eq!(
             needs_sentence(&[
                 Need::Approval("Scorer review".into()),

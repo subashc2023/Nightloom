@@ -16,7 +16,7 @@
   import { clock, reachName, reachStatusWords } from "../../home";
   import { homeNeedsNow, needs as board, replyTo, setDraft, dropEnded } from "../../needsBoard.svelte";
   import { withNote } from "../../askQuestions";
-  import { nightshiftWords, type NeedRow } from "../../needsYou";
+  import { elsewhereWords, type NeedRow } from "../../needsYou";
   import Panel from "../Panel.svelte";
   import Steps from "../Steps.svelte";
   import Btn from "../Btn.svelte";
@@ -58,13 +58,14 @@
   const sources = $derived(sourceRows(home.reach, home.sources, reachName, reachStatusWords, clock));
   const groups = $derived(sourceGroups(sources));
   // Item 945: Home lists what waits on him in his chats; Nightshift's blockers and shipped items are one quiet line.
+  // Item 995: that line, the status line and the panel's count all use the pill's one number (`mine.waiting`).
   const mine = $derived(homeNeedsNow());
   const needs = $derived(mine.rows);
-  const elsewhere = $derived(nightshiftWords(mine));
+  const elsewhere = $derived(elsewhereWords(mine));
   // Item 944: Home starts simple and grows — a section with nothing in it is not drawn (no empty board, no bare
   // heading); it arrives the first time it has something. While nothing needs him, one calm line says so.
   const stepCount = $derived(stepsOf(stageHost.now.events(), 3, isScanMessage).length);
-  const shape = $derived(watchShape({ sources: sources.length, reading: home.reach === null, needs: needs.length, steps: stepCount, busy: app.busy }));
+  const shape = $derived(watchShape({ sources: sources.length, reading: home.reach === null, needs: needs.length, steps: stepCount, busy: app.busy, waiting: mine.waiting }));
   // A section arrives only when it appears after the view is drawn (not at every open of Watching).
   let drawn = false;
   $effect(() => {
@@ -88,8 +89,8 @@
 <div class="w-watch" class:bare={shape.bare}>
 {#if shape.calm}
   <div class="w-calm" use:late>
-    <i class="w-light ok" aria-hidden="true"></i><span class="w-calm-t">{shape.calm}</span>
-    {#if elsewhere}<button class="w-else inline" use:tip={"Not listed on Home\nOpens the Needs-you view"} onclick={() => (app.showNeeds = true)}><span class="w-else-t">Nightshift · {elsewhere}</span><span class="w-else-go">in Needs you →</span></button>{/if}
+    <i class="w-light {shape.waits ? 'warn' : 'ok'}" aria-hidden="true"></i><span class="w-calm-t" data-home-line>{shape.calm}</span>
+    {#if elsewhere}<button class="w-else inline" use:tip={"Not listed on Home\nOpens the Needs-you view"} onclick={() => (app.showNeeds = true)}><span class="w-else-t">{elsewhere}</span><span class="w-else-go">in Needs you →</span></button>{/if}
   </div>
 {/if}
 {#if !shape.bare}
@@ -142,7 +143,7 @@
     {/if}
     {#if shape.needs}
     <div class="h9-col h9-fill" use:late>
-      <Panel title="Needs you" sub={String(needs.length)} lock={needs.length > 0}>
+      <Panel title="Needs you" sub={mine.waiting > 0 ? String(mine.waiting) : ""} lock={needs.length > 0}>
         <div class="w-needs">
           {#each needs as n (n.id)}
             {@const busy = !!board.sending[n.id]}
@@ -182,7 +183,7 @@
           {/each}
           <!-- Item 945: Nightshift's open blockers and shipped items are not listed here (he answers those where he
                runs Nightshift); one quiet line says how many, and opens the Needs-you view, which lists every one. -->
-          {#if elsewhere}<button class="w-else" use:tip={"Not listed on Home\nOpens the Needs-you view"} onclick={() => (app.showNeeds = true)}><span class="w-else-t">Nightshift · {elsewhere}</span><span class="w-else-go">in Needs you →</span></button>{/if}
+          {#if elsewhere}<button class="w-else" use:tip={"Not listed on Home\nOpens the Needs-you view"} onclick={() => (app.showNeeds = true)}><span class="w-else-t">{elsewhere}</span><span class="w-else-go">in Needs you →</span></button>{/if}
         </div>
       </Panel>
     </div>

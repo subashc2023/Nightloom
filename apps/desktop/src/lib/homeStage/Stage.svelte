@@ -43,8 +43,8 @@
 
   let { blank, children }: { blank: boolean; children: Snippet } = $props();
 
-  // Item 945: Home's own rows (Nightshift's blockers and shipped items are not counted on the tab).
-  const needs = $derived(homeNeedsNow().rows.length + home.cards.length);
+  // Item 995: the one Needs-you number, as the top pill and Watching's line say it.
+  const needs = $derived(homeNeedsNow().waiting);
   const brief = $derived(briefOf(app.events as unknown as Ev[], isScanMessage, app.busy));
   // The views a task of Home's may be drawn in.
   // Item 898: "brief" too — a page Home wrote with update_task, drawn by the Brief view.

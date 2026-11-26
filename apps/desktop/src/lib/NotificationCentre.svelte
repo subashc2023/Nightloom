@@ -25,7 +25,7 @@
     runDailyPass,
   } from "./state.svelte";
   import { bellList, isInstructionsFile, memoryFileName, type Notice } from "./centre";
-  import { needsNow } from "./needsBoard.svelte";
+  import { homeNeedsNow } from "./needsBoard.svelte";
   import { relativeTime } from "./time";
   import { hourLabel } from "./nightshiftFace";
   import DiffView from "./DiffView.svelte";
@@ -36,8 +36,8 @@
   // Item 969: the bell is a daily digest — no number, a dot while a row is new; proposals and blockers are
   // counted in Needs you (item 968), so the bell lists neither.
   const bell = $derived(bellList(app.centre.notices, app.centre.seen, new Date()));
-  /** What asks him to decide, left to Needs you: one quiet line at the panel's foot. */
-  const asks = $derived(needsNow().filter((r) => r.state === "waiting" && (r.kind === "proposal" || r.kind === "blocker")).length);
+  /** What waits on him, left to Needs you: one quiet line at the panel's foot. Item 995: the pill's one number. */
+  const asks = $derived(homeNeedsNow().waiting);
 
   /** The dream notice whose diff is open, and the diff itself. */
   let shown = $state<string | null>(null);
@@ -316,8 +316,8 @@
           </section>
         {/each}
         {#if asks > 0}
-          <button class="centre-else" use:tip={"Proposals and held blockers\nListed and answered in Needs you"} onclick={openNeeds}
-            ><span>{asks === 1 ? "1 thing asks you to decide" : `${asks} things ask you to decide`}</span><span class="centre-else-go">in Needs you →</span></button
+          <button class="centre-else" use:tip={"Everything that waits on you\nListed and answered in Needs you"} onclick={openNeeds}
+            ><span>{asks === 1 ? "1 thing needs you" : `${asks} things need you`}</span><span class="centre-else-go">in Needs you →</span></button
           >
         {/if}
       </div>

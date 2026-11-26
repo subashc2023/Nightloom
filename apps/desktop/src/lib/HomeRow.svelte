@@ -8,7 +8,6 @@
   import { tip } from "./tip";
   import { app, canLeaveProject } from "./state.svelte";
   import { homeNeedsNow } from "./needsBoard.svelte";
-  import { waitingCount } from "./needsYou";
   import { homeCount, homeTip, isHome, todayFigure } from "./home";
   import * as api from "./api";
   import { home, homeProject, openHome, refreshHome } from "./home.svelte";
@@ -19,8 +18,8 @@
   const project = $derived(homeProject());
   const here = $derived(isHome(app.project));
   // 763 H5's review: Start cards wait on him too.
-  // Item 945: Home's own rows — Nightshift's blockers are not counted here.
-  const n = $derived(waitingCount(homeNeedsNow().rows) + home.cards.length);
+  // Item 995: the one Needs-you number, as the top pill says it (held blockers and proposals included).
+  const n = $derived(homeNeedsNow().waiting);
   const count = $derived(homeCount(n));
   $effect(() => {
     if (project) untrack(() => void refreshHome());
