@@ -9,9 +9,12 @@
    * what goes and to whom; only its named button ("Send: Accept", "Send to Priya S.") hands the action to `act`.
    * What comes back stamps a receipt (SENT, COPIED), the way an answered question does.
    *
-   * `act` is 993d's. Without one — this build — every action is shown, disabled, marked "coming soon"; with one
-   * (the tests, the harness, then 993d) the whole flow runs. A signed-out or switched-off account disables the
-   * actions too and says why, with the way to Home's Sources.
+   * `act` is 993d's (`refAct.ts`, passed by `App.svelte`): his confirmed click runs one connector call, and what
+   * the connector answered comes back as the receipt — sent, not there any more (the card says so and the link
+   * dims), or the reason it failed, with nothing dropped. Without an `act` (a window with no way to run one) every
+   * action is shown, disabled, marked "coming soon". A signed-out or switched-off account disables the actions
+   * that need it and says why, with the way to Home's Sources; opening the item's own page and copying its link
+   * need no account and stay on.
    *
    * His typing is never lost (`refDrafts.svelte.ts`): a reply, a forward's recipient and an RSVP note are kept at
    * every keystroke under the item, offered back when the card opens again, and dropped only by a send, a save as a
@@ -34,6 +37,8 @@
     account,
     accountState = "unknown",
     act,
+    mailSend = true,
+    rsvpNow = null,
     onclose,
     onaccounts,
     ondone,
@@ -47,6 +52,10 @@
     accountState?: AccountState;
     /** Runs one action (993d). Absent: the actions are shown, disabled, "coming soon". */
     act?: (a: RefAction) => Promise<RefReceipt>;
+    /** Whether "Send to …" may send (993e). Off: the draft can still be saved to Gmail. */
+    mailSend?: boolean;
+    /** His answer as the window last knew it (an RSVP sent or undone this session), over the link's own. */
+    rsvpNow?: Rsvp | null;
     onclose: () => void;
     /** To Home's Sources, from the signed-out notice. */
     onaccounts?: () => void;
@@ -59,8 +68,12 @@
   const key = $derived(refKey(ref));
   const f = $derived(ref.fields);
   const warn = $derived(accountWarn(accountState, account));
-  const ready = $derived(!!act && warn === null);
-  const offWhy = $derived(ready ? undefined : warn ? "This account cannot be reached right now" : SOON);
+  // The connector said the item is not there any more: nothing more can be sent for it.
+  let gone = $state(false);
+  const ready = $derived(!!act && warn === null && !gone);
+  const offWhy = $derived(ready ? undefined : !act ? SOON : gone ? "It is not there any more" : "This account cannot be reached right now");
+  // Opening its page and copying its link need no account.
+  const linkWhy = $derived(!act ? SOON : f.link ? undefined : "This link came without its address");
   const elsewhere = $derived(openElsewhere(ref));
   const asOf = $derived(asOfWords(ref, now()));
   const draft = $derived(draftOf(key));
@@ -75,7 +88,7 @@
   let discarding = $state(false);
   // His answer after an RSVP went through; until then the link's own.
   let answered = $state<Rsvp | null>(null);
-  const rsvp = $derived(answered ?? rsvpOf(f.rsvp));
+  const rsvp = $derived(rsvpNow ?? answered ?? rsvpOf(f.rsvp));
   const pill = $derived(rsvpPill(rsvp));
 
   let card = $state<HTMLElement | null>(null);
@@ -124,7 +137,8 @@
       const r = await act(action);
       // The pressed button holds its lock for the pick's 300 ms, then the receipt stamps in.
       await new Promise((ok) => setTimeout(ok, hold()));
-      after?.();
+      if (r.gone) gone = true;
+      else after?.();
       receipt = r;
       if (r.rsvp) answered = r.rsvp;
       view = "details";
@@ -142,6 +156,7 @@
 
   function send(): void {
     if (!pending || !canSend) return;
+    if (pending.type === "mail" && !mailSend) return;
     if (pending.type === "rsvp") void run({ type: "rsvp", answer: pending.answer, note: note.trim() }, "send", () => dropDraft(key, "note"));
     else void run({ type: "send", mode: pending.mode, to: sendTo, body }, "send", () => dropDraft(key, "mail"));
   }
@@ -228,14 +243,16 @@
             <button type="button" class="ns-btn rc-b" disabled={!ready} use:tip={offWhy} onclick={() => pick({ type: "mail", mode: m })}>{MAIL_WORD[m]}</button>
           {/each}
         {:else}
-          <button type="button" class="ns-btn rc-b" disabled={!ready || !f.link} use:tip={offWhy ?? (f.link ? undefined : "This link came without its address")} onclick={() => run({ type: "readHere" }, "read")}>Read it here</button>
-          <button type="button" class="ns-btn rc-b" class:rc-lockrow={busy === "copy"} disabled={!ready || !f.link} use:tip={offWhy ?? (f.link ? undefined : "This link came without its address")} onclick={() => run({ type: "copyLink" }, "copy")}>Copy link</button>
+          <button type="button" class="ns-btn rc-b" disabled={!act || !f.link} use:tip={linkWhy} onclick={() => run({ type: "readHere" }, "read")}>Read it here</button>
+          <button type="button" class="ns-btn rc-b" class:rc-lockrow={busy === "copy"} disabled={!act || !f.link} use:tip={linkWhy} onclick={() => run({ type: "copyLink" }, "copy")}>Copy link</button>
         {/if}
         {#if !act}<span class="rc-soon">{SOON}</span>{/if}
       </div>
     {/if}
     {#if failed}<div class="rc-warn" role="alert"><span>That did not go through: {failed}</span></div>{/if}
-    {#if receipt}
+    {#if receipt?.gone}
+      <div class="rc-warn rc-gone" role="status"><span>{receipt.text}</span></div>
+    {:else if receipt}
       <div class="rc-rc" role="status"><span class="rc-stamp">{receipt.stamp}</span><span class="rc-rt">{receipt.text}</span></div>
     {/if}
   {:else if pending}
@@ -270,7 +287,7 @@
           </div>
         {:else}
           <div class="rc-row">
-            <button type="button" class="ns-btn accent rc-b" class:rc-lockrow={busy === "send"} disabled={!canSend && busy !== "send"} use:tip={!body.trim() ? "Nothing written yet" : !sendTo ? "Say who gets it first" : "Sends exactly the words above (⌘↵)"} onclick={send}>Send to {sendTo || "…"} <span class="rc-ret">⌘↵</span></button>
+            <button type="button" class="ns-btn accent rc-b" class:rc-lockrow={busy === "send"} disabled={!mailSend || (!canSend && busy !== "send")} use:tip={!mailSend ? "Sending from here is not built yet\nSave as Gmail draft works" : !body.trim() ? "Nothing written yet" : !sendTo ? "Say who gets it first" : "Sends exactly the words above (⌘↵)"} onclick={send}>Send to {sendTo || "…"} <span class="rc-ret">⌘↵</span></button>
             <button type="button" class="ns-btn rc-b" class:rc-lockrow={busy === "save"} disabled={(!body.trim() || busy !== null) && busy !== "save"} onclick={saveDraft}>Save as Gmail draft</button>
             <span class="rc-gap"></span>
             <button type="button" class="ns-btn ghost rc-b rc-danger" disabled={busy !== null} onclick={() => (body.trim() || to.trim() ? (discarding = true) : discard())}>Discard</button>
@@ -283,7 +300,7 @@
   {/if}
 
   <div class="rc-sep hud-rule"></div>
-  <button type="button" class="rc-go hud-row" disabled={!ready || !f.link} use:tip={offWhy ?? (f.link ? undefined : "This link came without its address")} onclick={() => run({ type: "open" }, "open")}>
+  <button type="button" class="rc-go hud-row" disabled={!act || !f.link} use:tip={linkWhy} onclick={() => run({ type: "open" }, "open")}>
     <Icon name={ref.kind === "event" ? "calendar" : ref.kind === "email" ? "mail" : "drive"} size={14} />
     <span>{elsewhere.label}</span>
     {#if elsewhere.host && act}<span class="rc-host">{elsewhere.host}</span>{/if}

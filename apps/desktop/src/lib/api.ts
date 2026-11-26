@@ -2671,6 +2671,28 @@ export function homeSaveBrief(text: string): Promise<null> {
   return invoke("home_save_brief", { text });
 }
 
+/** Item 993d: the item a card was opened on, as the connector call needs it. */
+export interface RefActItem {
+  kind: string;
+  id: string;
+  src: string;
+  cal?: string;
+  name: string;
+}
+/** What the connector answered: done, not there any more, or an error — each with its one line. */
+export interface RefActReceipt {
+  outcome: "done" | "not_found" | "error";
+  text: string;
+}
+/**
+ * Item 993d: run his click in a card — one connector call in its own throwaway Haiku process, let through by a
+ * one-time pass for exactly this call. Call it only from the card's own confirm button (`refAct.ts`): this is
+ * the one way anything is sent, and nothing but his click may start it (blocker 2304).
+ */
+export function refAct(item: RefActItem, act: { type: "rsvp" | "saveDraft" | "send"; [k: string]: unknown }, binary?: string, safeMode?: boolean): Promise<RefActReceipt> {
+  return invoke("ref_act", { item, act, binary, safeMode });
+}
+
 /** Item 804: what Home can reach, from the last check (nothing is run). */
 export function homeReach(): Promise<HomeReach> {
   return invoke("home_reach");

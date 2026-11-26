@@ -7,19 +7,24 @@
    * `data-ref-cards`, which is what gives the links their look (refTag.css) — a window without a host (the phone
    * until 993f, Quick Entry) draws the names plain.
    *
-   * `act` is 993d's: it is not passed here yet, so the card shows every action disabled, "coming soon".
+   * `act` is 993d's (`refAct.ts`): his confirmed click in the card, run as one connector call. The host keeps what
+   * came back for the session — his answer to an event (so a card opened again shows it), the items the connector
+   * said are gone (their links dim) — and offers the Undo: an answer he changed can be put back for a few seconds,
+   * from a toast that outlives the card (blocker 2305). Undo is his click too, and runs the same way.
    */
   import { onMount } from "svelte";
   import RefCard from "./RefCard.svelte";
   import { refFromEl, refKey, type Ref } from "./refTag";
-  import { accountOf } from "./refCard";
-  import type { RefAction, RefReceipt } from "./refCard";
+  import { accountOf, rsvpAnswerOf, rsvpOf } from "./refCard";
+  import type { RefAction, RefReceipt, Rsvp, RsvpAnswer } from "./refCard";
   import type { HomeReach } from "./home";
 
   let {
     reach,
     loadReach,
     act,
+    mailSend = true,
+    toast,
     onaccounts,
   }: {
     /** What Home reaches, when the app already holds it. */
@@ -27,6 +32,10 @@
     /** Reads the last check (nothing is run) when it does not. */
     loadReach?: () => Promise<HomeReach>;
     act?: (ref: Ref, a: RefAction) => Promise<RefReceipt>;
+    /** Whether a card's "Send to …" may send (993e). */
+    mailSend?: boolean;
+    /** Where the Undo is offered (the app's toasts). Without one no Undo is offered. */
+    toast?: (text: string, action?: { label: string; run: () => void }) => void;
     onaccounts?: () => void;
   } = $props();
 
@@ -35,6 +44,51 @@
   let seq = 0;
   // The items something was sent for this session: their links keep a ✓.
   const done = new Set<string>();
+  // His answer to an event after an RSVP went through (or was undone) this session, by item.
+  const answers = $state<Record<string, Rsvp>>({});
+  // The items the connector said are not there any more: their links dim.
+  const gone = new Set<string>();
+
+  const linksOf = (k: string) => [...document.querySelectorAll<HTMLElement>("a.nl-ref")].filter((a) => {
+    const r = refFromEl(a);
+    return !!r && refKey(r) === k;
+  });
+
+  /** One action of his, and what the window keeps of its answer. */
+  async function run(ref: Ref, a: RefAction): Promise<RefReceipt> {
+    const k = refKey(ref);
+    const before = answers[k] ?? rsvpOf(ref.fields.rsvp);
+    const r = await act!(ref, a);
+    if (r.gone) {
+      gone.add(k);
+      for (const el of linksOf(k)) mark(el, "ref-gone", true);
+      return r;
+    }
+    if (a.type === "rsvp" && r.rsvp) {
+      answers[k] = r.rsvp;
+      const back = rsvpAnswerOf(before);
+      // An answer he changed can be put back; a first answer cannot be un-answered (the connector has no such call).
+      if (toast && back && back !== r.rsvp) toast(r.text, { label: "Undo", run: () => void undo(ref, back) });
+    }
+    return r;
+  }
+
+  async function undo(ref: Ref, back: RsvpAnswer): Promise<void> {
+    const k = refKey(ref);
+    try {
+      const r = await act!(ref, { type: "rsvp", answer: back, note: "" });
+      if (r.gone) {
+        gone.add(k);
+        for (const el of linksOf(k)) mark(el, "ref-gone", true);
+        toast?.(`Could not undo: ${r.text}`);
+        return;
+      }
+      answers[k] = r.rsvp ?? back;
+      toast?.(`Put back: ${r.text}`);
+    } catch (e) {
+      toast?.(`Could not undo the answer: ${String(e instanceof Error ? e.message : e)}`);
+    }
+  }
 
   const known = $derived(reach?.() ?? read);
   const account = $derived(open ? accountOf(known, open.ref.src) : null);
@@ -47,6 +101,7 @@
     if (open) mark(open.anchor, "ref-open", false);
     open = { ref, anchor: a, n: ++seq };
     mark(a, "ref-open", true);
+    if (gone.has(refKey(ref))) mark(a, "ref-gone", true);
     if (!reach?.() && !read && loadReach)
       void loadReach()
         .then((r) => (read = r))
@@ -121,7 +176,9 @@
       anchor={open.anchor}
       account={account.label}
       accountState={account.state}
-      act={act ? (a) => act(open!.ref, a) : undefined}
+      act={act ? ((r) => (a: RefAction) => run(r, a))(open.ref) : undefined}
+      {mailSend}
+      rsvpNow={answers[refKey(open.ref)] ?? null}
       onclose={() => close()}
       onaccounts={onaccounts ? () => (close(false), onaccounts()) : undefined}
       ondone={sent}

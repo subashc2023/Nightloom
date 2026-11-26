@@ -79,6 +79,7 @@ mod image_calls;
 /// The notes Inbox's Sort inbox (nightshift backlog 488).
 mod inbox_sort;
 mod listen;
+mod ref_action;
 // Recurring jobs' part on the Mac (item 746).
 mod home;
 mod jobs;
@@ -1674,6 +1675,7 @@ fn main() {
             note_edit::cancel_note_edit,
             inbox_sort::inbox_sort_list,
             inbox_sort::inbox_sort_plan,
+            ref_action::ref_act,
             listen::listen_audio,
             listen::listen_brief,
             listen::listen_parts,

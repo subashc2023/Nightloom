@@ -67,6 +67,7 @@ pub mod prompt;
 pub mod proposal;
 pub mod push;
 pub mod rail_store;
+pub mod ref_action;
 pub mod remote;
 pub mod retrospective;
 pub mod runaway;

@@ -78,3 +78,9 @@ a.nl-ref[data-ref-kind="doc"] {
   padding: 0 4px;
   vertical-align: 1px;
 }
+/* Item 993d: the connector said the item is not there any more (deleted, cancelled): its link dims. */
+:root[data-ref-cards] a.nl-ref.ref-gone {
+  opacity: 0.55;
+  text-decoration: line-through;
+  text-decoration-color: var(--dim);
+}

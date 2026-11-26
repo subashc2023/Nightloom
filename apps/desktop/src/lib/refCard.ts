@@ -20,11 +20,19 @@ export type RefAction =
   | { type: "readHere" }
   | { type: "open" };
 
-/** What an action came back with: the stamp's word and the one line beside it; `rsvp` when his answer changed. */
+/** What an action came back with: the stamp's word and the one line beside it; `rsvp` when his answer changed;
+ *  `gone` when the connector said the item is not there any more (nothing was sent; the card says so and the
+ *  link in the reply dims). A failure is not a receipt: `act` rejects with the reason. */
 export interface RefReceipt {
-  stamp: "Sent" | "Copied" | "Saved";
+  stamp: "Sent" | "Copied" | "Saved" | "Opened" | "Gone";
   text: string;
   rsvp?: Rsvp;
+  gone?: boolean;
+}
+
+/** An answer he can be put back to (the connector takes these three; "not answered" cannot be set again). */
+export function rsvpAnswerOf(r: Rsvp | null | undefined): RsvpAnswer | null {
+  return r === "accepted" || r === "tentative" || r === "declined" ? r : null;
 }
 
 export const KIND_WORD: Record<RefKind, string> = { event: "Event", email: "Email", doc: "Doc" };

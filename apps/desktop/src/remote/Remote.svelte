@@ -120,6 +120,7 @@
   // Item 770: a page a reply wrote, drawn where its block stands (a settled reply; a live one says it is coming).
   import { replyPages } from "../lib/replyPages";
   import { trackViewport } from "./viewport";
+  import { isSend } from "../lib/sendGuard";
   import { subagentCalls } from "../lib/subagent";
   import { arrive, launch, reducedMotion } from "../lib/sendMotion";
   import type { ApprovalRequest, AskQuestion, DocumentInput, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
@@ -3912,6 +3913,10 @@
                 <button class="btn accent" data-act="allow" onclick={() => answer(req, "allow")}>Remember it</button>
                 <button class="btn danger" data-act="deny" onclick={() => answer(req, "deny")}>Don’t</button>
               {:else if req.kind === "home_write"}
+                <button class="btn accent" data-act="allow" onclick={() => answer(req, "allow")}>Allow once</button>
+                <button class="btn danger" data-act="deny" onclick={() => answer(req, "deny")}>Deny</button>
+              {:else if isSend(req.name)}
+                <!-- 993d: a send asks every time; no standing allow is offered (the service reads none for one). -->
                 <button class="btn accent" data-act="allow" onclick={() => answer(req, "allow")}>Allow once</button>
                 <button class="btn danger" data-act="deny" onclick={() => answer(req, "deny")}>Deny</button>
               {:else if req.kind === "connector"}
