@@ -37,6 +37,50 @@ export function addToast(text: string, action?: { label: string; run: () => void
   arm(id, toastMs(text, action));
 }
 
+/**
+ * Items 1005 + 1007: a toast that says work has started and stays while it runs — no timer; the corner
+ * draws its elapsed time from `since` (`ToastClock.svelte`). The pass that raised it later puts its result
+ * in the same place (`settleToast`). Returns its id.
+ */
+export function progressToast(text: string, action?: { label: string; run: () => void }): number {
+  const id = ++toastSeq;
+  const since = Date.now();
+  app.toasts.push(action ? { id, text, action, since } : { id, text, since });
+  return id;
+}
+
+/** New words for a running toast (a pass moving to its next step); nothing when it is gone. */
+export function updateToast(id: number, text: string): void {
+  const t = app.toasts.find((x) => x.id === id);
+  if (t && t.text !== text) t.text = text;
+}
+
+/**
+ * The result where the progress toast stood: same place, new words, no clock. `stay`: no timer — it waits
+ * for his X (a pass he started and may have looked away from; item 1005). Without it, the usual timer by
+ * its words. A toast he already closed (or Stopped) gets a fresh one. Returns the id the result is under.
+ */
+export function settleToast(
+  id: number,
+  text: string,
+  action?: { label: string; run: () => void },
+  opts: { stay?: boolean } = {},
+): number {
+  const i = app.toasts.findIndex((x) => x.id === id);
+  if (i < 0) {
+    if (!opts.stay) {
+      addToast(text, action);
+      return toastSeq;
+    }
+    const fresh = ++toastSeq;
+    app.toasts.push(action ? { id: fresh, text, action } : { id: fresh, text });
+    return fresh;
+  }
+  app.toasts[i] = action ? { id, text, action } : { id, text };
+  if (!opts.stay) arm(id, toastMs(text, action));
+  return id;
+}
+
 /** The pointer is on a toast: its timer stops (the time left is kept). */
 export function holdToast(id: number): void {
   const t = timers.get(id);

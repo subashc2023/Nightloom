@@ -56,6 +56,7 @@
   import ConfirmDialog from "./lib/ConfirmDialog.svelte";
   import { quoteLabel } from "./lib/asideQuote";
   import AttachmentLayer from "./lib/AttachmentLayer.svelte";
+  import ToastClock from "./lib/ToastClock.svelte";
   import WaitingNotices from "./lib/WaitingNotices.svelte";
   import AttachmentView from "./lib/AttachmentView.svelte";
   import SubagentView from "./lib/SubagentView.svelte";
@@ -1131,7 +1132,7 @@
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="toast" class:actionable={!!t.action} onmouseenter={() => holdToast(t.id)} onmouseleave={() => releaseToast(t.id)}>
               <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-              <span class="toast-text" use:tip={"Click to copy"} onclick={(e) => { if (!(e.target as HTMLElement).closest("button")) void copyToast(t.id); }}>{t.text}{#if t.copied}<span class="toast-sep">{" · copied"}</span>{/if}{#if t.action}<span class="toast-sep">{" · "}</span><button
+              <span class="toast-text" use:tip={"Click to copy"} onclick={(e) => { if (!(e.target as HTMLElement).closest("button")) void copyToast(t.id); }}>{t.text}{#if t.since}<ToastClock since={t.since} />{/if}{#if t.copied}<span class="toast-sep">{" · copied"}</span>{/if}{#if t.action}<span class="toast-sep">{" · "}</span><button
                   class="toast-action"
                   onclick={() => runToastAction(t.id)}>{t.action.label}</button>{/if}</span>
               <button class="toast-x" aria-label="Dismiss" onclick={() => dismissToast(t.id)}>
