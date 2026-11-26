@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- Item 993c: the typed link's card (RefCardHost + RefCard over a reply drawn by the real renderer), built by
+     harness/ref993/vite.config.ts and snapped with nightshift-code bin/snap for the frame strip beside the mock
+     (notes/runner-design/993-mock/motion.html). Query (window.__h9q or the hash):
+     kind=event|email|doc · at=link|open|hover|confirm|sent|close · soon=1 (no actions wired: this build's state) ·
+     out=1 (a signed-out account) · classic=1. Not shipped. -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); color: var(--ink); font: 14px/1.5 var(--sans); }
+      #root { padding: 18px 20px; box-sizing: border-box; }
+      #root .said { background: var(--raised); border: 1px solid var(--line2); border-radius: 8px; padding: 11px 15px; }
+      #root .said p { margin: 0; }
+      #lbl { font: 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--dim); margin-bottom: 8px; }
+      html.still *, html.still *::before, html.still *::after { animation: none !important; transition: none !important; }
+      html.still .lk-veil, html.still .lk-scan { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="root"><div id="lbl"></div><div class="said markdown" id="said"></div></div>
+    <script type="module" src="./ref993.ts"></script>
+  </body>
+</html>

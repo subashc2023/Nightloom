@@ -3,6 +3,7 @@
  * each opens on its own, and the counts the page's top row shows.
  */
 import type { Ev } from "./steps";
+import { refPlain } from "../refTag";
 
 export interface BriefSection {
   key: string;
@@ -61,7 +62,8 @@ export function briefOf(events: readonly Ev[], isScan: (t: string) => boolean, b
 
 /** A section's markdown as plain words to speak: list marks, emphasis, links and code fences gone. */
 export function speakable(md: string): string {
-  return md
+  // Item 993a: a typed link is spoken as its name.
+  return refPlain(md)
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/^\s*(?:[-*•]|\d+[.)])\s+/gm, "")

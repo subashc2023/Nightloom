@@ -16,6 +16,7 @@
   import { checkpointAction, editAction, loadDraft, rowCheckpoint, rowRemoval, saveDraft, type ChatAction, type Row, type TextPart, type ToolRow } from "./client";
   import { missingSentence } from "./hosts";
   import { plainPreview } from "./preview";
+  import { refPlain } from "../lib/refTag"; // Item 993a: Copy takes a typed link as its name
   import { joinAttachNote, splitAttachNote } from "../lib/keep";
 
   interface Props {
@@ -161,7 +162,7 @@
     <div class="mm-listen"><ListenButton kind="reply" id={textId(copyText)} text={() => copyText} source={listen} /></div>
   {/if}
   <div class="mm-menu">
-    <button onclick={() => (oncopy(copyText), onclose())}>{@render ico("copy")} Copy</button>
+    <button onclick={() => (oncopy(refPlain(copyText)), onclose())}>{@render ico("copy")} Copy</button>
     {#if editTarget && !removed}
       <button disabled={dead} onclick={() => beginEdit(false)}>{@render ico("pencil")} Edit{kept ? " · draft kept" : ""}</button>
       {#if row.kind === "user" && !part}

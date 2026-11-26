@@ -1,4 +1,5 @@
 import { Marked, type MarkedExtension, type Token, type Tokens } from "marked";
+import { refPlain } from "./refTag";
 
 /**
  * The tagged hand-off prompt (nightshift item 464, 2026-10-28). One source of
@@ -110,12 +111,14 @@ export const handoffTag: MarkedExtension = {
       renderer(token: Tokens.Generic): string {
         const text = (token as HandoffToken).text;
         if (!text) return "";
+        // Item 993a: a typed link shows as its name on the card; the prompt the next chat starts from
+        // (`extractHandoff`) keeps the tag, ids and all.
         // A `pre` with no language wraps like prose (app.css, backlog 384)
         // and gets the code blocks' Copy button (codeCopy.ts), which copies
         // the text exactly as kept.
         return (
           `<div class="handoff-card"><div class="handoff-label">${HANDOFF_LABEL}</div>` +
-          `<pre class="handoff-text"><code>${escapeHtml(text)}</code></pre></div>\n`
+          `<pre class="handoff-text"><code>${escapeHtml(refPlain(text))}</code></pre></div>\n`
         );
       },
     },

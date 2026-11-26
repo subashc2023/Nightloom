@@ -1,9 +1,13 @@
+import { refPlain } from "../lib/refTag";
+
 /**
  * A message's preview in the long-press menu as plain words (nightshift 300
  * A25): the menu showed the raw markdown (`# Plan`, `**bold**`). The marks
  * go, the words stay; a code fence keeps its code, a table its cells.
  */
 export function plainPreview(md: string): string {
+  // Item 993a: a typed link (`<event …>COAST Meeting</event>`) is its name here.
+  md = refPlain(md);
   const lines: string[] = [];
   let fence = false;
   for (const raw of md.split("\n")) {

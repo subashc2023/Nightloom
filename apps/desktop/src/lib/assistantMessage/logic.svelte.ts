@@ -3,6 +3,7 @@
 // one look binds to something the other does not. Moved verbatim from AssistantMessage.svelte's script.
 // Every Copy button goes through the in-app clipboard ring (backlog 173).
 import { copyText } from "../clipRing.svelte";
+import { refPlain } from "../refTag";
 import { type Segment, addToast, app, endContentDrag, openContent, startContentDrag, type SubagentRow } from "../state.svelte";
 import { gapLead, gapPhase, liveFor } from "../liveContext";
 import { shortTokens } from "../contextDial";
@@ -196,7 +197,8 @@ export function assistantMessageLogic(props: () => AssistantMessageLogicProps) {
   let copied = $state(false);
   async function copy(): Promise<void> {
     try {
-      await copyText(textOf());
+      // Item 993a: a typed link is copied as its name, not its tag.
+      await copyText(refPlain(textOf()));
       copied = true;
       setTimeout(() => (copied = false), COPIED_MS);
     } catch {
