@@ -1172,6 +1172,12 @@ impl Registry {
         e.touched_ms = None;
         e.missed = false;
         e.stopped = true;
+        // Item 1006: the hold was this run's ("Extend"); Stop ends it with
+        // the run, so the switch no longer shows a "· 12 h" the stopped
+        // chat does not have (blocker 2331).
+        if e.hold.take().is_some() {
+            clear_hold(&e.dir);
+        }
         write_stop_mark(&e.dir, now);
         was_on
     }
@@ -1922,6 +1928,76 @@ mod tests {
         assert!(fresh.wants_facts("c", &dir));
         // A chat the registry does not hold: nothing to stop.
         assert!(!fresh.stop_until_next("unknown", 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 1006: Stop after Extend drops the hold with the run — the
+    /// switch's "· 12 h" tail went stale (verify sweep 2, shot 64).
+    #[test]
+    fn a_stop_from_the_list_drops_the_runs_hold() {
+        let dir = scratch("stop-hold-1006");
+        let reg = Registry::default();
+        let p = Policy::default();
+        assert!(reg.offer("c", &dir, &spec(), reply(100_000)));
+        reg.set_hold("c", &dir, 12, None, MIN);
+        assert_eq!(
+            reg.status("c", Some(&dir), &p, 2 * MIN).hold_hours,
+            Some(12)
+        );
+        assert!(reg.stop_until_next("c", 3 * MIN));
+        let s = reg.status("c", Some(&dir), &p, 4 * MIN);
+        assert_eq!(s.why, Some(Why::Stopped));
+        assert_eq!(s.hold_hours, None);
+        assert!(!dir.join(HOLD_FILE).exists());
+        // A restart reads the folder: still no hold.
+        let fresh = Registry::default();
+        assert_eq!(fresh.status("c", Some(&dir), &p, 5 * MIN).hold_hours, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 1006: a reply at 1:07 AM under "stop at his sleep" (2–9 AM):
+    /// the first ping (2:02 AM) falls in his sleep, so none is sent — the
+    /// rule as decided — but the reply's own hour runs to 2:07 AM, and the
+    /// status says so: warm until then, cut by his sleep, not scheduled.
+    #[test]
+    fn a_reply_an_hour_before_his_sleep_stays_warm_its_hour_without_a_ping() {
+        use chrono::{Local, TimeZone};
+        let day = Local::now().date_naive();
+        let at = |h: u32, m: u32| {
+            Local
+                .from_local_datetime(&day.and_hms_opt(h, m, 0).unwrap())
+                .single()
+                .unwrap()
+                .timestamp_millis()
+        };
+        let sleep = Sleep { start: 2, end: 9 };
+        let p = Policy {
+            rule: Rule::SleepCut(sleep),
+            sleep: Some(sleep),
+            ..Policy::default()
+        };
+        let dir = scratch("sleep-1006");
+        let reg = Registry::default();
+        let r = Reply {
+            sent_ms: at(1, 7),
+            ..reply(100_000)
+        };
+        assert!(reg.offer("c", &dir, &spec(), r));
+        let s = reg.status("c", Some(&dir), &p, at(1, 8));
+        assert!(!s.scheduled, "2:02 AM is in his sleep: no ping");
+        assert_eq!(s.why, Some(Why::Sleep));
+        assert!(s.sleep_cut);
+        assert_eq!(s.warm_until_ms, Some(at(2, 7)));
+        // A reply at 12:30 AM still gets its 1:25 AM ping, then stops.
+        let early = Reply {
+            sent_ms: at(0, 30),
+            ..reply(100_000)
+        };
+        assert_eq!(
+            step(Mode::On, Some(&early), None, false, false, &p, at(0, 31)),
+            Step::Wait(at(1, 25))
+        );
+        assert_eq!(warm_until(&early, None, true, &p), at(2, 25));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

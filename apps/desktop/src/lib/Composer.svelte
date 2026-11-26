@@ -61,7 +61,7 @@
   import { lossTipText } from "./shortTip";
   import { cacheRatesOf, loadCacheRates } from "./cacheRates.svelte";
   import { layerChangeSinceCache, modelIdFor, modelSwitchPending, nextSendModel, pendingChangeCost, switchDetail } from "./changeCost";
-  import { handedOffOff, holdPress, isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
+  import { handedOffOff, holdPress, holdTail, isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
   import { holdKeepWarm, keepWarm, loadKeepWarm, setKeepWarm } from "./keepWarm.svelte";
   import KeepWarmHold from "./KeepWarmHold.svelte";
   import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
@@ -4932,7 +4932,7 @@
         use:holdPress={() => (kwHoldOpen = true)}
         onclick={() => void flipKeepWarm(isOn(kw) ? "off" : "on")}
       >
-        <span class="bottom-mark" aria-hidden="true">♨</span>{switchLabel(kw, now)}{#if kw?.hold_hours}<span class="keep-warm-hold">· {kw.hold_hours} h</span>{/if}
+        <span class="bottom-mark" aria-hidden="true">♨</span>{switchLabel(kw, now)}{#if holdTail(kw)}<span class="keep-warm-hold">{holdTail(kw)}</span>{/if}
       </button>
       {#if kwHoldOpen && kwButton}<KeepWarmHold anchor={kwButton} status={kw} onpick={(h) => void holdFor(h)} onclose={() => (kwHoldOpen = false)} />{/if}
     {/if}

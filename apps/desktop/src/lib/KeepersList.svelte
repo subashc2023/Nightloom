@@ -60,8 +60,8 @@
 <div class="keepers" aria-label="Chats kept warm now">
   {#if rows.length === 0}
     <p class="empty">
-      No chat's cache is being kept warm right now. A chat shows here from its reply until its cache would go cold;
-      the ♨ switch under its message box turns it on or off.
+      No chat's cache is being kept warm right now. A chat shows here from its reply until its cache would go cold,
+      unless you stop it; the ♨ switch under its message box turns it on or off.
     </p>
   {:else}
     <ul>
@@ -70,13 +70,13 @@
         <li>
           <div class="who">
             <span class="name">{titleOf(s.chat) ?? (homes[s.chat] || "a chat")}</span>
-            <span class="line">{keeperLine(s, now)}</span>
+            <span class="line" title={keeperLine(s, now)}>{keeperLine(s, now)}</span>
           </div>
           <div class="acts">
             <button
               class="ns-btn small"
               disabled={busy === s.chat || next === null}
-              use:tip={next === null ? `Held ${s.hold_hours} h, the longest` : `Keep warm up to ${next} h after its last reply`}
+              use:tip={next === null ? `Held ${s.hold_hours} h, the longest` : `Keep warm up to ${next} h after its last reply${s.sleep_cut ? ", through your sleep" : ""}`}
               onclick={() => next !== null && void extend(s.chat, next)}>{next === null ? `Held ${s.hold_hours} h` : `Extend to ${next} h`}</button
             >
             <button

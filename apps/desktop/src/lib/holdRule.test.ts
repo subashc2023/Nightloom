@@ -81,7 +81,7 @@ describe("item 878: the hold rule's words", () => {
     expect(switchLabel(s, now)).toMatch(/^warm until .* · you're usually asleep$/);
     expect(noticeRow(s, now)?.text).toMatch(/you're usually asleep then$/);
     const idle = { ...s, scheduled: false, why: "sleep" as const, sleep_cut: false };
-    expect(idleWords(idle)).toBe("stopped — you're usually asleep (2–9 AM)");
+    expect(idleWords(idle)).toBe("ended — no pings in your sleep (2–9 AM)");
     expect(holdRows(s)[0]).toMatchObject({ hours: 8, label: "8 h (default)", detail: "8 pings at most, none 2–9 AM" });
   });
 });
