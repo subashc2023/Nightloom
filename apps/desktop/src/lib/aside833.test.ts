@@ -38,7 +38,7 @@ describe("833: the aside box at narrow widths", () => {
 
   it("the card's head folds by measurement and wraps at its floor, never past the edge", () => {
     expect(cardSrc).toMatch(/bind:this=\{headEl\}\s*data-fold=\{headFold\}/);
-    expect(cardSrc).toContain('<span class="head-word"> cached</span>');
+    expect(cardSrc).toContain('<span class="head-word">{" "}cached</span>'); // item 1008: the space survives Svelte
     expect(cardSrc).toMatch(/\.aside-card-head\[data-fold="4"\] \{\s*flex-wrap: wrap;/);
     expect(foldSrc).toContain('aria-label="Fold into thread"');
     expect(foldSrc).toContain('<span class="fold-btn-word">');

@@ -89,6 +89,8 @@
   let frameWidth = $state(0);
   /** Each composer card's `bottom` in the stack above the composer. */
   let footBottoms = $state<Record<number, number>>({});
+  /** Item 1008: the transcript viewport's height — a composer card's room. */
+  let footRoom = $state(0);
   const footIds = $derived(shown.filter((a) => !placements[a.id]).map((a) => a.id));
 
   interface Mark {
@@ -199,6 +201,7 @@
       below += (cards[id]?.element()?.offsetHeight ?? 0) + CARD_GAP;
     }
     footBottoms = bottoms;
+    footRoom = vp.clientHeight;
     // A draft just opened: its box takes the caret once it is placed.
     const f = app.asideFocus;
     if (f !== null && cards[f]) {
@@ -280,6 +283,7 @@
     front={a.id === frontId}
     footBottom={footIds.length > 1 ? (footBottoms[a.id] ?? null) : null}
     footCount={footIds.length}
+    {footRoom}
     frame={inner}
     {viewport}
     passageTop={passageTops[a.id] ?? null}

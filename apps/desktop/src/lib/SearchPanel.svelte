@@ -1,7 +1,8 @@
 <script module lang="ts">
-  /** The query and scope the kept answer is for, so reopening the panel
-   *  shows the last results and selection rather than searching again. */
-  let answered = "";
+  /** ~~The query and scope the kept answer is for (`answered`)~~ — item
+   *  1004: kept as `app.search.key` with the project in it (`searchKey`), so
+   *  reopening still shows the last results and selection, but never another
+   *  project's. */
 </script>
 
 <script lang="ts">
@@ -20,6 +21,8 @@
     countLine,
     emptyLine,
     escapeClosesPanel,
+    scopeWhere,
+    searchKey,
     findBar,
     flatten,
     groupKey,
@@ -109,10 +112,10 @@
   const rows = $derived(flatten(app.search.result));
   const count = $derived(app.search.result ? countLine(app.search.result, app.search.scope) : null);
 
-  /** The answer keyed by what it answers, for `answered` above. */
-  function key(q: string, scope: SearchScope): string {
-    return `${scope}\n${q}`;
-  }
+  /** The open project's id and name — what `this` and `notes` read. */
+  const projectId = $derived(app.project?.id ?? null);
+  const projectName = $derived(app.project?.name ?? null);
+  const where = $derived(scopeWhere(app.search.scope, projectName));
 
   // Debounced, as the sidebar's box was: every keystroke would otherwise
   // read every log in the scope. `seq` keeps a slow early answer from
@@ -121,15 +124,18 @@
   $effect(() => {
     const q = app.search.query.trim();
     const scope = app.search.scope;
+    // Item 1004: the project is part of what is searched — a switch while
+    // the panel is open searches again; one while it was shut does on reopen.
+    const k = searchKey(q, scope, projectId);
     if (!q) {
       app.search.result = null;
       app.search.selected = 0;
-      answered = "";
+      app.search.key = "";
       searching = false;
       seq++;
       return;
     }
-    if (app.search.result && answered === key(q, scope)) return;
+    if (app.search.result && app.search.key === k) return;
     searching = true;
     const mine = ++seq;
     const timer = setTimeout(() => {
@@ -139,7 +145,7 @@
           if (mine !== seq) return;
           app.search.result = r;
           app.search.selected = 0;
-          answered = key(q, scope);
+          app.search.key = k;
           folded = {};
         })
         .catch((e) => {
@@ -306,6 +312,12 @@
     </div>
   </div>
 
+  <!-- Item 1004: the place this scope searches, named — the open project's
+       chats (or notes), so a stale scope can never pass unseen. -->
+  {#if where}
+    <div class="search-where" data-scope={app.search.scope}>in <b>{where}</b></div>
+  {/if}
+
   {#if searching}
     <div class="search-count">searching…</div>
     <div class="search-res" aria-busy="true">
@@ -316,14 +328,14 @@
   {:else if !app.search.result}
     <p class="search-empty">
       {app.search.scope === "this"
-        ? "Every chat in this project is searched as you type."
+        ? `Every chat in ${projectName ?? "the unfiled chats"} is searched as you type.`
         : app.search.scope === "all"
           ? "Every chat in every project, and the unfiled ones, is searched as you type."
           : "The project's notes and the vault are searched as you type."}
     </p>
   {:else if app.search.result.chats === 0}
     <p class="search-empty">
-      {emptyLine(app.search.query.trim(), app.search.scope)}
+      {emptyLine(app.search.query.trim(), app.search.scope, projectName)}
       {#if app.search.scope === "this"}
         <button class="search-link" onclick={() => setScope("all")}>search all chats instead →</button>
       {/if}
@@ -409,7 +421,7 @@
   <div class="search-foot" bind:this={footRow} data-fold={footFold}>
     <span><span class="k">↑↓</span> preview</span>
     <span><span class="k">↵</span> open</span>
-    <span><span class="k">⌘G</span> next<span class="fold1"> in the chat</span></span>
+    <span><span class="k">⌘G</span> next<span class="fold1">{" "}in the chat</span></span>
     <span><span class="k">esc</span> close</span>
     <span class="k right">{SEARCH_CHORD_LABEL}</span>
   </div>
@@ -533,6 +545,19 @@
   .search-scope-row[data-fold="1"] .search-scope button {
     padding: 5px 9px;
     font-size: 12.5px;
+  }
+  /* Item 1004: the scope's place, one quiet line under the scope row. */
+  .search-where {
+    padding: 0 14px 4px;
+    font-size: 12px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .search-where b {
+    color: var(--ink);
+    font-weight: 500;
   }
   .search-count {
     display: flex;

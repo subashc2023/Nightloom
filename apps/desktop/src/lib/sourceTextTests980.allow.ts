@@ -202,4 +202,8 @@ export const BASELINE: readonly string[] = [
 
 /** Test files added after 2026-11-25 allowed to read `.svelte` source because
  * what they check is the markup itself: path relative to `src/`, and why. */
-export const MARKUP_TESTS: Readonly<Record<string, string>> = {};
+export const MARKUP_TESTS: Readonly<Record<string, string>> = {
+  // Item 1008: parses every component as the compiler does (svelte/compiler `parse`), asserting no element's words
+  // start or end with a space Svelte 5 drops ("84kcached"); no text is matched, the AST is the subject.
+  "lib/svelteSpaces1008.test.ts": "a whitespace lint over every component's parsed markup (item 1008)",
+};

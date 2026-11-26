@@ -124,15 +124,56 @@ function plural(n: number, one: string, many: string): string {
   return n === 1 ? one : many;
 }
 
-/** The empty state's sentence: where nothing mentioned the query. */
-export function emptyLine(query: string, scope: SearchScope): string {
+/** The empty state's sentence: where nothing mentioned the query. Item
+ *  1004: with the open project's name it names it ("in STATS 67"), so the
+ *  scope searched is never a guess. */
+export function emptyLine(query: string, scope: SearchScope, project?: string | null): string {
   const where =
     scope === "this"
-      ? "in this project"
+      ? project === undefined
+        ? "in this project"
+        : project === null
+          ? "in the unfiled chats"
+          : `in ${project}`
       : scope === "all"
         ? "in any chat"
-        : "in the notes";
+        : project
+          ? `in ${project}’s notes or the vault`
+          : "in the notes";
   return `Nothing mentions “${query}” ${where}.`;
+}
+
+// ---- the project a kept answer is for (item 1004) ----------------------------
+
+/**
+ * What a kept answer answers: the scope, the query and — for the two scopes
+ * that read the open project (`this`, `notes`) — the project. Item 1004 (verify
+ * sweep 2): the key was scope and query alone, so `/search sampling` in Home,
+ * then `/project STATS 67`, then `/search sampling` again found Home's empty
+ * answer "kept" and showed it under STATS 67. `all` reads every project, so a
+ * switch leaves its answer good.
+ */
+export function searchKey(query: string, scope: SearchScope, projectId: string | null): string {
+  return scope === "all" ? `all\n${query}` : `${scope}\n${projectId ?? ""}\n${query}`;
+}
+
+/** Whether the kept answer is the answer for what the panel would search
+ *  now (its query, scope and the open project) — the panel re-searches, and
+ *  the sidebar's `14 ▸` hides, when it is not. */
+export function keptIsCurrent(
+  search: { query: string; scope: SearchScope; result: unknown; key: string },
+  projectId: string | null,
+): boolean {
+  return search.result !== null && search.key === searchKey(search.query.trim(), search.scope, projectId);
+}
+
+/** The scope's place in words, shown under the scope row (item 1004's "the
+ *  scope it uses is shown"): the open project's name for `this`, its notes
+ *  and the vault for `notes`; null for `all`, whose label says it whole. */
+export function scopeWhere(scope: SearchScope, project: string | null): string | null {
+  if (scope === "all") return null;
+  if (scope === "this") return project === null ? "the unfiled chats" : `${project}’s chats`;
+  return project === null ? "the vault" : `${project}’s notes and the vault`;
 }
 
 // ---- labels ---------------------------------------------------------------
