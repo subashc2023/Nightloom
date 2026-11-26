@@ -105,6 +105,36 @@ export function isKeeping(s: KeepWarmStatus | null | undefined, now: number): bo
   return !!s && s.mode !== "off" && s.scheduled && s.warm_until_ms != null && s.warm_until_ms > now;
 }
 
+/**
+ * Item 1006: the pings have ended — the next would fall in his sleep, or
+ * the cap passed — but the cache's last hour still runs (a reply at 1:07 AM
+ * under "stop at your sleep, 2–9 AM" is warm to 2:07 AM with no ping). The
+ * list, the switch and the notice say it is warm, not stopped.
+ */
+export function isWarmEnding(s: KeepWarmStatus | null | undefined, now: number): boolean {
+  return !!s && s.mode !== "off" && !s.scheduled && (s.why === "sleep" || s.why === "cap") && s.warm_until_ms != null && s.warm_until_ms > now;
+}
+
+/** Item 1006: the pings ended for his sleep — at the reply itself when its
+ *  first ping would fall in it — while the cache still runs its hour. The
+ *  switch, its tooltip and the notice say warm; the cap's last hour keeps
+ *  its "ended" words there (items 582/681), and only the list shows it. */
+function sleepEnding(s: KeepWarmStatus | null | undefined, now: number): boolean {
+  return isWarmEnding(s, now) && s?.why === "sleep";
+}
+
+/** Item 1006: the cache is warm and the chat's switch is on — pings
+ *  running, or its last hour after they ended. */
+export function isWarm(s: KeepWarmStatus | null | undefined, now: number): boolean {
+  return isKeeping(s, now) || isWarmEnding(s, now);
+}
+
+/** Item 1006: why no more pings come while the cache's last hour runs. */
+function endingWords(s: KeepWarmStatus): string {
+  if (s.why === "sleep") return `no pings in your sleep${s.sleep ? ` (${sleepWords(s.sleep)})` : ""}`;
+  return `no more pings — ${span(capOf(s))} since the last reply`;
+}
+
 /** Why an on switch is not pinging, as a few words; null while it is. */
 export function idleWords(s: KeepWarmStatus): string | null {
   switch (s.why) {
@@ -123,7 +153,8 @@ export function idleWords(s: KeepWarmStatus): string | null {
     case "stopped":
       return "stopped — starts again at the next message";
     case "sleep":
-      return `stopped — ${ASLEEP}${s.sleep ? ` (${sleepWords(s.sleep)})` : ""}`;
+      // Item 1006: "stopped" is his Stop's word; his sleep only ends the pings.
+      return `ended — no pings in your sleep${s.sleep ? ` (${sleepWords(s.sleep)})` : ""}`;
     default:
       return null;
   }
@@ -135,8 +166,16 @@ export function switchLabel(s: KeepWarmStatus | null | undefined, now: number): 
   if (handedOffOff(s)) return `keep warm · ${HANDED_OFF}`;
   if (!s || s.mode === "off") return "keep warm";
   if (isKeeping(s, now)) return `warm until ${clockTime(s.warm_until_ms as number)}${s.sleep_cut ? ` · ${ASLEEP}` : ""}`;
+  if (sleepEnding(s, now)) return `warm until ${clockTime(s.warm_until_ms as number)} · ${endingWords(s)}`;
   const idle = idleWords(s);
   return idle ? `keep warm · ${idle}` : "keep warm on";
+}
+
+/** The switch's hold tail, "· 12 h"; "" without a hold, and none on a
+ *  stopped chat (item 1006: Stop drops the hold; an older backend may still
+ *  send one, which the stopped chat does not have). */
+export function holdTail(s: KeepWarmStatus | null | undefined): string {
+  return s?.hold_hours && s.why !== "stopped" ? `· ${s.hold_hours} h` : "";
 }
 
 /** What the pings have spent so far, or nothing before the first. */
@@ -165,7 +204,9 @@ export function switchTitle(s: KeepWarmStatus | null | undefined, now: number, c
     ? `Warm${once} until ${clockTime(s.warm_until_ms as number)}` +
       (s.sleep_cut ? ` — ${ASLEEP}${s.sleep ? ` ${sleepWords(s.sleep)}` : ""}` : "") +
       (s.next_ping_ms != null ? `, next ping ${clockTime(s.next_ping_ms)}` : "")
-    : `Keep warm on${once}, not running: ${idleWords(s) ?? "waiting"}`;
+    : sleepEnding(s, now)
+      ? `Warm${once} until ${clockTime(s.warm_until_ms as number)} — ${endingWords(s)}; they start again at the next reply`
+      : `Keep warm on${once}, not running: ${idleWords(s) ?? "waiting"}`;
   const held = s.hold_hours != null ? ` · held ${s.hold_hours} h` : "";
   const p = s.spent;
   const pings = p.pings > 0 ? ` · ${p.pings} ping${p.pings === 1 ? "" : "s"} so far` : "";
@@ -338,6 +379,7 @@ export function noticeRow(s: KeepWarmStatus | null | undefined, now: number): No
     const asleep = s.sleep_cut ? ` — ${ASLEEP} then` : "";
     return { on: true, text: `Keeping warm until ~${clockTime(s.warm_until_ms as number)}${once}${asleep}` };
   }
+  if (sleepEnding(s, now)) return { on: true, text: `Warm until ~${clockTime(s.warm_until_ms as number)} — ${endingWords(s)}` };
   if (s.mode === "off" && s.warm_until_ms != null && s.warm_until_ms > now) {
     return { on: false, text: `Not keeping warm — warm until ~${clockTime(s.warm_until_ms)}; click to keep it` };
   }
@@ -359,10 +401,13 @@ export function touchedUntil(s: KeepWarmStatus | null | undefined): number | nul
 /**
  * Item 913: the rows of Settings' "Chats kept warm now" — every chat whose
  * cache the pings are keeping warm right now, soonest to go cold first. Pure.
+ * Item 1006: and every on chat whose pings ended (his sleep, the cap) while
+ * its cache still runs its last hour — the list's "from its reply until its
+ * cache would go cold". A Stop forgets the reply, so a stopped chat leaves.
  */
 export function keeperRows(byChat: Record<string, KeepWarmStatus>, now: number): KeepWarmStatus[] {
   return Object.values(byChat)
-    .filter((s) => isKeeping(s, now))
+    .filter((s) => isWarm(s, now))
     .sort((a, b) => (a.warm_until_ms as number) - (b.warm_until_ms as number));
 }
 
@@ -381,7 +426,8 @@ export function keeperLine(s: KeepWarmStatus, now: number): string {
   const parts = [`warm until ${clockTime(s.warm_until_ms as number)}`];
   if (s.next_ping_ms != null && s.next_ping_ms > now) parts.push(`next ping ${clockTime(s.next_ping_ms)}`);
   if (s.hold_hours != null) parts.push(`held ${s.hold_hours} h`);
-  if (s.sleep_cut) parts.push(ASLEEP);
+  if (isWarmEnding(s, now)) parts.push(endingWords(s));
+  else if (s.sleep_cut) parts.push(ASLEEP);
   const p = s.spent;
   if (p.pings > 0) parts.push(`${p.pings} ping${p.pings === 1 ? "" : "s"}${p.cost_usd > 0 ? ` ≈ $${p.cost_usd.toFixed(2)}` : ""}`);
   return parts.join(" · ");
