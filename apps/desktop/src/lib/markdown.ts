@@ -126,6 +126,9 @@ phoneMarked.use(replyPage);
 phoneMarked.use(diagramBlock);
 // Item 798: the placeholder (the phone shows the block's path; the Mac draws the table).
 phoneMarked.use(evidenceBlock);
+// Item 991: an `<ask>` block is the Mac's quiet "Question for you" box on the phone too (it showed as loose text and
+// "- Yes …" lines); answering is the Needs-you list's, as on the Mac.
+phoneMarked.use(askTag);
 
 /** Render assistant markdown to sanitized HTML. `breaks` keeps a single
  *  newline as a line break (the phone's replies, nightshift 300 A32: a
@@ -174,6 +177,9 @@ replyMarked.use(diagramBlock);
 replyMarked.use(evidenceBlock);
 
 export function renderReply(src: string): string {
+  // Item 991: with no DOM to sanitize in (a server render: the node test suite, the phone's SSR checks), the words
+  // as text — escaped, never markup. A window always has one.
+  if (typeof DOMPurify.sanitize !== "function") return noDomText(src);
   // Item 454: a tab switch remounts the whole transcript, and every reply
   // went through marked, KaTeX and DOMPurify again — a maths chat paid the
   // full typesetting on every visit. The output is a pure function of the
@@ -348,4 +354,28 @@ function closeEmphasis(line: string): string {
   if (!closers) return line;
   const ws = /\s*$/.exec(line)!;
   return line.slice(0, ws.index) + closers + ws[0];
+}
+
+/**
+ * Item 991: one line of model-written words — a Home row's title, a to-do's text, a claim, a detail value — with its
+ * inline markdown drawn (bold, italics, code, links, a formula) and no block of its own (no paragraph, no list). Home's
+ * rows drew these as typed, so a scan's `**Google Drive:**` showed its stars. A line that holds a whole block (a
+ * list, a heading) is a reply: use `renderReply`.
+ */
+const noDomText = (src: string) => src.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const inlineMarked = new Marked();
+inlineMarked.use(math);
+inlineMarked.use(tilde);
+inlineMarked.use(emphasisLines);
+const inlineCacheHtml = new Map<string, string>();
+export function renderInline(src: string): string {
+  if (typeof DOMPurify.sanitize !== "function") return noDomText(src);
+  const hit = inlineCacheHtml.get(src);
+  if (hit !== undefined) return hit;
+  // Wrapped in a span: DOMPurify (under happy-dom at least) dropped an element that opened the string, so a line
+  // starting "**Google Drive:**" lost its bold; inside a span it is kept.
+  const html = DOMPurify.sanitize(`<span>${inlineMarked.parseInline(src, { async: false, gfm: true }) as string}</span>`, SANITIZE);
+  if (inlineCacheHtml.size >= 500) inlineCacheHtml.delete(inlineCacheHtml.keys().next().value!);
+  inlineCacheHtml.set(src, html);
+  return html;
 }

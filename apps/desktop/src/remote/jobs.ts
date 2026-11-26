@@ -5,6 +5,8 @@
  * host (`crates/nightloom-service/src/jobs`): the page sends his words.
  */
 
+import { skipWhy } from "../lib/skipWhy";
+
 export interface JobLast {
   started: string;
   ended: string;
@@ -196,7 +198,9 @@ function about(p: number): string {
 }
 
 /** The guard's reason as the card's last line: "Stopped because the weekly window is at 91%." (a name keeps its capital). */
-function reasonLine(why: string): string {
+function reasonLine(raw: string): string {
+  // Item 991: a reason stored by an older build says so.
+  const why = skipWhy(raw);
   const w = /^Home\b/.test(why) ? why : `${why.charAt(0).toLowerCase()}${why.slice(1)}`;
   return `Stopped because ${w}.`;
 }
@@ -330,7 +334,7 @@ export function lastText(j: Job, now = new Date()): string {
   if (!l) return "Has not run yet";
   // Item 784: "stopped" is his Stop on a run that looked stuck.
   // Item 763 H6: a run the spend guard did not start says why, no cost.
-  if (l.outcome === "skipped") return `Skipped ${whenText(l.ended, now)} — ${l.summary.replace(/^skipped — /, "")}`;
+  if (l.outcome === "skipped") return `Skipped ${whenText(l.ended, now)} — ${skipWhy(l.summary.replace(/^skipped — /, ""))}`;
   const how =
     l.outcome === "done" ? "finished" : l.outcome === "failed" ? "failed" : l.outcome === "stopped" ? "stopped, looked stuck" : "did not finish";
   // Item 812: a run he forced past the spend guard says so.

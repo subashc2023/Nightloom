@@ -7,6 +7,7 @@
   // kept with the stage's state (leaving Home, a tab switch, a restart). Kind A throughout: no model call.
   import Icon from "../Icon.svelte";
   import { tip } from "../tip";
+  import { plainLine } from "./steps"; // Item 991: a row's line drops markdown marks
   import { hudIn, hudOut } from "../hudMenu";
   import { app, openRun } from "../state.svelte";
   import { home, markHomeSeen } from "../home.svelte";
@@ -127,8 +128,8 @@
           <div class="h9-item h9-open hm-row" class:seen={!r.unseen} class:isopen={ui.row === r.key} style:--i={Math.min(i, 8)} onclick={() => toggleRow(r.key, r.unseen)}>
             <i class="hm-light {r.unseen ? feedLight(f.kind) : 'off'}"></i>
             <span class="hm-main">
-              <span class="hm-ft">{f.label ?? f.line}</span>
-              <span class="hm-fsub">{f.label ? f.line : feedTag(f.kind)} · {where}</span>
+              <span class="hm-ft">{f.label ?? plainLine(f.line)}</span>
+              <span class="hm-fsub">{f.label ? plainLine(f.line) : feedTag(f.kind)} · {where}</span>
             </span>
             <span class="h9-mono h9-dim hm-at">{clock(f.at)}</span>
             {#if r.unseen}<button class="hm-seen" aria-label="Mark seen — {f.label ?? f.line}" use:tip={"Mark seen\nIt stays listed"} onclick={(e) => (e.stopPropagation(), mark(r.key))}><Icon name="check" size={12} /></button>{:else}<span class="hm-seen gap" aria-hidden="true"></span>{/if}

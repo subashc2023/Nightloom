@@ -63,6 +63,47 @@ const NAME_MAX: usize = 80;
 /// The most of a stuck run's line a push carries (item 784).
 const DETAIL_MAX: usize = 120;
 
+/// Item 991: one line of the model's markdown as plain words for a banner:
+/// a link is its text, emphasis and code marks go, a leading heading or
+/// list mark goes. The words stay as written.
+pub fn plain_line(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s.trim();
+    // A leading heading, quote or list mark.
+    rest = rest.trim_start_matches(['#', '>']).trim_start();
+    for mark in ["- ", "* ", "+ "] {
+        if let Some(r) = rest.strip_prefix(mark) {
+            rest = r;
+            break;
+        }
+    }
+    let chars: Vec<char> = rest.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        // [text](target) → text
+        if c == '['
+            && let Some(close) = chars[i + 1..].iter().position(|&x| x == ']')
+        {
+            let end = i + 1 + close;
+            if chars.get(end + 1) == Some(&'(')
+                && let Some(paren) = chars[end + 2..].iter().position(|&x| x == ')')
+            {
+                out.extend(&chars[i + 1..end]);
+                i = end + 2 + paren + 1;
+                continue;
+            }
+        }
+        if c == '*' || c == '`' || (c == '_' && chars.get(i + 1) == Some(&'_')) {
+            i += if c == '_' { 2 } else { 1 };
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// What [`Push::subscribe`] answers when the page subscribed with another
 /// host's key (the phone page shows it; it clears after the Mac's next sync).
 pub const KEY_DIFFERS: &str = "this host's push key is not the one the phone subscribed with — it will match after the Mac's next sync";
@@ -629,7 +670,12 @@ impl Push {
             name.to_string()
         };
         let body = match (note.what, note.detail.as_deref().map(str::trim)) {
-            (What::Stuck | What::Scan | What::Watch, Some(d)) if !d.is_empty() => {
+            // Item 991: a watch's headline is the model's first line — a
+            // banner is plain text, so its markdown marks go.
+            (What::Watch, Some(d)) if !d.is_empty() => {
+                plain_line(d).chars().take(DETAIL_MAX).collect()
+            }
+            (What::Stuck | What::Scan, Some(d)) if !d.is_empty() => {
                 d.chars().take(DETAIL_MAX).collect()
             }
             _ => note.what.words().to_string(),

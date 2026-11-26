@@ -23,6 +23,9 @@
   import { pruneRouteDrafts, readRouteDrafts, routeText, withRouteDraft, type HomeRoute, type RoutePick } from "../lib/homeRoutes";
   import { onDestroy, onMount, tick, type Component } from "svelte";
   import { renderMarkdown } from "../lib/markdown";
+  // Item 991: a skip an older build wrote says so; Home's one-line rows drop markdown marks (plainLine).
+  import { skipWhy } from "../lib/skipWhy";
+  import { plainLine } from "../lib/homeStage/steps";
   import {
     ApiError,
     Unreachable,
@@ -582,7 +585,7 @@
               <span class="h-row-title">{r.label ?? "A chat"}</span>
               <span class="h-when">{shortWhen(r.at)}</span>
             </span>
-            <span class="h-line">{r.line}</span>
+            <span class="h-line">{plainLine(r.line)}</span>
           </button>
           {#if h.unseen}<button class="h-hseen" onclick={() => markOne(h.key)} aria-label={`Mark seen — ${r.label ?? r.line}`}>✓</button>{/if}
         </div>
@@ -654,7 +657,7 @@
           {:else if row.kind === "blocker" && row.blocker}
             {@const b = row.blocker}
             {@const k = `${b.project}:${b.id}`}
-            <p class="h-line">{row.line}</p>
+            <p class="h-line">{plainLine(row.line)}</p>
             {#if openBlocker === k && blockerViews[k]}
               <BlockerAnswer {ns} project={b.project} blocker={blockerViews[k]!} live={false} onanswered={() => { openBlocker = null; void load(); }} />
             {:else}
@@ -662,7 +665,7 @@
             {/if}
           {:else if row.kind === "question" && row.chat && !req}
             <!-- A turn-end question: his reply is the next message, kept as the chat's own draft. -->
-            <p class="h-line">{row.line}</p>
+            <p class="h-line">{plainLine(row.line)}</p>
             <div class="h-reply">
               <textarea
                 rows="2"
@@ -676,7 +679,7 @@
               </div>
             </div>
           {:else}
-            <p class="h-line">{row.line}</p>
+            <p class="h-line">{plainLine(row.line)}</p>
             {#if row.chat}<div class="h-acts"><button class="h-btn primary" onclick={() => onopen(row.chat!, row.project)}>Open to answer</button></div>{/if}
           {/if}
         </div>
@@ -694,7 +697,7 @@
               {@const k = `${b.project}:${b.id}`}
               <div class="h-row need" data-need="blocker">
                 <div class="h-row-top"><span class="h-kind blocker">Blocker</span><span class="h-row-title">{row.title}</span></div>
-                <p class="h-line">{row.line}</p>
+                <p class="h-line">{plainLine(row.line)}</p>
                 {#if openBlocker === k && blockerViews[k]}
                   <BlockerAnswer {ns} project={b.project} blocker={blockerViews[k]!} live={false} onanswered={() => { openBlocker = null; void load(); }} />
                 {:else}
@@ -720,9 +723,9 @@
         <p class="h-empty">No scan yet{scanJob ? ` · runs ${scanJob.every_words.replace(/^every day at /, "every day at ")}` : ""}.</p>
       {:else}
         {@const body = scanText(scanBody(scan))}
-        {#if scan.skipped}<p class="h-skip">Skipped: {scan.skipped}. This is the code-only page.</p>{/if}
+        {#if scan.skipped}<p class="h-skip">Skipped: {skipWhy(scan.skipped)}. This is the code-only page.</p>{/if}
         <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-        <div class="h-scan md">{@html renderMarkdown(body.text)}</div>
+        <div class="h-scan md">{@html renderMarkdown(body.text, { localImagesAsText: true })}</div>
         {#if home.chat}<div class="h-acts"><button class="h-btn quiet" onclick={() => onopen(home.chat!, home.project)}>Open Home's chat</button></div>{/if}
       {/if}
     {/if}

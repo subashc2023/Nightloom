@@ -29,8 +29,9 @@ describe("item 804: the reach panel", () => {
   });
 
   it("says what Home does with each row, and why not when it cannot", () => {
-    expect(reachNote(acct({}))).toBe("Read by the morning scan and Home's chat.");
-    expect(reachNote(acct({ address: "a@example.com" }))).toBe("Gmail · Read by the morning scan and Home's chat.");
+    // Item 991/990: a claude.ai connector says its access is his Claude account's (was "Read by the morning scan…" alone).
+    expect(reachNote(acct({}))).toBe("Through your Claude account's connector. Read by the morning scan and Home's chat.");
+    expect(reachNote(acct({ address: "a@example.com" }))).toBe("Gmail · Through your Claude account's connector. Read by the morning scan and Home's chat.");
     expect(reachNote(acct({ kind: "files", in_scan: false }))).toContain("the scan does not");
     expect(reachNote(acct({ on: false, in_scan: false }))).toBe("Turned off for Home.");
     expect(reachNote(acct({ status: "needs_sign_in", in_scan: false }))).toContain("sign in to it at claude.ai");

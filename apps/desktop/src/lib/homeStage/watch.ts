@@ -28,8 +28,16 @@ export interface SourceRow {
   state: string;
   /** It needs him (sign in again, a permission he turned down). */
   hot: boolean;
+  /** Item 990/991: where its access comes from, in his words — "through your Claude account's connectors" for a
+   *  claude.ai connector (Nightloom itself never signed in to that service), "one of your own Claude Code tools",
+   *  "on this Mac". */
+  via: string;
   detail: [string, string][];
 }
+
+/** Item 990/991: a connector's access, said once — he saw Gmail ×3 green and had "never signed into google". */
+export const VIA_CLAUDE = "through your Claude account's connectors";
+export const VIA_OWN = "one of your own Claude Code tools";
 
 /** Item 873: rows of one service together, in the order the first of each came. */
 export interface SourceGroup {
@@ -58,8 +66,10 @@ function connectorLight(a: ReachAccount): [SourceLight, string] {
   if (!a.on) return ["off", "Off for Home\nTurn it on in Settings → Home"];
   if (a.status === "needs_sign_in") return ["warn", "Needs sign-in\nSign in at claude.ai → Settings → Connectors"];
   if (a.status === "failed") return ["bad", "Not answering\nIt did not answer the last check"];
-  if (a.in_scan) return ["ok", "Connected · read by the scan\nHome's chat can read it too"];
-  return ["idle", "Connected · not in the scan\nHome's chat can read it"];
+  // Item 990/991: green says where the access comes from — a claude.ai connector on his Claude account.
+  const via = a.claude_ai ? "Via your Claude account's connector" : "Via your own Claude Code tool";
+  if (a.in_scan) return ["ok", `${via}\nRead by the scan and Home's chat`];
+  return ["idle", `${via}\nNot in the scan; Home's chat can read it`];
 }
 
 export function sourceRows(
@@ -87,9 +97,18 @@ export function sourceRows(
       why,
       state,
       hot: a.on && a.status !== "connected",
+      via: a.claude_ai ? VIA_CLAUDE : VIA_OWN,
       detail: [
         ["Service", a.service],
         ["Status", words(a.status)],
+        // Item 990/991: where the access comes from, and which account it is when known.
+        [
+          "Access",
+          a.claude_ai
+            ? `A claude.ai connector on your Claude account (claude.ai → Settings → Connectors). Nightloom holds no ${a.service} sign-in of its own; Home reads through Claude Code.`
+            : "One of your own Claude Code tools (claude mcp list); Home reads through it.",
+        ],
+        ["Account", a.address ?? (a.nth === null ? "The one this connector is signed in to" : "Not named yet — the connector does not say which address it is; the next scan that reads it names it here")],
         ["For Home", a.on ? "On — Home may read it; it never writes through it" : "Off — turn it on in Settings → Home"],
         ["Morning scan", a.in_scan ? "Reads it" : "Does not read it"],
         ...(a.checked_at ? ([["Checked", `${when(a.checked_at)}, on its own`]] as [string, string][]) : []),
@@ -121,6 +140,7 @@ export function sourceRows(
       why,
       state: allowed ? (s.on ? "allowed · on" : "allowed · off for Home") : s.status === "denied" ? "not allowed" : s.status === "write_only" ? "add-only access" : "not asked yet",
       hot: s.status === "denied",
+      via: "on this Mac",
       detail: [["Now", s.why], ["Change it", "Settings → Home"]],
     });
   }

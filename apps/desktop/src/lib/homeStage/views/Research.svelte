@@ -16,7 +16,7 @@
   import { tell, type HomeTask } from "../tasks.svelte";
   import { stageHost } from "../host";
   import { noteName, researchNote, researchOf, moreWords, type ResearchSource } from "../taskData";
-  import MathText from "../../MathText.svelte";
+  import InlineMd from "../../InlineMd.svelte"; // Item 991: model-written lines draw their markdown
 
   let { task }: { task: HomeTask } = $props();
   const r = $derived(researchOf(task.data));
@@ -69,7 +69,7 @@
 <div class="h9-grid">
   <div class="h9-col s-mainc">
     <Panel title="Question" sub="{kept} kept · {droppedN} dropped" live={!finished}>
-      <p class="s-q"><MathText text={r.question || task.why || task.name} /></p>
+      <p class="s-q"><InlineMd text={r.question || task.why || task.name} /></p>
     </Panel>
     <div class="h9-row h9-fill">
       <div class="h9-col s-left">
@@ -100,7 +100,7 @@
               <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
               <div class="s-claim h9-stagein h9-open" id="claim-{c.id}" class:hot={hot === c.src || hot === c.id} class:pin={ui.pinned[c.id]} class:isopen={ui.open === c.id} onmouseenter={() => (hot = c.src)} onmouseleave={() => (hot = null)} onclick={() => toggle(c.id)}>
                 <span class="s-n">{i + 1}</span>
-                <span class="s-ct"><MathText text={c.text} />{#if src?.site}<span class="ns-chip mono s-cite">{src.site}</span>{/if}</span>
+                <span class="s-ct"><InlineMd text={c.text} />{#if src?.site}<span class="ns-chip mono s-cite">{src.site}</span>{/if}</span>
                 <Btn small icon="key" on={ui.pinned[c.id]} tip={ui.pinned[c.id] ? "Unpin" : "Pin to the top\nThe answer leads with it"} onclick={() => pin(c.id, c.text)}>{ui.pinned[c.id] ? "Pinned" : "Pin"}</Btn>
               </div>
               {#if ui.open === c.id}
@@ -118,13 +118,13 @@
         <Panel title="Synthesis" sub={finished ? "finished" : "drafting as claims are kept"} live={!finished}>
           <div class="y-ans">
             {#each answer as a, i (i)}
-              <p class="h9-stagein"><MathText text={a.text} />{#each a.cites.filter((id) => num(id) > 0) as id (id)}<button class="ns-chip mono y-cite" class:hot={hot === id} onmouseenter={() => (hot = id)} onmouseleave={() => (hot = null)} onclick={() => ((ui.open = id), document.getElementById(`claim-${id}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }))}>claim {num(id)}</button>{/each}</p>
+              <p class="h9-stagein"><InlineMd text={a.text} />{#each a.cites.filter((id) => num(id) > 0) as id (id)}<button class="ns-chip mono y-cite" class:hot={hot === id} onmouseenter={() => (hot = id)} onmouseleave={() => (hot = null)} onclick={() => ((ui.open = id), document.getElementById(`claim-${id}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }))}>claim {num(id)}</button>{/each}</p>
             {/each}
             {#if answer.length === 0}<Loading label="Waiting for the first claim to draft from" lines={3} />{/if}
           </div>
           {#if r.open.length}
             <div class="y-k ns-cap">Open questions</div>
-            {#each r.open as o, i (i)}<div class="y-open h9-stagein" class:closed={!!o.answered}><i></i><MathText text={o.text} />{#if o.answered}<span class="h9-dim"> — <MathText text={o.answered} /></span>{/if}</div>{/each}
+            {#each r.open as o, i (i)}<div class="y-open h9-stagein" class:closed={!!o.answered}><i></i><InlineMd text={o.text} />{#if o.answered}<span class="h9-dim"> — <InlineMd text={o.answered} /></span>{/if}</div>{/each}
           {/if}
           {#if r.confidence}<div class="y-k ns-cap">Confidence</div><div class="y-conf">{r.confidence}</div>{/if}
           {#if finished}

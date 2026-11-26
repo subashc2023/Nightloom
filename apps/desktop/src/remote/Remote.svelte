@@ -5316,6 +5316,29 @@
     border-left: 3px solid var(--line2);
     color: var(--ink2);
   }
+  /* Item 991: a reply's <ask> block (markdown.ts's phone renderer), here and on Home's scan page. */
+  :global(.nl-ask) {
+    margin: 0.4em 0 0.7em;
+    padding: 8px 12px;
+    border: 1px solid var(--line2);
+    border-left: 3px solid var(--accent, var(--line2));
+    border-radius: 8px;
+    background: var(--well);
+  }
+  :global(.nl-ask-h) {
+    font-size: 0.78em;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink2);
+    margin-bottom: 4px;
+  }
+  :global(.nl-ask .nl-ask-q) {
+    margin: 0 0 4px;
+  }
+  :global(.nl-ask .nl-ask-o) {
+    margin: 0;
+    padding-left: 1.2em;
+  }
 
   /* ---- cards ---- */
   .card {

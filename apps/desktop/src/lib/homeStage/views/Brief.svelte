@@ -17,7 +17,8 @@
   import { briefNote, sectionsOf, speakable, type Brief } from "../brief";
   import { stageHost, type HomeTask } from "../host";
   import { briefPageOf, noteName } from "../taskData";
-  import MathText from "../../MathText.svelte";
+  // Item 991: a section is the model's markdown (lists, bold, links): drawn as the chat draws a reply.
+  import { renderReply } from "../../markdown";
   import JobRunConfirm from "../../../remote/JobRunConfirm.svelte";
   import { confirmPatch, type Job } from "../../../remote/jobs";
 
@@ -140,7 +141,7 @@
           {@const open = isOpen(s.key, i)}
           <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
           <div class="h9-item h9-open h9-stagein b-sec" style:--i={i} class:isopen={open} onclick={() => toggle(s.key, i)}><span class="h9-chev">▸</span><span class="b-title">{s.title}</span>{#if s.lines}<span class="h9-mono h9-dim">{s.lines} line{s.lines === 1 ? "" : "s"}</span>{/if}</div>
-          {#if open}<div class="b-body" use:reveal><MathText text={s.body} /></div>{/if}
+          {#if open}<div class="b-body md-block" use:reveal>{@html renderReply(s.body)}</div>{/if}
         {/each}
         {#if brief.writing}<Loading label="Home is still writing" lines={2} />{/if}
       {/if}
@@ -160,7 +161,7 @@
   .b-count span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
   .b-sec { align-items: baseline; }
   .b-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; }
-  .b-body { margin: 2px 0 8px 22px; padding: 8px 12px; border-left: 2px solid color-mix(in srgb, var(--home) 50%, transparent); font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+  .b-body { margin: 2px 0 8px 22px; padding: 8px 12px; border-left: 2px solid color-mix(in srgb, var(--home) 50%, transparent); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; user-select: text; }
   .b-none { display: block; padding: 6px 2px; font-size: 12.5px; }
   .b-read { display: block; font-size: 12px; color: var(--ink2); line-height: 1.45; }
 </style>

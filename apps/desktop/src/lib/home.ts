@@ -6,6 +6,7 @@
  * store is `home.svelte.ts`; `home763.test.ts` pins these.
  */
 import type { SessionEvent } from "./types";
+import { skipWhy } from "./skipWhy";
 
 /** The `source` of the project that is Home (`~/.nightloom/home/`). */
 export const HOME_SOURCE = "nightloom:home";
@@ -109,9 +110,11 @@ export function reachNote(a: ReachAccount): string {
   if (a.status === "needs_sign_in") return `${service}Not reachable — sign in to it at claude.ai, under Settings, Connectors.`;
   if (a.status === "failed") return `${service}Not reachable — it did not answer the last check.`;
   if (!a.on) return `${service}Turned off for Home.`;
-  if (a.in_scan) return `${service}Read by the morning scan and Home's chat.`;
+  // Item 990/991: a claude.ai connector says the access is his Claude account's, not a Nightloom sign-in.
+  const via = a.claude_ai ? "Through your Claude account's connector. " : "";
+  if (a.in_scan) return `${service}${via}Read by the morning scan and Home's chat.`;
   if (!a.claude_ai) return `${service}One of your own tools; Home's chat can use it.`;
-  return `${service}Home's chat can read it; the scan does not.`;
+  return `${service}${via}Home's chat can read it; the scan does not.`;
 }
 
 export function reachStatusWords(s: ReachStatus): string {
@@ -442,5 +445,6 @@ export function skippedScanToday(rows: FeedRow[], now: Date = new Date()): { why
     if (Number.isNaN(d.getTime()) || day(d) !== day(now)) continue;
     if (!best || new Date(r.at) > new Date(best.at)) best = r;
   }
-  return best ? { why: best.line.replace(/^Morning scan skipped\s*—\s*/, ""), at: best.at } : null;
+  // Item 991: a reason an older build wrote says so (skipWhy.ts).
+  return best ? { why: skipWhy(best.line.replace(/^Morning scan skipped\s*—\s*/, "")), at: best.at } : null;
 }

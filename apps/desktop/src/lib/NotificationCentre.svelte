@@ -1,6 +1,7 @@
 <script lang="ts">
   import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
+  import { plainLine } from "./homeStage/steps"; // Item 991: a row's line drops markdown marks
   /**
    * The bell and its panel (nightshift backlog 069): what waits on him,
    * six kinds with counts — proposals to a project's or his own
@@ -175,7 +176,7 @@
         <span class="centre-item-title">{n.title}</span>
         {#if n.at}<span class="centre-when" use:tip={n.at}>{relativeTime(n.at)}</span>{/if}
       </div>
-      {#if n.detail}<div class="centre-detail">{n.detail}</div>{/if}
+      {#if n.detail}<div class="centre-detail">{plainLine(n.detail)}</div>{/if}
       {#if n.kind === "cli"}<CliUpdateActions />{/if}
       <div class="centre-actions">
         {#if n.kind === "proposal"}

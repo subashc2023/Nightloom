@@ -539,3 +539,17 @@ fn a_stuck_runs_push_says_what_it_ran() {
     let v: serde_json::Value = serde_json::from_str(&p.payload(&done, 1)).unwrap();
     assert_eq!(v["body"], "Finished", "never the reply");
 }
+
+/// Item 991: a watch's push is plain text — the headline's markdown marks
+/// (bold, code, a link's target) are not in the banner.
+#[test]
+fn a_watch_push_is_plain_text() {
+    let (p, _, _) = push("watch");
+    let mut n = note(What::Watch, "c1");
+    n.label = Some("Price watch".into());
+    n.detail =
+        Some("**Price dropped:** the `M4` is now $1,299 — [store](https://example.com/x)".into());
+    let v: serde_json::Value = serde_json::from_str(&p.payload(&n, 1)).unwrap();
+    assert_eq!(v["body"], "Price dropped: the M4 is now $1,299 — store");
+    assert_eq!(super::plain_line("## - __Heads up__ *now*"), "Heads up now");
+}

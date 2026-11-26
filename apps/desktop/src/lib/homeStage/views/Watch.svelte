@@ -33,7 +33,7 @@
   import { stepsOf } from "../steps";
   import { arriveWhen, watchShape } from "../arrive";
   import { nudge } from "../tasks.svelte";
-  import MathText from "../../MathText.svelte";
+  import InlineMd from "../../InlineMd.svelte"; // Item 991: model-written lines draw their markdown
 
   const ui = bag("watch", { open: null as string | null, reply: null as string | null });
   // Item 874: what each Needs-you card's first button says and does — it opens the card's own reply box.
@@ -113,6 +113,8 @@
                 <span class="w-main">
                   <span class="w-name">{g.service}<span class="w-n">×{g.rows.length}</span></span>
                   {#if same}<span class="w-res w-{g.rows[0].light}" use:tip={g.rows[0].why}><i class="w-light {g.rows[0].light}"></i>{g.rows.length} accounts · {g.rows[0].state}</span>{:else}<span class="w-res">{g.rows.length} accounts</span>{/if}
+                  <!-- Item 990/991: where the access comes from, said once per service. -->
+                  <span class="w-via">{g.rows[0].via}</span>
                 </span>
               </div>
             {/if}
@@ -124,6 +126,7 @@
                 {#if solo}<span class="w-ico"><Icon name={s.icon} size={15} /></span>{:else}<i class="w-light {s.light}" use:tip={s.why}></i>{/if}
                 <span class="w-main">
                   <span class="w-name">{solo ? s.name : s.short}</span>
+                  {#if solo && s.id.startsWith("c:")}<span class="w-via">{s.via}</span>{/if}
                   {#if solo || !same || busy}<span class="w-res w-{s.light}" class:h9-caret={busy} use:tip={busy ? "" : s.why}>{#if solo}<i class="w-light {s.light}"></i>{/if}{busy ? "checking" : s.state}</span>{/if}
                 </span>
                 <span class="w-chk"><Btn small icon="refresh" disabled={busy} label="Check {s.name} now" tip={s.id.startsWith("c:") ? `Check ${s.name} now\nAsks Claude Code about it alone; no model request` : `Check ${s.name} now\nReads its macOS permission again; never asks`} onclick={() => void checkOne(s.id)} /></span>
@@ -147,7 +150,7 @@
             <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
             <div class="nd h9-open" class:isopen={ui.open === "n" + n.id} use:keyPicks={{ pick: ".nd-opts button" }} onclick={() => toggle("n" + n.id)}>
               <span class="nd-who"><span class="nd-wh">{n.tag} · {n.where}</span><span class="g"></span><span class="h9-chev">▸</span></span>
-              <p class="nd-q"><MathText text={n.title} /></p>
+              <p class="nd-q"><InlineMd text={n.title} /></p>
               {#if ui.open === "n" + n.id}
                 <Detail rows={[["What", n.detail || n.title], ...(n.detail && n.detail !== n.title ? ([["Chat", n.title]] as [string, string][]) : []), ["Where", n.where]]} />
               {/if}
@@ -206,6 +209,7 @@
   .w-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .w-n { margin-left: 7px; font: 500 10.5px var(--mono); color: var(--tint); opacity: 0.85; letter-spacing: 0.04em; }
   .w-res { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dim); transform-origin: left; align-self: flex-start; max-width: 100%; }
+  .w-via { display: block; font-size: 11px; color: var(--dim); }
   .w-res.w-warn { color: var(--partial); }
   .w-res.w-bad { color: var(--failed); }
   /* The account lines under a service's heading: hung off a thin rule in its tint, aligned under its name. */

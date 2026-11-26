@@ -16,7 +16,7 @@
   import { bag } from "../stageState.svelte";
   import { tell, nudge, type HomeTask } from "../tasks.svelte";
   import { todoOf, moreWords, type TodoItem, type Rows } from "../taskData";
-  import MathText from "../../MathText.svelte";
+  import InlineMd from "../../InlineMd.svelte"; // Item 991: model-written lines draw their markdown
 
   let { task }: { task: HomeTask } = $props();
   const items = $derived(todoOf(task.data));
@@ -69,7 +69,7 @@
               {#if s === "doing"}<i class="bk tl"></i><i class="bk tr"></i><i class="bk bl"></i><i class="bk br"></i><i class="d-beam"></i>{/if}
               <button class="d-box" aria-label="Mark done" onclick={(e) => (e.stopPropagation(), tick(i))}></button>
               <span class="d-main">
-                <span class="d-t"><MathText text={i.text} /></span>
+                <span class="d-t"><InlineMd text={i.text} /></span>
                 <span class="d-m">{s === "doing" ? (task.doing || "Home is on it now") : s === "queued" ? "handed to Home — it reads this at its next look" : s === "yours" ? "you took it back" : i.note || (i.who === "you" ? "yours" : "Home's")}</span>
                 {#if s === "doing" && i.steps.length}
                   <span class="d-subs">
@@ -101,7 +101,7 @@
             <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
             <div class="h9-item d-item d-done h9-open" class:isopen={ui.open === i.id} onclick={() => toggle(i.id)}>
               <span class="d-box on"><svg viewBox="0 0 12 12" width="12" height="12"><path d="M2.5 6.2l2.4 2.4 4.6-5" /></svg></span>
-              <span class="d-main"><span class="d-t"><MathText text={i.text} /></span><span class="d-m ok">{#if ui.mine[i.id]}You ticked it{:else}<MathText text={i.result || "Done by Home"} />{/if}</span></span>
+              <span class="d-main"><span class="d-t"><InlineMd text={i.text} /></span><span class="d-m ok">{#if ui.mine[i.id]}You ticked it{:else}<InlineMd text={i.result || "Done by Home"} />{/if}</span></span>
               {#if ui.mine[i.id]}<Btn small icon="revert" tip={"Put it back on the list"} onclick={() => untick(i)}>Undo</Btn>{/if}
               <span class="h9-chev">▸</span>
             </div>

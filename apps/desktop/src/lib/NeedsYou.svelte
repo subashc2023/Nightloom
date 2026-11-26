@@ -12,6 +12,7 @@
    */
   import { untrack } from "svelte";
   import { tip } from "./tip";
+  import { plainLine } from "./homeStage/steps"; // Item 991: a row's line drops markdown marks
   import { app } from "./state.svelte";
   import { openRun } from "./state/running.svelte";
   import { relativeTime, relativeTimeLong } from "./time";
@@ -242,8 +243,8 @@
             <div class="row" data-kind={row.kind} style:--i={k}>
               <span class="tag">{feedTag(row.kind)}</span>
               <div class="main">
-                <div class="title">{row.label ?? row.line}</div>
-                {#if row.label && row.line}<div class="detail">{row.line}</div>{/if}
+                <div class="title">{row.label ?? plainLine(row.line)}</div>
+                {#if row.label && row.line}<div class="detail">{plainLine(row.line)}</div>{/if}
               </div>
               <span class="where" use:tip={where}>{where}</span>
               <span class="when">{when(Date.parse(row.at))}</span>

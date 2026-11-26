@@ -20,18 +20,22 @@ describe("Home cards' maths (880)", () => {
     expect(mathParts("")).toEqual([{ kind: "text", text: "" }]);
   });
 
-  it("draws every card text through MathText", () => {
+  // Item 991 (2026-11-25): ~~every card text through MathText~~ — MathText draws text as typed, so the model's
+  // markdown showed raw. Model-written lines now go through InlineMd (inline markdown, formulas still typeset by
+  // the same `math` extension), a brief's section through renderReply; his own words (task.why) stay MathText.
+  // The rendered forms are tested in homeMarkdown991.dom.test.ts.
+  it("draws every model-written card text with its markdown and maths", () => {
     const cases: [string, string[]][] = [
-      [briefSrc, ["<MathText text={s.body} />"]],
-      [todoSrc, ["<MathText text={i.text} />", '<MathText text={i.result || "Done by Home"} />']],
-      [researchSrc, ["<MathText text={r.question || task.why || task.name} />", "<MathText text={c.text} />", "<MathText text={a.text} />", "<MathText text={o.text} />", "<MathText text={o.answered} />"]],
-      [triageSrc, ["<MathText text={cd.question} />"]],
-      [watchSrc, ["<MathText text={n.title} />"]],
-      [runSrc, ["<MathText text={s.name} />", "<MathText text={task.why} />", "<MathText text={r.asks} />"]],
-      [detailSrc, ["<dd style:--i={i}><MathText text={v} /></dd>"]],
+      [briefSrc, ["{@html renderReply(s.body)}"]],
+      [todoSrc, ["<InlineMd text={i.text} />", '<InlineMd text={i.result || "Done by Home"} />']],
+      [researchSrc, ["<InlineMd text={r.question || task.why || task.name} />", "<InlineMd text={c.text} />", "<InlineMd text={a.text} />", "<InlineMd text={o.text} />", "<InlineMd text={o.answered} />"]],
+      [triageSrc, ["<InlineMd text={cd.question} />"]],
+      [watchSrc, ["<InlineMd text={n.title} />"]],
+      [runSrc, ["<InlineMd text={s.name} />", "<MathText text={task.why} />", "<InlineMd text={r.asks} />"]],
+      [detailSrc, ["<dd style:--i={i}><InlineMd text={v} /></dd>"]],
     ];
     for (const [src, wants] of cases) for (const w of wants) expect(src).toContain(w);
-    expect(todoSrc.match(/<MathText text=\{i\.text\} \/>/g)).toHaveLength(2);
+    expect(todoSrc.match(/<InlineMd text=\{i\.text\} \/>/g)).toHaveLength(2);
     // The raw forms are gone.
     expect(briefSrc).not.toContain("use:reveal>{s.body}</div>");
     expect(todoSrc).not.toContain('<span class="d-t">{i.text}</span>');

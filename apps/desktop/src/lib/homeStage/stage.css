@@ -345,3 +345,18 @@
 .h9-arrive { animation: h9-arrive 420ms cubic-bezier(0.2, 0.9, 0.25, 1.05) backwards; }
 @keyframes h9-arrive { from { opacity: 0; transform: translateY(10px) scale(0.985); filter: drop-shadow(0 0 14px color-mix(in srgb, var(--accent) 60%, transparent)); } }
 @media (prefers-reduced-motion: reduce) { .h9-arrive { animation: none; } }
+
+/* Item 991: model-written markdown drawn on Home's stage (the reply strip, a brief's section) — the chat's reply
+   rules at the stage's size: paragraphs and lists spaced, bold kept bold, code in the mono face. Mac and phone. */
+.md-block > :first-child { margin-top: 0; }
+.md-block > :last-child { margin-bottom: 0; }
+.md-block p { margin: 0 0 6px; }
+.md-block ul, .md-block ol { margin: 2px 0 6px; padding-left: 20px; }
+.md-block li { margin: 1px 0; }
+.md-block li > p { margin: 0; }
+.md-block h1, .md-block h2, .md-block h3, .md-block h4 { margin: 8px 0 4px; font-size: 13.5px; font-weight: 600; }
+.md-block code { font-family: var(--mono); font-size: 0.92em; }
+.md-block pre { margin: 4px 0 6px; padding: 6px 8px; overflow-x: auto; border-radius: 4px; background: var(--paper2, rgba(127,127,127,0.08)); }
+.md-block a { color: var(--home); text-decoration: underline; text-underline-offset: 2px; }
+.md-block blockquote { margin: 4px 0; padding-left: 10px; border-left: 2px solid var(--line2); color: var(--dim); }
+.md-block .nl-ask { margin: 6px 0 2px; }

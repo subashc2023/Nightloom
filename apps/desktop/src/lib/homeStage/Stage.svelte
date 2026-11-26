@@ -34,6 +34,9 @@
   import { setStageHost, stageHost } from "./host";
   import { keepScroll } from "./keepScroll";
   import { desktopHost } from "./desktopHost";
+  import { renderReply } from "../markdown";
+  import TurnAskHost from "../TurnAskHost.svelte";
+  import { hereAsk } from "../needsBoard.svelte";
 
   // The views ask the window for what they need (the phone's Home page sets its own host).
   setStageHost(desktopHost);
@@ -103,6 +106,8 @@
     };
   });
   const last = $derived(lastExchange(app.events as unknown as Ev[], isScanMessage));
+  // Item 991: the strip's reply ends on an <ask> he has not answered — its card (the chat's own) goes under it.
+  const asking = $derived(!!last?.home && !app.busy && !!hereAsk());
   const focusTask = $derived(taskOf(focus.id));
   // 846 §7 step 3: the view in focus is written down (a small file, no model) so his next message to Home carries
   // where he was — the header rides on the wire only. Every change of focus, his or the stage's.
@@ -283,8 +288,11 @@
       <div class="h9-strip">
         <div class="h9-strip-b">
           <span class="h9-him"><b>YOU</b>{last.him}</span>
-          {#if last.home}<div class="h9-said"><span class="h9-said-tx">{last.home}</span></div>
+          <!-- Item 991: Home's reply is the chat's markdown, drawn as the chat draws it (renderReply: lists, bold, a
+               hand-off card, an <ask> block's question box); its question card sits under it while it waits on him. -->
+          {#if last.home}<div class="h9-said"><div class="h9-said-tx md-block">{@html renderReply(last.home)}</div></div>
           {:else if app.busy}<div class="h9-said"><span class="h9-said-th live">Home is working on it…</span></div>{/if}
+          {#if asking}<div class="h9-said-ask"><TurnAskHost /></div>{/if}
           <span class="h9-said-where">Sent to Home · the whole conversation is in Chat</span>
         </div>
         <Btn small icon="chat" tip={"The whole conversation\nOpens as its own view"} onclick={() => pick("chat")}>Open chat</Btn>
@@ -301,7 +309,9 @@
   .h9-view.chatview { inset: 8px 10px 0; border: 1px solid color-mix(in srgb, var(--home) 26%, var(--line2)); border-bottom: 0; border-radius: var(--r2) var(--r2) 0 0; overflow: hidden; background: var(--paper); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--home) 30%, transparent); }
   .h9-chat { position: relative; height: 100%; display: flex; flex-direction: column; min-height: 0; }
   .h9-strip { max-height: 132px; overflow-y: auto; }
-  .h9-said-tx { white-space: pre-wrap; }
+  /* Item 991: a strip holding a question card is as tall as the card needs (up to half the stage). */
+  .h9-strip:has(.h9-said-ask) { max-height: min(50vh, 420px); }
+  .h9-said-ask { margin: 6px 0 4px; }
   /* Classic: the rules shared with the phone's stage are in stage.css (845 batch 3). */
   .h9-stage.classic .h9-home { letter-spacing: 0.08em; }
   .h9-stage.classic .h9-view.chatview { box-shadow: none; }
