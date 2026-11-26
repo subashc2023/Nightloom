@@ -58,6 +58,7 @@
   import { shortModel } from "./subagentRows";
   import { capsLine, fmtElapsed, groupAgents, rowElapsedMs, rowState, stateLabel, summaryLine } from "./taskGroups";
   import Icon from "./Icon.svelte";
+  import SilentHelper from "./SilentHelper.svelte";
   import { allRunning } from "./running.svelte";
   import type { RunEntry } from "./running";
   import { tasksFocus } from "./tasksFocus.svelte";
@@ -251,6 +252,9 @@
         Transcript <Icon name="chevr" size={11} />
       </button>
     </span>
+    <!-- Item 752 (blocker 2345): silent 15 min → the notice and Restart, on
+         a line of its own under the row; nothing while it talks. -->
+    <span class="silent-line"><SilentHelper row={r} /></span>
   </div>
 {/snippet}
 
@@ -614,6 +618,15 @@
     grid-template-columns: var(--cols);
     column-gap: 12px;
     align-items: center;
+  }
+  /* Item 752: the silent helper's line spans the row; empty, it takes no room. */
+  .silent-line {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: flex-end;
+  }
+  .silent-line:not(:empty) {
+    padding-bottom: 6px;
   }
   .cols {
     padding: 0 13px;

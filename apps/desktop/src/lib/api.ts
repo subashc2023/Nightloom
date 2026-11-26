@@ -1591,6 +1591,14 @@ export function stopSubagents(turn: string, session?: string | null, note?: stri
   return invoke("stop_subagents", { turn, session: session ?? null, note: note ?? null });
 }
 
+/** Restart one helper silent for 15 min (item 752, blocker 2345): stop that
+ *  subagent alone (`stop_task`) and give the main agent `note`, which asks it
+ *  to launch the helper again from the same prompt. `false` when the turn is
+ *  gone or the helper no longer runs in it — nothing was stopped or sent. */
+export function restartSubagent(turn: string, taskId: string, session: string | null, note: string): Promise<boolean> {
+  return invoke("restart_subagent", { turn, taskId, session, note });
+}
+
 /** Take back a message sent into the running turn (backlog 328). */
 export function takeBackInjected(turn: string, id: string): Promise<"cancelled" | "delivered"> {
   return invoke("take_back_injected", { turn, id });

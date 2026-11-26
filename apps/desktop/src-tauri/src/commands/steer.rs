@@ -144,7 +144,6 @@ pub(crate) async fn stop_subagents(
     session: Option<String>,
     note: Option<String>,
 ) -> Result<usize, String> {
-    use nightloom_service::agent::steer;
     let inbox = state
         .inboxes
         .lock()
@@ -156,30 +155,94 @@ pub(crate) async fn stop_subagents(
     };
     let stopped = inbox.stop_agents();
     let note = note.filter(|t| !t.trim().is_empty());
-    if let (true, Some(note)) = (stopped > 0, note)
-        && !inbox.note_if_idle(&note)
-        && let Some(dir) = match session.as_deref() {
-            Some(s) => budget_dir(&state, s).await,
-            None => None,
-        }
-    {
-        let at_ms = chrono::Utc::now().timestamp_millis();
-        let _ = tokio::task::spawn_blocking(move || {
-            steer::queue(
-                &dir,
-                steer::MAIN,
-                steer::Queued {
-                    id: format!("stopped-{turn}-{at_ms}"),
-                    text: note,
-                    at_ms,
-                    about: None,
-                    raw: true,
-                },
-            )
-        })
+    if let (true, Some(note)) = (stopped > 0, note) {
+        tell_main(
+            &state,
+            &inbox,
+            session.as_deref(),
+            format!("stopped-{turn}"),
+            note,
+        )
         .await;
     }
     Ok(stopped)
+}
+
+/// Nightloom's note to the main agent after a stop (items 593 and 752): as
+/// the next command when it sits idle, else queued for its next tool call
+/// in the chat's steering file. Best-effort: the stop stands either way.
+async fn tell_main(
+    state: &State<'_, AppState>,
+    inbox: &nightloom_service::agent::inbox::Inbox,
+    session: Option<&str>,
+    id: String,
+    note: String,
+) {
+    use nightloom_service::agent::steer;
+    if inbox.note_if_idle(&note) {
+        return;
+    }
+    let Some(dir) = (match session {
+        Some(s) => budget_dir(state, s).await,
+        None => None,
+    }) else {
+        return;
+    };
+    let at_ms = chrono::Utc::now().timestamp_millis();
+    let _ = tokio::task::spawn_blocking(move || {
+        steer::queue(
+            &dir,
+            steer::MAIN,
+            steer::Queued {
+                id: format!("{id}-{at_ms}"),
+                text: note,
+                at_ms,
+                about: None,
+                raw: true,
+            },
+        )
+    })
+    .await;
+}
+
+/// Restart one helper (item 752, blocker 2345: his Restart on a subagent
+/// silent for 15 min): the CLI's `stop_task` for that agent alone, then
+/// Nightloom's note asking the main agent to launch it again from the same
+/// prompt — Nightloom cannot spawn a subagent itself; the main agent's
+/// `Agent` call does. Never run on its own: only his click calls this.
+/// `false` when the turn is gone or the agent no longer runs in it
+/// (nothing was stopped, no note sent).
+#[tauri::command]
+pub(crate) async fn restart_subagent(
+    state: State<'_, AppState>,
+    turn: String,
+    task_id: String,
+    session: Option<String>,
+    note: String,
+) -> Result<bool, String> {
+    let inbox = state
+        .inboxes
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&turn)
+        .cloned();
+    let Some(inbox) = inbox else {
+        return Ok(false);
+    };
+    if !inbox.stop_agent(&task_id) {
+        return Ok(false);
+    }
+    if !note.trim().is_empty() {
+        tell_main(
+            &state,
+            &inbox,
+            session.as_deref(),
+            format!("restart-{task_id}"),
+            note,
+        )
+        .await;
+    }
+    Ok(true)
 }
 
 /// The chat's steering notes, queued and delivered (backlog 295), for

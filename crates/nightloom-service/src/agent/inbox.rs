@@ -720,6 +720,28 @@ impl Inbox {
         ids.len()
     }
 
+    /// Stop one running subagent by its agent id (item 752, blocker 2345:
+    /// his Restart on a helper silent for 15 min) — the same `stop_task`
+    /// control request as [`Inbox::stop_agents`], for that one alone.
+    /// `false` when no turn takes input or the id is not running here (it
+    /// ended, or belongs to another turn): nothing was sent.
+    pub fn stop_agent(&self, id: &str) -> bool {
+        let mut s = self.lock();
+        let Some(tx) = s.tx.clone() else {
+            return false;
+        };
+        if !s.agents.iter().any(|(a, _)| a == id) {
+            return false;
+        }
+        s.seq += 1;
+        let line = serde_json::json!({
+            "type": "control_request",
+            "request_id": format!("nightloom-stop-task-{}", s.seq),
+            "request": { "subtype": "stop_task", "task_id": id },
+        });
+        tx.send(format!("{line}\n")).is_ok()
+    }
+
     /// Nightloom's own note to an idle main thread whose subagents still
     /// run (backlog 329: a nested spawn reported "at its next step" when
     /// the main thread has no next tool call to carry it). Written as a
@@ -1292,6 +1314,27 @@ mod tests {
         );
         inbox.on_line(r#"{"type":"system","subtype":"task_notification","task_id":"a8bb","status":"stopped"}"#);
         assert!(!inbox.is_open());
+    }
+
+    #[test]
+    fn stop_agent_stops_that_one_running_subagent_alone() {
+        let inbox = Inbox::default();
+        assert!(!inbox.stop_agent("a8bb"), "no turn: nothing to stop");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        inbox.open(tx);
+        inbox.on_line(r#"{"type":"system","subtype":"task_started","task_id":"a8bb","tool_use_id":"t","description":"one","task_type":"local_agent"}"#);
+        inbox.on_line(r#"{"type":"system","subtype":"task_started","task_id":"c9cc","tool_use_id":"u","description":"two","task_type":"local_agent"}"#);
+        assert!(!inbox.stop_agent("gone"), "an id not running here");
+        assert!(rx.try_recv().is_err());
+        assert!(inbox.stop_agent("c9cc"));
+        let line = rx.try_recv().unwrap();
+        assert!(
+            line.contains(r#""subtype":"stop_task""#)
+                && line.contains("c9cc")
+                && !line.contains("a8bb"),
+            "{line}"
+        );
+        assert!(rx.try_recv().is_err(), "the other agent was left running");
     }
 
     #[tokio::test]

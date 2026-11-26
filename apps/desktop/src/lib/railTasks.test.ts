@@ -39,7 +39,7 @@ describe("the right column's helpers (item 600)", () => {
       { id: "z", kind: "turn", session: "s1", doing: "Read" },
     ];
     const out = helperRows([], runs, "s1");
-    expect(out.rows).toEqual([{ id: "x", label: "why is it slow", kind: "aside", state: "running", focus: null }]);
+    expect(out.rows).toEqual([{ id: "x", label: "why is it slow", kind: "aside", state: "running", focus: null, silent: null }]);
     expect(out.running).toBe(1);
   });
 
