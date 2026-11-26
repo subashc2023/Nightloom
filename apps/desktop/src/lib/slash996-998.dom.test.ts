@@ -248,3 +248,51 @@ describe("997: bare /project shows the projects list", () => {
     expect(app.project?.id).toBe("stats");
   });
 });
+
+describe("996: /terminal makes a new shell in the project folder", () => {
+  it("with no dock yet: a shell tab in /w/STATS-67, in front", async () => {
+    await show();
+    type("/terminal");
+    key("Enter");
+    await settle();
+    const opens = calls.filter((c) => c.cmd === "terminal_open");
+    expect(opens.map((c) => (c.args as { cwd: string }).cwd)).toEqual(["/w/STATS-67"]);
+    const shell = term.shells.find((s) => !s.agentChat);
+    expect(shell?.cwd).toBe("/w/STATS-67");
+    expect(term.docks[shell!.pane!].active).toBe(shell!.id);
+    expect(term.docks[shell!.pane!].open).toBe(true);
+  });
+
+  for (const state of ["open on the Agent commands tab", "hidden", "collapsed"] as const) {
+    it(`with the dock ${state} (after /commands): a NEW shell, in front of the Agent commands tab`, async () => {
+      await show();
+      type("/commands");
+      key("Enter");
+      await settle();
+      const agent = term.shells.find((s) => s.agentChat === "chat-A")!;
+      expect(agent).toBeTruthy();
+      const dock = term.docks[agent.pane!];
+      if (state === "hidden") dock.open = false;
+      if (state === "collapsed") dock.collapsed = true;
+      type("/terminal");
+      key("Enter");
+      await settle();
+      const shells = term.shells.filter((s) => !s.agentChat);
+      expect(shells).toHaveLength(1);
+      expect(shells[0].cwd).toBe("/w/STATS-67");
+      const d = term.docks[shells[0].pane!];
+      expect(d.active).toBe(shells[0].id);
+      expect(d.open && !d.collapsed).toBe(true);
+    });
+  }
+
+  it("twice: two shells (each /terminal is a new terminal)", async () => {
+    await show();
+    for (let i = 0; i < 2; i++) {
+      type("/terminal");
+      key("Enter");
+      await settle();
+    }
+    expect(term.shells.filter((s) => !s.agentChat)).toHaveLength(2);
+  });
+});

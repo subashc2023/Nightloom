@@ -259,7 +259,7 @@
   import { atTime, resetTime } from "./schedule";
   import { canMakeMain } from "./versions";
   import { makeMainChat, versions } from "./versions.svelte";
-  import { openAgentTab, openTerminalFromBar, terminalCwd } from "./terminal.svelte";
+  import { newShell, openAgentTab, terminalCwd } from "./terminal.svelte";
   import { canLeaveProject, councilFor, saveMemoryFromChat, setCheckpoint, useProject } from "./state.svelte";
   import { rewindAsideWithUndo } from "./asideRewind.svelte";
   import { renameAside } from "./asides.svelte";
@@ -3025,7 +3025,10 @@
       noteScope: () => (app.project ? "project" : app.knowledge ? "knowledge" : null),
       newNote: (scope, name) => newNoteOrOpen(scope, name),
       terminalCwd: () => terminalCwd(),
-      openTerminal: () => openTerminalFromBar(),
+      // Item 996: always a NEW shell, in front and focused — ~~the top bar's
+      // button (`openTerminalFromBar`)~~, which only shows a hidden or
+      // collapsed dock (its Agent commands tab in front) and makes no shell.
+      openTerminal: async () => void (await newShell()),
       openAgentTab: async (id) => void openAgentTab(id),
       canMakeMain: (id) => canMakeMain(app.sessions, versions.map, id),
       makeMain: (id) => makeMainChat(id),
