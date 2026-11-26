@@ -22,6 +22,24 @@
 //! (atomically, so its appearance means it is whole). A release build
 //! never runs any of this.
 
+/// A line on stderr that survives a closed pipe (item 1002): `eprintln!`
+/// panics on EPIPE, and the off-screen snapshot's callback runs on the main
+/// thread — a dev app whose `cargo tauri dev` parent had exited hung there.
+macro_rules! log {
+    ($($arg:tt)*) => {
+        $crate::offscreen::stderr_line(&format!($($arg)*))
+    };
+}
+
+/// Write one line to stderr, ignoring any error (a dead pipe included).
+pub(crate) fn stderr_line(line: &str) {
+    write_line(&mut std::io::stderr(), line);
+}
+
+fn write_line(out: &mut impl std::io::Write, line: &str) {
+    let _ = writeln!(out, "{line}");
+}
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -84,7 +102,7 @@ fn spawn_capture_watch<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             let out = match capture_target(&text) {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("[offscreen] capture refused: {e}");
+                    log!("[offscreen] capture refused: {e}");
                     continue;
                 }
             };
@@ -111,7 +129,7 @@ pub fn apply<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
         return;
     }
     if hidden() {
-        eprintln!("[offscreen] hidden: never ordered in; occlusion detection left on");
+        log!("[offscreen] hidden: never ordered in; occlusion detection left on");
         return;
     }
     let Some(view) = app.get_webview("main") else {
@@ -171,7 +189,7 @@ mod macos {
             let _: () = msg_send![win, setCollectionBehavior: (1usize << 0) | (1usize << 4)];
             let _: () = msg_send![win, setFrameOrigin: CGPoint { x: -20000.0, y: -20000.0 }];
             let _: () = msg_send![win, orderFrontRegardless];
-            eprintln!("[offscreen] window at (-20000, -20000); occlusion detection off: {can}");
+            log!("[offscreen] window at (-20000, -20000); occlusion detection off: {can}");
         }
     }
 
@@ -186,7 +204,7 @@ mod macos {
         let shown = out.display().to_string();
         let done = block2::RcBlock::new(move |img: *mut AnyObject, _err: *mut AnyObject| {
             if img.is_null() {
-                eprintln!("[offscreen] capture failed: WebKit returned no image for {shown}");
+                log!("[offscreen] capture failed: WebKit returned no image for {shown}");
                 return;
             }
             // SAFETY: WebKit calls this on the main thread with a live
@@ -202,12 +220,12 @@ mod macos {
                     return;
                 };
                 if tiff.is_null() {
-                    eprintln!("[offscreen] capture failed: no TIFF for {shown}");
+                    log!("[offscreen] capture failed: no TIFF for {shown}");
                     return;
                 }
                 let rep: *mut AnyObject = msg_send![rep_cls, imageRepWithData: tiff];
                 if rep.is_null() {
-                    eprintln!("[offscreen] capture failed: no bitmap for {shown}");
+                    log!("[offscreen] capture failed: no bitmap for {shown}");
                     return;
                 }
                 let props: *mut AnyObject = msg_send![dict_cls, dictionary];
@@ -215,12 +233,12 @@ mod macos {
                 let png: *mut AnyObject =
                     msg_send![&*rep, representationUsingType: 4usize, properties: props];
                 if png.is_null() {
-                    eprintln!("[offscreen] capture failed: no PNG for {shown}");
+                    log!("[offscreen] capture failed: no PNG for {shown}");
                     return;
                 }
                 let path: *mut AnyObject = msg_send![str_cls, stringWithUTF8String: c_out.as_ptr()];
                 let ok: bool = msg_send![&*png, writeToFile: path, atomically: true];
-                eprintln!(
+                log!(
                     "[offscreen] capture {} {shown}",
                     if ok { "wrote" } else { "could not write" }
                 );
@@ -241,6 +259,23 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A writer whose pipe is closed, as stderr is once `cargo tauri dev`'s
+    /// parent has exited.
+    struct Broken;
+    impl std::io::Write for Broken {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    #[test]
+    fn a_log_line_on_a_closed_pipe_does_not_panic() {
+        write_line(&mut Broken, "[offscreen] capture wrote x.png");
+    }
 
     #[test]
     fn a_capture_request_names_one_absolute_png() {

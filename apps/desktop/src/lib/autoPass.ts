@@ -78,6 +78,13 @@ export function nightlyReady(idleMs: number | null, lastMs: number | null, now: 
   return idleMs !== null && idleMs >= NIGHTLY_IDLE_MS;
 }
 
+/** Item 1002: the automatic daily pass does not run in a dev build on a
+ *  scratch home — a fresh home has no last-pass stamp, so it would spend
+ *  model calls at the first launch. *Run now* and the buttons are unaffected. */
+export function autoPassAllowedHere(devScratchHome: boolean): boolean {
+  return !devScratchHome;
+}
+
 /*
  * Usage headroom (nightshift item 279, 2026-10-02). An automatic pass on
  * the Claude Code engine spends the same plan as his own turns; his
