@@ -40,6 +40,7 @@
   // Item 994: the strip's <ask> box is hidden while its card shows (the question once); without a card its
   // options send, as a box in the chat does.
   import { askInStrip, ASK_ANSWER_EVENT, type AskAnswerDetail } from "../askSettled";
+  import { renderStreamingReply } from "../streamBlocks";
   function takeAnswer(node: HTMLElement) {
     const take = (e: Event) => {
       const d = (e as CustomEvent<AskAnswerDetail>).detail;
@@ -121,6 +122,51 @@
   const last = $derived(lastExchange(app.events as unknown as Ev[], isScanMessage));
   // Item 991: the strip's reply ends on an <ask> he has not answered — its card (the chat's own) goes under it.
   const asking = $derived(!!last?.home && !app.busy && !!hereAsk());
+  // Item 992: while Home's turn runs, the reply it is writing now (the live turn's newest text block — the block
+  // `lastExchange` keeps once it lands), so the strip and the full-screen page stream as the chat does.
+  const liveHome = $derived.by(() => {
+    if (!app.busy || !app.live) return "";
+    const texts = app.live.segments.filter((g) => g.kind === "text" && g.text.trim());
+    const t = texts.at(-1);
+    return t && t.kind === "text" ? t.text.trim() : "";
+  });
+  const saidHtml = $derived(liveHome ? renderStreamingReply(liveHome) : last?.home ? renderReply(last.home) : "");
+  // Item 992: Home's reply as the whole page (his words: "go from this to like seeing it as my entire page"). The
+  // stage stays drawn under it, so the view, its tab and its scroll are where he left them when he comes back.
+  const full = $derived(!!stage.full && !!last);
+  // It opens and closes with the stage's own HUD motion when he presses; drawn again at a return to Home or a
+  // restart, it is simply there (as a view the stage switches to itself is — see viewIn below).
+  let fullPressed = false;
+  const fullIn = (node: HTMLElement) => (fullPressed ? hudIn(node) : { duration: 0 });
+  const fullOut = (node: HTMLElement) => (fullPressed ? hudOut(node) : { duration: 0 });
+  const pressFull = (on: boolean) => {
+    fullPressed = true;
+    stage.full = on;
+    setTimeout(() => (fullPressed = false), 400);
+  };
+  const openFull = () => pressFull(true);
+  const closeFull = () => pressFull(false);
+  // Escape closes it — unless something nearer took the key first (the composer's menus, a card, a HUD menu).
+  function fullKey(e: KeyboardEvent) {
+    if (!full || e.key !== "Escape" || e.defaultPrevented || e.isComposing) return;
+    e.preventDefault();
+    closeFull();
+  }
+  // The page follows a streaming reply while he sits at its end (as the chat does); scrolled up, it stays put.
+  let fullSc = $state<HTMLElement | null>(null);
+  let stick = true;
+  $effect.pre(() => {
+    void saidHtml;
+    const el = untrack(() => fullSc);
+    if (el) stick = el.scrollHeight - el.scrollTop - el.clientHeight < 28;
+  });
+  $effect(() => {
+    void saidHtml;
+    const el = fullSc;
+    untrack(() => {
+      if (el && stick && app.busy) el.scrollTop = el.scrollHeight;
+    });
+  });
   const focusTask = $derived(taskOf(focus.id));
   // 846 §7 step 3: the view in focus is written down (a small file, no model) so his next message to Home carries
   // where he was — the header rides on the wire only. Every change of focus, his or the stage's.
@@ -227,6 +273,8 @@
   }
 </script>
 
+<svelte:window onkeydown={fullKey} />
+
 <div class="h9-stage real" class:classic={classic()} class:blank class:narrow={oneW <= 760} class:tiny={oneW <= 480} class:short data-home-stage bind:this={rootEl}>
   <div class="h9-bar">
     <span class="h9-home"><i class="h9-dot" class:idle={!app.busy} aria-hidden="true"></i>HOME</span>
@@ -296,7 +344,7 @@
       </div>
     {/if}
   </div>
-  {#if last && stage.strip === "open" && focus.view !== "chat"}
+  {#if last && stage.strip === "open" && focus.view !== "chat" && !full}
     {#key last.at}
       <div class="h9-strip" use:takeAnswer>
         <div class="h9-strip-b">
@@ -304,15 +352,41 @@
           <!-- Item 991: Home's reply is the chat's markdown, drawn as the chat draws it (renderReply: lists, bold, a
                hand-off card, an <ask> block's question box); its question card sits under it while it waits on him.
                Item 994: the box hides while that card shows, so the question is drawn once (askInStrip). -->
-          {#if last.home}<div class="h9-said"><div class="h9-said-tx md-block" use:askInStrip={asking}>{@html renderReply(last.home)}</div></div>
+          {#if saidHtml}<div class="h9-said"><div class="h9-said-tx md-block" use:askInStrip={asking}>{@html saidHtml}</div></div>
           {:else if app.busy}<div class="h9-said"><span class="h9-said-th live">Home is working on it…</span></div>{/if}
           {#if asking}<div class="h9-said-ask"><TurnAskHost /></div>{/if}
           <span class="h9-said-where">Sent to Home · the whole conversation is in Chat</span>
         </div>
-        <Btn small icon="chat" tip={"The whole conversation\nOpens as its own view"} onclick={() => pick("chat")}>Open chat</Btn>
-        <Btn small icon="x" label="Close" onclick={closeStrip} />
+        <div class="h9-strip-acts">
+          <!-- Item 992: this reply as the whole page; Back (or Esc) returns to the stage as he left it. Named "Whole page",
+               not "Full screen": macOS's own Full Screen (the window's green button, ⌃⌘F) is a different thing. -->
+          <Btn small icon="full" label="Whole page" tip={"Read this reply as the whole page\nEsc or Back to Home returns here"} onclick={openFull} />
+          <Btn small icon="chat" tip={"The whole conversation\nOpens as its own view"} onclick={() => pick("chat")}>Open chat</Btn>
+          <Btn small icon="x" label="Close" onclick={closeStrip} />
+        </div>
       </div>
     {/key}
+  {/if}
+  {#if full && last}
+    <!-- Item 992: Home's reply as the whole page — drawn as the strip draws it (markdown, the <ask> card answering),
+         streaming while Home writes; the composer under the stage still sends. Back to Home / Esc closes it. -->
+    <div class="h9-full" role="dialog" aria-label="Home's reply, full screen" data-home-full use:takeAnswer use:keepScroll={"full-reply"} in:fullIn|global out:fullOut|global>
+      <div class="h9-full-bar">
+        <span class="h9-home"><i class="h9-dot" class:idle={!app.busy} aria-hidden="true"></i>HOME</span>
+        <span class="h9-full-what">{app.busy ? "Writing its reply…" : "Its reply"}</span>
+        <span class="h9-grow"></span>
+        <Btn small icon="chat" tip={"The whole conversation\nOpens as its own view"} onclick={() => (closeFull(), pick("chat"))}>Open chat</Btn>
+        <Btn small icon="unfull" tip={"Back to Home's stage\nWhere you left it · Esc does the same"} onclick={closeFull}>Back to Home</Btn>
+      </div>
+      <div class="h9-full-sc" bind:this={fullSc}>
+        <div class="h9-full-page">
+          <span class="h9-him"><b>YOU</b>{plainLine(last.him)}</span>
+          {#if saidHtml}<div class="h9-said h9-full-said"><div class="h9-said-tx md-block" use:askInStrip={asking}>{@html saidHtml}</div></div>
+          {:else if app.busy}<div class="h9-said h9-full-said"><span class="h9-said-th live">Home is working on it…</span></div>{/if}
+          {#if asking}<div class="h9-said-ask"><TurnAskHost /></div>{/if}
+        </div>
+      </div>
+    </div>
   {/if}
 </div>
 

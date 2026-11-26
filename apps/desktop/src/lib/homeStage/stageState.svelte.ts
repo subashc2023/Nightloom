@@ -40,6 +40,9 @@ interface Kept {
   /** The message the strip was closed on (its `at`), so a new send opens it again. */
   stripFor: string;
   ui: Record<string, Record<string, unknown>>;
+  /** Item 992: Home's reply is open as the whole page (kept, so leaving Home and coming back keeps it open). Written
+   *  only while true, so a stage kept before 992 reads back unchanged. */
+  full?: boolean;
 }
 const fresh = (): Kept => ({ focus: "watch", strip: "open", stripFor: "", ui: {} });
 
@@ -53,6 +56,7 @@ export function readKept(raw: string | null): Kept {
       strip: v.strip === "closed" ? "closed" : "open",
       stripFor: typeof v.stripFor === "string" ? v.stripFor : "",
       ui: v.ui && typeof v.ui === "object" ? v.ui : {},
+      ...(v.full === true ? { full: true } : {}),
     };
   } catch {
     return fresh();
