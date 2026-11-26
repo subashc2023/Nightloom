@@ -1,6 +1,7 @@
 // A chat's name as drawn (item 462), pure: no state, safe to import anywhere.
 
 import { shownText } from "./keep";
+import { plainLines } from "./plainMd";
 
 /**
  * A chat's name as drawn anywhere (item 462): its first line, at most 60
@@ -10,7 +11,8 @@ import { shownText } from "./keep";
  */
 export function nameLine(text: string): string {
   // Item 515: never the note for the CLI; his words, else the file names.
-  const t = shownText(text).trim().split("\n")[0].trim();
+  // Item 999: a name quotes words, not Markdown marks ("**Plan** for Monday" was drawn with its stars).
+  const t = plainLines(shownText(text).trim().split("\n")[0]).trim();
   return t.length > 60 ? `${t.slice(0, 57).trimEnd()}…` : t;
 }
 

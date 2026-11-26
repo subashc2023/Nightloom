@@ -29,7 +29,7 @@
   import { briefOf } from "./brief";
   import { bag, def, keep, stage, type ViewId } from "./stageState.svelte";
   import { rulesPass, foldDone, unfold, holdsHim, secondOf, type FocusKept } from "./focus";
-  import { lastExchange, type Ev } from "./steps";
+  import { lastExchange, plainLine, type Ev } from "./steps"; // plainLine: item 999, his line without its marks
   import { tabsFor, focusOf, type Tab } from "./tabs";
   import { setStageHost, stageHost } from "./host";
   import { keepScroll } from "./keepScroll";
@@ -300,7 +300,7 @@
     {#key last.at}
       <div class="h9-strip" use:takeAnswer>
         <div class="h9-strip-b">
-          <span class="h9-him"><b>YOU</b>{last.him}</span>
+          <span class="h9-him"><b>YOU</b>{plainLine(last.him)}</span>
           <!-- Item 991: Home's reply is the chat's markdown, drawn as the chat draws it (renderReply: lists, bold, a
                hand-off card, an <ask> block's question box); its question card sits under it while it waits on him.
                Item 994: the box hides while that card shows, so the question is drawn once (askInStrip). -->

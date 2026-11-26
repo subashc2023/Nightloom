@@ -89,6 +89,7 @@
     type Try,
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
+  import { plainFragment } from "../lib/plainMd"; // Item 999: a search hit's passage without Markdown marks
   import { renderStreamingMarkdown } from "../lib/streamBlocks";
   import MathText from "../lib/MathText.svelte";
   // Item 820: pictures and video a reply names, under its text.
@@ -4066,7 +4067,7 @@
                     {#if g.project && g.project.id !== UNFILED}<span class="tag">{g.project.name}</span>{/if}
                   </span>
                   {#each g.rows.slice(0, 2) as h (h.index)}
-                    <span class="hit-row">{h.before}<mark>{h.matched}</mark>{h.after}</span>
+                    <span class="hit-row">{plainFragment(h.before)}<mark>{h.matched}</mark>{plainFragment(h.after)}</span>
                   {/each}
                   {#if g.hits > 2}<span class="hit-more">{g.hits} matches</span>{/if}
                 </button>
@@ -4079,7 +4080,7 @@
                     <span class="tag">{n.scope === "knowledge" ? "vault" : "note"}</span>
                   </span>
                   {#each n.rows.slice(0, 2) as h (h.line)}
-                    <span class="hit-row">{h.before}<mark>{h.matched}</mark>{h.after}</span>
+                    <span class="hit-row">{plainFragment(h.before)}<mark>{h.matched}</mark>{plainFragment(h.after)}</span>
                   {/each}
                 </button>
               {/each}

@@ -40,6 +40,8 @@
  */
 import type { SessionEvent } from "./types";
 import { shownText } from "./keep";
+// Item 999: a rib quotes the words, not the Markdown marks (its bubble and its "Go to the reply: …" name).
+import { plainLines } from "./plainMd";
 
 export interface Tick {
   /** The event's index in the log — what the turn's anchor carries. */
@@ -109,7 +111,7 @@ export function ticks(
       // Item 515: the tick quotes his words, else the files he sent — never
       // the note for the CLI. Its weight is still the whole message.
       const raw = edited ?? e.text;
-      const text = shownText(raw);
+      const text = plainLines(shownText(raw));
       out.push({
         index,
         role: "user",
@@ -124,14 +126,15 @@ export function ticks(
         if (b.type === "text") said += b.text;
         else if (b.type === "tool_use") calls++;
       }
-      const text = edited ?? said;
+      const full = edited ?? said;
+      const text = plainLines(full);
       // A reply that only called tools has nothing to quote; say so rather
       // than show an empty bubble, and give it the thinnest tick.
       const line = firstLine(text) || (calls > 0 ? `(${calls} tool ${calls === 1 ? "call" : "calls"})` : "");
       out.push({
         index,
         role: "assistant",
-        weight: weightOf(text.length),
+        weight: weightOf(full.length),
         first_line: line,
         preview: previewOf(text) || line,
       });
@@ -257,12 +260,13 @@ export function previewText(t: Tick): string {
  *  `data-nav-live` (not a `data-turn`: code that reads `[data-turn]` as a
  *  log index must not see it); `index` is -1, never a log index. */
 export function liveTick(text: string): Tick {
+  const plain = plainLines(text);
   return {
     index: -1,
     role: "assistant",
     weight: weightOf(text.length),
-    first_line: firstLine(text),
-    preview: previewOf(text),
+    first_line: firstLine(plain),
+    preview: previewOf(plain),
     pending: true,
   };
 }

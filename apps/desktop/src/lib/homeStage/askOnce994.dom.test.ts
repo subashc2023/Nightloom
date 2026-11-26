@@ -106,4 +106,19 @@ describe("item 994: Home's strip shows an <ask> once", () => {
     flushSync();
     expect(answered).toEqual([{ answer: "Yes, read them now", question: Q }]);
   });
+
+  it("item 999: his line in the strip is his words, not their marks", () => {
+    app.view = "chat";
+    app.activeSessionId = "home-chat";
+    app.events = [
+      { event: "user_message", text: "is the **sampling** one `done`?", at: "2026-11-25T23:00:00Z" },
+      { event: "assistant_message", blocks: [{ type: "text", text: "Yes." }], at: "2026-11-25T23:00:10Z" },
+    ] as never;
+    stage.focus = "watch";
+    stage.strip = "open";
+    const children = createRawSnippet(() => ({ render: () => "<div></div>" }));
+    root = mount(Stage, { target: document.body, props: { blank: false, children } });
+    flushSync();
+    expect(document.body.querySelector(".h9-him")?.textContent).toBe("YOUis the sampling one done?");
+  });
 });
