@@ -740,6 +740,11 @@ async fn turn_on(
                     outcome.text.trim()
                 ));
             }
+            // 1002: a turn cut off before its `result` line is not finished;
+            // consuming the inbox on it would lose the batch.
+            if let Some(why) = outcome.cut_off.as_ref().filter(|_| !interrupted) {
+                return Err(format!("the dream's Claude Code turn was cut off: {why}"));
+            }
             // The summary is collected from the deltas; a CLI that did not
             // stream this turn still said what it did on the result line.
             if !streamed && !outcome.text.is_empty() {
@@ -3611,6 +3616,33 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
         assert!(!outcome.filed[0].proposed && !outcome.filed[0].applied);
         assert!(crate::proposal::list_in(&config).is_empty());
         assert_eq!(crate::proposal::applied_by_dream_in(&config).len(), 1);
+    }
+
+    /// 1002: a dream whose CLI dies before its `result` line is a failed
+    /// dream — the inbox is not consumed, the same batch is offered again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dream_cut_off_before_its_result_consumes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let (config, vault, _) = fixture("agent-cut-off", "Lanternfish");
+        append(&config, "Prefers long replies now.", None);
+        let fake = config.join("claude");
+        fs::write(
+            &fake,
+            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"x\",\"tools\":[],\"mcp_servers\":[],\"model\":\"claude-haiku-4-5\",\"permissionMode\":\"acceptEdits\",\"session_id\":\"s1\"}'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut pass = PassSpec::new(fake.to_string_lossy().into_owned(), vec![]);
+        pass.model = Some("haiku".into());
+        let before = observe::backlog_in(&config).pending.len();
+        assert!(before > 0);
+        let cancel = CancellationToken::new();
+        let err = run_on_agent(&pass, &vault, &config, &cancel, &mut |_| {})
+            .await
+            .expect_err("a cut-off turn is a failure");
+        assert!(err.contains("cut off"), "{err}");
+        assert_eq!(observe::backlog_in(&config).pending.len(), before);
     }
 
     /// A section the file already has is not one the proposal adds: a

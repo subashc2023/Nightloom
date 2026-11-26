@@ -1844,6 +1844,7 @@ fn main() {
             commands::memory::capture_status,
             commands::memory::capture_backfill_status,
             commands::memory::mac_idle_ms,
+            commands::memory::dev_scratch_home,
             commands::memory::capture,
             commands::memory::cancel_capture,
             commands::memory::centre_proposals,

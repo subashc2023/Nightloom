@@ -253,6 +253,22 @@ pub(crate) async fn mac_idle_ms() -> Result<Option<i64>, String> {
     blocking(|| Ok::<_, String>(nightloom_service::agent::brief::mac_idle_ms())).await
 }
 
+/// Whether this run is a debug build on a scratch home (`NIGHTLOOM_HOME`
+/// set): the automatic daily pass stays off there, since a fresh home has no
+/// "last pass" stamp and would spend model calls at the first launch (item
+/// 1002). A release build is never one.
+pub(crate) fn is_dev_scratch_home(debug: bool, nightloom_home: Option<&str>) -> bool {
+    debug && nightloom_home.is_some_and(|h| !h.is_empty())
+}
+
+#[tauri::command]
+pub(crate) fn dev_scratch_home() -> bool {
+    is_dev_scratch_home(
+        cfg!(debug_assertions),
+        std::env::var("NIGHTLOOM_HOME").ok().as_deref(),
+    )
+}
+
 /// What one capture did, flattened for the toast. `per_project` is the
 /// split by source in the order the dirs were walked, "unfiled" for the
 /// chats with no project.
@@ -658,4 +674,18 @@ pub(crate) async fn tidy_memory(
     let days = days.unwrap_or(nightloom_service::tidy::DEFAULT_DAYS).max(1);
     blocking(move || nightloom_service::dream::tidy_targets(&vault, &config, days, None, apply))
         .await
+}
+
+#[cfg(test)]
+mod dev_scratch_tests {
+    use super::is_dev_scratch_home;
+
+    /// Item 1002: only a debug build with a named home counts.
+    #[test]
+    fn only_a_debug_build_on_a_named_home_is_a_dev_scratch_home() {
+        assert!(is_dev_scratch_home(true, Some("/tmp/h")));
+        assert!(!is_dev_scratch_home(true, None));
+        assert!(!is_dev_scratch_home(true, Some("")));
+        assert!(!is_dev_scratch_home(false, Some("/tmp/h")));
+    }
 }

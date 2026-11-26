@@ -5,6 +5,7 @@ import {
   NIGHTLY_IDLE_MS,
   NIGHTLY_STALE_MS,
   USAGE_STALE_MS,
+  autoPassAllowedHere,
   deferredRecheckAt,
   handoffPassDue,
   nightlyReady,
@@ -50,6 +51,13 @@ describe("a hand-off turn", () => {
     expect(handoffPassDue(null, 1_000)).toBe(true);
     expect(handoffPassDue(1_000, 1_000 + HANDOFF_PASS_GAP_MS - 1)).toBe(false);
     expect(handoffPassDue(1_000, 1_000 + HANDOFF_PASS_GAP_MS)).toBe(true);
+  });
+});
+
+describe("the dev scratch home (item 1002)", () => {
+  it("keeps the automatic pass off there and on everywhere else", () => {
+    expect(autoPassAllowedHere(true)).toBe(false);
+    expect(autoPassAllowedHere(false)).toBe(true);
   });
 });
 

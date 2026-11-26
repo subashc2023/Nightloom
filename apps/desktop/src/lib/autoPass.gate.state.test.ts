@@ -18,6 +18,7 @@ vi.mock("./api", async (importOriginal) => ({
   capture: vi.fn(async () => ({})),
   dream: vi.fn(async () => ({ filed: [] })),
   macIdleMs: vi.fn(async () => 60 * 60_000),
+  devScratchHome: vi.fn(async () => false),
   tidyMemory: vi.fn(async () => []),
   tidyThreads: vi.fn(async () => []),
   listNotes: vi.fn(async () => []),
@@ -138,6 +139,18 @@ describe("automatic passes wait for usage headroom (item 279)", () => {
     await maybeDailyPass();
     expect(dream).toHaveBeenCalledTimes(1);
     expect(app.centre.lastDaily).not.toBeNull();
+  });
+
+  it("a dev build on a scratch home does not run the nightly pass at launch, but Run now does (item 1002)", async () => {
+    vi.mocked(api.devScratchHome).mockResolvedValueOnce(true);
+    app.centre.daily = { ...app.centre.daily, on: true, hour: 0 };
+    app.centre.lastDaily = null;
+    app.planUsage = usage(30, 20);
+    await maybeDailyPass();
+    expect(dream).not.toHaveBeenCalled();
+    expect(app.centre.lastDaily).toBeNull();
+    await runDailyPass();
+    expect(dream).toHaveBeenCalledTimes(1);
   });
 
   it("Run now ignores the gate", async () => {

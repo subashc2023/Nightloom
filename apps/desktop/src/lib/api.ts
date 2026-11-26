@@ -2169,6 +2169,12 @@ export function captureStatus(): Promise<number> {
 
 /** Milliseconds since the Mac last saw a key or the pointer, or null when
  *  it cannot be read (nightshift item 278: the nightly pass waits for it). */
+/** Whether this is a debug build on a scratch `NIGHTLOOM_HOME` (item 1002):
+ *  the automatic daily pass stays off there. */
+export function devScratchHome(): Promise<boolean> {
+  return invoke("dev_scratch_home");
+}
+
 export function macIdleMs(): Promise<number | null> {
   return invoke("mac_idle_ms");
 }

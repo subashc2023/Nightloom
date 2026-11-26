@@ -5,7 +5,7 @@ import { clockText } from "../schedule";
 import { CURATED, thinkingString, type ConnectionDraft } from "../catalog";
 import { refreshWithin } from "../afterWrite";
 import { cli } from "../cliUpdate.svelte";
-import { deferredRecheckAt, handoffPassDue, nightlyReady, usageGate } from "../autoPass";
+import { autoPassAllowedHere, deferredRecheckAt, handoffPassDue, nightlyReady, usageGate } from "../autoPass";
 import { buildNotices, dailyDue, saveCentreSeen, saveDailyPrefs, saveDismissed, saveLastDaily, saveSeenStamp, withSeen, type DailyPrefs, type Notice } from "../centre";
 import type { NightshiftRow } from "../types";
 import { showNightshift } from "./nightshift.svelte";
@@ -735,6 +735,8 @@ export async function runDailyPass(): Promise<void> {
 /** Run the daily pass if its hour has come and it has not run since. */
 export async function maybeDailyPass(): Promise<void> {
   if (!dailyDue(app.centre.daily, app.centre.lastDaily, new Date())) return;
+  // Item 1002: not in a dev build on a scratch home (no stamp -> a pass at once).
+  if (!autoPassAllowedHere(await api.devScratchHome().catch(() => false))) return;
   // Once a night when the Mac is idle (item 278): the hour decides the
   // day, and the pass then waits for an idle Mac unless the last one is
   // stale. The minute clock asks again until it is.

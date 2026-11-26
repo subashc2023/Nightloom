@@ -1511,6 +1511,12 @@ impl Pass<'_> {
                         done.text.trim()
                     ));
                 }
+                // 1002: a stream that ended before its `result` line (the CLI
+                // killed, a dropped network, a sleep) is not a finished turn —
+                // an empty reply would mark the batch read with nothing kept.
+                if let Some(why) = done.cut_off.as_ref().filter(|_| !interrupted) {
+                    return Err(format!("the capture's Claude Code turn was cut off: {why}"));
+                }
                 self.outcome.usage.add(done.usage);
                 // The subscription: no price per token, so the outcome's
                 // cost stays `None` the way an unpriced exchange leaves it.
@@ -2785,6 +2791,40 @@ mod tests {
         pass.safe_mode = false;
         let argv = agent_spec_for(&pass, &config, None).args("hi");
         assert!(argv.iter().any(|a| a == "--strict-mcp-config"), "{argv:?}");
+    }
+
+    /// 1002: a stand-in that dies after one line, before any `result` — the
+    /// CLI killed, the network gone — is a failed pass: the log stays unread
+    /// (watermark unmoved) and no observation is appended.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_capture_cut_off_before_its_result_leaves_the_log_unread() {
+        use std::os::unix::fs::PermissionsExt;
+        let (config, unfiled) = fixture("agent-cut-off");
+        let log = write_log(&unfiled, 2);
+        let fake = config.join("claude");
+        fs::write(
+            &fake,
+            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"x\",\"tools\":[],\"mcp_servers\":[],\"model\":\"claude-haiku-4-5\",\"permissionMode\":\"default\",\"session_id\":\"s1\"}'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let pass = PassSpec::new(fake.to_string_lossy().into_owned(), vec![]);
+        let cancel = CancellationToken::new();
+        let err = run_on_agent(&pass, &config, false, &cancel, &mut |_| {})
+            .await
+            .expect_err("a cut-off turn is a failure");
+        assert!(err.contains("cut off"), "{err}");
+        assert!(observe::backlog_in(&config).pending.is_empty());
+        assert_eq!(
+            state_in(&config)
+                .consumed
+                .get(&log.to_string_lossy().into_owned())
+                .copied()
+                .unwrap_or(0),
+            0,
+            "the watermark did not move"
+        );
     }
 
     /// The pass on the CLI, with a stand-in for `claude` that answers the
