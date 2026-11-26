@@ -15,6 +15,7 @@ import { progressToast, settleToast, updateToast, dismissToast } from "./toasts.
 import {
   autoResultText,
   captureStartText,
+  dreamErrorText,
   dreamStartText,
   outerText,
   passModelName,
@@ -268,7 +269,8 @@ export async function runDream(byHand = true): Promise<void> {
             (r.cost_usd != null ? ` ($${r.cost_usd.toFixed(4)})` : ""),
     );
   } catch (e) {
-    say(`dream failed: ${String(e)}`);
+    // Item 1014: an empty inbox is "nothing to consolidate", not "failed".
+    say(dreamErrorText(e));
   } finally {
     app.dreaming = false;
     app.dreamActivity = "";

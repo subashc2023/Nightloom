@@ -252,6 +252,21 @@ export interface SendExtras {
   /** Wave 4 C1: the same on every try of one message, so a try after a
    *  lost reply is answered, not run again ([`nonceFor`]). */
   nonce?: string;
+  /** Item 1014: give up after this long and throw `Unreachable` (the page holds it; `nonce` keeps a try that did
+   *  land from running twice). Unset: wait as long as the browser does — about a minute to a dead address. */
+  deadlineMs?: number;
+}
+
+/** Item 1014 (740 audit): a text send's deadline. The first Hold while the page still read "connecting" waited
+ *  ~1 min on a dead address with the message shown nowhere; now it is held after this. */
+export const SEND_DEADLINE_MS = 10_000;
+
+/** A signal that aborts after `ms` (Safari before 16 has no `AbortSignal.timeout`). */
+export function deadlineSignal(ms: number): AbortSignal {
+  if (typeof AbortSignal.timeout === "function") return AbortSignal.timeout(ms);
+  const c = new AbortController();
+  setTimeout(() => c.abort(), ms);
+  return c.signal;
 }
 
 /** `POST /api/feedback`'s answer (item 805). */
@@ -1261,7 +1276,9 @@ export class Client {
    *  keep. */
   async send(chat: string | null, text: string, extras: SendExtras = {}): Promise<"sent" | "queued"> {
     const path = chat ? `/chats/${encodeURIComponent(chat)}/send` : "/send";
-    const r = await this.call(path, { method: "POST", body: JSON.stringify(sendBody(text, extras)) });
+    const init: RequestInit = { method: "POST", body: JSON.stringify(sendBody(text, extras)) };
+    if (extras.deadlineMs) init.signal = deadlineSignal(extras.deadlineMs);
+    const r = await this.call(path, init);
     return parseSendReply(await r.text());
   }
 
@@ -2296,6 +2313,16 @@ export function shortModel(m: string | undefined | null): string {
   if (!m) return "";
   const x = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(m);
   return x ? `${x[1]} ${x[2]}.${x[3]}` : m;
+}
+
+/**
+ * Item 1014: the composer's model pill. `shortModel`'s "haiku 5.5"; `tight` (Aside and Stop share its 390-pt row
+ * while a turn runs — measured: 99 px left for it) keeps the family alone, "haiku", so it is never cut to
+ * "claude-hai". The Model sheet and the pill's label keep the whole name.
+ */
+export function pillText(model: string, tight: boolean): string {
+  const s = shortModel(model);
+  return tight ? s.replace(/ \d+(?:\.\d+)*$/, "").split(/[\s/]/)[0] : s;
 }
 
 /** The line under a reply (as the Mac's model header and footer say it):

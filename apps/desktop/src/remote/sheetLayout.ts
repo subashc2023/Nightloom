@@ -60,3 +60,15 @@ export function fitVisual(node: HTMLElement) {
     },
   };
 }
+
+/**
+ * Item 1014: which layer Escape closes, top first — the project page (back to Projects), Projects, a sheet,
+ * the drawer; null when none is open. `projectsPage` is null when Projects is closed.
+ */
+export function escapeLayer(open: { projectsPage: boolean | null; sheet: boolean; drawer: boolean }): "project-page" | "projects" | "sheet" | "drawer" | null {
+  if (open.projectsPage === true) return "project-page";
+  if (open.projectsPage === false) return "projects";
+  if (open.sheet) return "sheet";
+  if (open.drawer) return "drawer";
+  return null;
+}

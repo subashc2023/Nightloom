@@ -24,6 +24,7 @@
     Client,
     KEEP_PLANNING,
     Unreachable,
+    SEND_DEADLINE_MS,
     backoffMs,
     cardKind,
     draftKey,
@@ -83,13 +84,14 @@
     replySizes,
     liveFlags,
     shortModel,
+    pillText,
     resumeAction,
     speakText,
     type ExtraOp,
     type Try,
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
-  import { plainFragment } from "../lib/plainMd"; // Item 999: a search hit's passage without Markdown marks
+  import { plainHit } from "../lib/plainMd"; // Items 999 + 1014: a search hit's passage without Markdown marks or raw LaTeX
   import { scopeWhere } from "../lib/search"; // Item 1004: the scope's place, named
   import { renderStreamingMarkdown } from "../lib/streamBlocks";
   import MathText from "../lib/MathText.svelte";
@@ -123,6 +125,8 @@
   import type { ApprovalRequest, AskQuestion, DocumentInput, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
   import { badgeOf, extOf, looksLikeText, MAX_TEXT_BYTES, notebookText, routeOf } from "../lib/attachKinds";
   import MessageMenu from "./MessageMenu.svelte";
+  import PassStatusView from "./PassStatus.svelte";
+  import { passEvent, passRunningRead, passStarted, type PassStatus } from "./passStatus";
   import RailSheet from "./RailSheet.svelte";
   import PushRow from "./PushRow.svelte";
   import { browserEnv, pushHost, refreshPush, supportHere, syncBadge, watchPushTaps } from "./push";
@@ -152,7 +156,7 @@
   import ChatMenu from "./ChatMenu.svelte";
   import RulesSheet from "./RulesSheet.svelte";
   import { asideKey, connectorWords, type RuleForm } from "./rules";
-  import { chatSheetSub, fitVisual } from "./sheetLayout";
+  import { chatSheetSub, escapeLayer, fitVisual } from "./sheetLayout";
   import Hosts from "./Hosts.svelte";
   import { PLAYWRIGHT_BUTTONS, PLAYWRIGHT_DECLINED, playwrightAction } from "../lib/playwright";
   import { stuckView } from "../lib/stuck";
@@ -450,6 +454,8 @@
   let contextOn = $state(false);
   let railProblem = $state<string | null>(null);
   let running = $state<Running | null>(null);
+  /** Item 1013: the Dream / Capture he pressed here — working, then its result until he closes it. */
+  let passStatus = $state<PassStatus | null>(null);
   let runningProblem = $state<string | null>(null);
   let usage = $state<Usage | null>(null);
   /** Photos in the composer, scaled and base64'd (wave 1C). Page state
@@ -701,6 +707,10 @@
   });
   const fiveHour = $derived(usage?.plan.five_hour ?? null);
   const busyHere = $derived(remote.busy && !readOnly && sameHost && chatId !== null && chatId === remote.active_chat);
+  /** Item 1014: the pill says the rail's model (what the next send uses) in short — "haiku 5.5", never cut to
+   *  "claude-hai"; the newest reply's model only until the rail is read, or when the rail is on the default. */
+  const pillFull = $derived(shortModel(rail?.model) || lastModel || (rail ? "default" : "Model"));
+  const pillModel = $derived(pillText(pillFull, fil && chatId !== null && hasFeature(remote, "aside") && busyHere));
   /** The budget hook holds a call in the running chat on screen. */
   const heldHere = $derived(busyHere ? budgetHeld(running?.budget, now) : null);
   const status = $derived(
@@ -899,6 +909,8 @@
     // used to be the only reader).
     void refreshUsage();
     await refreshState();
+    // Item 1014: the composer's model pill reads the rail (the model the next send uses), not the last reply's.
+    void readRail();
     await refreshProjects();
     await refreshChats();
     const back = startPlace;
@@ -1012,13 +1024,9 @@
         break;
       }
       case "pass-event":
-        // The Mac's dream or capture pass (wave 3 B1): its own toast on the end.
-        try {
-          const p = JSON.parse(data) as { kind?: string; state?: string; text?: string | null };
-          if ((p.state === "done" || p.state === "failed") && p.text) note(p.text);
-        } catch {
-          /* a malformed event says nothing */
-        }
+        // The Mac's dream or capture pass (wave 3 B1): its own toast on the end — item 1013, held
+        // in the pass's own status until he closes it (a malformed event changes nothing).
+        passStatus = passEvent(passStatus, data, Date.now());
         break;
       case "lagged":
         void everything();
@@ -1605,6 +1613,8 @@
     void grow();
     await refreshTranscript(true);
     if (chatHost !== active) void refreshOther();
+    // Item 1014: the pill follows a model changed on the Mac since the last read.
+    void readRail();
   }
 
   function startNew(project: string | null = null) {
@@ -1855,8 +1865,11 @@
     const project = sendProject;
     const sentPhotos = photos;
     photos = [];
+    // Item 1014: shown at once as "sending…" (never nowhere), and held after a deadline when the host is gone.
+    const flying = startSending(text);
     try {
-      const status = await chatClient!.send(chatId, text, { project, images, documents, nonce: attempt.nonce });
+      const status = await chatClient!.send(chatId, text, { project, images, documents, nonce: attempt.nonce, ...textDeadline(images, documents) });
+      endSending(flying);
       lastTry = null;
       remote = { ...remote, busy: true };
       if (status !== "queued") turnChat = chatId;
@@ -1889,6 +1902,7 @@
     } catch (e) {
       // Nothing sent: the photos go back into the composer.
       photos = [...sentPhotos, ...photos];
+      endSending(flying);
       if (e instanceof Unreachable && images.length + documents.length === 0) hold(text, attempt.nonce);
       else if (e instanceof Unreachable) {
         note("The Mac is unreachable — your message and photos stay here");
@@ -2079,6 +2093,22 @@
     }
   }
 
+  /** Item 1014: messages on their way (the send not yet answered), drawn above the held ones. */
+  let sending = $state<{ id: number; text: string }[]>([]);
+  let sendingSeq = 0;
+  function startSending(text: string): number {
+    const id = ++sendingSeq;
+    sending = [...sending, { id, text }];
+    return id;
+  }
+  function endSending(id: number) {
+    sending = sending.filter((m) => m.id !== id);
+  }
+  /** A text-only send gets the deadline; one with photos or files waits (an upload can be slow, and it is not held). */
+  function textDeadline(images: unknown[], documents: unknown[]): { deadlineMs?: number } {
+    return images.length + documents.length === 0 ? { deadlineMs: SEND_DEADLINE_MS } : {};
+  }
+
   /** Hold `text` for later; `nonce` is its first try's, when it had one
    *  (the held copy is that message, not another). */
   function hold(text: string, nonce: string | null = null) {
@@ -2099,8 +2129,10 @@
     const sentPhotos = photos;
     setDraft("");
     photos = [];
+    const flying = startSending(text);
     try {
-      const status = await chatClient.send(chatId, text, { project: sendProject, images, documents, nonce });
+      const status = await chatClient.send(chatId, text, { project: sendProject, images, documents, nonce, ...textDeadline(images, documents) });
+      endSending(flying);
       lastTry = null;
       // Backlog 374: the Mac hands a queued message to the running turn at
       // its next step (and holds it for the turn's end only when it cannot).
@@ -2118,6 +2150,7 @@
       scrollToEnd();
     } catch (e) {
       photos = [...sentPhotos, ...photos];
+      endSending(flying);
       if (e instanceof Unreachable && images.length + documents.length === 0) hold(text, nonce);
       else {
         if (!(e instanceof Unreachable)) fail(e);
@@ -2594,6 +2627,16 @@
       spend: null,
     };
   });
+  /** Item 1014: the rail, quietly, so the pill and the Model sheet say the same model from the first look. */
+  async function readRail() {
+    if (!client || !hasFeature(remote, "rail")) return;
+    try {
+      rail = await client.rail();
+    } catch {
+      // The pill keeps what it had; the sheet says why when opened.
+    }
+  }
+
   async function openRail() {
     sheet = "rail";
     if (!client) return;
@@ -2699,11 +2742,28 @@
     drawer = false;
     try {
       await client!.pass(kind);
-      note(kind === "dream" ? `Dreaming on ${hostWord}` : `Capturing on ${hostWord}`);
+      // Item 1013: held on screen with a clock until the Mac's `pass-event` ends it.
+      passStatus = passStarted(kind, hostWord, Date.now());
     } catch (e) {
       note(String(e instanceof Error ? e.message : e));
     }
   }
+
+  // Item 1013: the end's event can be lost (a dropped stream, the phone asleep): while a pass shows working,
+  // Running is read every 15 s, and a pass it no longer lists ends the clock with a line that says so.
+  $effect(() => {
+    if (passStatus?.phase !== "working" || !client || !hasFeature(remote, "running")) return;
+    const c = client;
+    const t = setInterval(() => {
+      void c
+        .running()
+        .then((r) => (passStatus = passRunningRead(passStatus, { dream: !!r.dream, capture: !!r.capture }, Date.now())))
+        .catch(() => {
+          // Unreachable: the offline bar says it; the clock keeps running.
+        });
+    }, 15_000);
+    return () => clearInterval(t);
+  });
 
   async function openAside() {
     if (!chatId) return;
@@ -3084,6 +3144,19 @@
     sheetTall = false;
   }
 
+  /** Item 1014 (740 audit: "Escape does not close the sheet"): the top layer goes — the project page back to
+   *  Projects, Projects itself, a sheet, the drawer — the same as its Done, ‹ or a tap on the scrim. */
+  function escapeKey(e: KeyboardEvent) {
+    if (e.key !== "Escape" || e.defaultPrevented || e.isComposing) return;
+    const layer = escapeLayer({ projectsPage: projectsView ? projectsView.page !== null : null, sheet: sheet !== null, drawer });
+    if (!layer) return;
+    e.preventDefault();
+    if (layer === "project-page") projectsView = { page: null };
+    else if (layer === "projects") projectsView = null;
+    else if (layer === "sheet") closeSheet();
+    else drawer = false;
+  }
+
   // ---- wave 1C: photos --------------------------------------------------------------
   /** A photo from the camera or Photos, scaled to `PHOTO_EDGE` and
    *  re-encoded as JPEG (which also turns an iPhone's HEIC into something
@@ -3272,6 +3345,9 @@
   const still = reducedMotion();
   const toolCount = (tools: ToolRow[]): number => tools.reduce((n, t) => n + 1 + toolCount(t.children), 0);
 </script>
+
+<!-- Item 1014: Escape (a hardware keyboard, an iPad) closes the top layer, as a tap outside it does. -->
+<svelte:window onkeydown={escapeKey} />
 
 {#snippet chapterLines(list: readonly ShownChapter[])}
   <!-- Item 842: a chapter's divider (the Mac's ChapterRule, without its Rename and Remove: those are the Mac's). -->
@@ -3868,13 +3944,23 @@
       {/each}
     </main>
 
+    {#if passStatus}
+      <PassStatusView status={passStatus} onclose={() => (passStatus = null)} />
+    {/if}
     <footer class="dock">
+      <!-- Item 1013: over Home (fixed, z 6) a dock toast was drawn under it; `over-home` lifts it above. -->
       {#if toast && toastChat}
         {@const go = toastChat}
-        <button class="toast toast-go" transition:fly={{ y: 8, duration: motion(180) }} onclick={() => ((toast = null), void openChat(go))}>{toast} ›</button>
-      {:else if toast}<div class="toast" transition:fly={{ y: 8, duration: motion(180) }}>{toast}</div>{/if}
-      {#if queue.length > 0}
+        <button class="toast toast-go" class:over-home={home} transition:fly={{ y: 8, duration: motion(180) }} onclick={() => ((toast = null), void openChat(go))}>{toast} ›</button>
+      {:else if toast}<div class="toast" class:over-home={home} transition:fly={{ y: 8, duration: motion(180) }}>{toast}</div>{/if}
+      {#if queue.length > 0 || sending.length > 0}
         <div class="queue">
+          {#each sending as m (m.id)}
+            <div class="held sending" data-sending transition:fly={{ y: 8, duration: motion(180) }}>
+              <span class="held-text"><MathText text={m.text} /></span>
+              <span class="held-meta">sending…</span>
+            </div>
+          {/each}
           {#each queue as q (q.id)}
             <div class="held" class:failed={!!q.failed} transition:fly={{ y: 8, duration: motion(180) }}>
               <span class="held-text"><MathText text={q.text} /></span>
@@ -3933,7 +4019,7 @@
           {/if}
           {#if fil}
             <!-- Item 572: the model, as the desktop's composer shows it; opens Model and settings. -->
-            <button class="model-btn" onclick={openRail} aria-label="Model and settings"><span class="dot" class:ok={link === "online"} class:bad={link !== "online"}></span>{rail?.model || lastModel || "Model"}<span class="caret" aria-hidden="true">▾</span></button>
+            <button class="model-btn" onclick={openRail} aria-label="Model and settings — {pillFull}" title={pillFull}><span class="dot" class:ok={link === "online"} class:bad={link !== "online"}></span>{pillModel}<span class="caret" aria-hidden="true">▾</span></button>
           {/if}
           <textarea
             data-kept
@@ -4034,6 +4120,9 @@
           </div>
         {:else}
           <button class="new-row" onclick={() => startNew(null)}>{@render icon("new")} New chat</button>
+          <!-- Item 1012: on an iPhone (393 × 659) nine full-width rows left Recents 16 px; the
+               rest are two to a line, and this block shrinks (and scrolls) before Recents does. -->
+          <div class="drawer-menu" data-drawer-menu>
           {#if projects.length > 0 || hasFeature(remote, "projects")}
             <button class="new-row quiet" onclick={() => openProjects()}>{@render icon("folder")} Projects</button>
           {/if}
@@ -4057,6 +4146,7 @@
           {#if hasFeature(remote, "capture")}
             <button class="new-row quiet" onclick={() => startPass("capture")}>{@render icon("pulse")} Capture</button>
           {/if}
+          </div>
         {/if}
         {#if searchOn}
           <div class="drawer-list found">
@@ -4073,7 +4163,8 @@
                     {#if g.project && g.project.id !== UNFILED}<span class="tag">{g.project.name}</span>{/if}
                   </span>
                   {#each g.rows.slice(0, 2) as h (h.index)}
-                    <span class="hit-row">{plainFragment(h.before)}<mark>{h.matched}</mark>{plainFragment(h.after)}</span>
+                    {@const ph = plainHit(h.before, h.matched, h.after)}
+                    <span class="hit-row">{ph.before}<mark>{ph.matched}</mark>{ph.after}</span>
                   {/each}
                   {#if g.hits > 2}<span class="hit-more">{g.hits} matches</span>{/if}
                 </button>
@@ -4086,7 +4177,8 @@
                     <span class="tag">{n.scope === "knowledge" ? "vault" : "note"}</span>
                   </span>
                   {#each n.rows.slice(0, 2) as h (h.line)}
-                    <span class="hit-row">{plainFragment(h.before)}<mark>{h.matched}</mark>{plainFragment(h.after)}</span>
+                    {@const ph = plainHit(h.before, h.matched, h.after)}
+                    <span class="hit-row">{ph.before}<mark>{ph.matched}</mark>{ph.after}</span>
                   {/each}
                 </button>
               {/each}
@@ -5520,6 +5612,12 @@
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
     z-index: 3;
   }
+  /* Item 1013: Home covers the dock; a note said there is drawn above it. */
+  .toast.over-home {
+    position: fixed;
+    bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    z-index: 8;
+  }
   .toast-go {
     border: 0;
     font: inherit;
@@ -5753,8 +5851,36 @@
   .menu button:active:not(:disabled) {
     background: var(--well);
   }
+  /* Item 1012: two to a line; the block gives way (and scrolls) before Recents. */
+  .drawer-menu {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 0;
+    padding-bottom: 6px;
+  }
+  .drawer-menu .new-row {
+    min-height: 44px;
+    margin: 0 4px 0 8px;
+    padding: 0 8px;
+    gap: 10px;
+    font-size: 15px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .drawer-menu .new-row:nth-child(even) {
+    margin: 0 8px 0 4px;
+  }
+  .drawer-menu .new-row :global(.ico) {
+    flex: none;
+  }
   .drawer-list {
     flex: 1;
+    /* Item 1012: at least three chat rows, whatever the rows above take. */
+    min-height: min(184px, 30dvh);
     overflow-y: auto;
     padding: 4px 8px 12px;
     /* A5: a line where the list meets the fixed rows above it. */

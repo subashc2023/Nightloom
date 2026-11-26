@@ -29,6 +29,7 @@
   import {
     ApiError,
     Unreachable,
+    SEND_DEADLINE_MS,
     cardKind,
     clock12,
     loadDraft,
@@ -411,7 +412,8 @@
   async function sendInto(chat: string, project: string | null, text: string): Promise<boolean> {
     const nonce = newNonce();
     try {
-      const st = await client.send(chat, text, { project, nonce });
+      // Item 1014: a dead host is held after the deadline, not a minute later.
+      const st = await client.send(chat, text, { project, nonce, deadlineMs: SEND_DEADLINE_MS });
       onnote(st === "queued" ? "Sent — it goes when the running turn ends" : "Sent");
       return true;
     } catch (e) {

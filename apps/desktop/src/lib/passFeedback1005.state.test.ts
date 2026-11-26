@@ -215,6 +215,26 @@ describe("1005's class: the Capture and Dream buttons, the daily pass, the autom
     expect(app.toasts[0].text).toContain("dream: consolidated 5 observations");
   });
 
+  it("1014: Dream on an empty inbox says 'nothing to consolidate', not 'failed', and the result stays", async () => {
+    const call = held<Awaited<ReturnType<typeof api.dream>>>();
+    dream.mockReturnValue(call.promise);
+    const run = runDream();
+    await flush();
+    call.fail("nothing left to consolidate");
+    await run;
+    expect(app.toasts).toHaveLength(1);
+    expect(app.toasts[0].text).toBe("dream: nothing to consolidate — the memory inbox is empty (Capture fills it)");
+    expect(app.toasts[0].text).not.toMatch(/failed/);
+    vi.advanceTimersByTime(60_000);
+    expect(app.toasts).toHaveLength(1);
+  });
+
+  it("1014: any other Dream error still reads 'dream failed'", async () => {
+    dream.mockRejectedValue("no provider");
+    await runDream();
+    expect(app.toasts[0].text).toBe("dream failed: no provider");
+  });
+
   it("Run now: one toast names each step, then holds the day's summary", async () => {
     vi.mocked(api.captureStatus).mockResolvedValue(1);
     const call = held<CaptureReport>();
