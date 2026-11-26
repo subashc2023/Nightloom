@@ -1031,17 +1031,21 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>, connectors: bool) -
     // so a hand-off he asked for in words came back as a fenced block.
     text.push(' ');
     text.push_str(HANDOFF_NOTE);
-    // Item 993b: a chat with his connectors names what they returned as
-    // typed tags the desktop draws as links to a card — before the ask
-    // rule, which stays last.
-    if connectors {
-        text.push(' ');
-        text.push_str(REF_NOTE);
-    }
     // Item 753: a turn-end question is one tagged block, drawn as a card —
     // last in the note (a Haiku turn ignored it mid-note, 2026-11-16).
     text.push(' ');
     text.push_str(ASK_NOTE);
+    // Item 993b: a chat with his connectors names what they returned as
+    // typed tags the desktop draws as links to a card. After the ask rule,
+    // and so last in such a chat's note: measured 2026-11-26 on Haiku 5.5
+    // (`examples/ref_tags_live.rs`), the sentence just before ASK_NOTE got
+    // no tags in a main chat's reply, twice (reworded once); at the note's
+    // end every item it named was tagged (993b report). A chat without
+    // connectors keeps ASK_NOTE last.
+    if connectors {
+        text.push(' ');
+        text.push_str(REF_NOTE);
+    }
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
@@ -1107,11 +1111,12 @@ pub const ASK_NOTE: &str = "Ending a turn on a question: if your reply asks the 
 /// doc's `type` may be written `kind`; `id` and `src` required). The
 /// desktop draws each as a link that opens its card (`RefCard.svelte`).
 /// Only in the engine note of a chat whose connectors are on
-/// ([`EngineLayers::connectors`]), before [`ASK_NOTE`]. The fields are the
+/// ([`EngineLayers::connectors`]), last, after [`ASK_NOTE`] (measured on
+/// Haiku: before it, no tags). The fields are the
 /// tool result's own (blocker 2306); `src` is the connector's server name
 /// as Home's reach lists it (`claude.ai Gmail 2117773e`), which the card
 /// matches to an account.
-pub const REF_NOTE: &str = "Items from a connector: when the reply names a calendar event, an email or a Drive file that a connector tool returned, write its name as a tag, inline on one line — <event id=\"…\" src=\"…\" start=\"…\">Title</event>, <email id=\"…\" thread=\"…\" src=\"…\" from=\"…\">Subject</email>, <doc id=\"…\" src=\"…\" type=\"doc\">Name</doc>. id is the tool's own (eventId, messageId, fileId); src is the connector's name, as claude.ai Gmail 2117773e for mcp__claude_ai_Gmail_2117773e__ tools. Copy only fields the tool returned, never invent one: event cal start end rsvp where organizer link; email thread from to at gist link; doc type owner edited link. Nightloom draws each tag as a link that opens the item.";
+pub const REF_NOTE: &str = "Items from a connector are written as tags: every calendar event, email or Drive file your reply names from a connector tool's result is its tag, never plain text or a bold title — inline, on one line: <event id=\"…\" src=\"…\" start=\"…\">Title</event>, <email id=\"…\" thread=\"…\" src=\"…\" from=\"…\">Subject</email>, <doc id=\"…\" src=\"…\" type=\"doc\">Name</doc>. id is the tool's own (eventId, messageId, fileId); src is the connector's name, as claude.ai Gmail 2117773e for mcp__claude_ai_Gmail_2117773e__ tools. Copy only fields the tool returned, never invent one: event cal start end rsvp where organizer link; email thread from to at gist link; doc type owner edited link. Nightloom draws each tag as a link that opens the item.";
 
 /// Where a prompt for the next chat goes (nightshift item 583, 2026-11-10):
 /// the wrap-up's own sentence (`HANDOFF_ASK`, `apps/desktop/src/lib/handoffTag.ts`)
@@ -3434,7 +3439,9 @@ As of now — the front.
     }
 
     /// Item 993b (blocker 2307's default): a chat with his connectors on is
-    /// told the typed tags, before the ask rule (which stays last); one
+    /// told the typed tags, last in its note, after the ask rule (Haiku
+    /// followed it only there; a chat without connectors keeps the ask
+    /// rule last); one
     /// without them, an incognito one and the API engine's identity are
     /// not. The sentence names every kind and the attributes `REF_ATTRS`
     /// reads, and stays short — it rides every turn of such a chat.
@@ -3476,9 +3483,14 @@ As of now — the front.
         );
         let on = engine_note_segment(None, true).text;
         let (ref_at, ask_at) = (on.find(REF_NOTE).unwrap(), on.find(ASK_NOTE).unwrap());
-        assert!(ref_at < ask_at);
+        assert!(ask_at < ref_at);
         assert!(
             on.trim_end()
+                .ends_with(&format!("{ASK_NOTE} {REF_NOTE}\n</engine-note>"))
+        );
+        let off = engine_note_segment(None, false).text;
+        assert!(
+            off.trim_end()
                 .ends_with(&format!("{ASK_NOTE}\n</engine-note>"))
         );
         assert!(!engine_note_segment(None, false).text.contains(REF_NOTE));
