@@ -264,6 +264,21 @@
 .h9-said-tx { display: block; }
 .h9-said-fold { display: inline-flex; align-items: center; gap: 5px; margin: 0 0 2px; padding: 0 6px 0 2px; border: 0; border-radius: 3px; background: none; color: var(--home); font: 10.5px/1.6 var(--mono); cursor: pointer; }
 .h9-said-fold:hover { background: var(--home-soft); }
+/* Item 992: the strip's buttons stay in sight while a long reply scrolls under them. */
+.h9-strip-acts { flex: none; position: sticky; top: 0; display: flex; align-items: center; gap: 6px; }
+/* Item 992: Home's reply as the whole page — over the stage (bar, tabs, views, strip), which stays drawn under it, so
+   Back finds every view where he left it. The composer is outside the stage and still sends. */
+.h9-full { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; background: var(--paper); }
+.h9-full::before { content: ""; position: absolute; inset: 0 0 auto; height: 1px; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--home) 60%, transparent), transparent); pointer-events: none; }
+.h9-full.hud-in { animation: hud-glass-in 220ms ease-out both; }
+.h9-full.hud-out { animation: hud-glass-out 150ms ease-in both; pointer-events: none; }
+.h9-full-bar { flex: none; display: flex; align-items: center; gap: 10px; padding: 10px 18px 8px; min-height: 30px; border-bottom: 1px solid color-mix(in srgb, var(--home) 22%, var(--line2)); }
+.h9-full-what { font-size: 12.5px; color: var(--ink2); }
+.h9-full-sc { flex: 1; min-height: 0; overflow-y: auto; }
+.h9-full-page { box-sizing: border-box; width: 100%; max-width: 860px; margin: 0 auto; padding: 18px 28px 40px; display: flex; flex-direction: column; gap: 12px; }
+.h9-full-said { font-size: 15px; line-height: 1.65; }
+.h9-full .h9-said-ask { margin: 4px 0 0; }
+.h9-stage.classic .h9-full::before { display: none; }
 .nd-hint.kept { color: var(--accent-ink); overflow-wrap: anywhere; }
 
 /* 3 · Home's steps: a timeline rail in Home's own colour; the chat thinking block's live parts (the arrival, the needle

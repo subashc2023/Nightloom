@@ -28,6 +28,9 @@ export const ICONS = {
   copy: '<rect x="7" y="7" width="9" height="10" rx="1.5"/><path d="M13 7V4.5A1.5 1.5 0 0 0 11.5 3h-6A1.5 1.5 0 0 0 4 4.5v8A1.5 1.5 0 0 0 5.5 14H7"/>',
   term: '<path d="M4 6l4 4-4 4M10 14h6"/>',
   cols: '<rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M10 4v12"/>',
+  /* Item 992: full screen (four corners opening out) and back (the corners folding in). */
+  full: '<path d="M4 8V4h4M12 4h4v4M16 12v4h-4M8 16H4v-4"/>',
+  unfull: '<path d="M8 4v4H4M12 4v4h4M16 12h-4v4M4 12h4v4"/>',
   // The chat-surface redesign (nightshift notes/runner-design/surface-redesign-2026-09-13).
   home: '<path d="M3.5 9.5 10 4l6.5 5.5"/><path d="M5.5 8.2V16h3.2v-4h2.6v4h3.2V8.2"/>',
   folder: '<path d="M3 6a1.5 1.5 0 0 1 1.5-1.5H8l2 2h5.5A1.5 1.5 0 0 1 17 8v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 15z"/>',
