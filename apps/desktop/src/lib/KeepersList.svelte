@@ -70,7 +70,7 @@
         <li>
           <div class="who">
             <span class="name">{titleOf(s.chat) ?? (homes[s.chat] || "a chat")}</span>
-            <span class="line" title={keeperLine(s, now)}>{keeperLine(s, now)}</span>
+            <span class="line" use:tip={keeperLine(s, now)}>{keeperLine(s, now)}</span>
           </div>
           <div class="acts">
             <button
