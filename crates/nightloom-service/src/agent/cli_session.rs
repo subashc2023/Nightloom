@@ -1257,6 +1257,14 @@ pub fn find(projects: &Path, cwd: &Path, id: &str) -> Result<PathBuf, CliSession
 /// `create_new`, so an id collision — or a second writer — fails rather
 /// than overwrites; the original is not opened for writing at all.
 pub fn write_copy(original: &Path, edited: &CliSession) -> Result<String, CliSessionError> {
+    // A dev scratch home never writes into the real home's CLI folders
+    // (item 1011): the copy would sit beside his own session.
+    if super::dev_guard::foreign_file(original) {
+        return Err(CliSessionError::Locate(format!(
+            "dev home: {} is in a Claude Code folder outside this home, so no edited copy was written beside it (item 1011)",
+            original.display()
+        )));
+    }
     let id = uuid::Uuid::new_v4().to_string();
     let path = original.with_file_name(format!("{id}.jsonl"));
     let text = edited.render_as(&id);
@@ -2645,6 +2653,25 @@ mod tests {
         let dir = project_dir(Path::new(cwd)).expect("a home directory");
         assert_eq!(dir.file_name().unwrap().to_string_lossy(), measured);
         assert_eq!(dir.parent(), projects_dir().as_deref());
+    }
+
+    /// Item 1011: on a dev scratch home, no edited copy is written beside
+    /// a session in a folder of the real home's; beside its own it is.
+    #[test]
+    fn a_dev_home_writes_no_copy_beside_his_session() {
+        let (_t, scope, real_dir, own_dir) = super::super::dev_guard::tests::layout();
+        let _g = super::super::dev_guard::test_scope(scope);
+        let s = CliSession::parse(&fixture()).unwrap();
+        let his = real_dir.join("bf71e603-aaaa.jsonl");
+        let before = fs::read_dir(&real_dir).unwrap().count();
+        let err = write_copy(&his, &s).unwrap_err();
+        assert!(err.to_string().contains("item 1011"), "{err}");
+        assert_eq!(
+            fs::read_dir(&real_dir).unwrap().count(),
+            before,
+            "nothing written"
+        );
+        assert!(write_copy(&own_dir.join("0e1-own.jsonl"), &s).is_ok());
     }
 
     #[test]

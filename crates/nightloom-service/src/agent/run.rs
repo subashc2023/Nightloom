@@ -102,6 +102,15 @@ impl ClaudeCodeAgent {
     /// one is already waiting. The turn uses it only if nothing about the
     /// command changed by then.
     pub fn prewarm(&self) -> std::io::Result<bool> {
+        // A dev home's foreign session (item 1011): nothing to start.
+        if self
+            .spec
+            .resume
+            .as_deref()
+            .is_some_and(|id| super::dev_guard::foreign_resume(id).is_some())
+        {
+            return Ok(false);
+        }
         self.warm
             .fill(warm::Key::of(&self.spec, &self.spec.stdin_args()))
     }
@@ -627,6 +636,16 @@ impl ClaudeCodeAgent {
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
+        // Item 1011: a dev scratch home never resumes (or forks) a session
+        // whose file is in a folder of the real home's — the main chat, an
+        // aside, a council seat, a keep-warm ping all come through here.
+        if let Some(id) = spec.resume.as_deref()
+            && let Some(file) = super::dev_guard::foreign_resume(id)
+        {
+            return Err(AgentError::ForeignSession(super::dev_guard::refusal(
+                id, &file,
+            )));
+        }
         let attached = input
             .as_ref()
             .is_some_and(|i| !i.images.is_empty() || !i.documents.is_empty());

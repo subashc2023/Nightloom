@@ -200,6 +200,15 @@ pub fn run_fork(
     wall_ms: u64,
 ) -> std::io::Result<ForkOutcome> {
     let mut argv = spec.argv.clone();
+    // No `--resume` means no session to fork from — a dev home's foreign
+    // session was dropped from the argv (item 1011): `Err`, so the hook
+    // lets the spawn through as a fresh helper, never a lone
+    // `--resume-session-at`.
+    if !argv.iter().any(|a| a == "--resume") {
+        return Err(std::io::Error::other(
+            "no session to fork (a dev home never resumes a real session, item 1011)",
+        ));
+    }
     match argv.iter().position(|a| a == "-p") {
         Some(i) if i + 1 < argv.len() && argv[i + 1].is_empty() => {
             argv[i + 1] = prompt.to_string();

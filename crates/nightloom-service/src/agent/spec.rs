@@ -1134,7 +1134,14 @@ impl AgentSpec {
             a.push("--strict-mcp-config".into());
             a.push("--disable-slash-commands".into());
         }
-        if let Some(id) = &self.resume {
+        // Never a real session from a dev scratch home (item 1011): the
+        // backstop under every process this spec builds — a prewarm, a
+        // checkpoint fork — beside the turn's own refusal in `drive_as`.
+        if let Some(id) = self
+            .resume
+            .as_ref()
+            .filter(|id| dev_guard::foreign_resume(id).is_none())
+        {
             a.push("--resume".into());
             a.push(id.clone());
             // Meaningless without a session to fork, so never sent alone.

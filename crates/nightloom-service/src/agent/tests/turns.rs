@@ -1448,3 +1448,70 @@ async fn measure_466_stop_latency_claude_code() {
         println!("466 cli {kind}: {:.2} s {notices:?}", t.as_secs_f64());
     }
 }
+
+/// Item 1011: on a dev scratch home, a chat whose Claude Code session file
+/// is in a folder of the real home's never starts a process — not the
+/// chat's turn, not an aside, not a prewarm — and the turn says why. Its
+/// own session still runs. The stand-in records that it ran at all.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_dev_home_never_resumes_his_real_session() {
+    let (t, scope, real_dir, _) = super::dev_guard::tests::layout();
+    let _g = super::dev_guard::test_scope(scope);
+    let ran = t.path().join("ran");
+    let body = format!(
+        r##"printf '%s\n' "$@" >> '{ran}'
+printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"dontAsk","session_id":"0e1-own"}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"0e1-own","stop_reason":"end_turn","usage":{{"input_tokens":1,"output_tokens":1}}}}'
+cat >/dev/null
+exit 0
+"##,
+        ran = ran.display()
+    );
+    let his_before = std::fs::read(real_dir.join("bf71e603-aaaa.jsonl")).unwrap();
+    let mut s = AgentSpec::new(t.path());
+    s.binary = stand_in(t.path(), &body);
+    s.resume = Some("bf71e603-aaaa".into());
+    let agent = ClaudeCodeAgent::new(s.clone());
+    let cancel = CancellationToken::new();
+    assert!(
+        !agent.prewarm().unwrap(),
+        "no waiting process for his session"
+    );
+    let turn = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        agent.run_turn("hello", &cancel, &mut |_| {}),
+    )
+    .await
+    .unwrap();
+    match turn {
+        Err(AgentError::ForeignSession(m)) => assert!(m.contains("bf71e603-aaaa"), "{m}"),
+        other => panic!("expected the refusal, got {other:?}"),
+    }
+    let aside = agent
+        .ask_aside("beside".into(), None, None, None, &cancel, &mut |_| {})
+        .await
+        .expect("a session to ask beside");
+    assert!(matches!(aside, Err(AgentError::ForeignSession(_))));
+    let seat = agent.run_with(&s, "seat", &cancel, &mut |_| {}).await;
+    assert!(matches!(seat, Err(AgentError::ForeignSession(_))));
+    assert!(!ran.exists(), "no process started");
+    assert_eq!(
+        std::fs::read(real_dir.join("bf71e603-aaaa.jsonl")).unwrap(),
+        his_before
+    );
+
+    // The home's own session: the turn runs and resumes it.
+    let mut own = s.clone();
+    own.resume = Some("0e1-own".into());
+    let agent = ClaudeCodeAgent::new(own);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        agent.run_turn("hello", &cancel, &mut |_| {}),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let argv = std::fs::read_to_string(&ran).unwrap();
+    assert!(argv.contains("--resume\n0e1-own"), "{argv}");
+}
