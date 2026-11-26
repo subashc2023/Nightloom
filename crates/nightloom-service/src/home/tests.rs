@@ -287,6 +287,10 @@ claude.ai Google Drive: u - ✔ Connected\n";
     assert!(m.contains("never send, draft, reply, label"));
     assert!(m.contains("`waiting: N`") && m.contains("`account: "));
     assert!(!m.contains("Do not use tools"));
+    // Item 993b: the items it names come back as the typed tags; a
+    // thread's gist rides the tag, never the page's prose.
+    assert!(m.contains("<event>, <email>, <doc>") && m.contains("gist goes only in its tag"));
+    assert!(!scan_message(&facts, false).contains("<event>"));
     // The scan's end keeps the addresses it reported; the next facts name them.
     let reply =
         "**Mail and calendar** …\naccount: claude.ai Gmail 2117773e = a@example.com\nwaiting: 1";

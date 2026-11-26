@@ -408,6 +408,13 @@ pub(crate) async fn connect_agent_body(
             // Backlog 405: the engine note names only what an incognito
             // chat's server serves.
             incognito,
+            // Item 993b (blocker 2307): a chat with his connectors — the
+            // rail's switch, or a chat of Home's, which gets them below
+            // (`home::reach::apply`) — is taught the item tags.
+            connectors: !incognito
+                && (spec.claude_ai_connectors
+                    || seen.and_then(|p| p.source.as_deref())
+                        == Some(nightloom_service::home::SOURCE)),
         },
     );
     // A changed layer waits for the chat's cold moment (nightshift backlog

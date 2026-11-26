@@ -104,6 +104,7 @@ impl Chat {
                 limits: None,
                 cli_agents_md: false,
                 incognito: false,
+                connectors: false,
             },
         );
         let ask = Ask {

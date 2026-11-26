@@ -956,6 +956,11 @@ impl ServeHost {
                     ),
                 // Backlog 405: the note names only what its server serves.
                 incognito,
+                // Item 993b: on this host only Home's chats get his
+                // connectors (`home::reach::apply`), so only they are
+                // taught the item tags.
+                connectors: !incognito
+                    && project.and_then(|p| p.source.as_deref()) == Some(crate::home::SOURCE),
             },
         );
         self.without_home_memory(prompt)

@@ -441,6 +441,13 @@ pub struct EngineLayers<'a> {
     /// only the Nightloom tool its server serves (`--incognito`) and says
     /// nothing of other chats, memory or the CLI's transcripts.
     pub incognito: bool,
+    /// The chat has his claude.ai connectors (nightshift item 993b,
+    /// blocker 2307's default): the rail's switch on, or a chat of Home's
+    /// project, which always has them. The engine note then teaches the
+    /// `<event>`/`<email>`/`<doc>` tags ([`REF_NOTE`]). Toggling the
+    /// connectors already re-writes the cached prefix (the tool list
+    /// changes), so the sentence costs no extra cache write.
+    pub connectors: bool,
 }
 
 impl EngineLayers<'static> {
@@ -454,6 +461,7 @@ impl EngineLayers<'static> {
         limits: None,
         cli_agents_md: false,
         incognito: false,
+        connectors: false,
     };
 }
 
@@ -504,7 +512,7 @@ pub fn agent_prompt_with(
         prompt.push(if layers.incognito {
             incognito_engine_note_segment()
         } else {
-            engine_note_segment(config.knowledge.as_ref())
+            engine_note_segment(config.knowledge.as_ref(), layers.connectors)
         });
     }
     if layers.pacing && preamble {
@@ -916,7 +924,7 @@ pub fn subagent_rules_update_note(layer: &str) -> String {
 /// tool set on macOS and Linux leaves out `Glob` and `Grep` (`external`, the
 /// CLI reference for `--tools`), and promising a tool the model may not have
 /// is the substituted-tool failure `safe_mode` documents.
-fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
+fn engine_note_segment(knowledge: Option<&KnowledgeContext>, connectors: bool) -> Segment {
     let mut text = String::from(
         "<engine-note>\n\
          On this engine the file tools are Claude Code's own: read a note with Read, write \
@@ -1023,6 +1031,13 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     // so a hand-off he asked for in words came back as a fenced block.
     text.push(' ');
     text.push_str(HANDOFF_NOTE);
+    // Item 993b: a chat with his connectors names what they returned as
+    // typed tags the desktop draws as links to a card — before the ask
+    // rule, which stays last.
+    if connectors {
+        text.push(' ');
+        text.push_str(REF_NOTE);
+    }
     // Item 753: a turn-end question is one tagged block, drawn as a card —
     // last in the note (a Haiku turn ignored it mid-note, 2026-11-16).
     text.push(' ');
@@ -1085,6 +1100,18 @@ pub const DRAW_NOTE: &str = "Drawing tools on this Mac: Graphviz dot (dot -Tpng 
 /// click sends the answer and files it as an answered blocker. Beside the
 /// hand-off rule in every chat's engine note and the API engine's identity.
 pub const ASK_NOTE: &str = "Ending a turn on a question: if your reply asks the user to choose, confirm or decide anything — including a closing line such as \"Which do you want?\" — do not end on a plain-text question. End the reply with this block instead, with nothing after it:\n<ask>\nThe question, in full sentences.\n- Your default answer\n- The other answer\n</ask>\nOne question, one or two answers, your default first. Nightloom draws the block as a card whose buttons send the answer; a plain-text question gets no card.";
+
+/// How a chat with his connectors names what they returned (nightshift
+/// item 993b): an event, an email or a Drive file as a typed inline tag,
+/// whose grammar is `REF_ATTRS` in `apps/desktop/src/lib/refTag.ts` (a
+/// doc's `type` may be written `kind`; `id` and `src` required). The
+/// desktop draws each as a link that opens its card (`RefCard.svelte`).
+/// Only in the engine note of a chat whose connectors are on
+/// ([`EngineLayers::connectors`]), before [`ASK_NOTE`]. The fields are the
+/// tool result's own (blocker 2306); `src` is the connector's server name
+/// as Home's reach lists it (`claude.ai Gmail 2117773e`), which the card
+/// matches to an account.
+pub const REF_NOTE: &str = "Items from a connector: when the reply names a calendar event, an email or a Drive file that a connector tool returned, write its name as a tag, inline on one line — <event id=\"…\" src=\"…\" start=\"…\">Title</event>, <email id=\"…\" thread=\"…\" src=\"…\" from=\"…\">Subject</email>, <doc id=\"…\" src=\"…\" type=\"doc\">Name</doc>. id is the tool's own (eventId, messageId, fileId); src is the connector's name, as claude.ai Gmail 2117773e for mcp__claude_ai_Gmail_2117773e__ tools. Copy only fields the tool returned, never invent one: event cal start end rsvp where organizer link; email thread from to at gist link; doc type owner edited link. Nightloom draws each tag as a link that opens the item.";
 
 /// Where a prompt for the next chat goes (nightshift item 583, 2026-11-10):
 /// the wrap-up's own sentence (`HANDOFF_ASK`, `apps/desktop/src/lib/handoffTag.ts`)
@@ -2311,9 +2338,9 @@ the body text",
         assert!(text.contains("use list_notes"), "{text}");
         assert!(text.contains("make_note_folder to make a folder"), "{text}");
         assert!(text.contains("move_notes to move or rename"), "{text}");
-        let note = engine_note_segment(Some(&k)).text;
+        let note = engine_note_segment(Some(&k), false).text;
         assert!(note.contains("mcp__nightloom__move_notes"), "{note}");
-        assert!(!engine_note_segment(None).text.contains("move_notes"));
+        assert!(!engine_note_segment(None, false).text.contains("move_notes"));
     }
 
     /// The sentence that stops the two stores collapsing into one. If it goes
@@ -2774,7 +2801,7 @@ the body text",
     /// continuation, in the exact shape the desktop reads.
     #[test]
     fn the_engine_note_says_how_to_ask_to_be_continued_later() {
-        let note = engine_note_segment(None).text;
+        let note = engine_note_segment(None, false).text;
         assert!(note.contains(r#"<continue-later at="reset">"#));
         assert!(note.contains("</continue-later>"));
         assert!(note.contains("instead of CronCreate or ScheduleWakeup"));
@@ -3290,10 +3317,13 @@ As of now — the front.
         assert!(PAGE_NOTE.contains("picture file"));
         assert!(DEFAULT_IDENTITY.contains(PAGE_NOTE), "{DEFAULT_IDENTITY}");
         for seg in [
-            engine_note_segment(None),
-            engine_note_segment(Some(&KnowledgeContext {
-                dir: PathBuf::from("/kb"),
-            })),
+            engine_note_segment(None, false),
+            engine_note_segment(
+                Some(&KnowledgeContext {
+                    dir: PathBuf::from("/kb"),
+                }),
+                false,
+            ),
             incognito_engine_note_segment(),
         ] {
             assert!(seg.text.contains(PAGE_NOTE), "{}", seg.text);
@@ -3314,10 +3344,13 @@ As of now — the front.
             "{DEFAULT_IDENTITY}"
         );
         for seg in [
-            engine_note_segment(None),
-            engine_note_segment(Some(&KnowledgeContext {
-                dir: PathBuf::from("/kb"),
-            })),
+            engine_note_segment(None, false),
+            engine_note_segment(
+                Some(&KnowledgeContext {
+                    dir: PathBuf::from("/kb"),
+                }),
+                false,
+            ),
             incognito_engine_note_segment(),
         ] {
             assert!(seg.text.contains(DIAGRAM_NOTE), "{}", seg.text);
@@ -3339,10 +3372,13 @@ As of now — the front.
         }
         assert!(DEFAULT_IDENTITY.contains(DRAW_NOTE), "{DEFAULT_IDENTITY}");
         for seg in [
-            engine_note_segment(None),
-            engine_note_segment(Some(&KnowledgeContext {
-                dir: PathBuf::from("/kb"),
-            })),
+            engine_note_segment(None, false),
+            engine_note_segment(
+                Some(&KnowledgeContext {
+                    dir: PathBuf::from("/kb"),
+                }),
+                false,
+            ),
             incognito_engine_note_segment(),
         ] {
             assert!(seg.text.contains(DRAW_NOTE), "{}", seg.text);
@@ -3366,10 +3402,13 @@ As of now — the front.
             "{DEFAULT_IDENTITY}"
         );
         for seg in [
-            engine_note_segment(None),
-            engine_note_segment(Some(&KnowledgeContext {
-                dir: PathBuf::from("/kb"),
-            })),
+            engine_note_segment(None, false),
+            engine_note_segment(
+                Some(&KnowledgeContext {
+                    dir: PathBuf::from("/kb"),
+                }),
+                false,
+            ),
             incognito_engine_note_segment(),
         ] {
             assert!(seg.text.contains(HANDOFF_NOTE), "{}", seg.text);
@@ -3385,10 +3424,88 @@ As of now — the front.
         assert!(ASK_NOTE.contains("\n<ask>\n") && ASK_NOTE.contains("\n</ask>\n"));
         assert!(ASK_NOTE.contains("do not end on a plain-text question"));
         assert!(DEFAULT_IDENTITY.contains(ASK_NOTE), "{DEFAULT_IDENTITY}");
-        for seg in [engine_note_segment(None), incognito_engine_note_segment()] {
+        for seg in [
+            engine_note_segment(None, false),
+            incognito_engine_note_segment(),
+        ] {
             assert!(seg.text.contains(ASK_NOTE), "{}", seg.text);
         }
         assert!(ASK_NOTE.split_whitespace().count() <= 90);
+    }
+
+    /// Item 993b (blocker 2307's default): a chat with his connectors on is
+    /// told the typed tags, before the ask rule (which stays last); one
+    /// without them, an incognito one and the API engine's identity are
+    /// not. The sentence names every kind and the attributes `REF_ATTRS`
+    /// reads, and stays short — it rides every turn of such a chat.
+    #[test]
+    fn a_chat_with_connectors_is_told_the_item_tags_and_only_then() {
+        for tag in [
+            "<event id=",
+            "</event>",
+            "<email id=",
+            "</email>",
+            "<doc id=",
+            "</doc>",
+        ] {
+            assert!(REF_NOTE.contains(tag), "{tag}");
+        }
+        for attr in [
+            "src",
+            "start",
+            "end",
+            "rsvp",
+            "where",
+            "organizer",
+            "thread",
+            "from",
+            "gist",
+            "type",
+            "owner",
+            "edited",
+            "link",
+        ] {
+            assert!(REF_NOTE.contains(attr), "{attr}");
+        }
+        assert!(REF_NOTE.contains("never invent"));
+        assert!(REF_NOTE.contains("claude.ai Gmail"));
+        assert!(
+            REF_NOTE.split_whitespace().count() <= 120,
+            "{}",
+            REF_NOTE.split_whitespace().count()
+        );
+        let on = engine_note_segment(None, true).text;
+        let (ref_at, ask_at) = (on.find(REF_NOTE).unwrap(), on.find(ASK_NOTE).unwrap());
+        assert!(ref_at < ask_at);
+        assert!(
+            on.trim_end()
+                .ends_with(&format!("{ASK_NOTE}\n</engine-note>"))
+        );
+        assert!(!engine_note_segment(None, false).text.contains(REF_NOTE));
+        assert!(!incognito_engine_note_segment().text.contains(REF_NOTE));
+        assert!(!DEFAULT_IDENTITY.contains(REF_NOTE));
+        // Through the layers: the switch reaches the note, and only there.
+        let dir = temp_dir("agent-ref-note");
+        std::fs::write(dir.join("AGENTS.md"), "a project rule").unwrap();
+        let config = PromptConfig {
+            project_instructions: true,
+            ..bare(dir.clone())
+        };
+        let with = |connectors| {
+            agent_prompt_with(
+                &config,
+                None,
+                EngineLayers {
+                    engine_note: true,
+                    connectors,
+                    ..EngineLayers::NONE
+                },
+            )
+            .render_flat()
+            .unwrap_or_default()
+        };
+        assert!(with(true).contains(REF_NOTE));
+        assert!(!with(false).contains(REF_NOTE));
     }
 
     /// Nightshift 573: under `Choose`, both layers name gathering — search,
@@ -3470,6 +3587,7 @@ As of now — the front.
             limits: None,
             cli_agents_md: false,
             incognito: false,
+            connectors: false,
         };
         let full = agent_prompt_with(&config, Some("Be terse."), all);
         assert_eq!(
@@ -4161,6 +4279,7 @@ As of now — the front.
                 limits: Some(limits),
                 cli_agents_md: false,
                 incognito: false,
+                connectors: false,
             },
         );
         assert!(
