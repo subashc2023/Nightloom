@@ -207,3 +207,44 @@ describe("998: a bare command typed in full runs on one Return", () => {
     expect(readDraft("chat-A").text).toContain("YEAR BODY");
   });
 });
+
+describe("997: bare /project shows the projects list", () => {
+  for (const how of ["one Return on /project", "/project + space, one Return", "Tab, then Return"] as const) {
+    it(`${how}: the list opens, the project stays`, async () => {
+      await show();
+      if (how === "one Return on /project") {
+        type("/project");
+        key("Enter");
+      } else if (how === "/project + space, one Return") {
+        type("/project ");
+        key("Enter");
+      } else {
+        type("/project");
+        key("Tab");
+        await settle();
+        expect(readDraft("chat-A").text).toBe("/project ");
+        key("Enter");
+      }
+      await settle();
+      expect(app.overlay).toBe("projects");
+      expect(app.project?.id).toBe("stats");
+      expect(calls.filter((c) => /project/i.test(c.cmd))).toEqual([]);
+      const dlg = document.querySelector('[role="dialog"][aria-label="Switch project"]');
+      expect(dlg).not.toBeNull();
+      for (const p of PROJECTS) expect(dlg!.textContent).toContain(p.name);
+      expect(readDraft("chat-A").text).toBe("");
+    });
+  }
+
+  it("/project while the list is open keeps it open (it opens, never toggles shut)", async () => {
+    await show();
+    app.overlay = "projects";
+    await settle();
+    // The list holds the window's keys while open; the box's own Return still reaches the box first.
+    type("/project");
+    key("Enter");
+    await settle();
+    expect(app.overlay).toBe("projects");
+    expect(app.project?.id).toBe("stats");
+  });
+});

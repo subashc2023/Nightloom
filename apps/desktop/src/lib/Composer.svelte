@@ -1843,6 +1843,11 @@
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
+      // Item 997: the Return that runs an app command is the box's alone.
+      // `/project` opens ⌘P's list inside this keydown; the list's own
+      // window handler then took this same Return as "open the first
+      // project" (Home, its Morning-scan chat) — or, from Home, nothing.
+      if (parseCommand(text, aside ? "aside" : "chat")) e.stopPropagation();
       void submit();
     } else if (e.key === "ArrowUp" && !text && queue.length > 0) {
       // The CLI's rule: Up in an empty input takes the newest held
@@ -3015,7 +3020,8 @@
       currentProject: () => app.project?.id ?? null,
       canLeaveProject: () => canLeaveProject(),
       useProject: async (id) => void (await useProject(id)),
-      openProjects: () => runMenuCommand("projects"),
+      // Item 997: opens the list, never toggles it shut (⌘P's menu id toggles).
+      openProjects: () => void (app.overlay !== "projects" && runMenuCommand("projects")),
       noteScope: () => (app.project ? "project" : app.knowledge ? "knowledge" : null),
       newNote: (scope, name) => newNoteOrOpen(scope, name),
       terminalCwd: () => terminalCwd(),
