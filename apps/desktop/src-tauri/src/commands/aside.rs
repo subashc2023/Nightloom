@@ -595,6 +595,8 @@ fn seat_for(
                 .map(|p| p.dir.clone())
                 .filter(|d| !d.as_os_str().is_empty())
         })?;
+    // Only the Unix branch below sets the endpoint.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut seat = AsideSeat::prepare(&chat_dir, key, None).ok()?;
     #[cfg(unix)]
     if let (Some(chat), Some(host)) = (

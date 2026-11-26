@@ -1124,7 +1124,7 @@ fn import_project(
                     // Checked on disk, not by name: the folder holds
                     // projects made by hand too, and the disk is case
                     // insensitive where a name set is not.
-                    while avoid_existing && crate::project::holds_anything(&into.join(&slug)) {
+                    while avoid_existing && taken_any_case(into, &slug) {
                         slug = unique_slug(name, &project.uuid, slugs);
                     }
                     let root = into.join(slug);
@@ -2012,6 +2012,23 @@ fn note_name(filename: &str) -> String {
     } else {
         format!("{base}.md")
     }
+}
+
+/// Whether a folder named `slug` in any case holds something in `into`: a
+/// case-insensitive disk (macOS, Windows) makes `Foo` and `foo` one folder,
+/// and on Linux a second project spelled only by case would sit beside the
+/// first, so every disk is asked the same way (item 1021).
+fn taken_any_case(into: &Path, slug: &str) -> bool {
+    if crate::project::holds_anything(&into.join(slug)) {
+        return true;
+    }
+    let Ok(entries) = fs::read_dir(into) else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        e.file_name().to_string_lossy().eq_ignore_ascii_case(slug)
+            && crate::project::holds_anything(&e.path())
+    })
 }
 
 /// A folder name for a project title, unique within this run.

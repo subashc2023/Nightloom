@@ -210,7 +210,10 @@ mod tests {
         // Same size, a new modification time: read again too.
         std::fs::write(&note, "# Six, longer\n").unwrap();
         let later = std::time::SystemTime::now() + std::time::Duration::from_secs(7);
-        std::fs::File::open(&note)
+        // Opened for writing: Windows refuses a new time on a read-only handle.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&note)
             .unwrap()
             .set_modified(later)
             .unwrap();

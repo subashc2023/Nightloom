@@ -1,6 +1,11 @@
 //! The door's tests: the reads, the switch, the wait's four ends, the
 //! command line and the MCP tools — over a real socket and a host that
 //! writes real logs, with no model.
+//!
+//! The door is a Unix socket (`server::open` refuses elsewhere), so the
+//! tests that open one run on Unix only; their fake host goes unused on
+//! Windows (item 1021).
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -364,6 +369,7 @@ async fn with_nothing_holding_the_home_reads_answer_and_writes_say_why() {
     let _ = std::fs::remove_dir_all(&config);
 }
 
+#[cfg(unix)] // opens the door's Unix socket
 #[tokio::test]
 async fn a_write_is_refused_until_he_switches_it_on_then_starts_marked_and_replies() {
     let (config, project, host) = open("start", Turn::Replies);
@@ -430,6 +436,7 @@ async fn a_write_is_refused_until_he_switches_it_on_then_starts_marked_and_repli
     let _ = std::fs::remove_dir_all(&config);
 }
 
+#[cfg(unix)] // opens the door's Unix socket
 #[tokio::test]
 async fn a_wait_ends_needing_him_failed_or_still_running() {
     // The chat asks: exit 2, and a send into it is refused, not queued.
@@ -562,6 +569,7 @@ fn the_command_line_parses_and_never_exits_two_for_a_typo() {
     }
 }
 
+#[cfg(unix)] // opens the door's Unix socket
 #[tokio::test]
 async fn the_command_line_starts_waits_and_prints_the_reply() {
     let (config, project, _) = open("cli", Turn::Replies);
@@ -613,6 +621,7 @@ async fn the_command_line_starts_waits_and_prints_the_reply() {
     let _ = std::fs::remove_dir_all(&config);
 }
 
+#[cfg(unix)] // opens the door's Unix socket
 #[tokio::test]
 async fn the_four_tools_list_show_start_and_send() {
     use nightloom_core::tool::CancellationToken;

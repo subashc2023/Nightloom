@@ -293,7 +293,12 @@ fn the_seated_aside_has_its_own_browser_and_directory() {
         "{cfg}"
     );
     let s = settings(&aside.args("q")).to_string();
-    assert!(s.contains("asides/u1") && s.contains(ask::WAIT_ARG), "{s}");
+    // Windows joins with a backslash, which the JSON doubles (item 1021).
+    let slashed = s.replace("\\\\", "/");
+    assert!(
+        slashed.contains("asides/u1") && s.contains(ask::WAIT_ARG),
+        "{s}"
+    );
     assert!(
         !s.contains(&format!("{CHAT_DIR}'")),
         "the chat's directory: {s}"
