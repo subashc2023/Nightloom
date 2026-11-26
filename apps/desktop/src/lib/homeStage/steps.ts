@@ -92,7 +92,7 @@ export function stepsOf(events: readonly Ev[], turns = 3, isScan: (t: string) =>
     const e = events[i];
     if (e.event === "user_message") {
       const scan = isScan(e.text ?? "");
-      out.push({ key: `u${i}`, kind: "you", icon: "reply", title: scan ? "The morning scan started" : `You: ${cut((e.text ?? "").trim().replace(/\s+/g, " "), 80)}`, out: "", detail: [["From", scan ? "The scan, on its schedule" : "You, in the message box"]], at: e.at ?? null });
+      out.push({ key: `u${i}`, kind: "you", icon: "reply", title: scan ? "The morning scan started" : `You: ${cut(plainLine(e.text ?? ""), 80)}` /* item 999: his words, not their marks */, out: "", detail: [["From", scan ? "The scan, on its schedule" : "You, in the message box"]], at: e.at ?? null });
     } else if (e.event === "assistant_message") {
       (e.blocks ?? []).forEach((b, j) => {
         if (b.type === "tool_use" && b.name) {

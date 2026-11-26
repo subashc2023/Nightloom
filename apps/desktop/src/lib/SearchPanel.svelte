@@ -32,6 +32,8 @@
   import type { ChatGroup, SearchScope } from "./types";
   import { tabPlace } from "./tabPlace";
   import { viewGet, viewSet } from "./viewState";
+  // Item 999: a hit's passage drops the reply's Markdown marks ("…the **sampling" read raw).
+  import { plainFragment } from "./plainMd";
 
   /**
    * Search everywhere (nightshift backlog 117, with 106's second half;
@@ -358,7 +360,7 @@
                 onclick={() => void commit(i)}
               >
                 <span class="who" class:you={r.who === "you"}>{whoLabel(r.who)}</span>
-                <span class="pass">{r.before}<mark class="search-mark">{r.matched}</mark>{r.after}</span>
+                <span class="pass">{plainFragment(r.before)}<mark class="search-mark">{r.matched}</mark>{plainFragment(r.after)}</span>
                 <span class="when">{relativeTime(r.at)}{matchesSuffix(r.matches)}</span>
               </button>
             {/each}
@@ -394,7 +396,7 @@
                 onclick={() => void commit(i)}
               >
                 <span class="who">line {r.line}</span>
-                <span class="pass">{r.before}<mark class="search-mark">{r.matched}</mark>{r.after}</span>
+                <span class="pass">{plainFragment(r.before)}<mark class="search-mark">{r.matched}</mark>{plainFragment(r.after)}</span>
                 <span class="when">{matchesSuffix(r.matches).replace(/^ · /, "")}</span>
               </button>
             {/each}

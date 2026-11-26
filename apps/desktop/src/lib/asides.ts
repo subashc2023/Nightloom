@@ -56,6 +56,7 @@ import type { Attachment } from "./types";
 import type { AsideMoved } from "./state/asides.svelte";
 import { cleanMoved } from "./asideMove";
 import { cleanChanges, type AsideChange } from "./asideNotes";
+import { plainOneLine } from "./plainMd";
 
 export const ASIDES_KEY = "nightloom.asides";
 let loadedSeq = 0;
@@ -621,7 +622,8 @@ function cutWords(s: string, max: number): string {
   return (sp > max * 0.5 ? cut.slice(0, sp) : cut).replace(/[\s,;:.—-]+$/, "") + "…";
 }
 /** A question or passage on one line, uncapped: the label's own `max` cuts it. */
-const oneLine = (v: unknown): string | null => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() || null : null);
+// Item 999: a passage quoted from a reply drops its Markdown marks.
+const oneLine = (v: unknown): string | null => (typeof v === "string" ? plainOneLine(v) || null : null);
 
 /** What a thread is called: its name, else its first question, else a
  *  snippet of its passage, else "Aside". One line, at most `max` chars. */
