@@ -287,11 +287,27 @@ export function waitingCount(rows: readonly NeedRow[]): number {
   return rows.filter((r) => r.state === "waiting").length;
 }
 
+/**
+ * Item 995: THE Needs-you number — the one every surface shows (the top pill, the sidebar's Home row, Home's
+ * Watching tab and its status line, the bell's foot line): every waiting row (held blockers, proposals, a chat's
+ * question or card) plus Home's Start cards. Before 995 each surface counted its own subset, so Home said
+ * "Nothing needs you" beside a pill that said 5.
+ */
+export function needCount(rows: readonly NeedRow[], cards = 0): number {
+  return waitingCount(rows) + Math.max(0, cards);
+}
+
+/** "needs you" for one, "need you" otherwise. */
+export function needWord(n: number): string {
+  return n === 1 ? "needs you" : "need you";
+}
+
 /** The badge's words: "2 need you"; with nothing waiting but something to review, "to review" with no number
- *  (item 968: the one number counts only what needs him — `n` is 0); empty with neither. */
-export function badgeWords(rows: readonly NeedRow[]): { n: number; word: string; waiting: boolean } | null {
-  const w = waitingCount(rows);
-  if (w > 0) return { n: w, word: w === 1 ? "needs you" : "need you", waiting: true };
+ *  (item 968: the one number counts only what needs him — `n` is 0); empty with neither. Item 995: Home's Start
+ *  cards (`cards`) are in the one number. */
+export function badgeWords(rows: readonly NeedRow[], cards = 0): { n: number; word: string; waiting: boolean } | null {
+  const w = needCount(rows, cards);
+  if (w > 0) return { n: w, word: needWord(w), waiting: true };
   const r = rows.filter((x) => x.state === "review").length;
   return r > 0 ? { n: 0, word: "to review", waiting: false } : null;
 }
@@ -352,6 +368,12 @@ export interface HomeNeeds {
   /** Left to the Needs-you view (he answers these where he runs Nightshift): how many of each. */
   blockers: number;
   shipped: number;
+  /** Item 995: of `blockers`, the held ones (they wait on him and are in the one number). */
+  held: number;
+  /** Item 995: proposals pending (in the one number; not listed on Home). */
+  proposals: number;
+  /** Item 995: the one number (`needCount`) over every row — what Home's line and every badge say. */
+  waiting: number;
 }
 
 /**
@@ -359,9 +381,12 @@ export interface HomeNeeds {
  * not Home's to announce — he manages those where he runs Nightshift (his words) — so they are counted, not
  * listed; the Needs-you view still shows and answers every one.
  */
-export function homeNeeds(rows: readonly NeedRow[]): HomeNeeds {
+export function homeNeeds(rows: readonly NeedRow[], cards = 0): HomeNeeds {
   const mine = rows.filter((r) => r.state !== "working");
   return {
+    held: mine.filter((r) => r.kind === "blocker" && r.state === "waiting").length,
+    proposals: mine.filter((r) => r.kind === "proposal" && r.state === "waiting").length,
+    waiting: needCount(rows, cards),
     rows: mine.filter((r) => !NIGHTSHIFT_KINDS.includes(r.kind)),
     // Every open blocker, held or decided: the quiet line under Home's list counts them as before (item 945).
     blockers: mine.filter((r) => r.kind === "blocker").length,
@@ -374,6 +399,20 @@ export function nightshiftWords(n: { blockers: number; shipped: number }): strin
   const parts: string[] = [];
   if (n.blockers > 0) parts.push(n.blockers === 1 ? "1 blocker" : `${n.blockers} blockers`);
   if (n.shipped > 0) parts.push(n.shipped === 1 ? "1 shipped item" : `${n.shipped} shipped items`);
+  return parts.join(" · ");
+}
+
+/**
+ * Item 995: the quiet line on Home for what it does not list — the counts agree with the pill: held blockers and
+ * proposals (both in the one number), then shipped items to review. Blockers whose default went ahead ("decided
+ * for you") are not counted (item 968: folded, no count). "4 held blockers · 1 proposal · 20 shipped items to
+ * review"; empty with none.
+ */
+export function elsewhereWords(n: { held: number; proposals: number; shipped: number }): string {
+  const parts: string[] = [];
+  if (n.held > 0) parts.push(n.held === 1 ? "1 held blocker" : `${n.held} held blockers`);
+  if (n.proposals > 0) parts.push(n.proposals === 1 ? "1 proposal" : `${n.proposals} proposals`);
+  if (n.shipped > 0) parts.push(n.shipped === 1 ? "1 shipped item to review" : `${n.shipped} shipped items to review`);
   return parts.join(" · ");
 }
 

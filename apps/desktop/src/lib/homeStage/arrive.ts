@@ -16,16 +16,32 @@ export function arriveWhen(late: () => boolean) {
   };
 }
 
-/** What Watching draws (pure): a section only once it has something; the one calm line while nothing needs him. */
-export function watchShape(o: { sources: number; reading: boolean; needs: number; steps: number; busy: boolean }): { sources: boolean; needs: boolean; steps: boolean; calm: string | null; bare: boolean } {
+/**
+ * What Watching draws (pure): a section only once it has something; the one line while Home lists nothing.
+ * `needs` is how many rows Home lists itself; `waiting` (item 995) is the one Needs-you number every badge shows
+ * (`needCount`) — held blockers and proposals included, which Home counts but does not list (item 945). The line
+ * says "Nothing needs you" only when that number is 0; otherwise it says the number (`waits` true: amber light).
+ */
+export function watchShape(o: { sources: number; reading: boolean; needs: number; steps: number; busy: boolean; waiting?: number }): {
+  sources: boolean;
+  needs: boolean;
+  steps: boolean;
+  calm: string | null;
+  bare: boolean;
+  waits: boolean;
+} {
   const sources = o.sources > 0 || o.reading;
   const needs = o.needs > 0;
   const steps = o.steps > 0 || o.busy;
-  const bare = !sources && !needs && !steps;
+  const waiting = Math.max(0, o.waiting ?? 0);
+  const waits = !needs && waiting > 0;
+  const bare = !sources && !needs && !steps && !waits;
   const calm = needs
     ? null
-    : bare
-      ? "Nothing needs you. Home is watching — what needs you, what it handled and its steps show up here as they happen. Connect what it may read in Settings → Home."
-      : "Nothing needs you — Home is watching.";
-  return { sources, needs, steps, calm, bare };
+    : waits
+      ? `${waiting} ${waiting === 1 ? "needs" : "need"} you — none of it in your chats.`
+      : bare
+        ? "Nothing needs you. Home is watching — what needs you, what it handled and its steps show up here as they happen. Connect what it may read in Settings → Home."
+        : "Nothing needs you — Home is watching.";
+  return { sources, needs, steps, calm, bare, waits };
 }

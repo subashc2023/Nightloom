@@ -64,6 +64,8 @@
     needRows,
     newsRows,
     heldWords,
+    needTotal,
+    proposalWords,
     runningLine,
     saveHomeKept,
     scanText,
@@ -123,6 +125,8 @@
   let pushRows = $state<PushFeedWire[]>([]);
   let jobs = $state<Job[]>([]);
   let held = $state<HeldBlockerWire[]>([]);
+  /** Item 995: pending proposals (counted, reviewed on the Mac). */
+  let proposals = $state(0);
   // Item 763 H5: Start cards — his edits kept as drafts, a tap that could not go says why.
   let cards = $state<HomeRoute[]>([]);
   /** Routes waiting on something other than him (a closed project, a night run). */
@@ -169,10 +173,12 @@
     const h = feed?.home ?? { project: null, chat: null };
     return { project: h.project, chat: h.chat ?? homeChat };
   });
-  // Item 945: Nightshift's held blockers are not Needs-you rows — one folded line under the list, not counted.
+  // Item 945: Nightshift's held blockers are not listed with the chats' rows — one folded line under the list.
+  // Item 995: they are counted, with the proposals: `total` is the Mac pill's one number.
   const needs = $derived(needRows(pushRows, jobs, [], { chat: remote.active_chat, label: openLabel, pending: remote.pending.length }));
   const heldRows = $derived(needRows([], [], held, { chat: null, label: null, pending: 0 }));
-  const header = $derived(headerWords(needs.length + cards.length, today, needsRead));
+  const total = $derived(needTotal({ needs: needs.length, cards: cards.length, held: heldRows.length, proposals }));
+  const header = $derived(headerWords(total, today, needsRead));
   const headParts = $derived(header.split(" · "));
   const stop = $derived(stopWords(today));
   const fromAway = $derived(active === "away" && macPaired);
@@ -246,7 +252,10 @@
         needsRead = true;
       }
       if (j !== FAIL) jobs = j.jobs;
-      if (h !== FAIL) held = h.blockers;
+      if (h !== FAIL) {
+        held = h.blockers;
+        proposals = h.proposals ?? 0;
+      }
       if (rt && rt !== FAIL) {
         cards = rt.cards;
         heldRoutes = rt.held ?? [];
@@ -268,7 +277,7 @@
 
   // ---- the place kept: scroll and folds ----
   // Item 944: whether Needs you has anything to draw, and whether the whole of Home's own column is empty.
-  const anyNeeds = $derived(needs.length + cards.length + heldRoutes.length + heldRows.length > 0);
+  const anyNeeds = $derived(total + heldRoutes.length > 0);
   const bareHome = $derived(!anyNeeds && !scan && !(running?.chats.length));
   let kept = $state(loadHomeKept());
   // Item 946: the same feed as a notification list — every news row, the unseen ones marked.
@@ -604,7 +613,7 @@
 
   <!-- Item 845: Home's stage — the bar, the tab row (Watching, the brief, Home's tasks, Chat); a task's tab draws its
        view here in place of Home's own sections. Tell Home stays under every tab. -->
-  <HomeStage {client} {home} {scan} needs={needs.length + cards.length} {fil} tick={bump} bind:watching bind:where={stageWhere} onopen={(c, p) => onopen(c, p)} {onnote} />
+  <HomeStage {client} {home} {scan} needs={total} {fil} tick={bump} bind:watching bind:where={stageWhere} onopen={(c, p) => onopen(c, p)} {onnote} />
 
   {#if watching}
   <!-- Item 944: Home starts simple and grows — a section with nothing in it is not drawn; the first time it has
@@ -615,7 +624,7 @@
   <!-- 1. Needs you -->
   {#if anyNeeds}
   <div class="h-sec arrive" class:fil data-home-section="needs">
-    {@render head("needs", "Needs you", needs.length + cards.length)}
+    {@render head("needs", "Needs you", total)}
     {#if !folded("needs")}
       {#each cards as route (route.id)}
         <StartCard
@@ -632,7 +641,7 @@
       {#each heldRoutes as route (route.id)}
         <RouteHeld {route} />
       {/each}
-      {#if needs.length + cards.length + heldRoutes.length === 0}
+      {#if total + heldRoutes.length === 0}
         <p class="h-empty">{loading ? "Reading…" : "Nothing needs you."}</p>
       {/if}
       {#each needs as row (row.key)}
@@ -684,11 +693,14 @@
           {/if}
         </div>
       {/each}
+      {#if proposals > 0}
+        <p class="h-else h-else-line" data-home-proposals><span class="h-else-t">{proposalWords(proposals)}</span></p>
+      {/if}
       {#if heldRows.length}
         <button class="h-else" onclick={() => fold("held")} aria-expanded={!folded("held")} data-home-head="held">
           <span class="h-chev" class:shut={folded("held")} aria-hidden="true">›</span>
           <span class="h-else-t">{heldWords(heldRows.length)}</span>
-          <span class="h-else-n">not counted above</span>
+          <span class="h-else-n">in the count above</span>
         </button>
         {#if !folded("held")}
           {#each heldRows as row (row.key)}
@@ -1048,6 +1060,11 @@
     .h-handled.fil .h-hrow {
       animation: none;
     }
+  }
+  /* Item 995: the proposals' line — words only, nothing to press on the phone. */
+  .h-else-line {
+    margin: 0;
+    cursor: default;
   }
   /* Item 945: Nightshift's held blockers — one quiet line under Needs you. */
   .h-else {

@@ -20,6 +20,7 @@ import { chatName, turnEndListeners, windowFocused, type TurnEnded } from "./not
 import { answeredWhen, extractAsk, pendingAsk, type Ask } from "./askTag";
 import { followUpTitle, homeNeeds, isHeld, needRows, parseEnded, seenNow, trimEnded, type HomeNeeds, type EndedTurn, type NeedRow, type OpenBlocker, type PendingProposal, type ShippedItem } from "./needsYou";
 import { proposalNoticeId } from "./centre";
+import { home } from "./home.svelte";
 
 export const ENDED_KEY = "nightloom.needsYou.ended";
 export const DRAFTS_KEY = "nightloom.needsYou.drafts";
@@ -185,7 +186,8 @@ export function needsNow(): NeedRow[] {
 
 /** Item 945: Home's own list — what waits on him in his chats; Nightshift's rows counted, not listed. */
 export function homeNeedsNow(): HomeNeeds {
-  return homeNeeds(needsNow());
+  // Item 995: Home's Start cards are in the one number too.
+  return homeNeeds(needsNow(), home.cards.length);
 }
 
 /** Re-read the open blockers and the shipped items of every Nightshift
