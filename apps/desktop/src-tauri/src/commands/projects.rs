@@ -138,8 +138,8 @@ pub(crate) async fn pick_export(app: AppHandle) -> Result<Option<String>, String
 /// written before the project exists. It also means a second import adds the
 /// chats you have had since rather than a second copy of every project.
 ///
-/// `into` is optional. Without it the imported projects have no folder, which
-/// is what a claude.ai project actually is.
+/// `into` is optional. Without it each imported project gets a folder in the
+/// projects folder, where New project puts one (item 1017).
 #[tauri::command]
 pub(crate) async fn import_claude(
     state: State<'_, AppState>,

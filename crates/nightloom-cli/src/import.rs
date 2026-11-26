@@ -11,10 +11,8 @@ pub struct ImportArgs {
     #[arg(value_name = "EXPORT")]
     export: PathBuf,
 
-    /// Also give each imported project a folder here. Omit it and the
-    /// projects have no folder, which is what a claude.ai project is: some
-    /// instructions, some documents and a pile of conversations, with no code
-    /// anywhere. Pass it when you mean to keep code alongside them.
+    /// Put each imported project's folder here. Omit it and each gets one in
+    /// the projects folder, where New project puts one (item 1017).
     #[arg(long, value_name = "DIR")]
     into: Option<PathBuf>,
 

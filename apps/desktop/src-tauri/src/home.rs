@@ -9,10 +9,16 @@ use serde::Serialize;
 use tauri::AppHandle;
 
 /// The registry at launch, with Home in it (made once; a registry that may
-/// not be saved this run is left as it is).
+/// not be saved this run is left as it is), and every claude.ai import that
+/// had no folder given one in the projects folder (item 1017) — before the
+/// window reads the list.
 pub(crate) fn registry_with_home() -> Registry {
     let mut r = Registry::load();
     if let Some(config) = project::config_dir() {
+        let folder = project::projects_folder_at(&config, &r);
+        for line in r.give_imports_folders(&folder) {
+            eprintln!("nightloom: {line}");
+        }
         let _ = home::ensure_project(&mut r, &config);
     }
     r

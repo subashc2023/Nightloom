@@ -1354,10 +1354,8 @@ export function pickExport(): Promise<string | null> {
  * Import a claude.ai export as projects, and register them so the list shows
  * them.
  *
- * `into` is optional and normally omitted: an imported project is
- * instructions, documents and conversations with no code anywhere, so there
- * is no folder to make. Pass one only when the user means to keep code
- * alongside them.
+ * `into` is optional and normally omitted: each imported project then gets a
+ * folder in the projects folder, where New project puts one (item 1017).
  */
 export function importClaude(
   exportPath: string,

@@ -812,16 +812,17 @@ fn parse_items<T: DeserializeOwned>(
 // ---------------------------------------------------------------------------
 
 /// What to import and where to put it.
+#[derive(Clone)]
 pub struct ImportOptions {
-    /// Folder the project folders are created under, if the user wants
-    /// folders at all.
+    /// Folder the project folders are created under.
     ///
-    /// `None` is the ordinary case and the reason a project stopped being a
-    /// folder: a claude.ai project is instructions, documents and
-    /// conversations, and creating an empty directory to hold no code was
-    /// something this module did only because identity was a hash of a path.
-    /// Give it a path when the imported project is somewhere you also intend
-    /// to keep code.
+    /// `None` means the projects folder — the one the New project form puts
+    /// a folder in ([`crate::project::projects_folder_at`] for the config
+    /// dir the registry lives in). ~~Before 2026-11-26 `None` meant no
+    /// folder at all~~ (item 1017, "why no folder gnag"): a folderless
+    /// project kept its files hidden in its store, where he could not see
+    /// them, and was the only one of 26 in his list showing "no folder".
+    /// An in-memory registry (no file, so no config dir) still gets none.
     pub into: Option<PathBuf>,
     /// Import conversations belonging to no project, into one folder of their
     /// own. Off by default: for most accounts these are the bulk of the
@@ -833,7 +834,7 @@ pub struct ImportOptions {
 }
 
 impl ImportOptions {
-    /// Import into projects with no folder.
+    /// Import into the projects folder.
     pub fn new() -> Self {
         Self {
             into: None,
@@ -975,6 +976,22 @@ pub fn import(
     opts: &ImportOptions,
     registry: &mut Registry,
 ) -> Result<ImportReport, String> {
+    // No `--into`: the projects folder, the same place New project puts a
+    // folder (item 1017). Only then are folders already there stepped
+    // around — `--into` keeps its old behaviour exactly.
+    let defaulted = opts.into.is_none();
+    let resolved;
+    let opts = if defaulted {
+        resolved = ImportOptions {
+            into: registry
+                .config_dir()
+                .map(|config| crate::project::projects_folder_at(config, registry)),
+            ..opts.clone()
+        };
+        &resolved
+    } else {
+        opts
+    };
     if let Some(into) = &opts.into {
         fs::create_dir_all(into).map_err(|e| format!("cannot create {}: {e}", into.display()))?;
     }
@@ -1025,7 +1042,14 @@ pub fn import(
             .get(project.uuid.as_str())
             .cloned()
             .unwrap_or_default();
-        let outcome = import_project(project, &conversations, opts, registry, &mut slugs)?;
+        let outcome = import_project(
+            project,
+            &conversations,
+            opts,
+            defaulted,
+            registry,
+            &mut slugs,
+        )?;
         report.projects.push(outcome);
     }
 
@@ -1040,7 +1064,7 @@ pub fn import(
             prompt_template: String::new(),
             docs: Vec::new(),
         };
-        let outcome = import_project(&holder, &unfiled, opts, registry, &mut slugs)?;
+        let outcome = import_project(&holder, &unfiled, opts, defaulted, registry, &mut slugs)?;
         report.projects.push(outcome);
         report.unfiled = 0;
     }
@@ -1067,6 +1091,10 @@ fn import_project(
     project: &ExportedProject,
     conversations: &[&ExportedConversation],
     opts: &ImportOptions,
+    // Whether `opts.into` is the projects folder rather than a `--into`: a
+    // folder there already holding something is another project's, and is
+    // stepped around rather than written into.
+    avoid_existing: bool,
     registry: &mut Registry,
     slugs: &mut HashSet<String>,
 ) -> Result<ProjectOutcome, String> {
@@ -1092,7 +1120,14 @@ fn import_project(
         None => {
             let workspace = match &opts.into {
                 Some(into) => {
-                    let root = into.join(unique_slug(name, &project.uuid, slugs));
+                    let mut slug = unique_slug(name, &project.uuid, slugs);
+                    // Checked on disk, not by name: the folder holds
+                    // projects made by hand too, and the disk is case
+                    // insensitive where a name set is not.
+                    while avoid_existing && crate::project::holds_anything(&into.join(&slug)) {
+                        slug = unique_slug(name, &project.uuid, slugs);
+                    }
+                    let root = into.join(slug);
                     fs::create_dir_all(&root)
                         .map_err(|e| format!("cannot create {}: {e}", root.display()))?;
                     Some(crate::project::normalize(&root))
@@ -2191,11 +2226,12 @@ mod tests {
         assert_eq!(sessions, 1);
     }
 
-    /// The case that forced a project to stop being a folder: a claude.ai
-    /// project is instructions, documents and conversations, and nothing here
-    /// should have to invent a directory to hold no code.
+    /// With no `--into`, an imported project gets a folder in the projects
+    /// folder — where New project puts one — rather than none (item 1017,
+    /// "why no folder gnag": Philosophy was the one of 26 showing "no
+    /// folder", its files hidden in its store).
     #[test]
-    fn a_project_can_be_imported_without_a_folder_at_all() {
+    fn a_project_imported_without_into_gets_a_folder_in_the_projects_folder() {
         let (_src, export) = export_of(
             "folderless",
             one_project(),
@@ -2209,24 +2245,25 @@ mod tests {
             }]),
         );
 
-        let into = test_dir("import-folderless");
-        let mut registry = Registry::load_from(into.join("projects.json"));
+        // The registry's config dir records a projects folder, so nothing
+        // falls back to the real `~/Documents/Nightloom/projects`.
+        let config = test_dir("import-folderless");
+        let folder = config.join("projects");
+        crate::project::set_projects_folder_in(&config, Some(&folder)).unwrap();
+        let mut registry = Registry::load_from(config.join("projects.json"));
         let report = import(&export, &ImportOptions::new(), &mut registry).unwrap();
 
-        let outcome = &report.projects[0];
-        assert!(outcome.root.is_none(), "no folder was asked for");
-        // Nothing was written under the directory the registry happens to
-        // live in: an import with no `--into` creates no folders anywhere the
-        // user can trip over.
-        assert!(!into.join("thesis").exists());
-
-        // And it is a working project regardless — instructions where the
-        // preamble looks, notes in the docspace, the chat in the log dir.
         let project = registry.find_by_source("claude:p-1").unwrap().clone();
-        assert!(project.workspace.is_none());
-        assert!(project.workspace_dir().join("AGENTS.md").is_file());
+        let expected = crate::project::normalize(&folder.join("Thesis-Research"));
+        assert_eq!(project.workspace.as_deref(), Some(expected.as_path()));
+        assert_eq!(report.projects[0].root.as_deref(), Some(expected.as_path()));
+        // A working project in it — instructions where the preamble looks,
+        // notes in the docspace, the chat in the log dir.
+        assert!(expected.join("AGENTS.md").is_file());
         assert!(project.notes_dir().join("outline.md").is_file());
         assert!(project.session_dir().join("c-1.jsonl").is_file());
+        // And nothing in the hidden stand-in.
+        assert!(!project.store_dir().join("workspace").exists());
 
         // A second run adds what is new rather than a second project.
         let again = import(&export, &ImportOptions::new(), &mut registry).unwrap();
@@ -2234,7 +2271,39 @@ mod tests {
         assert_eq!(registry.projects().len(), 1);
 
         fs::remove_dir_all(project.store_dir()).ok();
-        fs::remove_dir_all(&into).ok();
+        fs::remove_dir_all(&config).ok();
+    }
+
+    /// A folder in the projects folder that already holds something is
+    /// another project's, made by hand or by an earlier import; the import
+    /// steps around it, case insensitively as the disk is, and never writes
+    /// into it. An empty one is used.
+    #[test]
+    fn an_import_into_the_projects_folder_steps_around_a_folder_in_use() {
+        let (_src, export) = export_of("folder-in-use", one_project(), json!([]));
+
+        let config = test_dir("import-folder-in-use");
+        let folder = config.join("projects");
+        let theirs = folder.join("thesis-research");
+        fs::create_dir_all(&theirs).unwrap();
+        fs::write(theirs.join("mine.txt"), "his").unwrap();
+        crate::project::set_projects_folder_in(&config, Some(&folder)).unwrap();
+        let mut registry = Registry::load_from(config.join("projects.json"));
+        import(&export, &ImportOptions::new(), &mut registry).unwrap();
+
+        let project = registry.find_by_source("claude:p-1").unwrap().clone();
+        let root = project.workspace.clone().unwrap();
+        let name = root.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            !name.eq_ignore_ascii_case("thesis-research"),
+            "wrote into a folder in use: {name}"
+        );
+        assert!(name.starts_with("Thesis-Research-"), "{name}");
+        assert_eq!(fs::read_dir(&theirs).unwrap().count(), 1);
+        assert_eq!(fs::read_to_string(theirs.join("mine.txt")).unwrap(), "his");
+
+        fs::remove_dir_all(project.store_dir()).ok();
+        fs::remove_dir_all(&config).ok();
     }
 
     /// The safety-critical one. A `tool_use` in an export names one of

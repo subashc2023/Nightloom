@@ -418,6 +418,108 @@ impl Registry {
             .find(|p| p.source.as_deref() == Some(source))
     }
 
+    /// The config dir this registry's file sits in — what
+    /// [`projects_folder_at`] takes. `None` for an in-memory registry.
+    pub fn config_dir(&self) -> Option<&Path> {
+        self.path.as_deref().and_then(Path::parent)
+    }
+
+    /// Give every claude.ai import that has no folder one under `folder`
+    /// (item 1017, "why no folder gnag"). Run at launch, before the window
+    /// reads the list; a project it repairs has a folder afterwards, so each
+    /// is done once.
+    ///
+    /// Only projects with no folder whose `source` starts `claude:` — one
+    /// made from a folder, or by hand, is never touched. The files kept in
+    /// the hidden stand-in (`<store>/workspace`: `AGENTS.md`, `.agents/`,
+    /// whatever the chats wrote) are **copied**, never moved: the stand-in
+    /// stays as it was. The copy goes to a sibling first and is renamed into
+    /// place, so a copy cut short leaves no half-filled folder that would
+    /// then be skipped forever. A target that already holds anything is
+    /// skipped and said so; it is never written into.
+    ///
+    /// Returns one line per project acted on or skipped, for the log.
+    pub fn give_imports_folders(&mut self, folder: &Path) -> Vec<String> {
+        let mut log = Vec::new();
+        if self.save_blocked.is_some() {
+            return log;
+        }
+        let mut changed = false;
+        for i in 0..self.projects.len() {
+            let project = &self.projects[i];
+            let imported = project
+                .source
+                .as_deref()
+                .is_some_and(|s| s.starts_with("claude:"));
+            if project.workspace.is_some() || !imported {
+                continue;
+            }
+            let name = project.name.clone();
+            let old = project.workspace_dir();
+            let target = folder.join(self.free_slug(&name, project.source.as_deref(), folder));
+            if holds_anything(&target) {
+                log.push(format!(
+                    "{name}: not given a folder — {} already holds something",
+                    target.display()
+                ));
+                continue;
+            }
+            if let Err(e) = copy_into_new(&old, &target) {
+                log.push(format!("{name}: not given a folder — {e}"));
+                continue;
+            }
+            self.projects[i].workspace = Some(normalize(&target));
+            changed = true;
+            log.push(format!(
+                "{name}: given the folder {} (copied from {})",
+                target.display(),
+                old.display()
+            ));
+        }
+        if changed && let Err(e) = self.save() {
+            log.push(format!("the folders were made but not saved: {e}"));
+        }
+        log
+    }
+
+    /// The import's rule for a folder name ([`slug`], `project` for a name
+    /// of punctuation), with the source's id appended when another
+    /// registered project already has that folder under `folder`.
+    fn free_slug(&self, name: &str, source: Option<&str>, folder: &Path) -> String {
+        let base = match slug(name) {
+            s if s.is_empty() => "project".to_string(),
+            s => s,
+        };
+        let canonical = normalize(folder);
+        let taken = |candidate: &str| {
+            self.projects.iter().any(|p| {
+                p.workspace.as_deref().is_some_and(|w| {
+                    w.parent()
+                        .is_some_and(|parent| parent == folder || parent == canonical)
+                        && w.file_name()
+                            .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(candidate))
+                })
+            })
+        };
+        if !taken(&base) {
+            return base;
+        }
+        let suffix: String = source
+            .unwrap_or_default()
+            .trim_start_matches("claude:")
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .take(6)
+            .collect();
+        let mut candidate = format!("{base}-{suffix}");
+        let mut n = 2;
+        while taken(&candidate) {
+            candidate = format!("{base}-{suffix}-{n}");
+            n += 1;
+        }
+        candidate
+    }
+
     /// Make a project, whether or not it has a folder.
     ///
     /// Never idempotent — every call is a new project with a new id. That is
@@ -1080,6 +1182,72 @@ pub fn normalize(path: &Path) -> PathBuf {
         std::env::current_dir().unwrap_or_default().join(path)
     };
     strip_verbatim(fs::canonicalize(&absolute).unwrap_or(absolute))
+}
+
+/// Whether `path` is a file, or a directory with anything in it. A missing
+/// path or an empty directory holds nothing — a folder there may be used.
+pub fn holds_anything(path: &Path) -> bool {
+    match fs::read_dir(path) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(_) => path.exists(),
+    }
+}
+
+/// Copy the tree at `from` into `to`, which must hold nothing: through a
+/// sibling `.<name>.copying` renamed into place at the end, so `to` is
+/// either absent (or empty) or complete. `from` is only read. A missing
+/// `from` makes `to` an empty folder.
+fn copy_into_new(from: &Path, to: &Path) -> Result<(), String> {
+    let name = to
+        .file_name()
+        .ok_or_else(|| format!("{} has no folder name", to.display()))?;
+    let parent = to
+        .parent()
+        .ok_or_else(|| format!("{} has no parent", to.display()))?;
+    fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    let staging = parent.join(format!(".{}.copying", name.to_string_lossy()));
+    fs::create_dir_all(&staging)
+        .map_err(|e| format!("cannot create {}: {e}", staging.display()))?;
+    if from.is_dir() {
+        copy_tree(from, &staging)?;
+    }
+    // An empty `to` (a folder made by hand and left empty) is replaced; a
+    // rename onto an empty directory is allowed on every platform we ship.
+    if to.is_dir() {
+        fs::remove_dir(to).map_err(|e| format!("cannot replace {}: {e}", to.display()))?;
+    }
+    fs::rename(&staging, to).map_err(|e| format!("cannot move the copy into {}: {e}", to.display()))
+}
+
+/// Files and folders, every one (dotfiles included — `.agents` is the
+/// docspace). A symlink is recreated as a link, never followed.
+fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    fs::create_dir_all(to).map_err(|e| format!("cannot create {}: {e}", to.display()))?;
+    let entries = fs::read_dir(from).map_err(|e| format!("cannot read {}: {e}", from.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("cannot read {}: {e}", from.display()))?;
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        let kind = entry
+            .file_type()
+            .map_err(|e| format!("cannot read {}: {e}", src.display()))?;
+        if kind.is_dir() {
+            copy_tree(&src, &dst)?;
+        } else if kind.is_symlink() {
+            #[cfg(unix)]
+            {
+                let link = fs::read_link(&src)
+                    .map_err(|e| format!("cannot read {}: {e}", src.display()))?;
+                if !dst.exists() {
+                    std::os::unix::fs::symlink(&link, &dst)
+                        .map_err(|e| format!("cannot link {}: {e}", dst.display()))?;
+                }
+            }
+        } else {
+            fs::copy(&src, &dst).map_err(|e| format!("cannot copy {}: {e}", src.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Undo `canonicalize`'s `\\?\` (and `\\?\UNC\`) prefixes on Windows; a no-op
@@ -2142,6 +2310,145 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Item 1017: a claude.ai import with no folder is given one in the
+    /// projects folder at launch, its hidden stand-in copied (dotfiles,
+    /// folders and links included) and left as it was, the registry saved —
+    /// once: a second launch does nothing.
+    #[test]
+    fn a_folderless_import_is_given_a_folder_with_its_files_copied() {
+        let config = temp_dir("repair");
+        let folder = config.join("projects");
+        let mut reg = Registry::load_in(&config);
+        let p = reg
+            .create("Philosophy", None, Some("claude:92cfedde-39cb".into()))
+            .unwrap();
+        let old = p.workspace_dir();
+        fs::create_dir_all(old.join(".agents")).unwrap();
+        fs::create_dir_all(old.join("research")).unwrap();
+        fs::write(old.join("AGENTS.md"), "# Philosophy").unwrap();
+        fs::write(old.join(".agents/kant.md"), "categorical").unwrap();
+        fs::write(old.join("research/hume.md"), "is/ought").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("research/hume.md", old.join("link.md")).unwrap();
+
+        let log = reg.give_imports_folders(&folder);
+        assert_eq!(log.len(), 1, "{log:?}");
+        let target = normalize(&folder.join("Philosophy"));
+        let after = reg.find(&p.id).unwrap().clone();
+        assert_eq!(after.workspace.as_deref(), Some(target.as_path()));
+        assert_eq!(
+            fs::read_to_string(target.join(".agents/kant.md")).unwrap(),
+            "categorical"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("research/hume.md")).unwrap(),
+            "is/ought"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("AGENTS.md")).unwrap(),
+            "# Philosophy"
+        );
+        #[cfg(unix)]
+        assert!(
+            fs::symlink_metadata(target.join("link.md"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        // Copied, not moved: the stand-in is as it was.
+        assert_eq!(
+            fs::read_to_string(old.join("research/hume.md")).unwrap(),
+            "is/ought"
+        );
+        assert!(old.join(".agents/kant.md").is_file());
+        // No staging folder left behind.
+        assert!(!folder.join(".Philosophy.copying").exists());
+        // Saved: the next launch reads the folder, and does nothing more.
+        let mut again = Registry::load_in(&config);
+        assert_eq!(
+            again.find(&p.id).unwrap().workspace.as_deref(),
+            Some(target.as_path())
+        );
+        assert!(again.give_imports_folders(&folder).is_empty());
+
+        fs::remove_dir_all(p.store_dir()).ok();
+        fs::remove_dir_all(&config).ok();
+    }
+
+    /// Only a folderless project whose source starts `claude:`: one with a
+    /// folder, one made by hand with none, one from another source — none
+    /// is touched, and nothing is written for them.
+    #[test]
+    fn the_folder_repair_touches_only_folderless_claude_imports() {
+        let config = temp_dir("repair-others");
+        let folder = config.join("projects");
+        let own = config.join("own");
+        fs::create_dir_all(&own).unwrap();
+        let mut reg = Registry::load_in(&config);
+        let with = reg
+            .create("With", Some(normalize(&own)), Some("claude:aaa".into()))
+            .unwrap();
+        let by_hand = reg.create("By hand", None, None).unwrap();
+        let other = reg.create("Other", None, Some("home".into())).unwrap();
+
+        assert!(reg.give_imports_folders(&folder).is_empty());
+        assert_eq!(
+            reg.find(&with.id).unwrap().workspace.as_deref(),
+            Some(normalize(&own).as_path())
+        );
+        assert!(reg.find(&by_hand.id).unwrap().workspace.is_none());
+        assert!(reg.find(&other.id).unwrap().workspace.is_none());
+        assert!(!folder.exists());
+
+        for p in [with, by_hand, other] {
+            fs::remove_dir_all(p.store_dir()).ok();
+        }
+        fs::remove_dir_all(&config).ok();
+    }
+
+    /// A target that already holds something is skipped and said so — never
+    /// written into — and the project keeps no folder. A name another
+    /// registered project's folder already has gets the source's id.
+    #[test]
+    fn the_folder_repair_skips_a_full_target_and_steps_around_a_taken_name() {
+        let config = temp_dir("repair-skip");
+        let folder = config.join("projects");
+        fs::create_dir_all(folder.join("Busy")).unwrap();
+        fs::write(folder.join("Busy/his.txt"), "his").unwrap();
+        fs::create_dir_all(folder.join("Twin")).unwrap();
+        let mut reg = Registry::load_in(&config);
+        let busy = reg.create("Busy", None, Some("claude:b1".into())).unwrap();
+        let first = reg
+            .create(
+                "Twin",
+                Some(normalize(&folder.join("Twin"))),
+                Some("claude:t0".into()),
+            )
+            .unwrap();
+        let twin = reg
+            .create("Twin", None, Some("claude:abcdef99".into()))
+            .unwrap();
+
+        let log = reg.give_imports_folders(&folder);
+        assert_eq!(log.len(), 2, "{log:?}");
+        assert!(
+            log.iter()
+                .any(|l| l.starts_with("Busy: not given a folder")),
+            "{log:?}"
+        );
+        assert!(reg.find(&busy.id).unwrap().workspace.is_none());
+        assert_eq!(fs::read_dir(folder.join("Busy")).unwrap().count(), 1);
+        assert_eq!(
+            reg.find(&twin.id).unwrap().workspace.as_deref(),
+            Some(normalize(&folder.join("Twin-abcdef")).as_path())
+        );
+
+        for p in [busy, first, twin] {
+            fs::remove_dir_all(p.store_dir()).ok();
+        }
+        fs::remove_dir_all(&config).ok();
     }
 
     #[test]
