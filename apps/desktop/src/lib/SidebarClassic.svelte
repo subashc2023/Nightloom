@@ -29,6 +29,7 @@
   import { relativeTime } from "./time";
   import NotesPanel from "./NotesPanel.svelte";
   import SearchPanel from "./SearchPanel.svelte";
+  import { keptIsCurrent } from "./search";
   import ProjectMenu from "./ProjectMenu.svelte";
   import HomeRow from "./HomeRow.svelte";
   import Icon from "./Icon.svelte";
@@ -369,8 +370,8 @@
           bind:value={app.search.query}
           onfocus={T.openSearch}
         />
-        {#if app.search.result && !app.search.open}
-          <button class="search-cnt" use:tip={"Reopen the results"} onclick={T.openSearch}>{app.search.result.matches} ▸</button>
+        {#if keptIsCurrent(app.search, app.project?.id ?? null) && !app.search.open}
+          <button class="search-cnt" use:tip={"Reopen the results"} onclick={T.openSearch}>{app.search.result?.matches} ▸</button>
         {/if}
       </div>
     {/if}

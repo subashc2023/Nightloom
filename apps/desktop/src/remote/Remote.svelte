@@ -90,6 +90,7 @@
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
   import { plainFragment } from "../lib/plainMd"; // Item 999: a search hit's passage without Markdown marks
+  import { scopeWhere } from "../lib/search"; // Item 1004: the scope's place, named
   import { renderStreamingMarkdown } from "../lib/streamBlocks";
   import MathText from "../lib/MathText.svelte";
   // Item 820: pictures and video a reply names, under its text.
@@ -789,6 +790,9 @@
         await refreshProjects();
         await refreshChats();
       }
+      // Item 1004: a search of the project (or its notes) is of the project
+      // open now — the Mac's switch searches again, never keeps the old answer.
+      if (remote.project !== wasProject && searchOn && searchScope !== "all") void runSearch();
       // A new chat's id is the Mac's once its log exists (item 246).
       if (pendingNew && remote.active_chat && remote.active_chat !== pendingNew.before && chatId === null) {
         const id = remote.active_chat;
@@ -2872,6 +2876,8 @@
   }
 
   const searchOn = $derived(hasFeature(remote, "search") && search.trim().length >= 2);
+  /** Item 1004: where `this` / `notes` search — the Mac's open project. */
+  const searchWhere = $derived(scopeWhere(searchScope, remote.project ?? null));
 
   // ---- wave 2C: gestures (pass 1's leftovers) -----------------------------------------
   /**
@@ -4059,7 +4065,7 @@
             {:else if !found}
               <p class="empty">Searching…</p>
             {:else}
-              <p class="found-sum">{searchSummary(found)}{searching ? " · searching…" : ""}</p>
+              <p class="found-sum">{searchSummary(found)}{searchWhere ? ` · in ${searchWhere}` : ""}{searching ? " · searching…" : ""}</p>
               {#each found.groups as g (g.id)}
                 <button class="hit" onclick={() => ((search = ""), (found = null), void openChat(g.id, g.project?.id ?? null))}>
                   <span class="hit-head">

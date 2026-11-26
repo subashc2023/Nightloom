@@ -896,6 +896,10 @@ export const app = $state({
     scope: "this" as SearchScope,
     result: null as SearchResult | null,
     selected: 0,
+    /** What `result` answers (`searchKey`: scope, query and, for the
+     *  project's scopes, the project) — item 1004: a project switch makes
+     *  a kept answer stale rather than shown under the new project. */
+    key: "",
   },
   /** `action` (backlog 066) is the toast's one button — "Undo" on a
    *  removal or a rewind — and such a toast stays 8 s rather than 5. */

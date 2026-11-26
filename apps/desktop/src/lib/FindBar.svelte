@@ -10,7 +10,7 @@
   import Icon from "./Icon.svelte";
   import { app, toggleSidebar } from "./state.svelte";
   import { isMac } from "./platform";
-  import { registerFindBar } from "./search";
+  import { keptIsCurrent, registerFindBar } from "./search";
   import { windowWants } from "./transcriptWindow.svelte";
   import {
     collectSegments,
@@ -381,7 +381,8 @@
   /** The bar's link: the panel, with this query (board 11c's "from ⌘F"),
    *  or back to the results it already holds. */
   function toPanel() {
-    if (!app.search.result) app.search.query = query;
+    // Item 1004: an answer kept for another project is not "the results".
+    if (!keptIsCurrent(app.search, app.project?.id ?? null)) app.search.query = query;
     if (app.layout.sidebarCollapsed) toggleSidebar();
     app.search.open = true;
   }
@@ -440,9 +441,9 @@
            still holds results to go back to. -->
       <button
         class="find-btn find-all"
-        class:kept={!!app.search.result}
-        use:tip={app.search.result ? `Back to the results (${SEARCH_CHORD_LABEL})` : `Search all chats for this (${SEARCH_CHORD_LABEL})`}
-        aria-label={app.search.result ? "Back to the search results" : "Search all chats"}
+        class:kept={keptIsCurrent(app.search, app.project?.id ?? null)}
+        use:tip={keptIsCurrent(app.search, app.project?.id ?? null) ? `Back to the results (${SEARCH_CHORD_LABEL})` : `Search all chats for this (${SEARCH_CHORD_LABEL})`}
+        aria-label={keptIsCurrent(app.search, app.project?.id ?? null) ? "Back to the search results" : "Search all chats"}
         onclick={toPanel}
       >
         <Icon name="search" size={12} />
