@@ -48,6 +48,18 @@ pub const PASS_FILE: &str = "ref-pass.json";
 /// How long a pass lasts.
 pub const PASS_SECS: i64 = 120;
 
+/// How long the action's process may run before it is stopped: the pass's
+/// life and a little over. Past the pass nothing more can be let through,
+/// so a turn still going is only spending (measured 2026-11-26, 993d
+/// review: a turn with no tool to call ran 389 s and wrote 128k tokens).
+pub const TURN_SECS: u64 = PASS_SECS as u64 + 15;
+
+/// Why a click does not run under the rail's safe mode: safe mode's
+/// `--strict-mcp-config` leaves his claude.ai connectors out of the
+/// process, so the one call has no tool to reach (measured 2026-11-26,
+/// 993d review: no call made).
+pub const SAFE_MODE: &str = "Safe mode is on, so your connectors do not load in the process that would make this call; nothing was sent. Turn safe mode off on the rail to use the card's actions.";
+
 /// The model an action runs on, whatever any chat's is.
 pub const MODEL: &str = "haiku";
 

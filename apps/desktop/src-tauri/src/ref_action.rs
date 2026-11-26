@@ -38,6 +38,11 @@ pub(crate) async fn ref_act(
     if account.status != Status::Connected {
         return Err("that account is signed out or did not answer the last check".into());
     }
+    // Safe mode leaves his connectors out of the process: refused before a
+    // pass exists, so nothing can run (993d review).
+    if safe_mode.unwrap_or(false) {
+        return Err(ref_action::SAFE_MODE.into());
+    }
     let call = ref_action::call_for(&item, &act)?;
     let exe =
         std::env::current_exe().map_err(|e| format!("could not find Nightloom itself: {e}"))?;
@@ -52,14 +57,13 @@ pub(crate) async fn ref_act(
     let scratch = std::env::temp_dir().join("nightloom-ref-action");
     std::fs::create_dir_all(&scratch)
         .map_err(|e| format!("could not make the action's scratch folder: {e}"))?;
-    let mut pass = PassSpec::new(
+    let pass = PassSpec::new(
         binary
             .map(|b| b.trim().to_string())
             .filter(|b| !b.is_empty())
             .unwrap_or_else(|| "claude".into()),
         Vec::new(),
     );
-    pass.safe_mode = safe_mode.unwrap_or(false);
     // Every other connector is left out of this process's tool list.
     let blocked = accounts
         .iter()
@@ -79,6 +83,14 @@ pub(crate) async fn ref_act(
     ref_action::mint(&dir, &call, chrono::Utc::now())?;
     let _awake = power.acquire();
     let cancel = CancellationToken::new();
+    // Stopped once the pass can no longer let anything through (993d review).
+    let deadline = {
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(ref_action::TURN_SECS)).await;
+            cancel.cancel();
+        })
+    };
     let mut seen: Vec<Seen> = Vec::new();
     let tool = call.tool.clone();
     let ran = ClaudeCodeAgent::new(spec)
@@ -99,6 +111,7 @@ pub(crate) async fn ref_act(
             },
         )
         .await;
+    deadline.abort();
     let spent = ref_action::spent(&dir);
     let _ = std::fs::remove_dir_all(&dir);
     match ran {
