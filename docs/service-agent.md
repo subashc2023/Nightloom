@@ -506,10 +506,14 @@ is `inferred` from those runs unless tagged `external`.
   of normal chats; whether safe mode should give up the flag to have it is
   nightshift blocker 082. Not visible in the stream: the judging model's own
   call, and a second work turn (the condition held after one).
-- **No `Workflow` tool on his plan.** A plain run's `system/init.tools` has
+- ~~**No `Workflow` tool on his plan.** A plain run's `system/init.tools` has
   34 built-ins (`Task`, `Artifact`, `Bash`, the cron and task tools,
   `ToolSearch`, `WebFetch`, `WebSearch`, `Write`, …) and no `Workflow`;
-  nothing to build and nothing to expose.
+  nothing to build and nothing to expose.~~ (superseded 2026-11-26, `external`:
+  nightshift `notes/runner-design/wave-e-engine-report-2026-11-16.md` measured
+  CLI 2.1.325 under `claude -p` with `--permission-prompts none`: `system/init.tools`
+  lists `Workflow` among 218 tools. Whether Nightloom's own engine invocation
+  exposes it is unmeasured; nothing is built or exposed in Nightloom for it.)
 - **`--restricted` is not a substitute for `READ_ONLY_TOOLS`; keep `--tools`.**
   Alone it removes `Bash`, `CronCreate`, `WebFetch`, `Monitor`,
   `RemoteTrigger` and the MCP-resource tools and *keeps* `Edit`, `Write`,
