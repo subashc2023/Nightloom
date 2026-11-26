@@ -1,5 +1,7 @@
 // @ts-ignore -- node's own module: the suite runs in node; the app's tsconfig carries no node types.
 import { readFileSync } from "node:fs";
+// @ts-ignore -- as above.
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 // Item 919 (his bug, 2026-11-23): asides kept missing what the main chat has
@@ -27,8 +29,9 @@ import { describe, expect, it } from "vitest";
 // showed it failing on the code before 919).
 
 const env = (globalThis as unknown as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {};
-const ROOT = env.PARITY_ROOT ?? decodeURIComponent(new URL("..", import.meta.url).pathname);
-const read = (rel: string): string => readFileSync(`${ROOT.replace(/\/$/, "")}/${rel}`, "utf8");
+// `fileURLToPath`, not `.pathname`: on Windows the pathname is `/D:/…` (item 1021).
+const ROOT = env.PARITY_ROOT ?? fileURLToPath(new URL("..", import.meta.url));
+const read = (rel: string): string => readFileSync(`${ROOT.replace(/[\\/]$/, "")}/${rel}`, "utf8");
 /** A counterpart's file, or nothing when the file is not there. */
 const readOr = (rel: string) => {
   try {
