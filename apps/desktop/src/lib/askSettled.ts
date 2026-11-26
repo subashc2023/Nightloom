@@ -224,6 +224,19 @@ export function askSettled(node: HTMLElement) {
     soon();
   });
   own.observe(node, { childList: true });
+  const picks = askPicks(node);
+  return {
+    destroy() {
+      if (frame) cancelAnimationFrame(frame);
+      watch?.disconnect();
+      own.disconnect();
+      picks.destroy();
+    },
+  };
+}
+
+/** An open or closed box's options as buttons on `node` (item 859); see `askSettled`. */
+function askPicks(node: HTMLElement): { destroy(): void } {
   // Item 859: an open or closed box's option is a button — a click (or Enter / Space) sends it as his next
   // message through the transcript (ASK_ANSWER_EVENT); greyed until his message lands, or 5 s if refused.
   const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -256,12 +269,47 @@ export function askSettled(node: HTMLElement) {
   node.addEventListener("keydown", pick);
   return {
     destroy() {
-      if (frame) cancelAnimationFrame(frame);
-      watch?.disconnect();
-      own.disconnect();
       node.removeEventListener("click", pick);
       node.removeEventListener("keydown", pick);
       for (const t of timers) clearTimeout(t);
+    },
+  };
+}
+
+/**
+ * Item 994 (the 991 follow-up; 991's shot 02 showed it): Home's reply strip draws Home's last reply with
+ * `renderReply`, so an `<ask>` block came out as the "Question for you" box — and the chat's own question
+ * card (TurnAskHost) sat right under it: the question twice. The strip is no transcript (`askSettled` reads
+ * a transcript's bubbles and cards), so this action gives its boxes 859's states from what the strip knows:
+ * the strip holds only replies after his last message (`lastExchange`), so none is answered. The last box,
+ * while the card is drawn for it, is `live` (hidden: the question shows once, as the answerable card); with
+ * no card (a turn still runs) it is `open`, and an earlier box, or one Claude carried on past, is `closed` —
+ * both with their options as buttons that send (ASK_ANSWER_EVENT, which the strip takes).
+ */
+export function askInStrip(node: HTMLElement, cardDrawn: boolean) {
+  let card = cardDrawn;
+  const run = () => {
+    const boxes = Array.from(node.querySelectorAll<HTMLElement>(".nl-ask"));
+    boxes.forEach((b, i) => {
+      let later = false;
+      for (let n = b.nextElementSibling; n && !later; n = n.nextElementSibling) later = !!n.textContent?.trim();
+      const { state, note } = askBoxState({ said: null, last: i === boxes.length - 1, cardDrawn: card, laterWords: later });
+      markUnanswered(b, state as Exclude<AskBoxState, "answered">, note);
+    });
+  };
+  run();
+  // The reply is redrawn as it streams ({@html} replaces the children).
+  const own = new MutationObserver(run);
+  own.observe(node, { childList: true });
+  const picks = askPicks(node);
+  return {
+    update(next: boolean) {
+      card = next;
+      run();
+    },
+    destroy() {
+      own.disconnect();
+      picks.destroy();
     },
   };
 }
