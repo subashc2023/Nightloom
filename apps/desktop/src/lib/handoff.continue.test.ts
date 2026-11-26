@@ -8,6 +8,7 @@ import {
   handoff,
   noteAgentTurnEnd,
   noteFill,
+  noteCodeProject,
   readOrder,
   resetHandoff,
   setDefaultReadOrder,
@@ -101,6 +102,9 @@ describe("the automated hand-off against a scripted engine", () => {
   });
 
   it("opens with the read order alone when the reply had no block, and says so", async () => {
+    // Item 1007: the built-in read order is a code project's.
+    noteCodeProject("chat-noblock", true);
+    noteCodeProject("chat-next", true);
     runScript("chat-noblock", "HANDOFF.md written.");
     expect(handoff.startPrompt).toBeNull();
     await continueChat();

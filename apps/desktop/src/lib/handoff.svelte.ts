@@ -205,6 +205,34 @@ export const WRAP_UP =
   "Then stop; do not start the next step.";
 
 /**
+ * Item 1007 (verify sweep 2, 2026-11-26): the built-in wrap-up for a project
+ * that keeps no HANDOFF.md and no backlog/ (`codeProjectFor` false — the same
+ * probe as backlog 431's). `WRAP_UP` is his practices' wrap-up: HANDOFF.md,
+ * mdcheck.py, the backlog index. Sent in a plain folder, the model's first
+ * calls went hunting for those files (and the next chat's too). Here none is
+ * named: the start prompt itself carries the hand-off, and a git folder is
+ * still committed by path. His own Settings text, when he has one, is sent
+ * as he wrote it in every project.
+ */
+export const PLAIN_WRAP_UP =
+  "This chat's context window is nearly full, so let's hand off to a new chat. Before anything else:\n" +
+  "1. Finish or save whatever edit is half-done, so every file is in a coherent state. If a subagent you launched " +
+  "has not reported yet, wait for it and fold its report in before you go on.\n" +
+  "2. Fix any fact this chat made outdated in the project's instructions or notes (CLAUDE.md or other .md files, " +
+  "where the project has them). Fix facts only; do not trim or restructure.\n" +
+  "3. Only if this chat changed files in the project folder and it is a git repository: commit them by path, naming " +
+  "each file in `git add` (never `git add -A` or `git add .`, never `git stash`), its message saying what landed, with " +
+  "no AI attribution line; push only if the project's instructions say to. A chat that changed no file skips this " +
+  "and runs no command for it.\n" +
+  "4. End your reply with a short start prompt for the new chat. It is that chat's whole first message — nothing is " +
+  "added above it, and this project keeps no hand-off file — so the prompt carries the hand-off itself: after the " +
+  "parts listed under \"Hand-off contents\" below, what is done, what is in progress, the decisions taken and why, " +
+  "and the next steps in order; then any file to read (by line range, not whole) and what to do first. If an answer " +
+  "of mine truly matters before that, say in it which question to ask me first. " +
+  `${HANDOFF_ASK}\n` +
+  "Then stop; do not start the next step.";
+
+/**
  * ~~The fixed prompt above the model's start prompt~~ — item 520
  * (2026-11-09): the box's text when the wrap-up reply wrote no prompt; with
  * a prompt the prompt goes alone. Was: the fixed prompt above it
@@ -1132,7 +1160,25 @@ export function noteThreadFlags(slug: string, flags: string[], overCap = false):
 
 /** The wrap-up a chat starts from before its own edit: the thread's, else Settings'. */
 function baseMessage(chat: string | null): string {
-  return pickText(undefined, threadMessage(chat), defaultMessage());
+  return pickText(undefined, threadMessage(chat), defaultMessageFor(chat));
+}
+
+/**
+ * The Settings wrap-up as this chat sends it (item 1007): his own text as he
+ * wrote it; else the built-in — his practices' (`WRAP_UP`) in a project with a
+ * HANDOFF.md or a backlog/, the plain one (`PLAIN_WRAP_UP`) anywhere else.
+ */
+export function defaultMessageFor(chat: string | null): string {
+  if (stored.message !== null) return stored.message;
+  return codeProjectFor(chat) ? WRAP_UP : PLAIN_WRAP_UP;
+}
+
+/** The Settings read order as this chat opens with it (item 1007): his own;
+ *  else the built-in in a project with HANDOFF.md or a backlog/, and none
+ *  elsewhere (it names those files). */
+export function defaultReadOrderFor(chat: string | null): string {
+  if (stored.readOrder !== null) return stored.readOrder;
+  return codeProjectFor(chat) ? READ_ORDER : "";
 }
 
 /** The chat's thread's research wrap-up, flags included; null when unbound. */
@@ -1144,7 +1190,7 @@ function threadMessage(chat: string | null): string | null {
 /** The read order a chat starts from before its own edit. */
 function baseReadOrder(chat: string | null): string {
   const t = threadFor(chat);
-  return pickText(undefined, t ? threadReadOrder(t, THEN_START_PROMPT, threadOverCap[t] === true) : null, defaultReadOrder());
+  return pickText(undefined, t ? threadReadOrder(t, THEN_START_PROMPT, threadOverCap[t] === true) : null, defaultReadOrderFor(chat));
 }
 
 /** The chat's threshold, 0..1: its own if set, else the default. */
@@ -1297,7 +1343,7 @@ export function setDefaultMessage(text: string): void {
 /** The wrap-up this chat sends: its own if edited, else its thread's
  *  research wrap-up (backlog 271), else the Settings default. */
 export function message(chat: string | null): string {
-  return pickText(chat ? stored.messages[chat] : undefined, threadMessage(chat), defaultMessage());
+  return pickText(chat ? stored.messages[chat] : undefined, threadMessage(chat), defaultMessageFor(chat));
 }
 
 // ---- item 747: the goal for the next chat, and the wrap-up as sent ----
@@ -1316,10 +1362,12 @@ export function setGoal(chat: string | null, text: string): void {
   save();
 }
 
-/** Whether this chat's wrap-up writes a HANDOFF.md section: every chat but a
- *  thread chat in a project that keeps none (its memory is the thread). */
+/** Whether this chat's wrap-up writes a HANDOFF.md section: ~~every chat but a
+ *  thread chat in a project that keeps none (its memory is the thread)~~ —
+ *  item 1007: a chat in a project that keeps one (HANDOFF.md or a backlog/),
+ *  thread or not; elsewhere the hand-off's sections go in the prompt. */
 export function writesHandoffFile(chat: string | null): boolean {
-  return !threadFor(chat) || codeProjectFor(chat);
+  return codeProjectFor(chat);
 }
 
 /**

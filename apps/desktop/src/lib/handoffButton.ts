@@ -72,6 +72,33 @@ export interface NextChat {
   /** Item 705: the *Next chat* model pick — the same value as the hand-off
    *  card's; absent (no button) off the Claude Code engine. */
   model?: ModelHook | null;
+  /** Item 1007: the line saying the hand-off also saves memory from this
+   *  chat (the automatic pass is on); absent or null, no line. */
+  memory?: string | null;
+}
+
+/** Item 1007: the card's line when the automatic pass is on — a hand-off
+ *  starts a capture (then a dream) of this chat, which it used to do unsaid. */
+export const MEMORY_LINE =
+  "This hand-off also saves memory from this chat: a capture, then a dream, on the memory engine (Settings → Knowledge → Dreaming). A toast shows it while it runs.";
+export const MEMORY_LINE_CLASS = "handoff-memory-line";
+
+/** Put the memory line in the row before the button, or take it out. */
+function syncMemory(row: HTMLElement, next: NextChat): void {
+  let line = row.querySelector<HTMLElement>(`:scope > .${MEMORY_LINE_CLASS}`);
+  const text = next.memory ?? "";
+  if (!text) {
+    line?.remove();
+    return;
+  }
+  if (!line) {
+    line = el("div", `handoff-line ${MEMORY_LINE_CLASS}`);
+    // Its own line above the controls: after the carry block, before the read order.
+    const order = row.querySelector(":scope > details.handoff-order");
+    if (order) order.before(line);
+    else row.prepend(line);
+  }
+  if (line.textContent !== text) line.textContent = text;
 }
 
 /** Item 705: what the card's model pick shows and does. */
@@ -682,6 +709,7 @@ export function addContinueControls(root: HTMLElement, read: () => NextChat | nu
     after.after(row);
   }
   syncCarry(row, next, read);
+  syncMemory(row, next);
   syncReview(row, next, read);
   syncModel(row, next, read);
   if (card) syncMinimize(card, next, read);

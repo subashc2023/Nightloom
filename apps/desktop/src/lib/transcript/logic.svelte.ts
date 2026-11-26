@@ -17,11 +17,12 @@ import { app, addToast, menuInterceptors, denialReason, draftAside, liveFlags, r
 import { scheduledFor } from "../scheduled.svelte";
 import { coldUsdFor } from "../cacheRates.svelte";
 import { modelSeen } from "../modelSeen.svelte";
-import { cardLog, continuableReply, continuedFromReply, nextChatMessage, type NextChat } from "../handoffButton";
+import { cardLog, continuableReply, continuedFromReply, MEMORY_LINE, nextChatMessage, type NextChat } from "../handoffButton";
 import { nextModelLabel, nextModelRows, setNextModel } from "../nextChatModel.svelte";
 import { cancelReview, reviewOf, runReview } from "../chatReview.svelte";
 import { openPathAsTab } from "../forYou.svelte";
 import { carryFor } from "../handoffCarryFor";
+import { codeProjectFor } from "../handoff.svelte";
 import { pushUndo } from "../state/edits.svelte";
 import { REMOVED_PLACEHOLDER, blockEdits, blockElisions, displayTexts, editButtons, editChanges, editLine, editorKey, chipPrint, chipsOf, editDirty, editParts, editReduce, editTexts, editAttachments, chipsChanged, elideFlags, isEditable, type EditState, forkLine } from "../edit";
 import { toolInputSummary } from "../transcriptPrefs.svelte";
@@ -578,6 +579,8 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
         app.connection?.engine === "claude-code"
           ? { ...nextModelLabel(from), rows: nextModelRows(from), pick: (id: string) => setNextModel(from, id) }
           : null,
+      // Item 1007: said on the card before he presses Continue, when the switch is on.
+      memory: app.dreamPrefs.auto ? MEMORY_LINE : null,
     };
   });
 
@@ -2304,7 +2307,8 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
     const session = app.sessions.find((s) => s.id === chatId) ?? null;
     if (!session?.forked_from || session.forked_from.reason !== "handoff") return null;
     const line = forkLine(session, app.sessions) ?? "from an earlier chat";
-    return { id: session.forked_from.session, name: line.replace(/^from /, "") };
+    // Item 1007: HANDOFF.md named only where the project keeps one.
+    return { id: session.forked_from.session, name: line.replace(/^from /, ""), file: codeProjectFor(session.id) };
   });
 
   // ---- Ask aside about a highlighted passage (nightshift backlog 107) ----

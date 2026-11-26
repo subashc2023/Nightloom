@@ -3,6 +3,7 @@ import {
   AWAY_MS,
   RE_ASK,
   WRAP_UP,
+  noteCodeProject,
   autoQueues,
   extractStartPrompt,
   isAway,
@@ -369,6 +370,9 @@ describe("noteFill and the queue", () => {
 
 describe("the message, global and per chat", () => {
   it("falls back from the chat's own text to the Settings default to the built-in", () => {
+    // Item 1007: the practices built-in is a code project's (HANDOFF.md or a backlog/).
+    noteCodeProject("chat-m", true);
+    noteCodeProject("chat-other", true);
     setDefaultMessage(WRAP_UP);
     expect(defaultMessage()).toBe(WRAP_UP);
     expect(message("chat-m")).toBe(WRAP_UP);
@@ -397,6 +401,7 @@ describe("the message, global and per chat", () => {
   });
 
   it("Reset the message drops the chat's own text rather than blanking it (found 2026-09-25)", () => {
+    noteCodeProject("chat-c", true);
     setDefaultMessage(WRAP_UP);
     setMessage("chat-c", "Mine.");
     clearMessage("chat-c");

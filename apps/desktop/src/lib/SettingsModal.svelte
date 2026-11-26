@@ -2967,8 +2967,9 @@
             own auto-compact is off on this engine; instead, past the mark, the
             composer shows a notice with <em>Wrap up now</em>, which sends the
             wrap-up message as a turn of its own — the model finishes what is
-            half-done, writes <code>HANDOFF.md</code>, and ends with a start prompt
-            that a linked new chat opens with, never sent by itself.
+            half-done, writes <code>HANDOFF.md</code> (only in a project that keeps one
+            or a <code>backlog/</code>; elsewhere the prompt carries the hand-off), and
+            ends with a start prompt that a linked new chat opens with, never sent by itself.
           {/snippet}
         </SettingRow>
         <SettingRow fold="subscription/handoff-cap" shown={subShown("handoff-cap")}>
@@ -3120,7 +3121,7 @@
             <code>&lt;handoff&gt;</code> and <code>&lt;/handoff&gt;</code>: that is what the new chat's first message
             is read out of, shown as a card with <em>Continue with this prompt</em> (a fenced <code>start-prompt</code> block still works); without one the chat box offers an unsent new chat with the read order alone. A chat can edit its
             own copy on the notice without changing this.
-            {#if hasOwnDefaultMessage()}<em>Edited; Reset to default restores the built-in text (a box left empty reads as the built-in after a relaunch).</em>{:else}<em>The built-in text ({WRAP_UP.length} characters).</em>{/if}
+            {#if hasOwnDefaultMessage()}<em>Edited; Reset to default restores the built-in text (a box left empty reads as the built-in after a relaunch).</em>{:else}<em>The built-in text ({WRAP_UP.length} characters), for a project that keeps a HANDOFF.md or a backlog/; a project with neither gets a shorter built-in that names no such file (item 1007). Your own text is sent as written in every project.</em>{/if}
           {/snippet}
         </SettingRow>
         <!-- The read order (nightshift backlog 193; item 520): the new chat's
@@ -3152,7 +3153,7 @@
             with this prompt</em> sends the prompt alone — the wrap-up asks the
             model to open it with what to read. A copy a chat already has of its
             own stays with it and the chats that continue it.
-            {#if hasOwnDefaultReadOrder()}<em>Edited; Reset to default restores the built-in read order.</em>{:else}<em>The built-in read order: the newest HANDOFF.md section, then the two indexes.</em>{/if}
+            {#if hasOwnDefaultReadOrder()}<em>Edited; Reset to default restores the built-in read order.</em>{:else}<em>The built-in read order: the newest HANDOFF.md section, then the two indexes — in a project that keeps them; elsewhere none.</em>{/if}
           {/snippet}
         </SettingRow>
       </SettingsGroup>
