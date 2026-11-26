@@ -2261,6 +2261,10 @@ async fn start_listener(
     if port == 0 {
         return Err("the port must be between 1 and 65535".into());
     }
+    // Item 1003: a dev home never serves under the installed app's token.
+    if let Some(why) = credentials::remote_listener_refusal() {
+        return Err(why);
+    }
     // The CLI and the keychain off the runtime (FA7); a keychain that
     // could not be read keeps the token (FA4).
     let (ip, stored) = crate::blocking(move || -> Result<_, String> {
