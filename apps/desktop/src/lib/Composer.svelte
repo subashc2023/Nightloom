@@ -252,7 +252,7 @@
   import { registerPasteHandler, type PasteRequest } from "./pasteToCompose";
   import { handOffBlock, handOffNow, isHandoffCommand } from "./manualHandoff.svelte";
   // Item 966: the app's slash commands, one table for every box.
-  import { commandKind, commandMatches, newKind, NEW_KINDS_HINT, parseCommand, pickRow } from "./appCommands";
+  import { commandKind, commandMatches, newKind, NEW_KINDS_HINT, parseCommand, pickRow, typedInFull } from "./appCommands";
   // Item 967: the second batch's actions, each its control's own function.
   import { runBatch2, type BoxActions } from "./appCommands967";
   import { newNoteOrOpen } from "./newNoteOrOpen";
@@ -927,6 +927,8 @@
   });
   let slashDismissed = $state(false);
   let slashIndex = $state(0);
+  /** Item 998: ↑/↓ moved the menu's row since the last keystroke (a pick, not the typed name). */
+  let slashMoved = $state(false);
   /*
    * Item 800: saved message prompts join the list — on either engine and
    * before the first turn, since they are only text — wherever a `/word`
@@ -1044,6 +1046,7 @@
     void text;
     if (!/^\//.test(text)) slashDismissed = false;
     slashIndex = 0;
+    slashMoved = false;
   });
   function pickSlash(name: string, prompt: MessagePrompt | null = null, insert: BoxInsert | null = null): void {
     if (insert) {
@@ -1767,15 +1770,31 @@
       if (e.key === "ArrowDown") {
         e.preventDefault();
         slashIndex = (slashIndex + 1) % slashMatches.length;
+        slashMoved = true;
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
         slashIndex = (slashIndex - 1 + slashMatches.length) % slashMatches.length;
+        slashMoved = true;
         return;
       }
       // Item 890: never while an input method is composing (its Enter is the IME's).
       const imeKey = composing || e.isComposing || e.keyCode === 229;
+      // Item 998: a command's name typed in full (`/model`, `/keepwarm`) runs
+      // on this one Return, as Send would run it — unless ↑/↓ moved to
+      // another row, which Return then picks (blocker 2293). Tab still
+      // completes. Stopped here so no window key handler (⌘P's list, which
+      // `/project` opens in this same keydown) takes the Return as its own.
+      const full = !imeKey && e.key === "Enter" && !e.shiftKey ? typedInFull(text, aside ? "aside" : "chat") : null;
+      const sel = slashMatches[slashIndex];
+      if (full && (!slashMoved || (sel?.own && sel.name === full.name))) {
+        e.preventDefault();
+        e.stopPropagation();
+        slashDismissed = true;
+        void submit();
+        return;
+      }
       if (!imeKey && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
         e.preventDefault();
         pickSlash(slashMatches[slashIndex].name, slashMatches[slashIndex].prompt, slashMatches[slashIndex].insert);
