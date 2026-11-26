@@ -69,6 +69,16 @@ pub enum CredentialError {
     /// The store rejected the operation, or there is no store to reject it.
     #[error("the credential store is unavailable: {0}")]
     Store(String),
+    /// The phone token comes from `NIGHTLOOM_REMOTE_TOKEN`, so it cannot be
+    /// replaced from the app (item 1003).
+    #[error("the phone token comes from NIGHTLOOM_REMOTE_TOKEN; change it there")]
+    FromEnv,
+    /// A scratch home (`NIGHTLOOM_HOME`) with no `NIGHTLOOM_REMOTE_TOKEN`:
+    /// the real keychain entry is never touched (item 1003).
+    #[error(
+        "this is a dev home (NIGHTLOOM_HOME is set): the phone page needs NIGHTLOOM_REMOTE_TOKEN here, and the keychain's real token is never used"
+    )]
+    DevHome,
     /// Built without the `keyring` feature.
     #[error("this build has no credential store (compiled without the `keyring` feature)")]
     Unsupported,
@@ -314,23 +324,80 @@ pub fn clear_search_key(backend: SearchBackend) -> Result<(), CredentialError> {
 /// app, and `remote` must never read as a provider label.
 const REMOTE_TOKEN_ENTRY: &str = "remote:token";
 
+/// The environment variable that gives the phone token directly (item
+/// 1003, blocker 2333). Read before the keychain; never written anywhere.
+pub const REMOTE_TOKEN_ENV: &str = "NIGHTLOOM_REMOTE_TOKEN";
+
+/// Where the phone token comes from, decided from three plain facts so a
+/// test needs no keychain and no process environment (item 1003).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteTokenSource {
+    /// `NIGHTLOOM_REMOTE_TOKEN` is set: use it, store nothing.
+    Env(String),
+    /// The normal app: the keychain entry.
+    Keychain,
+    /// A set `NIGHTLOOM_HOME` without the env token: a dev build must never
+    /// reach the installed app's keychain token, so there is none.
+    DevHomeWithoutToken,
+}
+
+/// The pure decision: the env token wins (blank counts as unset); else a
+/// set home refuses; else the keychain.
+pub fn remote_token_source(home_set: bool, env: Option<&str>) -> RemoteTokenSource {
+    match env.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => RemoteTokenSource::Env(t.to_string()),
+        None if home_set => RemoteTokenSource::DevHomeWithoutToken,
+        None => RemoteTokenSource::Keychain,
+    }
+}
+
+fn current_remote_source() -> RemoteTokenSource {
+    let home_set = std::env::var_os("NIGHTLOOM_HOME").is_some_and(|h| !h.is_empty());
+    remote_token_source(home_set, std::env::var(REMOTE_TOKEN_ENV).ok().as_deref())
+}
+
+/// The sentence for a dev home with no env token, for the listener's
+/// start; `None` when the phone page may start here.
+pub fn remote_listener_refusal() -> Option<String> {
+    (current_remote_source() == RemoteTokenSource::DevHomeWithoutToken)
+        .then(|| CredentialError::DevHome.to_string())
+}
+
 /// The token the phone page must present, if one has been generated. No
-/// environment fallback: a token is made by the app and lives nowhere else.
+/// environment fallback for the keychain case: a token is made by the app.
+/// The env token (item 1003) is the one exception, and a dev home never
+/// reads the keychain.
 pub fn remote_token() -> Option<String> {
-    store::get(REMOTE_TOKEN_ENTRY)
+    match current_remote_source() {
+        RemoteTokenSource::Env(t) => Some(t),
+        RemoteTokenSource::Keychain => store::get(REMOTE_TOKEN_ENTRY),
+        RemoteTokenSource::DevHomeWithoutToken => None,
+    }
 }
 
 /// The token, with "none stored" told apart from "the store could not be
 /// read": the listener's start and the Regenerate button must keep the
 /// token he has on the latter rather than mint one (review 2026-09-17
 /// FA4 — a keychain the OS would not open regenerated the token and
-/// un-paired every phone).
+/// un-paired every phone). A dev home without the env token is an error,
+/// so nothing mints or stores one.
 pub fn try_remote_token() -> Result<Option<String>, CredentialError> {
-    store::try_get(REMOTE_TOKEN_ENTRY)
+    match current_remote_source() {
+        RemoteTokenSource::Env(t) => Ok(Some(t)),
+        RemoteTokenSource::Keychain => store::try_get(REMOTE_TOKEN_ENTRY),
+        RemoteTokenSource::DevHomeWithoutToken => Err(CredentialError::DevHome),
+    }
 }
 
 /// Store the token. An empty one clears the entry, as the key setters do.
+/// Refused under the env token and in a dev home, before the keychain is
+/// reached (item 1003).
 pub fn set_remote_token(token: &str) -> Result<(), CredentialError> {
+    match current_remote_source() {
+        RemoteTokenSource::Env(_) => return Err(CredentialError::FromEnv),
+        RemoteTokenSource::DevHomeWithoutToken => return Err(CredentialError::DevHome),
+        RemoteTokenSource::Keychain => {}
+    }
     let token = token.trim();
     if token.is_empty() {
         return store::clear(REMOTE_TOKEN_ENTRY);
@@ -395,6 +462,33 @@ mod tests {
             let _ = stored_search_key(backend);
             let _ = search_key_source(backend);
         }
+    }
+
+    /// Item 1003: the env token wins, a blank one is unset, a set home
+    /// without it refuses, and only the plain app reaches the keychain.
+    #[test]
+    fn the_remote_token_source_never_reaches_the_keychain_from_a_dev_home() {
+        use RemoteTokenSource::*;
+        assert_eq!(remote_token_source(false, None), Keychain);
+        assert_eq!(remote_token_source(false, Some("  ")), Keychain);
+        assert_eq!(remote_token_source(true, None), DevHomeWithoutToken);
+        assert_eq!(remote_token_source(true, Some("")), DevHomeWithoutToken);
+        assert_eq!(remote_token_source(true, Some(" t ")), Env("t".into()));
+        assert_eq!(remote_token_source(false, Some("t")), Env("t".into()));
+    }
+
+    #[test]
+    fn the_refusal_sentences_name_the_variable() {
+        assert!(
+            CredentialError::DevHome
+                .to_string()
+                .contains(REMOTE_TOKEN_ENV)
+        );
+        assert!(
+            CredentialError::FromEnv
+                .to_string()
+                .contains(REMOTE_TOKEN_ENV)
+        );
     }
 
     /// The two share an environment variable, so the store is not the one
