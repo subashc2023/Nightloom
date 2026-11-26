@@ -1,0 +1,69 @@
+/* Typed links (item 993a): an event, an email or a doc named in a reply. One global sheet, since the
+   link is markup the renderer produces on every reply surface (the chat, Home's reply, an aside, a
+   quote). The link look is worn only where a card can open (`data-ref-cards` on the root, set by
+   RefCardHost): anywhere else — the phone until its sheet is built, the Quick Entry window — the name
+   reads as the plain words it is, never a link that does nothing. */
+a.nl-ref {
+  color: inherit;
+  text-decoration: none;
+  cursor: inherit;
+}
+:root[data-ref-cards] a.nl-ref {
+  position: relative;
+  color: var(--ink);
+  border-bottom: 1px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  padding: 0 2px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition:
+    background-color 120ms,
+    color 120ms,
+    border-color 120ms,
+    box-shadow 120ms;
+}
+/* The kind's mark before the name: a calendar, an envelope, a page (the mock's 13 px line icons). */
+:root[data-ref-cards] a.nl-ref::before {
+  content: "";
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin-right: 4px;
+  vertical-align: -2px;
+  background: currentColor;
+  opacity: 0.85;
+  -webkit-mask: var(--ref-ico) center / contain no-repeat;
+  mask: var(--ref-ico) center / contain no-repeat;
+}
+a.nl-ref[data-ref-kind="event"] {
+  --ref-ico: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.4"><rect x="2" y="3" width="12" height="11" rx="2"/><path d="M2 6.5h12M5 1.5v3M11 1.5v3"/></svg>');
+}
+a.nl-ref[data-ref-kind="email"] {
+  --ref-ico: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.4"><rect x="1.5" y="3.5" width="13" height="9" rx="1.5"/><path d="M2 4.5l6 4.5 6-4.5"/></svg>');
+}
+a.nl-ref[data-ref-kind="doc"] {
+  --ref-ico: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.4"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13M6 8.5h5M6 11h5"/></svg>');
+}
+:root[data-ref-cards] a.nl-ref:hover,
+:root[data-ref-cards] a.nl-ref:focus-visible,
+:root[data-ref-cards] a.nl-ref.ref-open {
+  background: var(--accent-soft);
+  border-bottom-color: var(--accent);
+  color: var(--accent-ink, var(--ink));
+  outline: none;
+}
+:root[data-ref-cards] a.nl-ref.ref-open {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+/* Classic: the same link, in Classic's own quiet terms (a solid underline, no glow). */
+:root[data-ref-cards][data-layout="classic"] a.nl-ref {
+  border-bottom-style: solid;
+  border-bottom-color: var(--line2);
+}
+:root[data-ref-cards][data-layout="classic"] a.nl-ref.ref-open {
+  box-shadow: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-ref-cards] a.nl-ref {
+    transition: none;
+  }
+}

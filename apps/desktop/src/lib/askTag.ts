@@ -1,5 +1,6 @@
 import { Marked, type MarkedExtension, type Token, type Tokens } from "marked";
 import type { SessionEvent } from "./types";
+import { refPlain } from "./refTag";
 
 /**
  * The turn-end question (nightshift item 753, 2026-11-16): a turn that has to
@@ -51,7 +52,8 @@ const OPTION = /^\s*(?:[-*•]|\d+[.)])\s+(.*\S)\s*$/;
 export function parseAsk(inner: string): Ask | null {
   const question: string[] = [];
   const options: string[] = [];
-  for (const line of inner.split("\n")) {
+  // Item 993a: the box, the card and the Needs-you row draw these as plain words — a typed link is its name.
+  for (const line of refPlain(inner).split("\n")) {
     const m = OPTION.exec(line);
     if (m) {
       const label = m[1].replace(/\*\*|__|`/g, "").trim();

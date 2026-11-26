@@ -1,5 +1,6 @@
 <script lang="ts">
   import { hudIn, hudOut } from "./hudMenu";
+  import { refPlain } from "./refTag";
   import { onDestroy, onMount } from "svelte";
   import { app, asideInTab } from "./state.svelte";
   import type { Aside } from "./state.svelte";
@@ -110,7 +111,7 @@
   }
 
   function firstQuestion(a: { turns: { question: string }[] }): string {
-    return a.turns[0]?.question.trim() || "Not asked yet";
+    return refPlain(a.turns[0]?.question ?? "").trim() || "Not asked yet";
   }
 
   function openState(a: Aside): string {

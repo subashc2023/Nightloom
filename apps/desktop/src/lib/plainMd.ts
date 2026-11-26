@@ -1,4 +1,5 @@
 import { plainPreview } from "../remote/preview";
+import { refPlainFragment } from "./refTag";
 
 /**
  * Item 999 (the 991 family, second pass; the verify sweep's finding 6): text built from a message or a
@@ -83,8 +84,8 @@ export function plainFragment(s: string, math = false): string {
   if (!s) return s;
   const lead = /^\s*/.exec(s)?.[0] ?? "";
   const trail = lead.length === s.length ? "" : (/\s*$/.exec(s)?.[0] ?? "");
-  const body = s
-    .slice(lead.length, s.length - trail.length)
+  // Item 993a: a typed link is its name; a tag cut by the snippet's edge loses its loose half.
+  const body = refPlainFragment(s.slice(lead.length, s.length - trail.length))
     .replace(TAG, " ")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\]\([^)\s]*\)?/g, "")

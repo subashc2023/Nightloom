@@ -15,6 +15,7 @@ import { isLocalTarget, mediaKindOf } from "./replyMedia";
 import { replyPage } from "./replyPage";
 import { diagramBlock } from "./diagramBlock";
 import { evidenceBlock } from "./evidenceBlock";
+import { openRefAt, refTag } from "./refTag";
 
 marked.use(math);
 marked.use(tilde);
@@ -129,6 +130,8 @@ phoneMarked.use(evidenceBlock);
 // Item 991: an `<ask>` block is the Mac's quiet "Question for you" box on the phone too (it showed as loose text and
 // "- Yes …" lines); answering is the Needs-you list's, as on the Mac.
 phoneMarked.use(askTag);
+// Item 993a: an `<event>`, `<email>` or `<doc>` tag is a typed link (the phone's sheet opens it once built).
+phoneMarked.use(refTag);
 
 /** Render assistant markdown to sanitized HTML. `breaks` keeps a single
  *  newline as a line break (the phone's replies, nightshift 300 A32: a
@@ -175,6 +178,8 @@ replyMarked.use(replyPage);
 replyMarked.use(diagramBlock);
 // Item 798: an ```evidence block is a checked evidence table (evidenceTables.ts draws it from its file).
 replyMarked.use(evidenceBlock);
+// Item 993a: an `<event>`, `<email>` or `<doc>` tag is a typed link; RefCardHost opens its card on a click.
+replyMarked.use(refTag);
 
 export function renderReply(src: string): string {
   // Item 991: with no DOM to sanitize in (a server render: the node test suite, the phone's SSR checks), the words
@@ -270,6 +275,9 @@ export function streamingTail(whole: string): string {
   }
   const cut = src.lastIndexOf("\n") + 1;
   let line = src.slice(cut);
+  // Item 993a: a typed tag (`<event id="…`) still arriving is held back whole; it appears as its link when it closes.
+  const ref = openRefAt(line);
+  if (ref >= 0) line = line.slice(0, ref);
   // A link whose URL is still arriving: its text, no brackets, no URL.
   line = line.replace(/!?\[([^\]\n]*)\]\([^)\s]*$/, "$1");
   // Code spans: an odd backtick opens one that is still arriving.

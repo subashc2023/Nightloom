@@ -15,6 +15,7 @@
    * seek goes to the right part and place in it.
    */
   import { onDestroy } from "svelte";
+  import { refPlain } from "./refTag";
   import { before, clock, listenKey, loadPlace, loadRate, nextSpeed, partAt, savePlace, saveRate, speedWords, textId, type Source } from "./listen";
   import { readingFor, type Reading } from "./listen.svelte";
   import { tip } from "./tip";
@@ -68,7 +69,8 @@
 
   function start(asBrief: boolean) {
     brief = asBrief;
-    const words = text().trim();
+    // Item 993a: a typed link is read as its name.
+    const words = refPlain(text().trim());
     if (!words) {
       phase = "failed";
       why = "There is nothing to read aloud here";
