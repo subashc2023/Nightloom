@@ -3,6 +3,10 @@
  * review fix 457's `openIfTaken` in `NotesPanel.svelte`, same rules): a
  * name already there — in the list in any case, or on disk past a stale
  * list — opens that note instead of writing an empty file over it.
+ *
+ * Item 1018 (his blocker 2343, "open new"): either way the note opens in a
+ * NEW tab and the chat's tab stays; a tab already showing it is focused
+ * instead (`land` finds it before it makes one).
  */
 import * as api from "./api";
 import { readSaysTaken } from "./notesTree";
@@ -27,8 +31,15 @@ export async function newNoteOrOpen(scope: "project" | "knowledge", name: string
   }
   if (taken) {
     addToast(`${name} already exists — opened it rather than writing over it`);
-    showNote(scope, listed?.name ?? name);
+    openInNewTab(scope, listed?.name ?? name);
     return;
   }
-  if (await saveNote(scope, name, "")) showNote(scope, name);
+  if (await saveNote(scope, name, "")) openInNewTab(scope, name);
+}
+
+function openInNewTab(scope: "project" | "knowledge", name: string): void {
+  app.openNext = "new";
+  showNote(scope, name);
+  // Showing the note already in front changes nothing the reflection sees; the modifier must not stay armed.
+  app.openNext = "replace";
 }
