@@ -15,8 +15,14 @@ name: CI
 # nightshift itself joins only after a week of green (blocker 1858) — a red run emails him.
 on:
   push:
-    branches: [main, ci-check]
+    # nightshift added 2026-11-26 (item 1020, blocker 2292: his yes; his Actions emails are off).
+    branches: [main, ci-check, nightshift]
   pull_request:
+
+# Back-to-back pushes cancel the older run on the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
