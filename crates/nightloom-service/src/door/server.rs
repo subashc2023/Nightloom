@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use nightloom_core::ChatKind;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::{Live, Request, Sent};
 use crate::jobs::Prep;
@@ -223,6 +222,7 @@ pub fn bind(config: &Path) -> Result<std::os::unix::net::UnixListener, String> {
 /// of lines per connection, each answered in turn.
 #[cfg(unix)]
 pub async fn serve(listener: std::os::unix::net::UnixListener, door: Arc<Door>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let Ok(listener) = tokio::net::UnixListener::from_std(listener) else {
         return;
     };
