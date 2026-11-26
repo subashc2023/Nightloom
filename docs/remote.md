@@ -1,46 +1,131 @@
 # Remote — Nightloom on your phone over the tailnet
 
-Nightshift backlog 091, Shape B (2026-09-16). A small HTTP server inside
-the desktop process serves a phone-width page: the open project's chats, a
-chat's transcript as it streams, Send, Stop, and the approval cards. The
-turn still runs on the Mac; the phone is a window onto it. His wish list
-(blocker 104, in his words): "see what it's doing, answer the permission
-prompts, send it the next thing, from my phone, without a public server".
+Nightshift backlog 091, Shape B (2026-09-16); rewritten from the code on
+2026-11-26 (item 1015, after the Simulator audit of item 740). A small HTTP(S)
+server inside the desktop process serves a phone-width page. The turn still
+runs on the Mac; the phone is a window onto it. His wish list (blocker 104,
+in his words): "see what it's doing, answer the permission prompts, send it
+the next thing, from my phone, without a public server".
 
-## What it exposes
+Every section names the file it was read from. Line numbers are as of
+`7921bd89` and drift; the file names do not.
 
-Everything is under the listener's one address and port (default
-`8642`, blocker 172):
+## What the phone page does
 
-- `GET /` — the page (`remote.html`), and its files under `/assets/` and
-  `/remote/`. Nothing else in the bundle is reachable; the desktop's own
-  `index.html` is a 404.
-- Under `/api`, each with the bearer token:
-  - `GET /state` — the project's name, the chat the desktop has open,
-    `busy` (a turn holds the chat), `connected`, the engine, the pending
-    approval prompts.
-  - `GET /chats` — the sidebar's list for the open project.
-  - `GET /chats/{id}/transcript` — the log's events, read from disk (so any
-    chat is readable while another runs, and a transcript read mid-turn is
-    the honest partial).
-  - `POST /chats/{id}/send`, `POST /send` (the open chat) — `{ "text" }`;
-    answers `202 Accepted`: the turn runs on the Mac, its progress comes
-    down the stream.
-  - `POST /approve` — `{ id, name, decision, reason?, answer?, then? }`,
-    the desktop card's own payloads (`allow` · `always` · `deny`; a
-    question form's answers; an approved plan with `ask`/`auto`).
-  - `POST /cancel` — Stop.
-  - `GET /events` — server-sent events: `hello` first, then the desktop's
-    own `turn-event`, `tool-approval` and `turn-notice` window events by
-    name with their payloads unchanged, a `lagged` event when the phone
-    fell behind (it re-reads), a comment every 15 s to keep the connection.
+Source: `apps/desktop/src/remote/Remote.svelte` (the page), its components
+beside it, and `apps/desktop/remote.html` (the entry).
 
-A message or an answer from the phone is not run in Rust: it is handed to
-the desktop window as a `remote-send` / `remote-approve` / `remote-cancel`
-event, and the window's own `send`, `resolveApproval` and `cancelTurn` run
-it. So the transcript, the composer's queue, the hand-off, the banner and
-the sleep watch all see a phone message exactly as a typed one, and the
-desktop's view is never a turn behind.
+- **Pairing and hosts.** The page pairs by a link ending `#token=<hex>`; it
+  keeps the token in local storage and strips it from the address bar
+  (`client.ts:44`). The header's **host chip** opens the **Hosts** sheet
+  (`Hosts.svelte`): two hosts, the **Mac** and **Away** (the away server, a
+  copy of the service on Fly; `nightloom serve`, `Server::start_public`, `mod.rs:771`), each
+  with its own token — "The page tries the Mac first, then Away"
+  (`Hosts.svelte:112`). Per host: Pair / Pair again, Forget. A wrong token
+  shows a "scan again" bar; an unreachable Mac shows an offline bar, and
+  **Send** becomes **Hold** (see below). The Hosts sheet also holds the
+  **Speech test** button (`Remote.svelte:4402`).
+- **Home** (`HomeFirst.svelte`, `HomeStage.svelte`; first screen when the
+  address names no place): the Needs-you count, Watching / brief tabs, the
+  Handled corner (Mark all seen), Running, a "Tell Home…" box, the Jobs row.
+  Details in "Home, the phone's first screen" below.
+- **The drawer** (`Remote.svelte:4001–4137`), top to bottom: **Home**, close,
+  a search box with scopes (This project / All chats / Notes; hits show a
+  highlighted snippet), **New chat**, **Projects**, **Running tasks**,
+  **Jobs**, **Notes**, **Nightshift**, **Send feedback**, **Dream**,
+  **Capture**, then **Recents** (pull to refresh), the usage line
+  (`UsageLine.svelte`: 5-hour and week figures) and a footer saying which host
+  answers. Rows for features the host lacks are hidden (`hasFeature`).
+- **A chat**: the transcript with tool calls as one-line rows; a composer
+  with Send / **Hold** / Stop, photos and documents, a model pill, a mic
+  (`voice/MicButton.svelte`); cards for approvals, questions, plans, secrets
+  (`SecretAsk.svelte`, with the Bitwarden picker) and job approvals
+  (`JobChatCard.svelte`, `JobApproval.svelte`); a **Changes** sheet per turn
+  (`ChangesSheet.svelte`); a message menu (`MessageMenu.svelte`); a context
+  row (cache chip, 5-hour share, next-turn cost) that opens the **Context**
+  sheet and its layer editor (`ContextSheet.svelte`, `LayerEditor.svelte`).
+- **The chat's ⋯ menu** (`ChatMenu.svelte`): Rename, **Model and settings**,
+  New chat in project, then under More: Contents (only when the chat has
+  chapters), **Ask aside** (`AsideSheet.svelte`), **Ask the council**
+  (`CouncilSheet.svelte`), Continue, Make it a plain chat, Compact, Context,
+  Tool calls (show all / fewer), **Approval rules** (`RulesSheet.svelte`),
+  Open on the Mac, and Delete (moves to the trash; **Restore** brings it back).
+- **Model and settings** (`RailSheet.svelte`, route `/api/rail`): Model,
+  Effort, Thinking, and under Advanced a Fallback model, Approvals
+  (Auto / Ask / Plan), Fork helpers, Subagent limits and the model they run
+  on, the Council's seats and mode (answer / disproof), then **Look on this
+  phone** (Jarvis / Classic) and, under it, the **Notifications on this phone**
+  row (`PushRow.svelte`, mounted at `Remote.svelte:4299–4302`; this is not a
+  "Settings" sheet).
+- **Sheets from the drawer**: Projects and a project page (`ProjectsSheet.svelte`,
+  `ProjectPage.svelte`; New project, rename, forget), Notes (`NotesSheet.svelte`:
+  the project's notes and the vault), Nightshift (`NightshiftSheet.svelte`:
+  queue, blockers with an Answer box, mornings, Add item), Jobs
+  (`JobsSheet.svelte`), Running (`RunningSheet.svelte`), Send feedback
+  (`FeedbackSheet.svelte`).
+- **Held messages** survive closing the page; an unreachable Mac or a running
+  turn turns Send into Hold (see "Setting it up", step 6).
+
+## How a message travels
+
+Routes are in "Routes" below. A message or an answer from the phone is not
+run in Rust: it is handed to the desktop window as a `remote-send` /
+`remote-approve` / `remote-cancel` event, and the window's own `send`,
+`resolveApproval` and `cancelTurn` run it. The three listeners are in
+`apps/desktop/src/lib/remoteHandlers.ts:988–1008` (not `state.svelte.ts`).
+So the transcript, the composer's queue, the hand-off, the banner and the
+sleep watch all see a phone message exactly as a typed one. The window
+answers through the `remote_sent` command (`remote.rs:2065`); a window that
+does not answer within `SEND_WAIT` = 3 s (`remote.rs:87`) is a 409.
+
+## Routes
+
+Source: `crates/nightloom-service/src/remote/mod.rs`, `fn router` (about
+lines 900–1000), plus the merged routers named in the right column. The
+listener has one address and port (default `8642`, `DEFAULT_PORT`,
+`mod.rs:80`, blocker 172).
+
+**Served without the bearer token** (the outer router, `mod.rs:983–998`):
+
+| Route | What |
+|---|---|
+| `GET /`, `GET /remote.html` | the page |
+| `GET /assets/{*path}`, `GET /remote/{*path}` | the page's files only; the desktop's own `index.html` is a 404 (`serve_asset`, `mod.rs:1986`) |
+| `GET /apple-touch-icon.png`, `…-precomposed.png` | Home Screen icon |
+| `GET /push-sw.js` | the push service worker (holds no token) |
+| `GET /api/voice` | WebSocket; the **first frame carries the token**, checked before any audio is read (`voice_ws.rs`) |
+
+**Everything else is under `/api` with `Authorization: Bearer <token>`**; a
+missing or wrong one, and every unknown path, is a 401 with the sentence "the
+token is missing or wrong — open the link from Settings → Remote again"
+(`require_token`, `mod.rs:1085`; the fallback sits inside the layer on
+purpose, so a missing route cannot be told from a real one without a token).
+About 90 routes:
+
+| Group | Routes | Defined in |
+|---|---|---|
+| State and chats | `GET /state`, `GET /chats`, `POST /new`, `POST /chats/{id}/rename`, `/open`, `GET /chats/{id}/transcript`, `/context` (also `POST`), `POST /chats/{id}/act`, `/media`, `/layers`, `/cancel`, `POST /cancel` | `mod.rs` |
+| Send | `POST /chats/{id}/send`, `POST /send` — body `SendRequest` (`mod.rs:188–202`): `text`, `spoken`, `project`, `images`, `documents`, `council`; the 202 body is `{"status":"sent"}` or `{"status":"queued"}`, a refusal is a 409 | `mod.rs` |
+| Approvals, secrets | `POST /approve` (`allow` / `always` / `deny` / `later`, question answers, plan approval), `POST /secret`, `GET /bitwarden/ready`, `POST /bitwarden/search`, `/bitwarden/store` | `mod.rs` |
+| Stream | `GET /events` — SSE: `hello`, then the desktop's `turn-event`, `tool-approval`, `turn-notice` by name with payloads unchanged, `lagged` when the phone fell behind, a comment every 15 s | `mod.rs` |
+| Projects | `GET`/`POST /projects`, `POST /projects/{id}/open`, `/rename`, `/forget`, `GET /projects/{id}/chats`, `GET /projects/{pid}/chats/{id}/transcript` | `mod.rs` |
+| Asides, settings, status | `POST /chats/{id}/aside`, `/aside/cancel`, `GET /chats/{id}/asides`, `GET`/`POST /rail`, `GET /running`, `/usage`, `/cache-rates`, `/search` | `mod.rs` |
+| Notes, passes, files, voice | `GET /notes`, `GET`/`PUT`/`DELETE /notes/{scope}/{*name}`, `POST /dream`, `POST /capture`, `GET /sent-files/{id}/{name}`, `POST /listen`, `/listen/brief` | `mod.rs` |
+| Nightshift | `GET /nightshift`, `/nightshift/{p}/queue`, `POST …/items`, `GET …/items/{id}`, `…/blockers`, `…/blockers/{id}`, `POST …/blockers/{id}/answer`, `GET …/mornings`, `…/mornings/{name}` | `nightshift_routes.rs:185–193` |
+| Feedback | `/feedback` | `feedback_routes.rs:49` |
+| Home's sources | `GET /home/sources`, `POST /home/sources/{id}/ask`, `GET /home/routes`, `POST /home/routes/{id}/start`, `/dismiss` | `home_routes.rs:35–39` |
+| Home's screen | `GET /home/feed`, `POST /home/seen`, `GET /home/scan`, `/home/held`, `/home/today`, `/home/tasks`, `POST /home/tasks/event`, `/home/tasks/{id}/close`, `/home/tasks/focus`, `GET /home/steps`, `GET /shortcut/needs` | `home_phone_routes.rs:39–49` |
+| Push | `GET /push`, `POST /push/subscribe`, `/unsubscribe`, `/seen`, `GET /push/feed`, `POST /push/test`, `/push/key` | `push_routes.rs:37–43` |
+| Rules | `GET`/`POST /rules`, `GET`/`PUT /sync/rules` | `rules_routes.rs:39–40` |
+| Saved prompts | `GET /saved-prompts` | `saved_prompt_routes.rs:20` |
+| Jobs | `GET`/`POST /jobs`, `POST`/`DELETE /jobs/{id}`, `POST /jobs/{id}/run` | `job_routes.rs:35–37` |
+| Shortcuts | `POST /shortcut/send`, `GET /shortcut/running` | `shortcut_routes.rs:38–39` |
+| Sync (Mac ↔ away server) | `/sync/manifest`, `/sync/files/{*path}`, `/sync/outbox` (+ `/{chat}/log`, `/cli`), `/sync/ack`, `/sync/lease`, `/sync/jobs` | `sync_routes.rs:51–65` |
+
+Which route groups a host serves is told by `Host::features` (`mod.rs:496`,
+sent on `/api/state`, with `kind`: `mac` or `serve`, `mod.rs:503`): the page
+hides or greys a surface when its feature is missing, and a route answers 501
+when the host has none (`refused`, `mod.rs:1110`).
 
 ## The binding rule
 
@@ -48,41 +133,73 @@ desktop's view is never a turn behind.
 never `0.0.0.0`, never a LAN address, and there is no option for either
 (blocker 105, its default taken). The address comes from `Tailscale ip -4`
 (the app's bundled CLI, then `tailscale` on PATH), else from `ifconfig`'s
-`100.64.0.0/10` line; the server refuses to start on any address outside
-that range before a socket exists. With Tailscale off the switch fails
-with a sentence naming it. While the listener is on, the card and the QR
-show the address it is *bound* to, not whatever Tailscale answers now:
-if the node's address changes (a re-login, a reset), switch Remote off
-and on to bind the new one.
+`100.64.0.0/10` line (`tailnet.rs`); `Server::start` refuses any address
+outside that range before a socket exists (`mod.rs:745`, `Error::NotTailnet`).
+With Tailscale off the switch fails with a sentence naming it. While the
+listener is on, the card and the QR show the address it is *bound* to, not
+whatever Tailscale answers now: if the node's address changes (a re-login, a
+reset), switch Remote off and on to bind the new one. (The away server is the
+one exception: `start_public` binds any address, plain HTTP, behind Fly's proxy,
+`mod.rs:765–771`.)
 
-No TLS: the tailnet is WireGuard end to end, and a certificate the phone
-would have to trust is a setup step this page exists to not have. Only
-devices on *your* tailnet can reach the port at all; the token is what
-stops another of them.
+**TLS.** Plain HTTP by default: the tailnet is WireGuard end to end, and a
+certificate the phone would have to trust is a setup step this page exists to
+not have. **HTTPS is served when `cert.pem` and `key.pem` (from `tailscale
+cert`) are in `<config>/remote/`** (`tls.rs:13,43`; `mod.rs:750–761`; the
+phone's microphone needs a secure page). Unreadable files are an error, not a
+silent fall back to HTTP. The app renews the certificate at each start when
+HTTPS is already set up (`remote.rs:2283–2305`, `renew_certificate`), and the
+running listener renews it daily (`tls::keep_fresh`, `mod.rs:829`). The
+certificate is for the machine's tailnet **name**, not its address, so the QR
+carries `https://<machine>.<tailnet>.ts.net:<port>/#token=…`
+(`https_setup_url`, `remote.rs:1997`). Only devices on *your* tailnet can
+reach the port at all; the token is what stops another of them.
 
 ## The token
 
-A bearer token, made once when the listener first goes on: one uuid v4's
-random bits as 32 hex characters (blocker 173), stored in the keychain
-beside the API keys (`remote:token`), never on disk. Every `/api` call
-carries it as `Authorization: Bearer …`; a missing or wrong one is a 401
-(the page then says "scan again"). The page and its files need none — the
+Source: `credentials.rs:316–400`, `remote/token.rs`, `remote.rs:2407` (the
+`remote_token` command), `client.ts:44`.
+
+**Where it comes from**, decided by `remote_token_source`
+(`credentials.rs:343`) in this order:
+
+1. **`NIGHTLOOM_REMOTE_TOKEN`** (item 1003, blocker 2333), if set and not
+   blank (it is trimmed): used as is, stored nowhere. **Regenerate is refused**
+   under it ("the phone token comes from NIGHTLOOM_REMOTE_TOKEN; change it
+   there", `Error::FromEnv`).
+2. **A set `NIGHTLOOM_HOME` without it**: *no token at all*, and the listener
+   refuses to start ("this is a dev home (NIGHTLOOM_HOME is set): the phone
+   page needs NIGHTLOOM_REMOTE_TOKEN here, and the keychain's real token is
+   never used", `Error::DevHome`; checked at `remote.rs:2265`). A dev app never
+   serves under the installed app's token.
+3. **Otherwise the keychain** (`remote:token`, beside the API keys), made once
+   when the listener first goes on: one uuid v4's random bits as 32 lowercase
+   hex characters (`token.rs:17`, blocker 173). Never on disk.
+
+**Use a hex token.** The page's `#token=` reader accepts only
+`[0-9a-fA-F]{16,128}` and lowercases it (`client.ts:45`). A non-hex
+`NIGHTLOOM_REMOTE_TOKEN` is served by the listener but can never be paired
+from a link (the audit's first token, url-safe base64, did exactly this;
+measured in item 740, row 1). Nothing warns about it yet.
+
+Every `/api` call carries it as `Authorization: Bearer …`; a wrong one is a
+401 (the page then says "scan again"). The page and its files need none — the
 page is not secret.
 
 It reaches the phone through the page's own URL: the QR in Settings →
-Remote encodes `https://<machine>.<tailnet>.ts.net:<port>/#token=<token>`
-when HTTPS is set up (the certificate is for that name, not the address;
-item 246), else `http://<address>:<port>/#token=<token>`. The token rides
-the fragment, which never leaves the browser — not in a request, not in a
-referer — and the page moves it into local storage and strips it from the
-address bar the moment it loads. The event stream is read with `fetch`
-rather than `EventSource` for the same reason: `EventSource` cannot send a
-header, and the token must not go in a URL.
+Remote encodes the HTTPS link above when HTTPS is set up, else
+`http://<address>:<port>/#token=<token>`. The token rides the fragment, which
+never leaves the browser — not in a request, not in a referer — and the page
+moves it into local storage and strips it from the address bar the moment it
+loads. The event stream is read with `fetch` rather than `EventSource` for the
+same reason: `EventSource` cannot send a header, and the token must not go in
+a URL. (A pairing link for the away server and the Mac together is
+`<away>/#token=…&mac=…&mt=…`, `remote.rs:1980`.)
 
-**Regenerate** (in the card) replaces the token and restarts a running
-listener with it; every phone must scan again. Off, and a restart, end
-every open event stream at once — a phone holding one is cut, not left
-listening with the old token.
+**Regenerate** (in the card, `SettingsModal.svelte:2826`) replaces the token
+and restarts a running listener with it; every phone must scan again. Off,
+and a restart, end every open event stream at once — a phone holding one is
+cut, not left listening with the old token.
 
 ### What the phone is told (backlog 132, 2026-09-17)
 
@@ -156,7 +273,8 @@ awake while a turn runs" switch is on — the holder's rule, unchanged
 ## Push notifications (item 739, 2026-11-16)
 
 The Home Screen app can be sent real pushes (iOS 16.4+; the HTTPS link).
-Settings sheet → **Notifications on this phone** is the Subscribe switch,
+Model and settings sheet → **Notifications on this phone**
+(under Look; `Remote.svelte:4299–4302`) is the Subscribe switch,
 its off switch and "Send a test notification"; in Safari, or on the plain
 HTTP link, the row says why it cannot be turned on.
 
@@ -167,7 +285,8 @@ HTTP link, the row says why it cannot be turned on.
 - None is sent while the Mac's keyboard or trackpad was touched in the last
   two minutes. The away server cannot know that and always sends.
 - Routes, all behind the bearer: `GET /api/push`, `POST /api/push/subscribe`,
-  `/unsubscribe`, `/seen`, `/test`, and `/key` (away server only). The
+  `/unsubscribe`, `/seen`, `GET /api/push/feed` (what needs him; Home reads it,
+  `push_routes.rs:41`), `/test`, and `/key` (away server only). The
   worker is `/push-sw.js` (no fetch handler, no cache, no token).
 - Files, per host, mode 0600 under `<home>/remote/push/`: `vapid.pk8` (the
   signing key, made once) and `subscriptions.json`. The Mac's sync pass
@@ -440,26 +559,44 @@ routes are tested on loopback only.
 
 ## What is not here (yet)
 
-Attachments, folder pickers, settings, Nightshift's blockers and morning
-page, notes (this list is stale; the phone-page audit item rewrites it); Tailscale identity headers (`tailscale
-serve` in front of the port; later). Shape A and Shape C are separate
-items.
+Source: `mod.rs:24–30`. Tailscale identity headers (they need `tailscale
+serve` in front of the port; later) — the only claim left of the old list. The
+attachments (images, documents), the folder and project pickers and New
+project, the settings rail (`/api/rail`), Nightshift's blockers and mornings,
+and notes are all built (see "What the phone page does"). Shape A and Shape C
+are separate items.
 
 ## Where the code lives
 
-- `crates/nightloom-service/src/remote/` — the axum server over a `Host`
-  trait (`mod.rs`), the tailnet address (`tailnet.rs`), the token and QR
-  (`token.rs`), the Shortcuts routes (`shortcut_routes.rs`, item 744).
-  Tests bind loopback under `cfg(test)` only.
+- `crates/nightloom-service/src/remote/` — 16 files: `mod.rs` (the axum server
+  over a `Host` trait, the routes, the bearer check, the SSE relay), `api.rs`
+  (the one API's types, `api::feature`), `tailnet.rs` (the tailnet address),
+  `token.rs` (the token), `voice_ws.rs` (`/api/voice`), `resent.rs`,
+  `sync_routes.rs`, `rules_routes.rs`, `saved_prompt_routes.rs`,
+  `job_routes.rs`, `push_routes.rs`, `nightshift_routes.rs`,
+  `feedback_routes.rs`, `home_routes.rs`, `home_phone_routes.rs`,
+  `shortcut_routes.rs`. Beside it: `src/tls.rs` (the certificate),
+  `src/credentials.rs` (the token's source). Tests bind loopback under
+  `cfg(test)` only.
 - `apps/desktop/src-tauri/src/remote.rs` — `DesktopHost`, the relay, the
-  managed `Remote` state, the five commands (`remote_status`, `remote_start`,
-  `remote_stop`, `remote_set_keep_awake`, `remote_token`).
-- `apps/desktop/remote.html`, `src/remote/` (`main.ts`, `Remote.svelte`,
-  `client.ts` + its tests), `public/remote/` (the manifest and icons) —
-  a second Vite entry of the same build.
-- `src/lib/state.svelte.ts` (`init`) — the three `remote-*` listeners;
+  managed `Remote` state, and the commands `remote_status`, `remote_sent`,
+  `push_note`, `remote_claim`, `remote_done`, `remote_start`, `remote_stop`,
+  `remote_set_keep_awake`, `remote_token`, `remote_self_test` (ten;
+  `remote.rs:2056–2469`).
+- `apps/desktop/remote.html` and `apps/desktop/src/remote/` — a second Vite
+  entry of the same build: `main.ts`, `Remote.svelte`, `client.ts`, and about
+  thirty components and modules: the sheets (`AsideSheet`, `ChangesSheet`,
+  `ContextSheet`, `CouncilSheet`, `FeedbackSheet`, `JobsSheet`,
+  `NightshiftSheet`, `NotesSheet`, `ProjectsSheet`, `RailSheet`, `RulesSheet`,
+  `RunningSheet`), `ChatMenu`, `MessageMenu`, `LayerEditor`, `HomeFirst`,
+  `HomeStage`, `Hosts`, `SecretAsk`, `PushRow`, `UsageLine`, `ProjectPage`,
+  `JobChatCard`, `JobApproval`, `JobRunConfirm`, `BlockerAnswer`, and
+  `voice/` (`MicButton`, `Orb`, `SpeechTest`, `Voice`, capture, player, vad).
+  `apps/desktop/public/remote/` holds the manifest, the icons and
+  `push-sw.js`.
+- `apps/desktop/src/lib/remoteHandlers.ts:988–1008` — the three `remote-*`
+  listeners (`remote-send`, `remote-approve`, `remote-cancel`);
   `SettingsModal.svelte` — the Remote card.
-
 
 ## Approval follow-ups (nightshift item 783)
 
