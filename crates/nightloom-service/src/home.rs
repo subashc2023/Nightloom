@@ -431,7 +431,10 @@ fn accounts_section(config: &Path, now: DateTime<Utc>) -> String {
 /// The scan's message: [`SCAN_LINE`], what to write, and the facts. With
 /// `accounts` (item 804: the facts end with accounts to read), the one
 /// turn also reads each account's mail and calendar with the connectors'
-/// read tools; without, it uses no tools, as before.
+/// read tools; without, it uses no tools, as before. Item 993b: with
+/// accounts, each item it names is written as its typed tag
+/// (`prompt::REF_NOTE`), which Home's chat — connectors always on — is
+/// taught in its engine note.
 pub fn scan_message(facts: &str, accounts: bool) -> String {
     if !accounts {
         return format!(
@@ -459,7 +462,9 @@ pub fn scan_message(facts: &str, accounts: bool) -> String {
          four short sections: **What happened**, **Mail and calendar** (a line or two per account, \
          named by its address), **What needs you**, **Suggested next** (at most three). Name the \
          project and chat for each line from the facts; times in 12-hour AM/PM, his local time. \
-         Use no other tools, beyond looking the connector tools up. Then, for each account you read, one line `account: <connector name \
+         Use no other tools, beyond looking the connector tools up. Write each event, thread and \
+         file you name as its tag (<event>, <email>, <doc>, as the engine note says), its fields \
+         copied from the tool result; a thread's gist goes only in its tag. Then, for each account you read, one line `account: <connector name \
          exactly as listed> = <that account's address>`, and end with one line: `waiting: N`, the \
          number of things that need him.\n\n<facts>\n{facts}</facts>"
     )

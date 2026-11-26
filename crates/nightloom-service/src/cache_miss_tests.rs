@@ -73,6 +73,7 @@ fn spec_for(ws: &Path, notes: &Path, thread: Option<&str>) -> AgentSpec {
             limits: None,
             cli_agents_md: false,
             incognito: false,
+            connectors: false,
         },
     );
     let mut s = AgentSpec::new(ws.to_path_buf());
