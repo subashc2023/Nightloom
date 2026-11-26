@@ -119,6 +119,33 @@ export function commandMatches(text: string, surface: CommandSurface): AppComman
   return commandsOn(surface).filter((c) => c.name.startsWith(q));
 }
 
+/**
+ * Item 998: the commands whose bare form only asks for its words (a toast,
+ * the box kept) — `/aside`, `/rename`, `/schedule`, `/note`. Every other
+ * command does something typed alone, so Return on its name typed in full
+ * runs it; Return on one of these completes it to `/name ` for the words.
+ */
+const NEEDS_WORDS: ReadonlySet<AppCommandName> = new Set(["aside", "rename", "schedule", "note"]);
+
+/** Whether `cmd` does something typed alone, with no words after it. */
+export function runsAlone(cmd: AppCommand): boolean {
+  return !NEEDS_WORDS.has(cmd.name);
+}
+
+/**
+ * Item 998: the command a Return runs at once from the open menu — the box
+ * holds exactly `/name` (any case) of a command on `surface` that runs
+ * alone. Null otherwise: the menu's Return picks its row as before
+ * (blocker 2293: a picked row inserts `/name `, a second Return runs it).
+ */
+export function typedInFull(text: string, surface: CommandSurface): AppCommand | null {
+  const m = /^\/([A-Za-z]+)$/.exec(text);
+  if (!m) return null;
+  const name = m[1].toLowerCase();
+  const cmd = commandsOn(surface).find((c) => c.name === name);
+  return cmd && runsAlone(cmd) ? cmd : null;
+}
+
 /** The menu's label for a command's row: `app`, then what it does. */
 export function commandKind(cmd: AppCommand): string {
   return `app · ${cmd.what}`;

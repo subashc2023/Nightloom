@@ -252,14 +252,14 @@
   import { registerPasteHandler, type PasteRequest } from "./pasteToCompose";
   import { handOffBlock, handOffNow, isHandoffCommand } from "./manualHandoff.svelte";
   // Item 966: the app's slash commands, one table for every box.
-  import { commandKind, commandMatches, newKind, NEW_KINDS_HINT, parseCommand, pickRow } from "./appCommands";
+  import { commandKind, commandMatches, newKind, NEW_KINDS_HINT, parseCommand, pickRow, typedInFull } from "./appCommands";
   // Item 967: the second batch's actions, each its control's own function.
   import { runBatch2, type BoxActions } from "./appCommands967";
   import { newNoteOrOpen } from "./newNoteOrOpen";
   import { atTime, resetTime } from "./schedule";
   import { canMakeMain } from "./versions";
   import { makeMainChat, versions } from "./versions.svelte";
-  import { openAgentTab, openTerminalFromBar, terminalCwd } from "./terminal.svelte";
+  import { newShell, openAgentTab, terminalCwd } from "./terminal.svelte";
   import { canLeaveProject, councilFor, saveMemoryFromChat, setCheckpoint, useProject } from "./state.svelte";
   import { rewindAsideWithUndo } from "./asideRewind.svelte";
   import { renameAside } from "./asides.svelte";
@@ -927,6 +927,8 @@
   });
   let slashDismissed = $state(false);
   let slashIndex = $state(0);
+  /** Item 998: ↑/↓ moved the menu's row since the last keystroke (a pick, not the typed name). */
+  let slashMoved = $state(false);
   /*
    * Item 800: saved message prompts join the list — on either engine and
    * before the first turn, since they are only text — wherever a `/word`
@@ -1044,6 +1046,7 @@
     void text;
     if (!/^\//.test(text)) slashDismissed = false;
     slashIndex = 0;
+    slashMoved = false;
   });
   function pickSlash(name: string, prompt: MessagePrompt | null = null, insert: BoxInsert | null = null): void {
     if (insert) {
@@ -1767,15 +1770,31 @@
       if (e.key === "ArrowDown") {
         e.preventDefault();
         slashIndex = (slashIndex + 1) % slashMatches.length;
+        slashMoved = true;
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
         slashIndex = (slashIndex - 1 + slashMatches.length) % slashMatches.length;
+        slashMoved = true;
         return;
       }
       // Item 890: never while an input method is composing (its Enter is the IME's).
       const imeKey = composing || e.isComposing || e.keyCode === 229;
+      // Item 998: a command's name typed in full (`/model`, `/keepwarm`) runs
+      // on this one Return, as Send would run it — unless ↑/↓ moved to
+      // another row, which Return then picks (blocker 2293). Tab still
+      // completes. Stopped here so no window key handler (⌘P's list, which
+      // `/project` opens in this same keydown) takes the Return as its own.
+      const full = !imeKey && e.key === "Enter" && !e.shiftKey ? typedInFull(text, aside ? "aside" : "chat") : null;
+      const sel = slashMatches[slashIndex];
+      if (full && (!slashMoved || (sel?.own && sel.name === full.name))) {
+        e.preventDefault();
+        e.stopPropagation();
+        slashDismissed = true;
+        void submit();
+        return;
+      }
       if (!imeKey && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
         e.preventDefault();
         pickSlash(slashMatches[slashIndex].name, slashMatches[slashIndex].prompt, slashMatches[slashIndex].insert);
@@ -1824,6 +1843,11 @@
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
+      // Item 997: the Return that runs an app command is the box's alone.
+      // `/project` opens ⌘P's list inside this keydown; the list's own
+      // window handler then took this same Return as "open the first
+      // project" (Home, its Morning-scan chat) — or, from Home, nothing.
+      if (parseCommand(text, aside ? "aside" : "chat")) e.stopPropagation();
       void submit();
     } else if (e.key === "ArrowUp" && !text && queue.length > 0) {
       // The CLI's rule: Up in an empty input takes the newest held
@@ -2996,11 +3020,15 @@
       currentProject: () => app.project?.id ?? null,
       canLeaveProject: () => canLeaveProject(),
       useProject: async (id) => void (await useProject(id)),
-      openProjects: () => runMenuCommand("projects"),
+      // Item 997: opens the list, never toggles it shut (⌘P's menu id toggles).
+      openProjects: () => void (app.overlay !== "projects" && runMenuCommand("projects")),
       noteScope: () => (app.project ? "project" : app.knowledge ? "knowledge" : null),
       newNote: (scope, name) => newNoteOrOpen(scope, name),
       terminalCwd: () => terminalCwd(),
-      openTerminal: () => openTerminalFromBar(),
+      // Item 996: always a NEW shell, in front and focused — ~~the top bar's
+      // button (`openTerminalFromBar`)~~, which only shows a hidden or
+      // collapsed dock (its Agent commands tab in front) and makes no shell.
+      openTerminal: async () => void (await newShell()),
       openAgentTab: async (id) => void openAgentTab(id),
       canMakeMain: (id) => canMakeMain(app.sessions, versions.map, id),
       makeMain: (id) => makeMainChat(id),
