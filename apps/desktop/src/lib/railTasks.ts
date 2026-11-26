@@ -12,6 +12,7 @@
  * Pure: `TaskPanel.svelte` reads the store and calls this.
  */
 import { groupAgents, rowState, type RowState } from "./taskGroups";
+import { silentFor } from "./silentHelper";
 
 export interface HelperRow {
   /** The subagent's `tool_use_id` (opens the Running tasks panel on it), or the run's id. */
@@ -22,6 +23,9 @@ export interface HelperRow {
   state: RowState;
   /** A subagent row the Running tasks panel can open on. */
   focus: string | null;
+  /** Item 752 (blocker 2345): how long a running subagent has said
+   *  nothing, once past 15 min; else null. Its Restart is in Running tasks. */
+  silent: number | null;
 }
 
 interface SubRow {
@@ -32,6 +36,9 @@ interface SubRow {
   background: boolean;
   turn: number;
   startedAt: number;
+  updatedAt?: number;
+  heardAt?: number;
+  restored?: boolean;
 }
 
 interface Run {
@@ -48,6 +55,7 @@ export function helperRows(
   subs: readonly SubRow[],
   runs: readonly Run[],
   session: string | null,
+  now?: number,
 ): { rows: HelperRow[]; running: number; more: number } {
   const g = groupAgents([...subs]);
   const sub = (r: SubRow): HelperRow => ({
@@ -56,12 +64,13 @@ export function helperRows(
     kind: r.subagent_type === "council seat" ? "council seat" : r.background ? "background" : r.subagent_type || "subagent",
     state: rowState(r),
     focus: r.tool_use_id,
+    silent: now === undefined ? null : silentFor({ ...r, updatedAt: r.updatedAt ?? r.startedAt }, now),
   });
   // Asides run beside the chat with no subagent row (the Running tasks panel's own rows).
   const asides: HelperRow[] = session
     ? runs
         .filter((r) => r.session === session && r.kind === "aside")
-        .map((r) => ({ id: r.id, label: r.doing || "aside", kind: "aside", state: "running" as const, focus: null }))
+        .map((r) => ({ id: r.id, label: r.doing || "aside", kind: "aside", state: "running" as const, focus: null, silent: null }))
     : [];
   const running = [...g.running.map(sub), ...asides];
   const finished = g.latest.rows.map(sub);

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { silentLabel } from "./silentHelper";
   import { tip } from "./tip";
   import { app, currentTodos, openChatSubagents } from "./state.svelte";
   import { allRunning } from "./running.svelte";
@@ -30,7 +31,7 @@
   let now = $state(Date.now());
   const subs = $derived(column ? openChatSubagents() : []);
   const runs = $derived(column ? allRunning(now) : []);
-  const helpers = $derived(helperRows(subs, runs, app.activeSessionId));
+  const helpers = $derived(helperRows(subs, runs, app.activeSessionId, now));
   $effect(() => {
     if (!column || helpers.running === 0) return;
     const t = setInterval(() => (now = Date.now()), 1000);
@@ -73,10 +74,22 @@
             <button
               type="button"
               disabled={!h.focus}
-              use:tip={h.focus ? `${h.label} · ${h.kind} · ${STATE_WORD[h.state]} — open it in Running tasks` : `${h.label} · ${h.kind} · running`}
+              use:tip={h.silent !== null
+                ? `${h.label} · ${silentLabel(h.silent)} — open it in Running tasks to restart it`
+                : h.focus
+                  ? `${h.label} · ${h.kind} · ${STATE_WORD[h.state]} — open it in Running tasks`
+                  : `${h.label} · ${h.kind} · running`}
               onclick={() => h.focus && openTasksOn(h.focus)}
             >
-              <i aria-hidden="true"></i><span class="hl">{h.label}</span><span class="hk">{h.state !== "running" ? STATE_WORD[h.state] : SHOWN_KINDS.has(h.kind) ? h.kind : "running"}</span>
+              <i aria-hidden="true"></i><span class="hl">{h.label}</span><span class="hk" class:silent={h.silent !== null}
+                >{h.silent !== null
+                  ? `silent ${Math.floor(h.silent / 60_000)} min`
+                  : h.state !== "running"
+                    ? STATE_WORD[h.state]
+                    : SHOWN_KINDS.has(h.kind)
+                      ? h.kind
+                      : "running"}</span
+              >
             </button>
           </li>
         {/each}
@@ -247,6 +260,10 @@
   }
   .thelp li.running .hk {
     color: var(--signal);
+  }
+  /* Item 752: a helper silent 15 min. */
+  .thelp li.running .hk.silent {
+    color: var(--partial, var(--ink2));
   }
   .tmore {
     margin-top: 4px;

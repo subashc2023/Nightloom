@@ -1803,6 +1803,7 @@ fn main() {
             commands::steer::take_back_injected,
             commands::steer::send_now_injected,
             commands::steer::stop_subagents,
+            commands::steer::restart_subagent,
             commands::steer::steer_state,
             commands::steer::unsteer_subagent,
             commands::usage::checkpoint,

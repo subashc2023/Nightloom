@@ -56,6 +56,7 @@
   import { namesImage } from "./toolImages.svelte";
   import SignedOutNotice from "./SignedOutNotice.svelte";
   import StillRunningLine from "./StillRunningLine.svelte";
+  import SilentHelper from "./SilentHelper.svelte";
   import { errorWeight, retriedAfter, softLine } from "./errorWeight";
   import MidTurnBubble from "./MidTurnBubble.svelte";
   import RetryLine from "./RetryLine.svelte";
@@ -315,6 +316,11 @@
                       >{/if}</span
                   >
                 </button>
+                {#if agentRow}
+                  <!-- Item 752 (blocker 2345): a helper silent 15 min — the
+                       notice and Restart under its row; nothing while it talks. -->
+                  <div class="silent-under"><SilentHelper row={agentRow} /></div>
+                {/if}
                 {#if bornW && T.streaming}
                   <!-- The weft (backlog 342): an accent thread draws across the
                        row as it appears, a bright shuttle runs along it while
@@ -1601,5 +1607,10 @@
     display: block;
     height: 100%;
     background: var(--accent);
+  }
+  /* Item 752: the silent helper's line; empty, it takes no room. */
+  .silent-under:not(:empty) {
+    display: flex;
+    padding: 2px 0 4px 26px;
   }
 </style>

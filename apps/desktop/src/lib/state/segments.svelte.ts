@@ -20,8 +20,10 @@ export function upsertSubagentRow(ev: Extract<TurnEvent, { type: "subagent_statu
   const row = subagentRow(status.tool_use_id);
   const now = Date.now();
   if (row) {
-    Object.assign(row, status, { updatedAt: now, restored: false });
+    Object.assign(row, status, { updatedAt: now, heardAt: now, restored: false });
     row.session ??= session;
+    // Item 752: a Restart's mark goes once the CLI says it is no longer running.
+    if (row.status !== "running") row.restarting = false;
   } else {
     app.subagents.push({
       ...status,
@@ -29,6 +31,7 @@ export function upsertSubagentRow(ev: Extract<TurnEvent, { type: "subagent_statu
       turn: app.turnSeq,
       startedAt: now,
       updatedAt: now,
+      heardAt: now,
       segments: [],
     });
   }

@@ -270,6 +270,14 @@ export interface SubagentRow extends SubagentStatus {
   startedAt: number;
   /** Clock at the last event; the elapsed count stops here once done. */
   updatedAt: number;
+  /** Clock at the last thing it streamed (item 752, blocker 2345): its
+   *  status (after each of its tool calls) or a message of its own. The
+   *  "No output for 15 min" notice counts from here. Absent on a row from
+   *  the log, which draws no notice. */
+  heardAt?: number;
+  /** He pressed Restart (blocker 2345): drawn "Restarting…" until the CLI
+   *  reports it stopped. */
+  restarting?: boolean;
   /** The child's own calls, thinking and words, as the transcript's
    *  collapsed row has them (backlog 075) — a second copy, kept here. */
   segments: Segment[];
@@ -2836,6 +2844,45 @@ export function turnWasStopped(): boolean {
  */
 export const stopClock = $state<StopClock>({ since: null });
 
+/**
+ * The running turn's key for a chat (item 752, blocker 2345: Restart on a
+ * silent helper stops it through its turn's inbox): the screen's turn when
+ * it is that chat's, else the chat's background turn. Null when no turn of
+ * that chat runs here — its helpers ended with it.
+ */
+export function turnKeyOf(chat: string | null): string | null {
+  if (fg && fg.chat === chat) return fg.key;
+  if (chat) {
+    const bg = bgTurns.get(chat);
+    if (bg) return bg.key;
+  }
+  return null;
+}
+
+/** The prompt an `Agent` call was given, from the live reply (screen or
+ *  background) or the chat's log (item 752: the restart note carries it
+ *  whole; the CLI's status row may cut it short). Null when not found. */
+export function agentCallPrompt(id: string): string | null {
+  const lists: Segment[][] = [];
+  const screen = liveHost(app).live?.segments;
+  if (screen) lists.push(screen);
+  for (const b of Object.values(app.background)) if (b.live?.segments) lists.push(b.live.segments);
+  for (const segs of lists) {
+    const call = findCall(segs, id);
+    const p = (call?.input as { prompt?: unknown } | undefined)?.prompt;
+    if (typeof p === "string" && p) return p;
+  }
+  for (const e of app.events) {
+    if (e.event !== "assistant_message") continue;
+    for (const b of e.blocks) {
+      if (b.type !== "tool_use" || b.id !== id) continue;
+      const p = (b.input as { prompt?: unknown } | undefined)?.prompt;
+      if (typeof p === "string" && p) return p;
+    }
+  }
+  return null;
+}
+
 export async function cancelTurn(chat?: string | null): Promise<void> {
   // A named chat that is not the one on screen (backlog 159, A3: the
   // phone's Stop for the chat it shows): stop that chat's turn only; the
@@ -3133,7 +3180,11 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
   }
   if (ev.type === "subagent") {
     const row = subagentRow(ev.parent_tool_use_id);
-    if (row) applyToSegments(row.segments, ev.event);
+    if (row) {
+      applyToSegments(row.segments, ev.event);
+      // Item 752: it spoke — the silence clock starts again.
+      row.heardAt = Date.now();
+    }
   }
   if (!s.live) return;
   const segments = s.live.segments;
