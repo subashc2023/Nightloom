@@ -109,6 +109,10 @@
   import { chatPage } from "./lib/waitingChat";
   import NewProject from "./lib/NewProject.svelte";
   import Palette from "./lib/Palette.svelte";
+  // Item 993c: the card a typed link (an event, an email, a doc named in a reply) opens.
+  import RefCardHost from "./lib/RefCardHost.svelte";
+  import { home as homeState, openHome as openHomeForRef } from "./lib/home.svelte";
+  import { stage as homeStageKept } from "./lib/homeStage/stageState.svelte";
   import FeedbackBox from "./lib/FeedbackBox.svelte";
   import { feedback } from "./lib/feedback.svelte";
   import NightshiftSurface from "./lib/NightshiftSurface.svelte";
@@ -1194,6 +1198,9 @@
       <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showRecoveredDrafts = false; }}><RecoveredDrafts /></div>
     {/if}
     <Palette />
+    <!-- Item 993c: one card for every typed link in the window (replies, Home, asides). Its actions are 993d's:
+         no `act` is passed yet, so each is shown, disabled, "coming soon". The signed-out notice leads to Home's Sources. -->
+    <RefCardHost reach={() => homeState.reach} loadReach={api.homeReach} onaccounts={() => void openHomeForRef().then(() => (homeStageKept.focus = "watch"))} />
     <!-- His feedback to the agent (item 805): the draft outlives the box. -->
     {#if feedback.open}<FeedbackBox />{/if}
     <!-- The wrap-up's aside picker (nightshift item 285). -->
