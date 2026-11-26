@@ -11,6 +11,17 @@ import type { NightshiftRow } from "../types";
 import { showNightshift } from "./nightshift.svelte";
 import { showNote, AGENTS_MD, reviewProposal } from "./notes.svelte";
 import { DREAM_ENGINE, type DreamPrefs, app, refreshNotes, refreshProposals, refreshPlanUsage, PLAN_USAGE_LIVE_EVERY_MS, useProject, addToast } from "../state.svelte";
+import { progressToast, settleToast, updateToast, dismissToast } from "./toasts.svelte";
+import {
+  autoResultText,
+  captureStartText,
+  dreamStartText,
+  outerText,
+  passModelName,
+  rememberResultText,
+  rememberStartText,
+  type OuterPass,
+} from "../passFeedback";
 
 /** Re-count the memory inbox. Cheap: one file read on the backend. */
 export async function refreshDreamStatus(): Promise<void> {
@@ -75,6 +86,40 @@ function passTarget(): api.PassArgs {
   return passTargetFor(app.dreamPrefs, app.draft);
 }
 
+/*
+ * Items 1005 + 1007: the toast of the pass running now. A daily or automatic
+ * pass owns one toast for its whole run, and its capture and dream name their
+ * step in it rather than raising their own start; a pass started alone (a
+ * button, /remember) raises its own. Words in `passFeedback.ts`.
+ */
+let outer: { id: number; kind: OuterPass } | null = null;
+
+/** Stop whichever pass runs (they share one cancel token on the backend). */
+function stopPass(): void {
+  void (app.dreaming ? stopDream() : stopCapture());
+}
+const STOP = { label: "Stop", run: stopPass };
+
+/** The pass's model, as a sentence names it ("Haiku"); null when the engine's default. */
+function targetModel(t: api.PassArgs): string | null {
+  return passModelName(t.model);
+}
+
+/** A step's result under an outer pass: the outer toast's last line carries
+ *  its count, so only a failure or a stop is a toast of its own. */
+function inner(text: string): void {
+  if (/failed|interrupted/.test(text)) addToast(text);
+}
+
+/** A step of the outer pass, or a toast of the step's own: its id (-1: the outer one has it). */
+function stepToast(step: string, own: string): number {
+  if (outer) {
+    updateToast(outer.id, outerText(outer.kind, step));
+    return -1;
+  }
+  return progressToast(own, STOP);
+}
+
 /**
  * Run one capture pass with the dream's connection: read every session log
  * since its watermark and extract observations into the inbox. Its own job
@@ -88,21 +133,28 @@ export async function runCapture(quiet = false): Promise<void> {
   if (app.capturing || app.dreaming) return;
   const target = passTarget();
   app.capturing = true;
+  // Items 1005 + 1007: said at the start, and working until the result.
+  const tid = stepToast("capturing", captureStartText(app.capturePending, targetModel(target)));
+  const say = (text: string) => (tid >= 0 ? void settleToast(tid, text, undefined, { stay: !quiet }) : inner(text));
   try {
     // Outside Claude Code sessions first (item 751), so the pass reads
     // what was said there up to now.
     await syncOutside();
     const r = await api.capture(target);
+    lastCapture = r.observations;
     // An automatic pass that read nothing (every chat deferred) says
     // nothing (item 278: "skip silently when nothing is pending").
-    if (quiet && r.logs_read === 0 && r.observations === 0 && !r.interrupted) return;
+    if (quiet && r.logs_read === 0 && r.observations === 0 && !r.interrupted) {
+      if (tid >= 0) dismissToast(tid);
+      return;
+    }
     // "3 from Lanternfish, 1 unfiled": the split by source.
     const split = r.per_project
       .map((p) =>
         p.project === "unfiled" ? `${p.observations} unfiled` : `${p.observations} from ${p.project}`,
       )
       .join(", ");
-    addToast(
+    say(
       (r.interrupted ? "capture interrupted — " : "capture: ") +
         `captured ${r.observations} observation${r.observations === 1 ? "" : "s"}` +
         ` from ${r.logs_read} chat${r.logs_read === 1 ? "" : "s"}` +
@@ -117,7 +169,9 @@ export async function runCapture(quiet = false): Promise<void> {
   } catch (e) {
     // Another Nightloom's pass holding the lock is not news on an
     // automatic run; anything else is.
-    if (!(quiet && String(e).includes("already running"))) addToast(`capture failed: ${String(e)}`);
+    lastCapture = null;
+    if (!(quiet && String(e).includes("already running"))) say(`capture failed: ${String(e)}`);
+    else if (tid >= 0) dismissToast(tid);
   } finally {
     app.capturing = false;
   }
@@ -140,19 +194,22 @@ export async function saveMemoryFromChat(id: string): Promise<void> {
   const target = passTarget();
   app.capturing = true;
   let found = 0;
+  // Item 1005: said at once, with a clock and Stop while the model reads the
+  // chat (minutes, on a long one), then the result in the same place — kept
+  // until he closes it, since he may have looked away for those minutes.
+  const tid = progressToast(rememberStartText(targetModel(target)), STOP);
   try {
     const r = await api.capture(target, id);
     found = r.observations;
-    addToast(
-      (r.interrupted ? "save interrupted — " : "") +
-        `saved ${r.observations} observation${r.observations === 1 ? "" : "s"} from this chat` +
-        (r.refused > 0 ? ` (${r.refused} refused)` : "") +
-        (r.remaining > 0 ? "; the rest of it is left for the next save" : "") +
-        (r.observations > 0 ? " — Dream files them into memory" : ""),
+    settleToast(
+      tid,
+      rememberResultText(r),
       r.observations > 0 ? { label: "Dream", run: () => void runDream() } : undefined,
+      { stay: true },
     );
   } catch (e) {
-    addToast(`save memory failed: ${String(e)}`);
+    // Item 1002's words for a cut-off turn arrive here, and stay as the result.
+    settleToast(tid, `save memory failed: ${String(e)}`, undefined, { stay: true });
   } finally {
     app.capturing = false;
   }
@@ -177,21 +234,26 @@ export async function stopCapture(): Promise<void> {
  * same whichever engine the window is on — the Claude Code engine included,
  * since 2026-09-16 (`passTargetFor`).
  */
-export async function runDream(): Promise<void> {
+export async function runDream(byHand = true): Promise<void> {
   if (app.dreaming || app.capturing) return;
   await yieldBackfill();
   if (app.dreaming || app.capturing) return;
   const target = passTarget();
   app.dreaming = true;
   app.dreamActivity = "";
+  // Items 1005 + 1007: said at the start; the result where it stood.
+  const tid = stepToast("dreaming", dreamStartText(app.dreamPending, targetModel(target)));
+  const say = (text: string) => (tid >= 0 ? void settleToast(tid, text, undefined, { stay: byHand }) : inner(text));
+  lastDream = null;
   try {
     const r = await api.dream(target);
+    lastDream = r.interrupted ? 0 : r.consolidated;
     // "3 into Lanternfish, 2 into the vault": the split by target, which is
     // how the user learns a project's memory folder exists at all.
     const split = r.filed
       .map((f) => `${f.consolidated} into ${f.project ?? "the vault"}`)
       .join(", ");
-    addToast(
+    say(
       r.interrupted
         ? "dream interrupted — nothing consumed; the same batch is offered next time"
         : `dream: consolidated ${r.consolidated} observation${r.consolidated === 1 ? "" : "s"}` +
@@ -206,7 +268,7 @@ export async function runDream(): Promise<void> {
             (r.cost_usd != null ? ` ($${r.cost_usd.toFixed(4)})` : ""),
     );
   } catch (e) {
-    addToast(`dream failed: ${String(e)}`);
+    say(`dream failed: ${String(e)}`);
   } finally {
     app.dreaming = false;
     app.dreamActivity = "";
@@ -247,15 +309,41 @@ export async function maybeAutoDream(kind: AutoPassKind = "compaction"): Promise
     return true;
   }
   autoPassDeferred = false;
-  // Quiet (item 278): a capture that reads nothing — the open chat has one
-  // new turn, too little to be worth one — spends nothing and says nothing.
-  if (app.capturePending > 0) await runCapture(true);
-  await refreshDreamStatus();
-  if (app.dreamPending === 0) return false;
-  addToast("auto-dream: consolidating the memory inbox");
-  await runDream();
+  // Items 1005 + 1007: ~~quiet until a result~~ — the pass says it started
+  // (a hand-off's capture ran unannounced), names its step while it runs,
+  // and ends on one line of what it did. ~~"auto-dream: consolidating the
+  // memory inbox"~~ is that toast's dreaming step now.
+  if (outer) return false;
+  outer = { id: progressToast(outerText(kind, app.capturePending > 0 ? "capturing" : "dreaming"), STOP), kind };
+  const id = outer.id;
+  let captured: number | null = null;
+  let dreamed: number | null = null;
+  let failed: string | null = null;
+  try {
+    // Quiet (item 278): a capture that reads nothing — the open chat has one
+    // new turn, too little to be worth one — raises no toast of its own.
+    if (app.capturePending > 0) {
+      lastCapture = null;
+      await runCapture(true);
+      // A capture that failed or was stopped says so (its own toast has the why).
+      if (lastCapture === null && !app.capturing) failed = "the capture did not finish";
+      captured = lastCapture ?? 0;
+    }
+    await refreshDreamStatus();
+    if (app.dreamPending > 0) {
+      await runDream(false);
+      dreamed = lastDream ?? 0;
+    }
+  } finally {
+    outer = null;
+  }
+  settleToast(id, autoResultText(kind, captured, dreamed, failed));
   return false;
 }
+
+/** What the last capture and dream found, for the outer pass's line (null: failed or none). */
+let lastCapture: number | null = null;
+let lastDream: number | null = null;
 
 /*
  * The usage gate's wiring (nightshift item 279); the rules are pure in
@@ -657,11 +745,17 @@ export function setDailyPrefs(p: DailyPrefs): void {
  * so a pass that fails is not retried every minute until the hour comes
  * round — the next day's hour, or the *Run now* button, is the retry.
  */
-export async function runDailyPass(): Promise<void> {
+export async function runDailyPass(byHand = true): Promise<void> {
   if (app.centre.dailyRunning || app.dreaming || app.capturing) return;
   await yieldBackfill();
   if (app.centre.dailyRunning || app.dreaming || app.capturing) return;
   app.centre.dailyRunning = true;
+  // Items 1005 + 1007: one toast for the whole pass, naming its step, then
+  // its summary in the same place (kept until closed when he pressed Run now).
+  const kind: OuterPass = byHand ? "daily" : "nightly";
+  const own = outer === null;
+  if (own) outer = { id: progressToast(outerText(kind, "starting"), STOP), kind };
+  const tid = outer!.id;
   const started = Date.now();
   app.centre.lastDaily = started;
   saveLastDaily(started);
@@ -669,8 +763,15 @@ export async function runDailyPass(): Promise<void> {
   try {
     await refreshCaptureStatus();
     if (app.capturePending > 0) {
+      const chats = app.capturePending;
+      lastCapture = null;
       await runCapture();
-      said.push(`captured from ${app.capturePending} chat${app.capturePending === 1 ? "" : "s"}`);
+      // Item 1005: what it found, since the capture's own toast now folds into this one.
+      said.push(
+        lastCapture === null
+          ? `capture of ${chats} chat${chats === 1 ? "" : "s"} did not finish`
+          : `captured ${lastCapture} observation${lastCapture === 1 ? "" : "s"} from ${chats} chat${chats === 1 ? "" : "s"}`,
+      );
     } else {
       said.push("nothing new to capture");
     }
@@ -678,10 +779,11 @@ export async function runDailyPass(): Promise<void> {
     if (app.dreamPending > 0) {
       const pending = app.dreamPending;
       await runDream();
-      said.push(`dreamed ${pending} observation${pending === 1 ? "" : "s"}`);
+      said.push(lastDream === null ? "the dream did not finish" : `dreamed ${lastDream} of ${pending} observation${pending === 1 ? "" : "s"} into memory`);
     } else {
       said.push("nothing to dream");
     }
+    updateToast(tid, outerText(kind, "tidying"));
     try {
       const tidy = await api.tidyMemory(true);
       const moved = tidy.reduce((n, t) => n + t.report.movable, 0);
@@ -724,11 +826,12 @@ export async function runDailyPass(): Promise<void> {
     said.push(`failed: ${String(e)}`);
   } finally {
     app.centre.dailyRunning = false;
+    if (own) outer = null;
   }
   const when = new Date(started);
   // 12-hour whatever the locale (item 611b; was the locale's "02:05 PM" / "14:05").
   app.centre.dailyLast = `${when.toLocaleDateString()} ${clockText(started)} — ${said.join(", ")}`;
-  addToast(`daily pass: ${said.join(", ")}`);
+  settleToast(tid, `daily pass: ${said.join(", ")}`, undefined, { stay: byHand });
   await refreshCentre();
 }
 
@@ -746,7 +849,7 @@ export async function maybeDailyPass(): Promise<void> {
   // the day is not stamped, so the pass is owed until it runs.
   if (app.centre.dailyRunning || app.dreaming || app.capturing) return;
   if (!(await autoPassMayRun("nightly"))) return;
-  await runDailyPass();
+  await runDailyPass(false);
 }
 
 let dailyClock: ReturnType<typeof setInterval> | null = null;

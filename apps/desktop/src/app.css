@@ -667,6 +667,13 @@ button {
   color: var(--dim);
   overflow-wrap: anywhere;
 }
+/* Item 1007: the hand-off also saves memory — said on the card, on its own line. */
+.markdown .handoff-go .handoff-memory-line {
+  flex: 1 1 100%;
+  min-width: 0;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
 .markdown .handoff-go .handoff-review-line.handoff-warn {
   color: var(--warn, var(--accent-ink));
 }

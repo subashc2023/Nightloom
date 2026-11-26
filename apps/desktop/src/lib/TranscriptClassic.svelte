@@ -127,7 +127,7 @@
     {#if T.continuedFrom && T.drawFrom === 0}
       <div class="continued">
         <span class="continued-ic"><Icon name="branch" size={14} /></span>
-        <span>Continued from <span class="continued-t">“{T.continuedFrom.name}”</span> · <span class="mono">HANDOFF.md</span></span>
+        <span>Continued from <span class="continued-t">“{T.continuedFrom.name}”</span>{#if T.continuedFrom.file}{" · "}<span class="mono">HANDOFF.md</span>{/if}</span>
         <span class="spacer"></span>
         <button class="continued-open" onclick={() => void openSession(T.continuedFrom!.id)}>open the earlier chat</button>
       </div>

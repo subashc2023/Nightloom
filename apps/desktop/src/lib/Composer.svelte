@@ -1150,6 +1150,8 @@
   });
   /** A thread chat in a code project also writes HANDOFF.md (blocker 1568). */
   const threadAndHandoff = $derived(threadHandoff && codeProjectFor(app.activeSessionId));
+  /** Item 1007: the project keeps a HANDOFF.md or a backlog/, so the built-in wrap-up writes one; elsewhere it names neither. */
+  const codeHere = $derived(codeProjectFor(app.activeSessionId));
   /** The wrap-up this chat would send: its own edit, else its thread's, else the Settings default. */
   const wrapUpText = $derived(message(app.activeSessionId));
   /** The read order this chat's continuation opens with (backlog 193). */
@@ -4326,7 +4328,7 @@
               its × takes it back.
             {:else}
               <strong>Wrap up now</strong> sends the message below as its own turn. The model finishes what is
-              half-done, {#if threadAndHandoff}updates the thread's files and <code>HANDOFF.md</code>, commits{:else if threadHandoff}updates the thread's files{:else}writes <code>HANDOFF.md</code>, commits{/if}, and
+              half-done, {#if threadAndHandoff}updates the thread's files and <code>HANDOFF.md</code>, commits{:else if threadHandoff}updates the thread's files{:else if codeHere}writes <code>HANDOFF.md</code>, commits{:else}commits what it changed (in a git folder){/if}, and
               ends with the next chat's prompt. Or raise this chat's mark and keep going. Nothing is sent while this is open.
             {/if}
           </p>
@@ -4398,7 +4400,7 @@
     </div>
   {:else if handoffHere && handoff.stage === "wrapping"}
     <div class="handoff" role="status">
-      <div class="handoff-head"><span>Wrapping up — the model is finishing what is half-done, {#if threadAndHandoff}updating the thread's files and <code>HANDOFF.md</code>, committing{:else if threadHandoff}updating the thread's files{:else}writing <code>HANDOFF.md</code>, committing{/if}, and ending with the start prompt for the new chat.</span></div>
+      <div class="handoff-head"><span>Wrapping up — the model is finishing what is half-done, {#if threadAndHandoff}updating the thread's files and <code>HANDOFF.md</code>, committing{:else if threadHandoff}updating the thread's files{:else if codeHere}writing <code>HANDOFF.md</code>, committing{:else}committing what it changed (in a git folder){/if}, and ending with the start prompt for the new chat.</span></div>
     </div>
   {:else if handoffHere && handoff.stage === "wrapped" && !handoff.startPrompt}
     <!-- Item 506 (blocker 1660): the reply's next-chat card is the hand-off;
@@ -5049,7 +5051,7 @@
   {:else if !aside && handoff.noStartPromptChat !== null && handoff.noStartPromptChat === app.activeSessionId && !text}
     <!-- The continued chat whose box was left empty (backlog 086 pass 2):
          the note lives here, under the box, until he types. -->
-    <div class="hint">continued from the earlier chat — its wrap-up reply had no &lt;handoff&gt; prompt, so the box is empty; say which files to read first (HANDOFF.md is in the project)</div>
+    <div class="hint">continued from the earlier chat — its wrap-up reply had no &lt;handoff&gt; prompt, so the box is empty; say which files to read first{#if codeHere} (HANDOFF.md is in the project){/if}</div>
   {/if}
 </div>
 

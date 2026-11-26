@@ -45,7 +45,7 @@
       {#if T.continuedFrom}
         <button
           class="continued"
-          use:tip={"This chat continues a full one from its HANDOFF.md — click to open the earlier chat"}
+          use:tip={T.continuedFrom.file ? "This chat continues a full one from its HANDOFF.md — click to open the earlier chat" : "This chat continues a full one from its hand-off prompt — click to open the earlier chat"}
           onclick={() => void openSession(T.continuedFrom!.id)}
         >
           <span aria-hidden="true">↳</span><span class="fold1">{" "}continued from {T.continuedFrom.line}</span>

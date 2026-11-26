@@ -4,6 +4,7 @@ import { newDraftKey, readDraft, setDraftText } from "./drafts.svelte";
 import {
   READ_ORDER,
   WRAP_UP,
+  PLAIN_WRAP_UP,
   beginWrapUp,
   clearMessage,
   clearReadOrder,
@@ -126,10 +127,12 @@ describe("the wrap-up and the read order a chat gets", () => {
     expect(pickText(undefined, null, "default")).toBe("default");
   });
 
-  it("an unbound chat wraps up into HANDOFF.md as before", () => {
+  it("an unbound chat wraps up into HANDOFF.md as before — in a project that keeps one (item 1007)", () => {
     expect(threadFor("c1")).toBeNull();
+    noteCodeProject("c1", true);
     expect(message("c1")).toBe(WRAP_UP);
     expect(readOrder("c1")).toBe(READ_ORDER);
+    noteCodeProject("c1", false);
   });
 
   it("a bound chat gets the research wrap-up and the thread's read order", () => {
@@ -171,12 +174,15 @@ describe("the wrap-up and the read order a chat gets", () => {
     expect(message("c1")).toContain("Do not write HANDOFF.md for this chat.");
   });
 
-  it("an unbound chat is a code chat whatever the probe says", () => {
+  // ~~"an unbound chat is a code chat whatever the probe says"~~ — item 1007 (2026-11-26): the probe decides
+  // for an unbound chat too; a plain project's wrap-up names no HANDOFF.md, mdcheck or backlog.
+  it("an unbound chat follows the probe (item 1007)", () => {
     noteCodeProject("c1", false);
-    expect(message("c1")).toBe(WRAP_UP);
-    expect(message("c1")).toContain(CODE_CLOSE);
+    expect(message("c1")).toBe(PLAIN_WRAP_UP);
+    expect(message("c1")).not.toContain("HANDOFF.md");
     noteCodeProject("c1", true);
     expect(message("c1")).toBe(WRAP_UP);
+    expect(message("c1")).toContain(CODE_CLOSE);
     noteCodeProject("c1", false);
   });
 

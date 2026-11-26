@@ -19,6 +19,7 @@ import { anchorBelow } from "../portal";
 import { gaugeChipTip, planReadingTip } from "../shortTip";
 import { foldToFit } from "../fold";
 import { forkLine } from "../edit";
+import { codeProjectFor } from "../handoff.svelte";
 // Item 299: Make main on the open fork, from the bar.
 import { canMakeMain } from "../versions";
 import { versions } from "../versions.svelte";
@@ -134,7 +135,8 @@ export function topBarLogic(props: () => TopBarLogicProps) {
   const continuedFrom = $derived.by(() => {
     if (!session?.forked_from || session.forked_from.reason !== "handoff") return null;
     const line = forkLine(session, app.sessions) ?? "from an earlier chat";
-    return { id: session.forked_from.session, line: line.replace(/^from /, "") };
+    // Item 1007: HANDOFF.md named only where the project keeps one.
+    return { id: session.forked_from.session, line: line.replace(/^from /, ""), file: codeProjectFor(session.id) };
   });
   /** The open chat is a fork (or a version) that can take its original's
    *  place (item 299): the bar offers Make main beside the mode mark. */
