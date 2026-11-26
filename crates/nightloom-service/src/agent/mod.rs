@@ -37,6 +37,7 @@ pub mod budget;
 pub mod cli_session;
 pub mod connector_writes;
 pub mod connectors;
+pub mod dev_guard;
 pub mod flat;
 pub mod fork;
 pub mod inbox;
@@ -156,6 +157,10 @@ pub enum AgentError {
     },
     #[error("transport error: {0}")]
     Io(#[from] std::io::Error),
+    /// A dev scratch home refused to resume a session of the real home's
+    /// (item 1011, [`dev_guard`]). The message is the notice, whole.
+    #[error("{0}")]
+    ForeignSession(String),
 }
 
 /// Where to look, appended to a "not found" and to nothing else.
