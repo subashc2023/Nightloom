@@ -35,6 +35,7 @@
   import { acceptFiles } from "./attachFiles.svelte";
   import { saveAnswerFiles } from "./api";
   import { answerFilesKey, filesToSave, withFilesNote } from "./answerFiles";
+  import { isSend } from "./sendGuard";
 
   let { req }: { req: ApprovalRequest } = $props();
 
@@ -134,6 +135,9 @@
   // this chat", which would promise every later call runs unasked, is not
   // offered (the gate asks about each folder).
   const addsFolder = $derived(kind === "call" && req.name === "mcp__nightloom__add_folder");
+  // Item 993d (blockers 2304, 2346): a send reaches other people and runs only on this card's answer, every time —
+  // the service never reads a standing allow for one, so no "for this chat" or "always" is offered.
+  const sends = $derived(kind === "call" && isSend(req.name));
   const folderScope = $derived(
     addsFolder && (req.input as { scope?: unknown } | undefined)?.scope === "project" ? "project" : "chat",
   );
@@ -717,13 +721,18 @@
           </div>
         </div>
       {/if}
+      {#if sends && !req.kind}
+        <div class="arg">
+          <div class="why open" data-card-note data-card-send>This reaches other people, so it asks every time: this one call, once.</div>
+        </div>
+      {/if}
       <div class="actions">
         <button class="ns-btn accent" data-act="allow" data-pick onclick={() => decide("allow")}
-          >{req.kind === "remember" ? "Remember it" : req.kind === "connector" || req.kind === "home_write" ? "Allow once" : "Allow"}</button
+          >{req.kind === "remember" ? "Remember it" : req.kind === "connector" || req.kind === "home_write" ? "Allow once" : sends ? "Allow once" : "Allow"}</button
         >
         {#if req.kind === "connector"}
           <button class="ns-btn" data-act="always" data-pick use:tip={ALWAYS_READ_TIP} onclick={() => decide("always")}>Allow always</button>
-        {:else if req.aside === undefined && !addsFolder && req.kind !== "remember" && req.kind !== "home_write"}
+        {:else if !sends && req.aside === undefined && !addsFolder && req.kind !== "remember" && req.kind !== "home_write"}
           <button
             class="ns-btn"
             data-pick
@@ -765,9 +774,11 @@
 
   <div class="actions">
     <button class="btn allow" data-pick onclick={() => decide("allow")}>Allow once</button>
-    <button class="btn" data-pick onclick={() => decide("always")}>
-      Always allow {req.name}
-    </button>
+    {#if !sends}
+      <button class="btn" data-pick onclick={() => decide("always")}>
+        Always allow {req.name}
+      </button>
+    {/if}
     <button class="btn deny" data-pick bind:this={denyButton} onclick={onDeny}>
       {denying ? "Deny" : "Deny…"}
     </button>

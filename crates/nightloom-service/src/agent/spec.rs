@@ -1044,6 +1044,15 @@ impl AgentSpec {
                         "matcher": send_guard::MATCHER,
                         "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
                     }));
+                    // A nested `claude` from the shell would carry his
+                    // connectors past this rule (blocker 2347): a string
+                    // match, not airtight (`send_guard`'s note).
+                    if let Some(command) = send_guard::shell_command() {
+                        pre.push(serde_json::json!({
+                            "matcher": send_guard::SHELL_MATCHER,
+                            "hooks": [{ "type": "command", "command": command }]
+                        }));
+                    }
                 }
             }
         }

@@ -340,6 +340,10 @@ const SENDS: &[&str] = &[
     "mcp__claude_ai_Gmail_2117773e__reply",
     "mcp__claude_ai_Gmail__forward",
     "mcp__claude_ai_Google_Calendar__respond_to_event",
+    "mcp__claude_ai_Google_Calendar__create_event",
+    "mcp__claude_ai_Google_Calendar__update_event",
+    "mcp__claude_ai_Google_Calendar__delete_event",
+    "mcp__claude_ai_Google_Drive__share_file",
 ];
 
 fn hook() -> Vec<String> {
@@ -606,4 +610,70 @@ fn homes_read_only_hook_never_answers_a_send_unasked() {
             assert_ne!(r.decision(), "allow", "{tool}");
         }
     }
+}
+
+/// 993d review: the action's process is stopped once its pass can no
+/// longer let anything through — not before, and not long after.
+#[tokio::test(start_paused = true)]
+async fn the_action_is_stopped_at_its_deadline_and_not_before() {
+    assert!(TURN_SECS > PASS_SECS as u64, "the pass ends first");
+    assert!(
+        TURN_SECS <= PASS_SECS as u64 + 30,
+        "and the turn soon after"
+    );
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let timer = stop_at_deadline(&cancel);
+    tokio::time::sleep(std::time::Duration::from_secs(TURN_SECS - 1)).await;
+    assert!(!cancel.is_cancelled(), "still running a second before");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    assert!(cancel.is_cancelled(), "stopped at the deadline");
+    timer.await.unwrap();
+
+    // A turn that ends first aborts the timer: nothing is cancelled later.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let timer = stop_at_deadline(&cancel);
+    timer.abort();
+    tokio::time::sleep(std::time::Duration::from_secs(TURN_SECS * 2)).await;
+    assert!(!cancel.is_cancelled());
+}
+
+/// 993d review: under the rail's safe mode a click is refused before a
+/// pass exists (safe mode's `--strict-mcp-config` drops his connectors).
+#[test]
+fn safe_mode_is_refused_before_anything_is_minted() {
+    assert_eq!(refuse_under_safe_mode(true), Err(SAFE_MODE.to_string()));
+    assert_eq!(refuse_under_safe_mode(false), Ok(()));
+    assert!(SAFE_MODE.contains("nothing was sent"));
+}
+
+/// Blocker 2347: the shell tripwire stands beside the send refusal — in
+/// every position that refuses sends with his connectors on — and nowhere
+/// a card asks or the connectors are off.
+#[test]
+fn the_nested_claude_tripwire_stands_where_sends_are_refused() {
+    let dir = PathBuf::from("/logs/ask/chat-1");
+    let has = |spec: &AgentSpec| {
+        entries(spec)
+            .iter()
+            .any(|(m, _)| m == send_guard::SHELL_MATCHER)
+    };
+    let expect = cfg!(not(windows));
+    let mut bare = AgentSpec::new("/work");
+    bare.claude_ai_connectors = true;
+    bare.permission_mode = Some("bypassPermissions".into());
+    assert_eq!(has(&bare), expect, "bypass, no hook");
+    for mode in [AskMode::Auto, AskMode::AutoFork, AskMode::ExitingToAuto] {
+        assert_eq!(has(&asking(mode, &dir)), expect, "{mode:?}");
+    }
+    for mode in [AskMode::Ask, AskMode::Plan] {
+        assert!(!has(&asking(mode, &dir)), "{mode:?} asks on its card");
+    }
+    let mut off = asking(AskMode::Auto, &dir);
+    off.claude_ai_connectors = false;
+    let a = off.args("hi");
+    let hooked = a
+        .iter()
+        .position(|x| x == "--settings")
+        .is_some_and(|i| a[i + 1].contains(send_guard::SHELL_MATCHER));
+    assert!(!hooked, "connectors off: no entry");
 }

@@ -40,9 +40,7 @@ pub(crate) async fn ref_act(
     }
     // Safe mode leaves his connectors out of the process: refused before a
     // pass exists, so nothing can run (993d review).
-    if safe_mode.unwrap_or(false) {
-        return Err(ref_action::SAFE_MODE.into());
-    }
+    ref_action::refuse_under_safe_mode(safe_mode.unwrap_or(false))?;
     let call = ref_action::call_for(&item, &act)?;
     let exe =
         std::env::current_exe().map_err(|e| format!("could not find Nightloom itself: {e}"))?;
@@ -84,13 +82,7 @@ pub(crate) async fn ref_act(
     let _awake = power.acquire();
     let cancel = CancellationToken::new();
     // Stopped once the pass can no longer let anything through (993d review).
-    let deadline = {
-        let cancel = cancel.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(ref_action::TURN_SECS)).await;
-            cancel.cancel();
-        })
-    };
+    let deadline = ref_action::stop_at_deadline(&cancel);
     let mut seen: Vec<Seen> = Vec::new();
     let tool = call.tool.clone();
     let ran = ClaudeCodeAgent::new(spec)

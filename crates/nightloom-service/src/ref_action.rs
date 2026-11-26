@@ -60,6 +60,28 @@ pub const TURN_SECS: u64 = PASS_SECS as u64 + 15;
 /// 993d review: no call made).
 pub const SAFE_MODE: &str = "Safe mode is on, so your connectors do not load in the process that would make this call; nothing was sent. Turn safe mode off on the rail to use the card's actions.";
 
+/// The rail's safe mode, before anything is minted: refused with
+/// [`SAFE_MODE`], so no pass exists and no process starts.
+pub fn refuse_under_safe_mode(safe_mode: bool) -> Result<(), String> {
+    if safe_mode {
+        Err(SAFE_MODE.into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Cancel `cancel` once [`TURN_SECS`] have gone by (the action's
+/// deadline); abort the handle when the turn ends first.
+pub fn stop_at_deadline(
+    cancel: &tokio_util::sync::CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    let cancel = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(TURN_SECS)).await;
+        cancel.cancel();
+    })
+}
+
 /// The model an action runs on, whatever any chat's is.
 pub const MODEL: &str = "haiku";
 
