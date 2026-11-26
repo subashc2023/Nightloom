@@ -265,6 +265,11 @@
     font-size: 0.72rem;
     color: var(--dim);
   }
+  /* Item 1010: idle, Listen and Brief keep their own width (a flex item with
+     min-width 0 was squeezed into the Redo beside it). */
+  .listen:not(.open) {
+    flex: none;
+  }
   .listen.open {
     flex: 1 1 14rem;
   }

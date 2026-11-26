@@ -2843,18 +2843,31 @@
     user-select: none;
     -webkit-user-select: none;
   }
+  /* Item 1010: a narrow column (an aside card) wraps the footer onto a second
+     line between items; no item shrinks into its neighbour or breaks inside
+     itself ("BriRedo", "291 / tokens"). */
   .footer {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
+    gap: 2px 8px;
     margin-top: 2px;
+  }
+  .footer .redo {
+    flex: none;
+    white-space: nowrap;
   }
   .meta {
     font-family: var(--mono);
     font-size: 11px;
     color: var(--dim);
+    white-space: nowrap;
+    flex: none;
   }
   .meta.stopped {
+    flex: 0 1 auto;
+    min-width: 0;
+    white-space: normal;
     font-family: var(--sans);
     color: var(--failed);
   }

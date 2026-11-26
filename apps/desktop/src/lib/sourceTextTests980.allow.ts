@@ -206,4 +206,6 @@ export const MARKUP_TESTS: Readonly<Record<string, string>> = {
   // Item 1008: parses every component as the compiler does (svelte/compiler `parse`), asserting no element's words
   // start or end with a space Svelte 5 drops ("84kcached"); no text is matched, the AST is the subject.
   "lib/svelteSpaces1008.test.ts": "a whitespace lint over every component's parsed markup (item 1008)",
+  // Item 1010: happy-dom has no layout, so the footer's no-overlap guarantee can only be asserted on its CSS rules.
+  "lib/replyFooter1010.test.ts": "the reply footer's flex-wrap / nowrap rules are the subject; no layout engine in happy-dom (item 1010)",
 };
