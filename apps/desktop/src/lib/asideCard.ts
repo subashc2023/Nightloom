@@ -58,13 +58,31 @@ export const PREFERRED_CARD_HEIGHT = 300;
 export const CARD_GAP = 8;
 /** The card's width when the column allows it. */
 export const CARD_WIDTH = 440;
-/** Below this the card scrolls rather than shrinks. ~~160~~ 200 and a
+/** Below this the card scrolls rather than shrinks. ~~160~~ ~~200~~ 280 and a
  *  preferred ~~240~~ 300 since backlog 283: the card's foot is the chat's
- *  composer (box, chips, toolbar, line), ~130 px, and the thread above
- *  it needs room to be read. */
-export const MIN_CARD_HEIGHT = 200;
+ *  composer (box, chips, toolbar, line), ~~~130 px~~ ~195 px at 1150×780
+ *  (item 1008, verify sweep 2: its chips wrap to two rows), and the thread
+ *  above it needs room to be read — at 200 it had ~0. */
+export const MIN_CARD_HEIGHT = 280;
 /** Kept between the card and the viewport's edge on its side. */
 export const EDGE_MARGIN = 12;
+
+/**
+ * Item 1008 (verify sweep 2): the most a composer aside — the card above the
+ * chat's composer, with no passage — may grow. ~~`50vh`~~ (390 px at
+ * 1150×780) less its own composer foot (~195 px) and head left the thread
+ * ~150 px; it now takes the transcript's viewport (`room`, its height) less
+ * the margins, shared when several stack there, never under the floor. A
+ * short thread still draws short (the card is sized by its content up to
+ * this). Null while the room is not measured: the stylesheet's `50vh` holds.
+ */
+export function footCardMax(room: number, count: number): number | null {
+  if (!(room > 0)) return null;
+  const n = Math.max(1, count);
+  const usable = room - 2 * EDGE_MARGIN - (n - 1) * CARD_GAP;
+  // Several stacked keep the old stack's 200 px floor, so they still fit.
+  return Math.max(n === 1 ? MIN_CARD_HEIGHT : 200, Math.floor(usable / n));
+}
 
 /**
  * Which side of the passage the card opens on: below when a card of

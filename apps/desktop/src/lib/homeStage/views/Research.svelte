@@ -124,7 +124,7 @@
           </div>
           {#if r.open.length}
             <div class="y-k ns-cap">Open questions</div>
-            {#each r.open as o, i (i)}<div class="y-open h9-stagein" class:closed={!!o.answered}><i></i><InlineMd text={o.text} />{#if o.answered}<span class="h9-dim"> — <InlineMd text={o.answered} /></span>{/if}</div>{/each}
+            {#each r.open as o, i (i)}<div class="y-open h9-stagein" class:closed={!!o.answered}><i></i><InlineMd text={o.text} />{#if o.answered}<span class="h9-dim">{" "}— <InlineMd text={o.answered} /></span>{/if}</div>{/each}
           {/if}
           {#if r.confidence}<div class="y-k ns-cap">Confidence</div><div class="y-conf">{r.confidence}</div>{/if}
           {#if finished}

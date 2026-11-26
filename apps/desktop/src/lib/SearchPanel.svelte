@@ -421,7 +421,7 @@
   <div class="search-foot" bind:this={footRow} data-fold={footFold}>
     <span><span class="k">↑↓</span> preview</span>
     <span><span class="k">↵</span> open</span>
-    <span><span class="k">⌘G</span> next<span class="fold1"> in the chat</span></span>
+    <span><span class="k">⌘G</span> next<span class="fold1">{" "}in the chat</span></span>
     <span><span class="k">esc</span> close</span>
     <span class="k right">{SEARCH_CHORD_LABEL}</span>
   </div>

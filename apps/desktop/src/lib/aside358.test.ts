@@ -40,7 +40,7 @@ describe("358: the aside after its answer completes", () => {
       expect(src).not.toContain("read from cache</span>");
       expect(src).toMatch(/class="(ns-chip mono )?aside-cache"[^>]*tokens read from cache/);
       // Item 833: the word is a fold step of the card's head; the tab keeps it plain.
-      expect(src).toMatch(/\{fmtTokens\(last\.cacheRead\)\}(<span class="head-word">)? cached/);
+      expect(src).toMatch(/\{fmtTokens\(last\.cacheRead\)\}(<span class="head-word">\{" "\}cached| cached)/); // item 1008: the space survives Svelte
     });
   }
 

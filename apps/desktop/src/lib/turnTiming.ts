@@ -239,6 +239,26 @@ export function barOf(st: StepStamp | undefined, t0: number, tEnd: number): { le
   return { left: Math.min(left, 1 - width), width };
 }
 
+/**
+ * Item 1008 (verify sweep 2): one trace block's own time — its first step's
+ * start to its last step's end (a step still running ends `now`). A turn whose
+ * reply is split by text (one reply per API call) draws one trace block per
+ * part; each read the whole turn's elapsed ("1 min 57 s" twice), though the
+ * first block's call finished well before. Null when no step of the block was
+ * timed (a reply read back after a relaunch), and the foot keeps the turn's.
+ */
+export function stepsSpan(rec: TraceRecord, keys: readonly (string | null | undefined)[], now: number): number | null {
+  let a = Infinity;
+  let b = -Infinity;
+  for (const k of keys) {
+    const st = k ? rec.steps[k] : undefined;
+    if (!st) continue;
+    a = Math.min(a, st.start);
+    b = Math.max(b, st.end ?? now);
+  }
+  return a === Infinity ? null : Math.max(0, b - a);
+}
+
 /** `0.4 s`, `11.8 s`, `2 min 3 s`. */
 export function fmtSecs(ms: number): string {
   const s = Math.max(0, ms) / 1000;

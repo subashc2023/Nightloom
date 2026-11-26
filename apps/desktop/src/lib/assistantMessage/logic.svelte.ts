@@ -40,7 +40,7 @@ import { type RampParams } from "../stepRamp";
 import { untrack } from "svelte";
 // Item 589: the running step's motion, a variant per kind of step.
 import { type StepMotion } from "../stepMotion.svelte";
-import { SpeedMeter, barOf, fmtSecs, sparkPoints, stepKeys, traceBook, type TraceRecord } from "../turnTiming";
+import { SpeedMeter, barOf, fmtSecs, sparkPoints, stepKeys, stepsSpan, traceBook, type TraceRecord } from "../turnTiming";
 // Item 495 part 2: the folds kept past a chat switch.
 import { decodeOverride, encodeOverride, foldKey, keptGet, keptSet, type FoldScope } from "../keptFolds.svelte";
 import "../replyMediaMac";
@@ -573,13 +573,17 @@ export function assistantMessageLogic(props: () => AssistantMessageLogicProps) {
     const r = traceRec;
     return !!r && rows.some(({ i }) => !!stepKey[i] && !!r.steps[stepKey[i]!]);
   }
-  /** The trace's foot: how many steps, how long the turn has run. */
+  /** The trace's foot: how many steps, how long ~~the turn has run~~ its
+   *  own steps ran (item 1008: each block its own span, `stepsSpan`; the
+   *  turn's only when none of its steps has a time). */
   function traceFoot(rows: readonly { i: number }[]): { steps: string; elapsed: string | null } {
+    void traceRev;
     const n = rows.length;
     const r = traceRec;
+    const own = r ? stepsSpan(r, rows.map(({ i }) => stepKey[i]), streaming ? now : traceEnd(r)) : null;
     return {
       steps: `${n} step${n === 1 ? "" : "s"}`,
-      elapsed: r ? fmtSecs(traceEnd(r) - r.t0) : null,
+      elapsed: r ? fmtSecs(own ?? traceEnd(r) - r.t0) : null,
     };
   }
 

@@ -100,7 +100,7 @@
       <span class="cap-n">{view.percent}%{#if view.weekly} week{/if}</span>
       <span class="cap-mode">{view.modeShort}</span>
       <span class="cap-sep" aria-hidden="true">·</span>
-      <span class="cap-src">{view.sourceWords}{#if view.locked}<span class="cap-lock" aria-label="you corrected it"> ✓</span>{/if}</span>
+      <span class="cap-src">{view.sourceWords}{#if view.locked}<span class="cap-lock" aria-label="you corrected it">{" "}✓</span>{/if}</span>
       {#if view.latest !== null}
         <span class="cap-sep" aria-hidden="true">·</span>
         <span class="cap-spent mono">

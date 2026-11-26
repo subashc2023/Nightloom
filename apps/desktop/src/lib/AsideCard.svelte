@@ -24,7 +24,7 @@
   import { tick } from "svelte";
   import { asideCardScrollKey } from "./scroll.svelte";
   import type { Aside } from "./state.svelte";
-  import type { Placement } from "./asideCard";
+  import { footCardMax, type Placement } from "./asideCard";
   import MoveZone from "./MoveZone.svelte";
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
   import CopyButton from "./CopyButton.svelte";
@@ -103,6 +103,7 @@
     front = true,
     footBottom = null,
     footCount = 1,
+    footRoom = 0,
     frame = null,
     viewport = null,
     passageTop = null,
@@ -120,6 +121,9 @@
      *  and how many share the stack's room. */
     footBottom?: number | null;
     footCount?: number;
+    /** Item 1008: the transcript viewport's height, the room a composer
+     *  card grows into (`footCardMax`); 0 while unmeasured. */
+    footRoom?: number;
     /** Item 734: the chat column the card is drawn in (the transcript's
      *  `inner`) and its scrolled viewport; a drop is kept in the column's
      *  px. Null for the panel's card, which does not move. */
@@ -144,6 +148,8 @@
   const folded = $derived(!panel && aside.folded === true);
   /** Item 735: minimized to one line (never in the panel). */
   const minimized = $derived(!panel && aside.minimized === true);
+  /** Item 1008: a composer card's cap — the viewport's room, not `50vh`. */
+  const footMax = $derived(placement === null && !panel ? footCardMax(footRoom, footCount) : null);
   /** Item 755: minimize and expand with the short fold motion (foldMotion.ts), the hand-off card's too. */
   function minimizeMoving(): void {
     void foldMotion(root, async () => {
@@ -414,9 +420,11 @@
         : "50vh"
       : placement
       ? `${placement.maxHeight}px`
-      : !panel && footCount > 1
-        ? `max(200px, calc(60vh / ${footCount}))`
-        : undefined}
+      : !panel && footMax !== null
+        ? `${footMax}px`
+        : !panel && footCount > 1
+          ? `max(200px, calc(60vh / ${footCount}))`
+          : undefined}
   style:bottom={!pos && !placement && !panel && footBottom !== null ? `${footBottom}px` : undefined}
   onkeydown={cardKeys}
 >
@@ -506,7 +514,7 @@
       <!-- Short (backlog 358): the long "188,342 read from cache" lost the
            head's room and drew as "1…"; the full count is its tip. -->
       <span class="ns-chip mono aside-cache" use:tip={`${last.cacheRead.toLocaleString()} tokens read from cache`}
-        >{fmtTokens(last.cacheRead)}<span class="head-word"> cached</span></span
+        >{fmtTokens(last.cacheRead)}<span class="head-word">{" "}cached</span></span
       >
     {/if}
     <span class="spacer"></span>
