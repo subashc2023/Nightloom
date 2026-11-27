@@ -2702,7 +2702,8 @@ export interface RefActItem {
 }
 /** What the connector answered: done, not there any more, or an error — each with its one line. */
 export interface RefActReceipt {
-  outcome: "done" | "not_found" | "error";
+  /** `unknown` (993e review): a mail was let through and no success came back — it may have gone. */
+  outcome: "done" | "not_found" | "error" | "unknown";
   text: string;
 }
 /**
@@ -2712,6 +2713,33 @@ export interface RefActReceipt {
  */
 export function refAct(item: RefActItem, act: { type: "rsvp" | "saveDraft" | "send"; [k: string]: unknown }, binary?: string, safeMode?: boolean): Promise<RefActReceipt> {
   return invoke("ref_act", { item, act, binary, safeMode });
+}
+
+/** Item 993e (review finding 1): an email's own headers, read through the connector's read-only `get_message`. */
+export interface RefHeads {
+  from: string;
+  from_name?: string;
+  to: string[];
+  cc: string[];
+  subject?: string;
+  /** Display names by lower-case address. */
+  names: Record<string, string>;
+}
+/** Read an email's headers before its reply can be sent: one read-only call, its own throwaway process. */
+export function refRead(item: RefActItem, binary?: string, safeMode?: boolean): Promise<RefHeads> {
+  return invoke("ref_read", { item, binary, safeMode });
+}
+/** A card action that was on its way when Nightloom last quit or died (993e): the item's `refKey`, what was going
+ *  ("a reply to a@x", never "Sent"), the item's name, and whether it was a mail (an RSVP is not). */
+export interface RefUnfinished {
+  key: string;
+  what: string;
+  item: string;
+  mail: boolean;
+}
+/** Card actions that were on their way when Nightloom last quit (read once, then cleared). */
+export function refUnfinished(): Promise<RefUnfinished[]> {
+  return invoke("ref_unfinished");
 }
 
 /** Item 804: what Home can reach, from the last check (nothing is run). */

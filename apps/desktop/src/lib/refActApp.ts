@@ -6,16 +6,27 @@
 import * as api from "./api";
 import { app } from "./state.svelte";
 import { openWebTab } from "./webtabs.svelte";
-import { makeRefAct } from "./refAct";
+import { makeRefAct, makeRefRead } from "./refAct";
 import { addToast } from "./state/toasts.svelte";
 
-export const refAct = makeRefAct({
+const deps = {
   openUrl: api.openUrl,
   openTab: openWebTab,
-  copy: (text) => navigator.clipboard.writeText(text),
+  copy: (text: string) => navigator.clipboard.writeText(text),
   run: api.refAct,
+  read: api.refRead,
   agent: () => ({ binary: app.draft.agentBinary.trim() || undefined, safeMode: app.draft.agentSafeMode }),
-});
+};
+export const refAct = makeRefAct(deps);
+
+/** The read of an email's own headers before its reply can go (993e review, finding 1). */
+export const refRead = makeRefRead(deps);
+
+/** Mails that were on their way when Nightloom last quit (993e review, finding 7). */
+export const refUnfinished = api.refUnfinished;
 
 /** Where the card's host offers the Undo of a changed answer: the app's toasts (12 s with an action). */
 export const refToast = addToast;
+
+/** Where a mail's hold shows once the card is closed (`refHoldToast.ts`). */
+export { refHoldToast } from "./refHoldToast";

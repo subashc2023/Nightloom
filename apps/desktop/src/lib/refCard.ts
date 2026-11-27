@@ -14,7 +14,7 @@ export type MailMode = "reply" | "replyAll" | "forward";
  *  for anything that sends (993d wires `act`; without one every action is shown, disabled, "coming soon"). */
 export type RefAction =
   | { type: "rsvp"; answer: RsvpAnswer; note: string }
-  | { type: "send"; mode: MailMode; to: string; body: string }
+  | { type: "send"; mode: MailMode; to: string; body: string; recipients?: { to: string[]; cc: string[] }; about?: string }
   | { type: "saveDraft"; mode: MailMode; to: string; body: string }
   | { type: "copyLink" }
   | { type: "readHere" }
@@ -218,7 +218,58 @@ export function rsvpConfirm(r: Ref, answer: RsvpAnswer): { ask: string; who: str
   return { ask: `${verb} ${r.name}?`, who: organizer ? `${organizer} and the guests see your answer.` : "The organizer and the guests see your answer." };
 }
 
-/** Who a mail goes to, as the Send button names them: the sender for a reply, his typed recipient for a forward. */
+/** An email's own headers, read through the connector before a mail can go (993e review, finding 1). */
+export interface MailHeads {
+  from: string;
+  from_name?: string;
+  to: string[];
+  cc: string[];
+  subject?: string;
+  names: Record<string, string>;
+}
+
+const low = (a: string) => a.trim().toLowerCase();
+function uniq(xs: readonly string[], seen: Set<string>): string[] {
+  const out: string[] = [];
+  for (const x of xs) {
+    const k = low(x);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(x.trim());
+  }
+  return out;
+}
+
+/** Who a reply / reply to all goes to, from the message's real headers: the sender (or, for his own message, its
+ *  first recipient); for all, the sender and every To, and every Cc — never his own address (`me`). */
+export function mailRecipients(h: MailHeads, mode: "reply" | "replyAll", me: string | null | undefined): { to: string[]; cc: string[] } {
+  const mine = new Set(me ? [low(me)] : []);
+  const own = !!me && low(h.from) === low(me);
+  if (mode === "reply") return { to: own ? uniq(h.to, mine).slice(0, 1) : [h.from], cc: [] };
+  const seen = new Set(mine);
+  const to = uniq([h.from, ...h.to], seen);
+  return { to, cc: uniq(h.cc, seen) };
+}
+
+/** A person as the message names them: "Priya Sharma <priya@x.io>", or the bare address. */
+export function personWords(h: MailHeads, addr: string): string {
+  const n = h.names[low(addr)] ?? (low(addr) === low(h.from) ? h.from_name : undefined);
+  return n ? `${n} <${addr}>` : addr;
+}
+/** The short name for the Send button. */
+export function personShort(h: MailHeads, addr: string): string {
+  return h.names[low(addr)] ?? (low(addr) === low(h.from) ? h.from_name : undefined) ?? addr;
+}
+/** The Send button's "to …" (and the hold toast's): the first person with their address beside the name — a
+ *  display name is the sender's to set, so it is never shown alone (993e re-review, N3) — and how many more. */
+export function sendToWords(h: MailHeads, r: { to: string[]; cc: string[] }): string {
+  const all = [...r.to, ...r.cc];
+  if (all.length === 0) return "";
+  return all.length === 1 ? personWords(h, all[0]) : `${personWords(h, all[0])} and ${all.length - 1} more`;
+}
+
+/** Who a mail goes to, as the Send button names them: the sender for a reply, his typed recipient for a forward.
+ *  The tag's words only — what the confirm sends to comes from `mailRecipients` over the real headers. */
 export function mailTo(r: Ref, mode: MailMode, typed: string): string {
   if (mode === "forward") return typed.trim();
   const from = r.fields.from ?? "";

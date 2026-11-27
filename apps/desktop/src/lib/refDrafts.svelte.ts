@@ -76,8 +76,60 @@ export function dropDraft(key: string, part: "mail" | "note"): void {
   keepDraft(key, part === "mail" ? { mode: null, body: "", to: "" } : { note: "" });
 }
 
+/*
+ * A mail that may have gone (993e review, finding 4; re-review N2): by the item, the words the card shows, kept
+ * beside the draft and in the page's storage — so a reload or a restart keeps Send off with the warning, and only
+ * his "I checked: not sent" lets that item send again.
+ */
+export const REF_MAYBE_KEY = "nightloom.refMaybeSent";
+
+/** What storage holds, as may-have-gone notes; never throws, and drops anything that is not one. */
+export function readMaybe(raw: string | null): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    const v: unknown = raw ? JSON.parse(raw) : null;
+    if (!v || typeof v !== "object" || Array.isArray(v)) return out;
+    for (const [k, why] of Object.entries(v as Record<string, unknown>)) if (typeof why === "string" && why.trim()) out[k] = why;
+  } catch {
+    // Unreadable storage: nothing held (the Rust journal still warns of a quit mid-call).
+  }
+  return out;
+}
+
+export const refMaybe = $state<{ by: Record<string, string> }>({
+  by: (() => {
+    try {
+      return readMaybe(localStorage.getItem(REF_MAYBE_KEY));
+    } catch {
+      return {};
+    }
+  })(),
+});
+
+function saveMaybe(): void {
+  try {
+    localStorage.setItem(REF_MAYBE_KEY, JSON.stringify(refMaybe.by));
+  } catch {
+    // best-effort; still held in app state this session
+  }
+}
+
+/** It may have gone: Send stays off for the item, across reloads and restarts. */
+export function markMaybeSent(key: string, why: string): void {
+  refMaybe.by[key] = why;
+  saveMaybe();
+}
+
+/** His "I checked: not sent": the item may send again. */
+export function clearMaybeSent(key: string): void {
+  delete refMaybe.by[key];
+  saveMaybe();
+}
+
 /** Tests: start from nothing. */
 export function resetDrafts(): void {
   refDrafts.by = {};
   save();
+  refMaybe.by = {};
+  saveMaybe();
 }

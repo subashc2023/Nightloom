@@ -9,21 +9,22 @@
 
 use crate::power;
 use nightloom_service::home::reach::{self, Status};
-use nightloom_service::ref_action::{self, Act, Item, Receipt, Seen};
+use nightloom_service::ref_action::{self, Act, Call, Heads, Item, Receipt, Seen, Unfinished};
 use nightloom_service::{ClaudeCodeAgent, PassSpec, TurnEvent, project};
 use tauri::State;
 use tokio_util::sync::CancellationToken;
 
-/// Run his click. `Err` is a click that could not start (nothing was
-/// sent); a call that started and failed is a [`Receipt`] saying how.
-#[tauri::command]
-pub(crate) async fn ref_act(
-    power: State<'_, power::Holder>,
-    item: Item,
-    act: Act,
+/// One pinned call in its own process: the account checks, the pass, the
+/// turn, the deadline. Returns what the turn saw of the call and the
+/// action's folder (still on disk, for the caller to read the pass's state
+/// and remove). `Err`: it could not start, nothing ran.
+async fn run_call(
+    power: &power::Holder,
+    item: &Item,
+    call: &Call,
     binary: Option<String>,
     safe_mode: Option<bool>,
-) -> Result<Receipt, String> {
+) -> Result<(Result<(), String>, Vec<Seen>, std::path::PathBuf), String> {
     let config = project::config_dir().ok_or("no Nightloom home")?;
     // The account must be one Home reaches and he left on: the last check's
     // own row, never the link's word for it.
@@ -41,7 +42,6 @@ pub(crate) async fn ref_act(
     // Safe mode leaves his connectors out of the process: refused before a
     // pass exists, so nothing can run (993d review).
     ref_action::refuse_under_safe_mode(safe_mode.unwrap_or(false))?;
-    let call = ref_action::call_for(&item, &act)?;
     let exe =
         std::env::current_exe().map_err(|e| format!("could not find Nightloom itself: {e}"))?;
     // The action's own fresh folder: one click, one pass, gone afterwards.
@@ -78,7 +78,7 @@ pub(crate) async fn ref_act(
         &dir,
         blocked,
     );
-    ref_action::mint(&dir, &call, chrono::Utc::now())?;
+    ref_action::mint(&dir, call, chrono::Utc::now())?;
     let _awake = power.acquire();
     let cancel = CancellationToken::new();
     // Stopped once the pass can no longer let anything through (993d review).
@@ -87,7 +87,7 @@ pub(crate) async fn ref_act(
     let tool = call.tool.clone();
     let ran = ClaudeCodeAgent::new(spec)
         .run_turn(
-            ref_action::message(&call).as_str(),
+            ref_action::message(call).as_str(),
             &cancel,
             &mut |event| match event {
                 TurnEvent::ToolResult {
@@ -104,14 +104,119 @@ pub(crate) async fn ref_act(
         )
         .await;
     deadline.abort();
-    let spent = ref_action::spent(&dir);
-    let _ = std::fs::remove_dir_all(&dir);
-    match ran {
-        Ok(_) => Ok(ref_action::receipt(&act, &seen, spent)),
-        // The process failed: what is known is whether the call was let through.
-        Err(_) if spent || !seen.is_empty() => Ok(ref_action::receipt(&act, &seen, spent)),
-        Err(e) => Err(format!(
-            "the action could not start, so nothing was sent: {e}"
-        )),
+    Ok((ran.map(|_| ()).map_err(|e| e.to_string()), seen, dir))
+}
+
+/// Run his click. `Err` is a click that could not start (nothing was
+/// sent); a call that started and failed is a [`Receipt`] saying how.
+#[tauri::command]
+pub(crate) async fn ref_act(
+    power: State<'_, power::Holder>,
+    item: Item,
+    act: Act,
+    binary: Option<String>,
+    safe_mode: Option<bool>,
+) -> Result<Receipt, String> {
+    let call = ref_action::call_for(&item, &act)?;
+    // A mail on its way is written down first: a quit mid-call leaves this
+    // entry, and the next launch says it may have gone (993e review, 7). It
+    // is this send's own: only its end below removes it (re-review, N5).
+    let journal = if call.sends {
+        let (what, mail) = ref_action::going_words(&act);
+        let entry = Unfinished {
+            key: ref_action::item_key(&item),
+            what,
+            item: item.name.clone(),
+            mail,
+        };
+        journal_dir()
+            .and_then(|d| ref_action::journal_begin(&d, launch(), &entry, chrono::Utc::now()).ok())
+    } else {
+        None
+    };
+    let out = run_call(&power, &item, &call, binary, safe_mode).await;
+    let done = match out {
+        Err(e) => Err(e),
+        Ok((ran, seen, dir)) => {
+            let receipt = ref_action::settle(&act, &seen, &dir);
+            let spent = ref_action::spent(&dir);
+            let _ = std::fs::remove_dir_all(&dir);
+            match ran {
+                Ok(()) => Ok(receipt),
+                // The process failed: what is known is whether the call was let through.
+                Err(_) if spent || !seen.is_empty() => Ok(receipt),
+                Err(e) => Err(format!(
+                    "the action could not start, so nothing was sent: {e}"
+                )),
+            }
+        }
+    };
+    if let Some(path) = &journal {
+        ref_action::journal_end(path);
     }
+    done
+}
+
+/// Read an email's own headers (993e review, finding 1): who it is from,
+/// to and cc, and its subject — what a reply's confirm shows and pins.
+/// One read-only `get_message` call, run like an action.
+#[tauri::command]
+pub(crate) async fn ref_read(
+    power: State<'_, power::Holder>,
+    item: Item,
+    binary: Option<String>,
+    safe_mode: Option<bool>,
+) -> Result<Heads, String> {
+    let call = ref_action::read_call(&item)?;
+    let (ran, seen, dir) = run_call(&power, &item, &call, binary, safe_mode).await?;
+    let _ = std::fs::remove_dir_all(&dir);
+    let answer = seen.iter().rev().find_map(|s| match s {
+        Seen::Result { content, is_error } => Some((content, *is_error)),
+        Seen::Denied { .. } => None,
+    });
+    match answer {
+        Some((content, false)) => ref_action::heads_of(content),
+        Some((content, true)) => Err(format!(
+            "the connector said: {}",
+            content
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(200)
+                .collect::<String>()
+        )),
+        None => Err(match ran {
+            Err(e) => format!("the message could not be read: {e}"),
+            Ok(()) => "the message could not be read (no answer came back)".into(),
+        }),
+    }
+}
+
+fn journal_dir() -> Option<std::path::PathBuf> {
+    project::config_dir().map(|c| c.join("ref-actions").join("going"))
+}
+
+/// This run of the app, as the journal names it: the pid and when the
+/// first entry was asked for (a later run with a reused pid differs).
+fn launch() -> &'static str {
+    static LAUNCH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    LAUNCH.get_or_init(|| {
+        format!(
+            "{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        )
+    })
+}
+
+/// The mails that were on their way when Nightloom last quit or died
+/// (their journal entries outlived the call): read once and cleared, for
+/// the window to say they may have gone (993e review, finding 7). This
+/// run's own entries stay: their sends are still going (re-review, N5).
+#[tauri::command]
+pub(crate) fn ref_unfinished() -> Vec<Unfinished> {
+    journal_dir()
+        .map(|d| ref_action::journal_take(&d, launch()))
+        .unwrap_or_default()
 }

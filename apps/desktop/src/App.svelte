@@ -27,7 +27,6 @@
     holdToast,
     releaseToast,
     copyToast,
-    dismissToast,
     answerAsideDiscard,
     setPaneWidth,
     splitTab,
@@ -111,8 +110,9 @@
   import Palette from "./lib/Palette.svelte";
   // Item 993c: the card a typed link (an event, an email, a doc named in a reply) opens.
   import RefCardHost from "./lib/RefCardHost.svelte";
+  import ToastX from "./lib/ToastX.svelte";
   // Item 993d: what a click in that card does.
-  import { refAct, refToast } from "./lib/refActApp";
+  import { refAct, refHoldToast, refRead, refToast, refUnfinished } from "./lib/refActApp";
   import { home as homeState, openHome as openHomeForRef } from "./lib/home.svelte";
   import { stage as homeStageKept } from "./lib/homeStage/stageState.svelte";
   import FeedbackBox from "./lib/FeedbackBox.svelte";
@@ -1141,9 +1141,7 @@
               <span class="toast-text" use:tip={"Click to copy"} onclick={(e) => { if (!(e.target as HTMLElement).closest("button")) void copyToast(t.id); }}>{t.text}{#if t.since}<ToastClock since={t.since} />{/if}{#if t.copied}<span class="toast-sep">{" · copied"}</span>{/if}{#if t.action}<span class="toast-sep">{" · "}</span><button
                   class="toast-action"
                   onclick={() => runToastAction(t.id)}>{t.action.label}</button>{/if}</span>
-              <button class="toast-x" aria-label="Dismiss" onclick={() => dismissToast(t.id)}>
-                <Icon name="x" size={12} />
-              </button>
+              <ToastX {t} />
             </div>
           {/each}
           <WaitingNotices />
@@ -1202,7 +1200,7 @@
     <Palette />
     <!-- Item 993c: one card for every typed link in the window (replies, Home, asides). Its actions are 993d's:
          no `act` is passed yet, so each is shown, disabled, "coming soon". The signed-out notice leads to Home's Sources. -->
-    <RefCardHost reach={() => homeState.reach} loadReach={api.homeReach} act={refAct} mailSend={false} toast={refToast} onaccounts={() => void openHomeForRef().then(() => (homeStageKept.focus = "watch"))} />
+    <RefCardHost reach={() => homeState.reach} loadReach={api.homeReach} act={refAct} readMail={refRead} unfinished={refUnfinished} mailSend={true} toast={refToast} holdToast={refHoldToast} onaccounts={() => void openHomeForRef().then(() => (homeStageKept.focus = "watch"))} />
     <!-- His feedback to the agent (item 805): the draft outlives the box. -->
     {#if feedback.open}<FeedbackBox />{/if}
     <!-- The wrap-up's aside picker (nightshift item 285). -->
@@ -1577,24 +1575,7 @@
     min-width: 0;
     cursor: copy;
   }
-  /* The X (backlog 410): the dim text's colour, the ink on hover. */
-  .toast-x {
-    flex: none;
-    background: none;
-    border: none;
-    padding: 2px;
-    margin: -1px -4px 0 0;
-    color: var(--dim);
-    cursor: pointer;
-    display: flex;
-    border-radius: 4px;
-  }
-  .toast-x:hover,
-  .toast-x:focus-visible {
-    color: var(--ink);
-    background: color-mix(in srgb, var(--ink) 10%, transparent);
-    outline: none;
-  }
+  /* The X (backlog 410) is lib/ToastX.svelte, its style with it. */
   /* The action is the toast's own text with the accent — a word, not a
      button drawn as one. */
   .toast-action {
