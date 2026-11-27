@@ -112,7 +112,7 @@
   // Item 993c: the card a typed link (an event, an email, a doc named in a reply) opens.
   import RefCardHost from "./lib/RefCardHost.svelte";
   // Item 993d: what a click in that card does.
-  import { refAct, refToast } from "./lib/refActApp";
+  import { refAct, refHoldToast, refToast } from "./lib/refActApp";
   import { home as homeState, openHome as openHomeForRef } from "./lib/home.svelte";
   import { stage as homeStageKept } from "./lib/homeStage/stageState.svelte";
   import FeedbackBox from "./lib/FeedbackBox.svelte";
@@ -1202,7 +1202,7 @@
     <Palette />
     <!-- Item 993c: one card for every typed link in the window (replies, Home, asides). Its actions are 993d's:
          no `act` is passed yet, so each is shown, disabled, "coming soon". The signed-out notice leads to Home's Sources. -->
-    <RefCardHost reach={() => homeState.reach} loadReach={api.homeReach} act={refAct} mailSend={false} toast={refToast} onaccounts={() => void openHomeForRef().then(() => (homeStageKept.focus = "watch"))} />
+    <RefCardHost reach={() => homeState.reach} loadReach={api.homeReach} act={refAct} mailSend={true} toast={refToast} holdToast={refHoldToast} onaccounts={() => void openHomeForRef().then(() => (homeStageKept.focus = "watch"))} />
     <!-- His feedback to the agent (item 805): the draft outlives the box. -->
     {#if feedback.open}<FeedbackBox />{/if}
     <!-- The wrap-up's aside picker (nightshift item 285). -->

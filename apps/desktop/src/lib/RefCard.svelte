@@ -19,6 +19,11 @@
    * His typing is never lost (`refDrafts.svelte.ts`): a reply, a forward's recipient and an RSVP note are kept at
    * every keystroke under the item, offered back when the card opens again, and dropped only by a send, a save as a
    * Gmail draft, or Discard — which asks first.
+   *
+   * A mail (993e) goes only from his click on "Send to …", with the whole draft on screen. Its Undo is a hold
+   * (`mailHold`, kept by the host): the card counts down "Sending to … in 5 s" with an Undo, and Esc means Undo
+   * too; the words are locked while it counts, so what goes is what he saw. Undone: nothing was called, the confirm
+   * and his words stay. Sent: the receipt names who it went to.
    */
   import { onMount, tick } from "svelte";
   import AskLock from "./AskLock.svelte";
@@ -30,6 +35,7 @@
   import { MAIL_WORD, KIND_WORD, RSVP_CHOICES, accountWarn, asOfWords, detailRows, mailTo, openElsewhere, rsvpConfirm, rsvpOf, rsvpPill, whenLine } from "./refCard";
   import type { AccountState, MailMode, RefAction, RefReceipt, Rsvp, RsvpAnswer } from "./refCard";
   import { draftOf, dropDraft, keepDraft } from "./refDrafts.svelte";
+  import { MAIL_HOLD_MS, isUndone, secondsLeft } from "./mailHold";
 
   let {
     ref,
@@ -38,6 +44,7 @@
     accountState = "unknown",
     act,
     mailSend = true,
+    mailHold = null,
     rsvpNow = null,
     onclose,
     onaccounts,
@@ -54,6 +61,8 @@
     act?: (a: RefAction) => Promise<RefReceipt>;
     /** Whether "Send to …" may send (993e). Off: the draft can still be saved to Gmail. */
     mailSend?: boolean;
+    /** A mail of this item in its hold (993e, the host's): when it goes, and its Undo. */
+    mailHold?: { until: number; to: string; undo: () => void } | null;
     /** His answer as the window last knew it (an RSVP sent or undone this session), over the link's own. */
     rsvpNow?: Rsvp | null;
     onclose: () => void;
@@ -101,7 +110,18 @@
   const pendingAnswer = $derived(pending?.type === "rsvp" ? pending.answer : null);
   const mailMode = $derived(pending?.type === "mail" ? pending.mode : null);
   const sendTo = $derived(mailMode ? mailTo(ref, mailMode, to) : "");
-  const canSend = $derived(!busy && (pending?.type === "rsvp" || (!!body.trim() && !!sendTo)));
+  const canSend = $derived(!busy && !mailHold && (pending?.type === "rsvp" || (!!body.trim() && !!sendTo)));
+  // He undid a mail in its hold: said once, under the confirm.
+  let undoneNote = $state<string | null>(null);
+  // The countdown's clock, ticking only while a mail is held.
+  let clock = $state(Date.now());
+  $effect(() => {
+    if (!mailHold) return;
+    clock = Date.now();
+    const t = setInterval(() => (clock = Date.now()), 250);
+    return () => clearInterval(t);
+  });
+  const holdLeft = $derived(mailHold ? secondsLeft(mailHold.until, clock) : 0);
 
   onMount(() => {
     // Keys go to the card from its opening; the link gets the focus back when it closes (RefCardHost).
@@ -109,8 +129,9 @@
   });
 
   async function pick(p: Pending): Promise<void> {
-    if (!ready || busy) return;
+    if (!ready || busy || mailHold) return;
     failed = null;
+    undoneNote = null;
     receipt = null;
     discarding = false;
     pending = p;
@@ -133,6 +154,7 @@
     if (!act || busy) return;
     busy = which;
     failed = null;
+    undoneNote = null;
     try {
       const r = await act(action);
       // The pressed button holds its lock for the pick's 300 ms, then the receipt stamps in.
@@ -145,8 +167,10 @@
       pending = null;
       if (r.stamp === "Sent") ondone?.();
     } catch (e) {
+      // Undone in its hold (993e): nothing was called; the confirm and his words stay.
+      if (isUndone(e)) undoneNote = e.message;
       // Nothing is dropped on a failure: the confirm and his words stay, with the reason.
-      failed = String(e instanceof Error ? e.message : e);
+      else failed = String(e instanceof Error ? e.message : e);
     } finally {
       busy = null;
     }
@@ -175,7 +199,9 @@
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      if (discarding) discarding = false;
+      // A mail in its hold: Esc is its Undo, never a close that leaves it going.
+      if (mailHold) mailHold.undo();
+      else if (discarding) discarding = false;
       else if (view === "confirm") back();
       else onclose();
       return;
@@ -287,7 +313,7 @@
           </div>
         {:else}
           <div class="rc-row">
-            <button type="button" class="ns-btn accent rc-b" class:rc-lockrow={busy === "send"} disabled={!mailSend || (!canSend && busy !== "send")} use:tip={!mailSend ? "Sending from here is not built yet\nSave as Gmail draft works" : !body.trim() ? "Nothing written yet" : !sendTo ? "Say who gets it first" : "Sends exactly the words above (⌘↵)"} onclick={send}>Send to {sendTo || "…"} <span class="rc-ret">⌘↵</span></button>
+            <button type="button" class="ns-btn accent rc-b" class:rc-lockrow={busy === "send"} disabled={!mailSend || (!canSend && busy !== "send")} use:tip={!mailSend ? "Sending from here is not built yet\nSave as Gmail draft works" : !body.trim() ? "Nothing written yet" : !sendTo ? "Say who gets it first" : `Sends exactly the words above (⌘↵)\nUndo for ${Math.round(MAIL_HOLD_MS / 1000)} s after`} onclick={send}>Send to {sendTo || "…"} <span class="rc-ret">⌘↵</span></button>
             <button type="button" class="ns-btn rc-b" class:rc-lockrow={busy === "save"} disabled={(!body.trim() || busy !== null) && busy !== "save"} onclick={saveDraft}>Save as Gmail draft</button>
             <span class="rc-gap"></span>
             <button type="button" class="ns-btn ghost rc-b rc-danger" disabled={busy !== null} onclick={() => (body.trim() || to.trim() ? (discarding = true) : discard())}>Discard</button>
@@ -296,6 +322,15 @@
         {/if}
       {/if}
       {#if failed}<div class="rc-warn in" role="alert"><span>That did not go through: {failed}. Nothing was dropped.</span></div>{/if}
+      {#if undoneNote && !mailHold}<div class="rc-note rc-undone" role="status">{undoneNote}</div>{/if}
+    </div>
+  {/if}
+
+  {#if mailHold}
+    <div class="rc-hold" role="status" aria-live="polite" style:--rc-hold-ms="{Math.max(0, mailHold.until - Date.now())}ms">
+      <span class="rc-hold-t">Sending to {mailHold.to} in <b>{holdLeft}</b> s</span>
+      <span class="rc-gap"></span>
+      <button type="button" class="ns-btn accent rc-b" use:tip={"Nothing is sent (esc)"} onclick={() => mailHold?.undo()}>Undo <span class="rc-esc">esc</span></button>
     </div>
   {/if}
 
@@ -473,6 +508,46 @@
   .rc-kept > span {
     flex: 1;
     min-width: 0;
+  }
+  /* A mail in its hold (993e): the countdown and its Undo, in the accent (the card's sending colour), with a bar
+     that drains over the hold in both themes; reduced motion keeps the bar still. */
+  .rc-hold {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 13px 10px;
+    padding: 8px 10px;
+    border-radius: var(--r1, 5px);
+    background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line2));
+    color: var(--ink);
+    font-size: 12.5px;
+    overflow: hidden;
+  }
+  .rc-hold::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 2px;
+    width: 100%;
+    background: var(--accent);
+    transform-origin: left;
+    animation: rc-drain var(--rc-hold-ms, 5000ms) linear forwards;
+  }
+  .rc-hold-t b {
+    font-variant-numeric: tabular-nums;
+  }
+  @keyframes rc-drain {
+    to {
+      transform: scaleX(0);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rc-hold::after {
+      animation: none;
+    }
   }
   .rc-acts {
     display: flex;

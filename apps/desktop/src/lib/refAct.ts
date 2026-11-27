@@ -59,6 +59,7 @@ export function makeRefAct(d: RefActDeps): (ref: Ref, a: RefAction) => Promise<R
     if (r.outcome !== "done") throw new Error(r.text);
     if (a.type === "rsvp") return { stamp: "Sent", text: `${RSVP_CHOICES.find((c) => c.answer === a.answer)?.done ?? r.text} · ${ref.name}`, rsvp: a.answer };
     if (a.type === "saveDraft") return { stamp: "Saved", text: r.text };
-    return { stamp: "Sent", text: r.text };
+    // A mail (993e): the connector's own word of who it went to ("Sent to Priya S."), and what it was about.
+    return { stamp: "Sent", text: ref.name ? `${r.text} · ${ref.name}` : r.text };
   };
 }

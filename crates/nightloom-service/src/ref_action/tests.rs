@@ -333,6 +333,184 @@ fn the_receipt_is_read_from_the_tools_own_result() {
     assert!(r.text.contains("may or may not"), "{}", r.text);
 }
 
+// ---- Item 993e: a reply, a reply to all, a forward, sent from his click. ----
+
+fn send(mode: &str, to: &str, body: &str) -> Act {
+    Act::Send {
+        mode: mode.into(),
+        to: to.into(),
+        body: body.into(),
+    }
+}
+
+#[test]
+fn a_sent_reply_is_one_reply_call_and_a_forward_goes_only_to_his_address() {
+    let reply = call_for(&email(), &send("reply", "Priya S.", "Thanks —\nsee you.")).unwrap();
+    assert_eq!(reply.tool, "mcp__claude_ai_Gmail_2117773e__reply");
+    assert_eq!(
+        reply.input,
+        json!({ "messageId": "19a0f3", "replyAll": false, "body": "Thanks —\nsee you." })
+    );
+    assert_eq!(reply.words_key, Some("body"));
+    assert!(reply.sends);
+    // The name on the button is never an address: a reply goes where Gmail says.
+    assert!(reply.input.get("to").is_none());
+
+    let all = call_for(
+        &email(),
+        &send("replyAll", "Priya S. and everyone on it", "Yes."),
+    )
+    .unwrap();
+    assert_eq!(all.tool, "mcp__claude_ai_Gmail_2117773e__reply");
+    assert_eq!(all.input["replyAll"], json!(true));
+
+    let fwd = call_for(&email(), &send("forward", " sam@example.com ", "FYI")).unwrap();
+    assert_eq!(fwd.tool, "mcp__claude_ai_Gmail_2117773e__forward");
+    assert_eq!(
+        fwd.input,
+        json!({ "messageId": "19a0f3", "to": ["sam@example.com"], "forwardText": "FYI" })
+    );
+    assert_eq!(fwd.words_key, Some("forwardText"));
+    assert!(fwd.sends);
+    for tool in [&reply.tool, &fwd.tool] {
+        assert!(send_guard::sends(tool), "{tool}");
+    }
+}
+
+#[test]
+fn a_send_with_no_body_no_recipient_or_the_wrong_item_is_no_call() {
+    for act in [
+        send("reply", "Priya", ""),
+        send("reply", "Priya", " \n "),
+        send("forward", "", "FYI"),
+        send("forward", "Sam", "FYI"),
+        send("forward", "a@b.c, d@e.f", "FYI"),
+        send("forward", "Sam <sam@example.com>", "FYI"),
+        send("send", "sam@example.com", "FYI"),
+        send("reply", "Priya", &"x".repeat(MAX_WORDS + 1)),
+    ] {
+        assert!(call_for(&email(), &act).is_err(), "{act:?}");
+    }
+    assert!(call_for(&event(), &send("reply", "Priya", "hi")).is_err());
+    let mut it = email();
+    it.id = "a b".into();
+    assert!(call_for(&it, &send("reply", "Priya", "hi")).is_err());
+    let mut it = email();
+    it.src = "openalex".into();
+    assert!(call_for(&it, &send("reply", "Priya", "hi")).is_err());
+}
+
+/// The spec's check: a pass minted for one body refuses a send whose body
+/// differs — by a word, a space, a line — and stays unspent for the right one.
+#[test]
+fn a_pass_for_one_body_refuses_a_send_whose_body_differs() {
+    for act in [
+        send("reply", "Priya", "See you at 3."),
+        send("replyAll", "everyone on it", "See you at 3."),
+        send("forward", "sam@example.com", "See you at 3."),
+    ] {
+        let dir = tmp("body");
+        let call = call_for(&email(), &act).unwrap();
+        let now = Utc::now();
+        let pass = mint(&dir, &call, now).unwrap();
+        // The words are not in the pass file, only their hash.
+        let file = std::fs::read_to_string(dir.join(PASS_FILE)).unwrap();
+        assert!(!file.contains("See you at 3."), "{file}");
+        assert!(pass.words_sha256.len() == 64);
+        let key = call.words_key.unwrap();
+        for other in [
+            "See you at 4.",
+            "See you at 3. ",
+            "See you at 3.\n",
+            "see you at 3.",
+            "",
+        ] {
+            let mut input = call.input.clone();
+            input[key] = json!(other);
+            assert_eq!(
+                decide(&dir, &stdin(&call.tool, &input), now).decision(),
+                "deny",
+                "{other:?}"
+            );
+            assert!(dir.join(PASS_FILE).exists(), "a refusal spends nothing");
+        }
+        // His words with one key more (a cc, a signature) are not the call either.
+        for (k, v) in [
+            ("cc", json!(["x@example.com"])),
+            ("includeSignature", json!(true)),
+        ] {
+            let mut input = call.input.clone();
+            input[k] = v;
+            assert_eq!(
+                decide(&dir, &stdin(&call.tool, &input), now).decision(),
+                "deny"
+            );
+        }
+        // A reply's pass is not a reply-all's, nor a forward to someone else.
+        let mut wider = call.input.clone();
+        if key == "body" {
+            wider["replyAll"] = json!(wider["replyAll"] != json!(true));
+        } else {
+            wider["to"] = json!(["eve@example.com"]);
+        }
+        assert_eq!(
+            decide(&dir, &stdin(&call.tool, &wider), now).decision(),
+            "deny"
+        );
+        // The words that were on screen: let through, once.
+        let line = stdin(&call.tool, &call.input);
+        assert_eq!(decide(&dir, &line, now).decision(), "allow");
+        assert_eq!(decide(&dir, &line, now).decision(), "deny");
+    }
+}
+
+/// The spec's check, the pass's side: a model turn (no click, so no pass)
+/// cannot fire a reply, a reply to all or a forward in the action process —
+/// refused in code by the hook, whatever the arguments.
+#[test]
+fn a_model_turn_cannot_fire_reply_reply_all_or_forward() {
+    let dir = tmp("model");
+    for act in [
+        send("reply", "Priya", "hi"),
+        send("replyAll", "everyone", "hi"),
+        send("forward", "sam@example.com", "hi"),
+    ] {
+        let call = call_for(&email(), &act).unwrap();
+        let r = decide(&dir, &stdin(&call.tool, &call.input), Utc::now());
+        assert_eq!(r.decision(), "deny", "{}", call.tool);
+    }
+    // A pass for one mail is not a pass for another kind of send.
+    let reply = call_for(&email(), &send("reply", "Priya", "hi")).unwrap();
+    mint(&dir, &reply, Utc::now()).unwrap();
+    let fwd = call_for(&email(), &send("forward", "sam@example.com", "hi")).unwrap();
+    assert_eq!(
+        decide(&dir, &stdin(&fwd.tool, &fwd.input), Utc::now()).decision(),
+        "deny"
+    );
+}
+
+#[test]
+fn a_sent_mail_says_who_it_went_to() {
+    let ok = [Seen::Result {
+        content: "{\"id\":\"m2\",\"threadId\":\"t1\"}".into(),
+        is_error: false,
+    }];
+    let r = receipt(&send("reply", "Priya S.", "hi"), &ok, true);
+    assert_eq!((r.outcome, r.text.as_str()), ("done", "Sent to Priya S."));
+    let r = receipt(&send("forward", "sam@example.com", "hi"), &ok, true);
+    assert_eq!(r.text, "Forwarded to sam@example.com");
+    let r = receipt(&send("reply", "", "hi"), &ok, true);
+    assert_eq!(r.text, "Sent");
+    // Never "sent" without the tool's own success.
+    let r = receipt(&send("reply", "Priya S.", "hi"), &[], true);
+    assert!(r.text.contains("may or may not"), "{}", r.text);
+    let denied = [Seen::Denied {
+        reason: NOT_THE_CALL.into(),
+    }];
+    let r = receipt(&send("reply", "Priya S.", "hi"), &denied, false);
+    assert!(r.text.contains("nothing was sent"), "{}", r.text);
+}
+
 // ---- Blocker 2304: a model turn, no click — no position lets a send run. ----
 
 const SENDS: &[&str] = &[

@@ -198,7 +198,9 @@ fn tool_on(src: &str, tool: &str) -> Result<String, String> {
 /// schemas a Claude Code session lists, read 2026-11-26, not called):
 /// `respond_to_event` takes `eventId`, `calendarId`, `responseStatus`,
 /// `responseComment`; `create_draft` takes `replyToMessageId`, `to`,
-/// `subject`, `body`.
+/// `subject`, `body`; `reply` takes `messageId`, `body`, `replyAll`;
+/// `forward` takes `messageId`, `to` (a list), `forwardText` (read
+/// 2026-11-27 for 993e, not called).
 pub fn call_for(item: &Item, act: &Act) -> Result<Call, String> {
     match act {
         Act::Rsvp { answer, note } => {
@@ -265,10 +267,48 @@ pub fn call_for(item: &Item, act: &Act) -> Result<Call, String> {
                 sends: false,
             })
         }
-        Act::Send { .. } => Err(
-            "sending mail from a card is not built yet (item 993e); Save as Gmail draft works"
-                .into(),
-        ),
+        // Item 993e: the reply or the forward, sent. Only his click on "Send
+        // to …" reaches here (after the card's hold, which his Undo stops
+        // before this command is ever called), and the body is the words
+        // that were on screen: the pass pins its hash, so a body that
+        // differs by one character is refused and the pass stays unspent.
+        Act::Send { mode, to, body } => {
+            if item.kind != "email" {
+                return Err("only an email can be replied to or forwarded".into());
+            }
+            let body = words(body)?;
+            if body.trim().is_empty() {
+                return Err("nothing is written yet".into());
+            }
+            let id = clean_id("message id", &item.id)?;
+            let mut input = Map::new();
+            input.insert("messageId".into(), id.into());
+            let (tool, words_key) = match mode.as_str() {
+                // Gmail answers the sender, or everyone on it, as the
+                // message itself names them: no address is guessed here.
+                "reply" | "replyAll" => {
+                    input.insert("replyAll".into(), (mode == "replyAll").into());
+                    input.insert("body".into(), body.into());
+                    ("reply", "body")
+                }
+                // A forward goes only to the one address he typed.
+                "forward" => {
+                    if to.trim().is_empty() {
+                        return Err("say who gets the forward first".into());
+                    }
+                    input.insert("to".into(), json!([address(to)?]));
+                    input.insert("forwardText".into(), body.into());
+                    ("forward", "forwardText")
+                }
+                _ => return Err("a mail is a reply, a reply to all or a forward".into()),
+            };
+            Ok(Call {
+                tool: tool_on(&item.src, tool)?,
+                input: Value::Object(input),
+                words_key: Some(words_key),
+                sends: true,
+            })
+        }
     }
 }
 
@@ -534,7 +574,15 @@ pub fn receipt(act: &Act, seen: &[Seen], spent: bool) -> Receipt {
                     "Note saved as a draft · message not attached".into()
                 }
                 Act::SaveDraft { .. } => "Draft saved in Gmail".into(),
-                Act::Send { .. } => "Sent".into(),
+                Act::Send { mode, to, .. } => {
+                    let to = one_line(to, 80);
+                    let what = if mode == "forward" { "Forwarded" } else { "Sent" };
+                    if to.is_empty() {
+                        what.into()
+                    } else {
+                        format!("{what} to {to}")
+                    }
+                }
             },
         },
         Some((content, true)) if gone(content) => Receipt {

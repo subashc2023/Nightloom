@@ -46,7 +46,8 @@ function setup(opts: { act?: boolean | ((a: RefAction) => Promise<RefReceipt>); 
         return { stamp: "Sent", text: "Reply to Priya S." };
       }
     : undefined;
-  host = mount(RefCardHost, { target: document.body, props: { reach: () => opts.reach ?? REACH, act } });
+  // The hold before a mail goes (993e) is its own test's (refAct993e); here the stand-in answers at once.
+  host = mount(RefCardHost, { target: document.body, props: { reach: () => opts.reach ?? REACH, act, holdMs: 0 } });
   flushSync();
 }
 const link = (name: string) => [...page.querySelectorAll<HTMLElement>("a.nl-ref")].find((a) => a.textContent === name)!;
