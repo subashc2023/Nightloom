@@ -75,10 +75,10 @@
       </div>
       {#if s.text && filament}
         <FoldText lines={10} foldKey={`w:${key}`}>
-          <div class="waiting-text fil" data-find-text={s.text} bind:this={textEl}><MathText text={s.text} /></div>
+          <div class="waiting-text fil" data-find-text={s.text} bind:this={textEl}><MathText text={s.text} links /></div>
         </FoldText>
       {:else if s.text}
-        <div class="waiting-text" data-find-text={s.text}><MathText text={s.text} /></div>
+        <div class="waiting-text" data-find-text={s.text}><MathText text={s.text} links /></div>
       {/if}
       {#if (s.attachments ?? []).length > 0}
         <div class="waiting-files" data-waiting-files>

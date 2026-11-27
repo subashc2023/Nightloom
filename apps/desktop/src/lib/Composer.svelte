@@ -4118,7 +4118,7 @@
             <span class="queue-n mono">{i + 1}</span>
             <span class="queue-text" data-find-text={q.text}
               >{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span>
-              {/if}{#if rowOpen[q.id]}<span class="queue-whole"><MathText text={q.text} /></span>{:else}<MathText text={firstLine(q.text) || "(no text)"} />{/if}{#if q.attachments.length > 0}
+              {/if}{#if rowOpen[q.id]}<span class="queue-whole"><MathText text={q.text} links /></span>{:else}<MathText text={firstLine(q.text) || "(no text)"} />{/if}{#if q.attachments.length > 0}
                 <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span
             >
             {#if long}

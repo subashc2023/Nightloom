@@ -336,7 +336,7 @@
                     <summary>Carried from agent “{adoptedMsg.agent ?? "subagent"}” — its task and run, which this chat answers from</summary>
                     <pre>{adoptedMsg.carried}</pre>
                   </details>
-                  {#if adoptedMsg.said}<div class="user-text"><MathText text={adoptedMsg.said} /></div>{/if}
+                  {#if adoptedMsg.said}<div class="user-text"><MathText text={adoptedMsg.said} links /></div>{/if}
                 {/if}
               {/snippet}
               {#snippet extra()}
@@ -1585,6 +1585,7 @@
   .user-text {
     white-space: pre-wrap;
     word-break: break-word;
+    overflow-wrap: anywhere;
   }
   .adopted-carry {
     margin-bottom: 0.4rem;

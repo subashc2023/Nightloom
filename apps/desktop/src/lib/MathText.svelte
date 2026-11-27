@@ -16,20 +16,30 @@
 
 <script lang="ts">
   import { drawnParts, mathParts } from "./userMath";
+  import { linkParts } from "./userLinks";
 
   /**
    * Item 837: words a person typed, with their maths typeset (`userMath.ts`)
    * — his sent message on the Mac (both looks) and on the phone. Everything
    * that is not a formula is the text as typed, in the parent's own
-   * `white-space`; a formula's source is on `data-tex`.
+   * `white-space`; with `links` a URL is a link (item 1029); a formula's source is on `data-tex`.
    */
-  let { text }: { text: string } = $props();
+  let { text, links = false }: { text: string; links?: boolean } = $props();
   const parts = $derived(drawnParts(mathParts(text)));
 </script>
 
-{#each parts as p, i (i)}{#if p.kind === "math"}<span class="user-math" class:display={p.display} data-tex={p.src}>{@html mathHtml(p.tex, p.display)}</span>{:else}{p.text}{/if}{/each}
+{#each parts as p, i (i)}{#if p.kind === "math"}<span class="user-math" class:display={p.display} data-tex={p.src}>{@html mathHtml(p.tex, p.display)}</span>{:else if links}{#each linkParts(p.text) as l, j (j)}{#if l.kind === "link"}<a class="user-link" href={l.href} rel="noopener noreferrer">{l.text}</a>{:else}{l.text}{/if}{/each}{:else}{p.text}{/if}{/each}
 
 <style>
+  /* Item 1029: a URL in his words; wraps inside the bubble, never past its edge. */
+  .user-link {
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+    cursor: pointer;
+  }
   /* KaTeX sizes itself for a document; beside a message's words it reads as a heading (app.css `.markdown .katex`). */
   .user-math :global(.katex) {
     font-size: 1.05em;

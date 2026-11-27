@@ -3675,7 +3675,7 @@
           {@const hand = ran || r.edited ? null : parseHandoffMessage(r.said)}
           <div class="turn user" data-row={i} class:enter={i >= enterFrom && !still} class:removed={r.removed} use:arrive={{ channel: "phone" }}>
             <div class="bubble" use:press={() => openMenu(r)}>
-              {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{#each r.files as f, fi (fi)}<span class="file-card"><span class="file-badge">{fileBadgeOf(f)}</span><span class="file-name">{f}</span></span>{/each}{#if hand}<div class="hb-card" data-handoff-bubble><div class="hb-head">Nightloom hand-off · wrap-up sent for you</div><div class="hb-headline">{#if hand.goal}<span class="hb-goal">Goal</span>{/if}{hand.headline}</div><details><summary>The message · {hand.lines} {hand.lines === 1 ? "line" : "lines"}</summary><pre>{hand.text}</pre></details></div>{:else if ran}<div class="ran-card"><div class="ran-head">Ran in terminal · {ran.status}</div><div class="ran-cmd">{ran.command}</div>{#if ran.output}<details><summary>Output</summary><pre>{ran.output}</pre></details>{/if}</div>{:else}<MathText text={r.said} />{/if}
+              {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{#each r.files as f, fi (fi)}<span class="file-card"><span class="file-badge">{fileBadgeOf(f)}</span><span class="file-name">{f}</span></span>{/each}{#if hand}<div class="hb-card" data-handoff-bubble><div class="hb-head">Nightloom hand-off · wrap-up sent for you</div><div class="hb-headline">{#if hand.goal}<span class="hb-goal">Goal</span>{/if}{hand.headline}</div><details><summary>The message · {hand.lines} {hand.lines === 1 ? "line" : "lines"}</summary><pre>{hand.text}</pre></details></div>{:else if ran}<div class="ran-card"><div class="ran-head">Ran in terminal · {ran.status}</div><div class="ran-cmd">{ran.command}</div>{#if ran.output}<details><summary>Output</summary><pre>{ran.output}</pre></details>{/if}</div>{:else}<MathText text={r.said} links />{/if}
             </div>
             <div class="stamp">
               {#if r.removed}{"removed from the context · "}{:else if r.edited}{"edited · "}{/if}{shortWhen(r.at)}
@@ -4970,6 +4970,7 @@
     padding: 10px 16px;
     font-size: 15.5px;
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
   /* A file a reply sent (backlog 343): the attachment chip, tapped to
      fetch it. */
