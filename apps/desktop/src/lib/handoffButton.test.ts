@@ -11,6 +11,7 @@ import {
   queueHold,
   resetHandoff,
   setDefaultReadOrder,
+  withHistory,
 } from "./handoff.svelte";
 import {
   CONTINUE_LABEL,
@@ -106,7 +107,7 @@ describe("506: the click", () => {
     await continueWithPrompt("chat-a", 3, card);
     expect(api.continueSession).toHaveBeenCalledTimes(1);
     expect(app.activeSessionId).toBe("chat-next");
-    expect(vi.mocked(api.send).mock.calls[0][0]).toBe(card);
+    expect(vi.mocked(api.send).mock.calls[0][0]).toBe(withHistory(card, { id: "chat-a" })); // item 1025: the history pointer goes under it
     expect(readDraft("chat-next").text).toBe("");
     expect(continuedThisRun("chat-a", 3)).toBe(true);
   });
@@ -115,14 +116,14 @@ describe("506: the click", () => {
     setDefaultReadOrder("");
     app.activeSessionId = "chat-b";
     await continueWithPrompt("chat-b", 3, card);
-    expect(vi.mocked(api.send).mock.calls[0][0]).toBe(card);
+    expect(vi.mocked(api.send).mock.calls[0][0]).toBe(withHistory(card, { id: "chat-b" })); // item 1025: the history pointer goes under it
   });
 
   it("a thread chat stays in the thread, sends the prompt alone, and the + is consumed", async () => {
     noteThread("chat-t", "club");
     app.activeSessionId = "chat-t";
     await continueWithPrompt("chat-t", 3, card);
-    expect(vi.mocked(api.send).mock.calls[0][0]).toBe(card);
+    expect(vi.mocked(api.send).mock.calls[0][0]).toBe(withHistory(card, { id: "chat-t" })); // item 1025: the history pointer goes under it
     expect(vi.mocked(takeThreadHandoff)).toHaveBeenCalledWith("club", "chat-next");
     noteThread("chat-t", null);
   });
@@ -131,7 +132,7 @@ describe("506: the click", () => {
     vi.mocked(api.send).mockRejectedValue("the engine fell over");
     app.activeSessionId = "chat-c";
     await continueWithPrompt("chat-c", 3, card);
-    expect(readDraft("chat-next").text).toBe(card);
+    expect(readDraft("chat-next").text).toBe(withHistory(card, { id: "chat-c" })); // item 1025: the history pointer goes under it
   });
 
   it("no engine connected: nothing is sent, the text is in the box", async () => {
@@ -139,7 +140,7 @@ describe("506: the click", () => {
     app.activeSessionId = "chat-d";
     await continueWithPrompt("chat-d", 3, card);
     expect(api.send).not.toHaveBeenCalled();
-    expect(readDraft("chat-next").text).toBe(card);
+    expect(readDraft("chat-next").text).toBe(withHistory(card, { id: "chat-d" })); // item 1025: the history pointer goes under it
   });
 
   it("does nothing during a turn, and a second click while the first runs starts no second chat", async () => {

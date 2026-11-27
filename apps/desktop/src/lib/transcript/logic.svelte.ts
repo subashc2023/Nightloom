@@ -17,12 +17,12 @@ import { app, addToast, menuInterceptors, denialReason, draftAside, liveFlags, r
 import { scheduledFor } from "../scheduled.svelte";
 import { coldUsdFor } from "../cacheRates.svelte";
 import { modelSeen } from "../modelSeen.svelte";
-import { cardLog, continuableReply, continuedFromReply, MEMORY_LINE, nextChatMessage, type NextChat } from "../handoffButton";
+import { cardLog, continuableReply, continuedFromReply, HISTORY_LINE, MEMORY_LINE, nextChatMessage, type NextChat } from "../handoffButton";
 import { nextModelLabel, nextModelRows, setNextModel } from "../nextChatModel.svelte";
 import { cancelReview, reviewOf, runReview } from "../chatReview.svelte";
 import { openPathAsTab } from "../forYou.svelte";
 import { carryFor } from "../handoffCarryFor";
-import { codeProjectFor } from "../handoff.svelte";
+import { writesHandoffFile } from "../handoff.svelte";
 import { pushUndo } from "../state/edits.svelte";
 import { REMOVED_PLACEHOLDER, blockEdits, blockElisions, displayTexts, editButtons, editChanges, editLine, editorKey, chipPrint, chipsOf, editDirty, editParts, editReduce, editTexts, editAttachments, chipsChanged, elideFlags, isEditable, type EditState, forkLine } from "../edit";
 import { toolInputSummary } from "../transcriptPrefs.svelte";
@@ -581,6 +581,8 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
           : null,
       // Item 1007: said on the card before he presses Continue, when the switch is on.
       memory: app.dreamPrefs.auto ? MEMORY_LINE : null,
+      // Item 1025: what Nightloom adds under the prompt at Continue, said here.
+      history: HISTORY_LINE,
     };
   });
 
@@ -2307,8 +2309,8 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
     const session = app.sessions.find((s) => s.id === chatId) ?? null;
     if (!session?.forked_from || session.forked_from.reason !== "handoff") return null;
     const line = forkLine(session, app.sessions) ?? "from an earlier chat";
-    // Item 1007: HANDOFF.md named only where the project keeps one.
-    return { id: session.forked_from.session, name: line.replace(/^from /, ""), file: codeProjectFor(session.id) };
+    // Item 1007: HANDOFF.md named only where the hand-off writes one (item 1025: every chat but a plain thread chat).
+    return { id: session.forked_from.session, name: line.replace(/^from /, ""), file: writesHandoffFile(session.id) };
   });
 
   // ---- Ask aside about a highlighted passage (nightshift backlog 107) ----

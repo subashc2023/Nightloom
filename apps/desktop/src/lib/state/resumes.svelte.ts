@@ -3,7 +3,7 @@ import { takeThreadHandoff } from "../threadHandoff.svelte";
 import { noteHandoffOpened } from "../handoffLog";
 import { hasHiddenChars } from "../shellRun";
 import * as api from "../api";
-import { carryReadOrder, clearAwaySent, firstMessage, awayNow, extractStartPrompt, handoff, idleAway, isUnattended, markUnattended, neverHandsOff, noteAwayWrapUp, noteChatProject, noteSystemIdle, noteThread, leaveHandoff, projectFor, threadFor, undoAwayWrapUp, waitingCards, wrapUpToSend } from "../handoff.svelte";
+import { carryReadOrder, clearAwaySent, firstMessage, awayNow, extractStartPrompt, handoff, idleAway, isUnattended, markUnattended, neverHandsOff, noteAwayWrapUp, noteChatProject, noteSystemIdle, noteThread, leaveHandoff, projectFor, threadFor, undoAwayWrapUp, waitingCards, withHistory, wrapUpToSend } from "../handoff.svelte";
 import { setDraftText } from "../drafts.svelte";
 import { chatName, notifyTurnEnd } from "../notify";
 import { limitPauseFrom, resumeDelayMs, resumeMessage } from "../limit";
@@ -12,7 +12,7 @@ import { liveHost } from "../browse";
 import type { AgentTurnResult, SessionEvent, Usage } from "../types";
 import { chatHome } from "./asides.svelte";
 import { chatHomeOf } from "../chatHomeOf";
-import { type Segment, app, sendUntyped, refreshSessions, continueWithPrompt, backgroundName, chatRuns, sendInChat, addToast, turnWasStopped } from "../state.svelte";
+import { type Segment, app, sendUntyped, refreshSessions, continueWithPrompt, historyFrom, backgroundName, chatRuns, sendInChat, addToast, turnWasStopped } from "../state.svelte";
 
 /**
  * Resume a turn the usage limit paused (nightshift backlog 164): sends the
@@ -241,7 +241,9 @@ async function handOffUnattended(chat: string, prompt: string, home: { id: strin
   if (!awayNow(onScreen)) return null;
   if (handedOff.has(once) || chatRuns(chat)) return null;
   handedOff.add(once);
-  const text = firstMessage("", prompt);
+  // Item 1025: off screen too, the pointer to the full history goes under it
+  // (on screen, `continueWithPrompt` adds it).
+  const text = withHistory(firstMessage("", prompt), historyFrom(chat));
   resumeLog(`handoff ${chat.slice(0, 8)} ${onScreen ? "on screen" : "off screen"} project=${home.id ?? "unfiled"}`);
   if (onScreen) {
     if (app.busy) {

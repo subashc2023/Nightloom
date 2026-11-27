@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { readDraft } from "./drafts.svelte";
 import {
+  HISTORY_MARK,
   READ_ORDER,
   beginWrapUp,
   clearDefaultReadOrder,
@@ -13,6 +14,7 @@ import {
   resetHandoff,
   setDefaultReadOrder,
   setReadOrder,
+  withHistory,
 } from "./handoff.svelte";
 import { app, continueChat } from "./state.svelte";
 import type { SessionEvent } from "./types";
@@ -85,7 +87,11 @@ describe("the automated hand-off against a scripted engine", () => {
     expect(vi.mocked(api.continueSession)).toHaveBeenCalledTimes(1);
     expect(app.activeSessionId).toBe("chat-next");
     const box = readDraft("chat-next").text;
-    expect(box).toBe("Changed since: the parser test is red. First fix src/parse.ts.");
+    // Item 1025: and under it, where the chat it continues can be read in full.
+    expect(box).toBe(withHistory("Changed since: the parser test is red. First fix src/parse.ts.", { id: "chat-full" }));
+    expect(box).toContain(HISTORY_MARK);
+    expect(box).toContain('search_chats with scope "chain"');
+    expect(box).toContain("chat chat-full");
     // Nothing sent: the new chat's log is what the backend returned.
     expect(app.events).toEqual([]);
     expect(readDraft("chat-next").queue).toHaveLength(0);
@@ -108,7 +114,7 @@ describe("the automated hand-off against a scripted engine", () => {
     runScript("chat-noblock", "HANDOFF.md written.");
     expect(handoff.startPrompt).toBeNull();
     await continueChat();
-    expect(readDraft("chat-next").text).toBe(READ_ORDER);
+    expect(readDraft("chat-next").text).toBe(withHistory(READ_ORDER, { id: "chat-noblock" }));
     expect(handoff.noStartPromptChat).toBe("chat-next");
   });
 
@@ -116,6 +122,18 @@ describe("the automated hand-off against a scripted engine", () => {
     setDefaultReadOrder("");
     runScript("chat-blank", REPLY);
     await continueChat();
-    expect(readDraft("chat-next").text).toBe("Changed since: the parser test is red. First fix src/parse.ts.");
+    expect(readDraft("chat-next").text).toBe(withHistory("Changed since: the parser test is red. First fix src/parse.ts.", { id: "chat-blank" }));
+  });
+
+  it("item 1025: names the previous chat's title and log when the sidebar lists it", async () => {
+    runScript("chat-listed", REPLY);
+    app.sessions = [
+      { id: "chat-listed", path: "/tmp/sessions/chat-listed.jsonl", modified: "2026-11-26T22:00:00Z", user_turns: 3, first_user: "go", title: "Parser work" },
+    ];
+    await continueChat();
+    const box = readDraft("chat-next").text;
+    expect(box).toContain("“Parser work”, chat chat-listed, 2026-11-26");
+    expect(box).toContain("/tmp/sessions/chat-listed.jsonl");
+    app.sessions = [];
   });
 });

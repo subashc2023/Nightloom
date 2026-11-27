@@ -109,6 +109,7 @@
     cap,
     codeProbePaths,
     codeProjectFor,
+    writesHandoffFile,
     noteCodeProject,
     neverHandsOff,
   } from "./handoff.svelte";
@@ -1150,8 +1151,9 @@
   });
   /** A thread chat in a code project also writes HANDOFF.md (blocker 1568). */
   const threadAndHandoff = $derived(threadHandoff && codeProjectFor(app.activeSessionId));
-  /** Item 1007: the project keeps a HANDOFF.md or a backlog/, so the built-in wrap-up writes one; elsewhere it names neither. */
-  const codeHere = $derived(codeProjectFor(app.activeSessionId));
+  /** Item 1007: the project keeps a HANDOFF.md or a backlog/, so the built-in wrap-up writes one; elsewhere it names neither.
+   *  ~~codeProjectFor~~ — item 1025: every chat's wrap-up writes one now but a thread chat in a project that keeps none. */
+  const codeHere = $derived(writesHandoffFile(app.activeSessionId));
   /** The wrap-up this chat would send: its own edit, else its thread's, else the Settings default. */
   const wrapUpText = $derived(message(app.activeSessionId));
   /** The read order this chat's continuation opens with (backlog 193). */

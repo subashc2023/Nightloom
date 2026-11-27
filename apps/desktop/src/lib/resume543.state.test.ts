@@ -27,10 +27,10 @@ vi.mock("./api", async (importOriginal) => ({
 }));
 
 const api = await import("./api");
-const { app, clearResumes, limitWakeDue, resumeAfterLimit, resumes, sendInChat } = await import("./state.svelte");
+const { app, clearResumes, historyFrom, limitWakeDue, resumeAfterLimit, resumes, sendInChat } = await import("./state.svelte");
 const { RESUME_MARGIN_MS } = await import("./limit");
 const { RESUMES_KEY, readResumes } = await import("./chatResume");
-const { noteActivity, isUnattended, setMarkAt, NEVER } = await import("./handoff.svelte");
+const { noteActivity, isUnattended, setMarkAt, NEVER, withHistory } = await import("./handoff.svelte");
 const { readDraft } = await import("./drafts.svelte");
 
 const COLLEGE = { id: "p-college", name: "College" };
@@ -475,7 +475,8 @@ describe("544 — an unattended chat hands off by itself; with him present the c
     await settle();
     expect(api.continueChat).toHaveBeenCalledWith(A, "p-college");
     expect(send).toHaveBeenCalledTimes(2);
-    expect(send.mock.calls[1]![0]).toBe("Read HANDOFF.md, then run wave B.");
+    // Item 1025: the history pointer goes under the prompt.
+    expect(send.mock.calls[1]![0]).toBe(withHistory("Read HANDOFF.md, then run wave B.", historyFrom(A)));
     expect(send.mock.calls[1]![7]).toEqual({ chat: "chat-next", project: "p-college" });
     expect(app.background["chat-next"]?.project).toBe("p-college");
     // The new chat inherits the unattended state: its own pause, ask and hand-off go by themselves.
@@ -539,7 +540,8 @@ describe("544 — an unattended chat hands off by itself; with him present the c
     expect(api.continueChat).not.toHaveBeenCalled();
     expect(app.activeSessionId).toBe("chat-next");
     expect(send).toHaveBeenCalledTimes(2);
-    expect(send.mock.calls[1]![0]).toBe("Read HANDOFF.md, then run wave B.");
+    // Item 1025: the history pointer goes under the prompt.
+    expect(send.mock.calls[1]![0]).toBe(withHistory("Read HANDOFF.md, then run wave B.", historyFrom(A)));
   });
 
   it("545: a chat whose mark is never is not continued by Nightloom, away or not", async () => {

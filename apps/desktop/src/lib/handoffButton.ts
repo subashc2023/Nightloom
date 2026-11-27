@@ -75,7 +75,16 @@ export interface NextChat {
   /** Item 1007: the line saying the hand-off also saves memory from this
    *  chat (the automatic pass is on); absent or null, no line. */
   memory?: string | null;
+  /** Item 1025: the line saying the continued chat's first message also
+   *  points at this chat's full history; absent or null, no line. */
+  history?: string | null;
 }
+
+/** Item 1025: what the card says Nightloom adds under the prompt
+ *  (`historyPointer`), so what is sent is on screen. */
+export const HISTORY_LINE =
+  "The next chat's first message also says where this chat's full conversation can be searched (search_chats, scope chain), so it can look up what the summary leaves out.";
+export const HISTORY_LINE_CLASS = "handoff-history-line";
 
 /** Item 1007: the card's line when the automatic pass is on — a hand-off
  *  starts a capture (then a dream) of this chat, which it used to do unsaid. */
@@ -85,14 +94,23 @@ export const MEMORY_LINE_CLASS = "handoff-memory-line";
 
 /** Put the memory line in the row before the button, or take it out. */
 function syncMemory(row: HTMLElement, next: NextChat): void {
-  let line = row.querySelector<HTMLElement>(`:scope > .${MEMORY_LINE_CLASS}`);
-  const text = next.memory ?? "";
+  syncLine(row, MEMORY_LINE_CLASS, next.memory ?? "");
+}
+
+/** Item 1025: the history line, the same way. */
+function syncHistory(row: HTMLElement, next: NextChat): void {
+  syncLine(row, HISTORY_LINE_CLASS, next.history ?? "");
+}
+
+/** One line of the card's row, by class: added before the read order, kept, or taken out. */
+function syncLine(row: HTMLElement, cls: string, text: string): void {
+  let line = row.querySelector<HTMLElement>(`:scope > .${cls}`);
   if (!text) {
     line?.remove();
     return;
   }
   if (!line) {
-    line = el("div", `handoff-line ${MEMORY_LINE_CLASS}`);
+    line = el("div", `handoff-line ${cls}`);
     // Its own line above the controls: after the carry block, before the read order.
     const order = row.querySelector(":scope > details.handoff-order");
     if (order) order.before(line);
@@ -710,6 +728,7 @@ export function addContinueControls(root: HTMLElement, read: () => NextChat | nu
   }
   syncCarry(row, next, read);
   syncMemory(row, next);
+  syncHistory(row, next);
   syncReview(row, next, read);
   syncModel(row, next, read);
   if (card) syncMinimize(card, next, read);

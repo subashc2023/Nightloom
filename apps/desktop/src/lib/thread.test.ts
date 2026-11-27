@@ -179,7 +179,9 @@ describe("the wrap-up and the read order a chat gets", () => {
   it("an unbound chat follows the probe (item 1007)", () => {
     noteCodeProject("c1", false);
     expect(message("c1")).toBe(PLAIN_WRAP_UP);
-    expect(message("c1")).not.toContain("HANDOFF.md");
+    // ~~not.toContain("HANDOFF.md")~~ — item 1025: it writes HANDOFF.md again; no mdcheck or backlog.
+    expect(message("c1")).toContain("HANDOFF.md");
+    expect(message("c1")).not.toContain("mdcheck");
     noteCodeProject("c1", true);
     expect(message("c1")).toBe(WRAP_UP);
     expect(message("c1")).toContain(CODE_CLOSE);
@@ -308,7 +310,8 @@ describe("Continue on a bound chat", () => {
     expect(handoff.stage).toBe("wrapped");
     await continueChat();
     expect(app.activeSessionId).toBe("chat-next");
-    expect(readDraft("chat-next").text).toBe("Start with T-04.");
+    // Item 1025: the history pointer goes under the prompt.
+    expect(readDraft("chat-next").text.startsWith("Start with T-04.\n\nEarlier history (added by Nightloom):")).toBe(true);
     expect(threadFor("chat-next")).toBe("stuart-brainstorm");
     expect(api.threadUpkeep).toHaveBeenCalledWith("stuart-brainstorm", true);
   });

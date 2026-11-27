@@ -18,8 +18,8 @@ import {
   type ReviewOptions,
   type ReviewTarget,
 } from "./chatReview.svelte";
-import { resetHandoff } from "./handoff.svelte";
-import { app, continueWithPrompt } from "./state.svelte";
+import { resetHandoff, withHistory } from "./handoff.svelte";
+import { app, continueWithPrompt, historyFrom } from "./state.svelte";
 import type { AsideResult } from "./types";
 import buttonSrc from "./handoffButton.ts?raw";
 import transcriptSrcRaw from "./Transcript.svelte?raw";
@@ -102,7 +102,8 @@ describe("857: Continue during a review", () => {
     await continueWithPrompt("chat-a", 7, "Pick up the thread.");
     expect(api.continueSession).toHaveBeenCalledTimes(1);
     expect(app.activeSessionId).toBe("chat-next");
-    expect(vi.mocked(api.send).mock.calls[0][0]).toBe("Pick up the thread.");
+    // Item 1025: the history pointer goes under the prompt.
+    expect(vi.mocked(api.send).mock.calls[0][0]).toBe(withHistory("Pick up the thread.", historyFrom("chat-a")));
     expect(reviewBusy(reviewOf("chat-a", 7))).toBe(true);
     // The aside answers after the switch: the page still saves, under the old chat's card.
     release(answer);
