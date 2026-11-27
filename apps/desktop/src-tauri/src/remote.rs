@@ -167,6 +167,8 @@ const VOICE_IDLE: Duration = Duration::from_secs(600);
 /// Item 801: a Brief is one short Haiku turn; give it a generous minute
 /// and a half.
 const BRIEF_WAIT: Duration = Duration::from_secs(90);
+/// How long the window has to name the rail's agent settings (993f).
+const REF_AGENT_WAIT: Duration = Duration::from_secs(10);
 
 impl DesktopHost {
     fn new(app: AppHandle) -> Arc<Self> {
@@ -803,6 +805,35 @@ impl Host for DesktopHost {
         }
     }
 
+    /// Item 993f: the Mac runs a card's actions for the phone's sheet.
+    fn ref_acts(&self) -> bool {
+        true
+    }
+
+    /// Item 993f: one action from the phone's sheet, after the listener
+    /// redeemed his tap for exactly it (`ref_gate`). The window is asked
+    /// only for the rail's agent binary and safe mode (`remote-ref-agent`);
+    /// nothing runs there. A window that does not answer: nothing runs.
+    async fn ref_act(
+        &self,
+        item: nightloom_service::ref_action::Item,
+        act: nightloom_service::ref_action::Act,
+    ) -> Result<nightloom_service::ref_action::Receipt, String> {
+        let (binary, safe_mode) = self.ref_agent().await?;
+        let power = self.app.state::<power::Holder>();
+        crate::ref_action::run_act(&power, item, act, binary, Some(safe_mode)).await
+    }
+
+    /// Item 993f: an email's own headers for the phone's sheet.
+    async fn ref_read(
+        &self,
+        item: nightloom_service::ref_action::Item,
+    ) -> Result<nightloom_service::ref_action::Heads, String> {
+        let (binary, safe_mode) = self.ref_agent().await?;
+        let power = self.app.state::<power::Holder>();
+        crate::ref_action::read_heads(&power, item, binary, Some(safe_mode)).await
+    }
+
     /// Item 801: the phone's Brief, run by the window (`remote-brief`), which
     /// knows the agent binary and safe mode it runs every turn with.
     async fn brief(&self, text: &str) -> Result<String, String> {
@@ -1198,6 +1229,24 @@ fn from_json<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> Result<T, 
 }
 
 impl DesktopHost {
+    /// The rail's agent binary and safe mode, as the window holds them
+    /// (item 993f): the only thing the window is asked for a phone's card
+    /// action. Safe mode unknown is no answer, so nothing runs.
+    async fn ref_agent(&self) -> Result<(Option<String>, bool), String> {
+        let v = self
+            .call("remote-ref-agent", serde_json::json!({}), REF_AGENT_WAIT)
+            .await?;
+        let safe = v
+            .get("safeMode")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or("the window did not say whether safe mode is on, so nothing was sent")?;
+        let binary = v
+            .get("binary")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        Ok((binary, safe))
+    }
+
     /// A project as the phone lists it, from the window's answer (the
     /// desktop's `ProjectInfo`: its `id`), with `active` read fresh.
     async fn row_of(&self, project: &serde_json::Value) -> Result<ProjectRow, String> {

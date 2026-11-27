@@ -1678,6 +1678,8 @@ fn main() {
             ref_action::ref_act,
             ref_action::ref_read,
             ref_action::ref_unfinished,
+            ref_action::ref_lock,
+            ref_action::ref_checked,
             listen::listen_audio,
             listen::listen_brief,
             listen::listen_parts,

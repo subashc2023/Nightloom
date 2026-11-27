@@ -32,6 +32,7 @@
 pub mod api;
 mod feedback_routes;
 mod home_routes;
+mod ref_routes;
 // Item 763 H8: what the phone's Home reads (feed, scan, held blockers, Siri's needs).
 mod home_phone_routes;
 mod job_routes;
@@ -421,6 +422,33 @@ pub trait Host: Send + Sync + 'static {
             "Only the Nightloom app on your Mac can ask for {}.",
             source.name()
         ))
+    }
+
+    /// Item 993f: whether this host runs a card's actions (the Mac does;
+    /// the away server and the default do not, and every `/home/ref` route
+    /// that would reach a connector answers [`NOT_AVAILABLE`]).
+    fn ref_acts(&self) -> bool {
+        false
+    }
+    /// Item 993f: run one card action on the Mac, after
+    /// [`crate::ref_gate`] redeemed his tap for exactly it. The Mac runs
+    /// 993d/993e's own path (the window crate's one `mint` caller).
+    async fn ref_act(
+        &self,
+        item: crate::ref_action::Item,
+        act: crate::ref_action::Act,
+    ) -> Result<crate::ref_action::Receipt, String> {
+        let _ = (item, act);
+        Err(NOT_AVAILABLE.into())
+    }
+    /// Item 993f: an email's own headers (the read-only `get_message`), so
+    /// the phone's sheet shows who a mail really goes to.
+    async fn ref_read(
+        &self,
+        item: crate::ref_action::Item,
+    ) -> Result<crate::ref_action::Heads, String> {
+        let _ = item;
+        Err(NOT_AVAILABLE.into())
     }
 
     /// This host's recurring jobs (item 746, [`crate::jobs`]): the store
@@ -961,6 +989,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .merge(feedback_routes::router())
         // Item 808: Home's sources on this Mac (status, and ask the Mac).
         .merge(home_routes::router())
+        .merge(ref_routes::router())
         .merge(push_routes::router())
         .merge(rules_routes::router())
         .merge(saved_prompt_routes::router())
@@ -2659,6 +2688,303 @@ mod tests {
         fn asset(&self, path: &str) -> Option<Asset> {
             self.0.asset(path)
         }
+    }
+
+    /// Item 993f: the Mac's card runner as a stub — never a connector. Each
+    /// call it was asked to run is counted; an item id starting `unknown`
+    /// answers as a mail let through with no success back.
+    struct RefHost {
+        inner: Arc<FakeHost>,
+        ran: Mutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Host for RefHost {
+        async fn state(&self) -> RemoteState {
+            self.inner.state().await
+        }
+        async fn chats(&self, project: Option<&str>) -> Result<Vec<ChatRow>, String> {
+            self.inner.chats(project).await
+        }
+        async fn projects(&self) -> Result<Vec<ProjectRow>, String> {
+            self.inner.projects().await
+        }
+        async fn transcript(
+            &self,
+            project: Option<&str>,
+            id: &str,
+        ) -> Result<Vec<SessionEvent>, String> {
+            self.inner.transcript(project, id).await
+        }
+        async fn send(&self, chat: Option<&str>, text: &str) -> Result<Handed, String> {
+            self.inner.send(chat, text).await
+        }
+        async fn new_chat(&self, project: Option<&str>, text: &str) -> Result<Handed, String> {
+            self.inner.new_chat(project, text).await
+        }
+        async fn rename(&self, chat: &str, title: &str) -> Result<(), String> {
+            self.inner.rename(chat, title).await
+        }
+        async fn open(&self, chat: &str) -> Result<(), String> {
+            self.inner.open(chat).await
+        }
+        async fn approve(&self, req: ApproveRequest) -> Result<(), String> {
+            self.inner.approve(req).await
+        }
+        async fn cancel(&self, chat: Option<&str>) -> Result<(), String> {
+            self.inner.cancel(chat).await
+        }
+        fn events(&self) -> broadcast::Receiver<Event> {
+            self.inner.events()
+        }
+        fn asset(&self, path: &str) -> Option<Asset> {
+            self.inner.asset(path)
+        }
+        fn home_config(&self) -> Option<std::path::PathBuf> {
+            self.inner.home_config()
+        }
+        fn ref_acts(&self) -> bool {
+            true
+        }
+        async fn ref_act(
+            &self,
+            item: crate::ref_action::Item,
+            act: crate::ref_action::Act,
+        ) -> Result<crate::ref_action::Receipt, String> {
+            let what = match &act {
+                crate::ref_action::Act::Send { body, .. } => format!("send:{body}"),
+                crate::ref_action::Act::Rsvp { answer, .. } => format!("rsvp:{answer}"),
+                crate::ref_action::Act::SaveDraft { .. } => "draft".into(),
+            };
+            self.ran.lock().unwrap().push((item.id.clone(), what));
+            Ok(crate::ref_action::Receipt {
+                outcome: if item.id.starts_with("unknown") {
+                    "unknown"
+                } else {
+                    "done"
+                },
+                text: "Sent to client@co.example".into(),
+            })
+        }
+    }
+
+    async fn ref_up() -> (Server, Arc<RefHost>, String) {
+        let (inner, _tx) = FakeHost::new();
+        let host = Arc::new(RefHost {
+            inner,
+            ran: Mutex::new(Vec::new()),
+        });
+        let token = token::generate();
+        let server =
+            Server::start_for_test("127.0.0.1:0".parse().unwrap(), token.clone(), host.clone())
+                .await
+                .unwrap();
+        (server, host, token)
+    }
+
+    fn ref_mail(id: &str) -> serde_json::Value {
+        serde_json::json!({ "kind": "email", "id": id, "src": "claude.ai Gmail 2117773e", "name": "Speaker confirmation" })
+    }
+    fn ref_reply(body: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "send", "mode": "reply", "to": "Client Co", "body": body,
+            "recipients": { "to": ["client@co.example"], "cc": [] } })
+    }
+
+    /// Item 993f (blocker 2304): the listener runs no card action without a
+    /// tap of his minted for exactly it — none, a made-up one, one for other
+    /// words, one let go before the hold ended, one he undid, one spent.
+    #[tokio::test]
+    async fn the_listener_refuses_a_send_without_a_pass_minted_from_his_tap() {
+        let (server, host, token) = ref_up().await;
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let id = format!("m-{}", uuid::Uuid::new_v4().simple());
+        let item = ref_mail(&id);
+        let reply = ref_reply("Yes, Thursday works.");
+        // No tap, and a made-up one.
+        for tap in [serde_json::Value::Null, serde_json::json!("made-up")] {
+            let (status, v) = post_json(
+                &c,
+                format!("{base}/act"),
+                &token,
+                serde_json::json!({ "tap": tap, "item": item, "act": reply }),
+            )
+            .await;
+            assert_eq!(status, 403, "{v}");
+        }
+        // His tap for these words; let go at once (the hold has not ended).
+        let (status, t) = post_json(
+            &c,
+            format!("{base}/tap"),
+            &token,
+            serde_json::json!({ "item": item, "act": reply }),
+        )
+        .await;
+        assert_eq!(status, 200, "{t}");
+        assert_eq!(t["hold_ms"], 5000);
+        let tap = t["tap"].as_str().unwrap().to_string();
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/act"),
+            &token,
+            serde_json::json!({ "tap": tap, "item": item, "act": reply }),
+        )
+        .await;
+        assert_eq!(status, 403, "before the hold ended");
+        // Other words under his tap.
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/act"),
+            &token,
+            serde_json::json!({ "tap": tap, "item": item, "act": ref_reply("Yes, Friday works.") }),
+        )
+        .await;
+        assert_eq!(status, 403, "not what he tapped");
+        // A second tap for the item while his is held.
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/tap"),
+            &token,
+            serde_json::json!({ "item": item, "act": reply }),
+        )
+        .await;
+        assert_eq!(status, 403, "one hold per item");
+        // His Undo: the tap goes, and nothing can use it afterwards.
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/undo"),
+            &token,
+            serde_json::json!({ "tap": tap }),
+        )
+        .await;
+        assert_eq!(status, 204);
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/act"),
+            &token,
+            serde_json::json!({ "tap": tap, "item": item, "act": reply }),
+        )
+        .await;
+        assert_eq!(status, 403, "undone");
+        assert!(
+            host.ran.lock().unwrap().is_empty(),
+            "nothing ran: {:?}",
+            host.ran.lock().unwrap()
+        );
+        server.stop().await;
+    }
+
+    /// Item 993f: an answer to an invitation from the phone runs once on its
+    /// tap; the same tap again runs nothing.
+    #[tokio::test]
+    async fn a_phone_rsvp_runs_once_on_its_tap() {
+        let (server, host, token) = ref_up().await;
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let id = format!("e-{}", uuid::Uuid::new_v4().simple());
+        let item = serde_json::json!({ "kind": "event", "id": id, "src": "claude.ai Google Calendar", "name": "COAST Meeting" });
+        let act = serde_json::json!({ "type": "rsvp", "answer": "accepted", "note": "" });
+        let (status, t) = post_json(
+            &c,
+            format!("{base}/tap"),
+            &token,
+            serde_json::json!({ "item": item, "act": act }),
+        )
+        .await;
+        assert_eq!(status, 200, "{t}");
+        assert_eq!(t["hold_ms"], 0);
+        let body = serde_json::json!({ "tap": t["tap"], "item": item, "act": act });
+        let (status, r) = post_json(&c, format!("{base}/act"), &token, body.clone()).await;
+        assert_eq!(status, 200, "{r}");
+        assert_eq!(r["outcome"], "done");
+        let (status, _) = post_json(&c, format!("{base}/act"), &token, body).await;
+        assert_eq!(status, 403, "a tap is one press");
+        assert_eq!(
+            *host.ran.lock().unwrap(),
+            vec![(id, "rsvp:accepted".to_string())]
+        );
+        server.stop().await;
+    }
+
+    /// Item 993f: a mail whose fate is unknown locks Send for the item on
+    /// both screens until he says he checked.
+    #[tokio::test]
+    async fn an_unknown_outcome_locks_the_item_until_he_checked() {
+        let (server, _host, token) = ref_up().await;
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let id = format!("unknown-{}", uuid::Uuid::new_v4().simple());
+        let key = format!("email:claude.ai Gmail 2117773e:{id}");
+        let config = _host.home_config().unwrap();
+        crate::ref_gate::maybe_mark(&config, &key, "It may have gone.");
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/lock"),
+            &token,
+            serde_json::json!({ "key": key }),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(v["maybe"], "It may have gone.");
+        // A new tap for a mail on a locked item is refused.
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/tap"),
+            &token,
+            serde_json::json!({ "item": ref_mail(&id), "act": ref_reply("again") }),
+        )
+        .await;
+        assert_eq!(status, 403);
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/checked"),
+            &token,
+            serde_json::json!({ "key": key }),
+        )
+        .await;
+        assert_eq!(status, 204);
+        let (_, v) = post_json(
+            &c,
+            format!("{base}/lock"),
+            &token,
+            serde_json::json!({ "key": key }),
+        )
+        .await;
+        assert!(v["maybe"].is_null(), "{v}");
+        server.stop().await;
+    }
+
+    /// Item 993f: a host without the Mac's runner (the away server) taps,
+    /// reads and runs nothing.
+    #[tokio::test]
+    async fn the_away_server_runs_no_card_action() {
+        let (host, _) = FakeHost::new();
+        let token = token::generate();
+        let server = Server::start_for_test(
+            "127.0.0.1:0".parse().unwrap(),
+            token.clone(),
+            Arc::new(BareHost(host)),
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let item = ref_mail("m-away");
+        for (path, body) in [
+            (
+                "tap",
+                serde_json::json!({ "item": item, "act": ref_reply("hi") }),
+            ),
+            (
+                "act",
+                serde_json::json!({ "tap": "t", "item": item, "act": ref_reply("hi") }),
+            ),
+            ("read", serde_json::json!({ "item": item })),
+        ] {
+            let (status, v) = post_json(&c, format!("{base}/{path}"), &token, body).await;
+            assert_eq!(status, 501, "{path}: {v}");
+        }
+        server.stop().await;
     }
 
     async fn up() -> (Server, Arc<FakeHost>, broadcast::Sender<Event>, String) {

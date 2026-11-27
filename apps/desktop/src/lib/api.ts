@@ -2715,6 +2715,16 @@ export function refAct(item: RefActItem, act: { type: "rsvp" | "saveDraft" | "se
   return invoke("ref_act", { item, act, binary, safeMode });
 }
 
+/** Item 993f: the "may have gone" lock the Mac keeps for both screens (set by an unknown outcome on the Mac or the
+ *  phone), or null. */
+export function refLock(key: string): Promise<string | null> {
+  return invoke("ref_lock", { key });
+}
+/** Item 993f: he checked Gmail's Sent on the Mac's card: the lock goes for both screens. */
+export function refChecked(key: string): Promise<void> {
+  return invoke("ref_checked", { key });
+}
+
 /** Item 993e (review finding 1): an email's own headers, read through the connector's read-only `get_message`. */
 export interface RefHeads {
   from: string;

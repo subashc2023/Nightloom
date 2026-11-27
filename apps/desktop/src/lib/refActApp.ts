@@ -7,6 +7,7 @@ import * as api from "./api";
 import { app } from "./state.svelte";
 import { openWebTab } from "./webtabs.svelte";
 import { makeRefAct, makeRefRead } from "./refAct";
+import { refKey, type Ref } from "./refTag";
 import { addToast } from "./state/toasts.svelte";
 
 const deps = {
@@ -30,3 +31,8 @@ export const refToast = addToast;
 
 /** Where a mail's hold shows once the card is closed (`refHoldToast.ts`). */
 export { refHoldToast } from "./refHoldToast";
+
+/** Item 993f: the "may have gone" lock the Mac keeps for both screens (the phone's sheet may have set it). */
+export const refLockOf = (ref: Ref) => api.refLock(refKey(ref)).catch(() => null);
+/** Item 993f: "I checked: not sent" on the Mac clears the lock for the phone too. */
+export const refCheckedHere = (key: string) => void api.refChecked(key).catch(() => {});

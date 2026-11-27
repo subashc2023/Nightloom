@@ -1045,6 +1045,9 @@ export async function installRemoteHandlers(): Promise<void> {
   await listen<{ id: number }>("remote-running", (e) => void answer(e.payload.id, async () => runningNow()));
   // Item 801: the phone's Brief, on this window's agent binary.
   await listen<{ id: number; text: string }>("remote-brief", (e) => void answer(e.payload.id, () => briefHere(e.payload.text)));
+  // Item 993f: a card action from the phone's sheet runs in Rust; the window only names the rail's agent binary and
+  // safe mode (as the Mac card's own action takes them, `refActApp.ts`). Nothing is run here.
+  await listen<{ id: number }>("remote-ref-agent", (e) => void answer(e.payload.id, async () => ({ binary: app.draft.agentBinary.trim() || null, safeMode: app.draft.agentSafeMode === true })));
   await listen<ProjectOp & { id: number }>("remote-project", (e) => {
     const { id, ...op } = e.payload;
     void answer(id, () => runProject(op as ProjectOp));

@@ -91,6 +91,7 @@
     type Try,
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
+  import PhoneRefCards from "./PhoneRefCards.svelte";
   import { plainHit } from "../lib/plainMd"; // Items 999 + 1014: a search hit's passage without Markdown marks or raw LaTeX
   import { scopeWhere } from "../lib/search"; // Item 1004: the scope's place, named
   import { renderStreamingMarkdown } from "../lib/streamBlocks";
@@ -260,6 +261,13 @@
     if (!env.remembered()) return;
     void (refresh ? refreshPush(env, pushHosts) : Promise.resolve(null)).then(() => syncBadge(env, pushHosts)).catch(() => {});
   }
+  /** Item 993f: why a card's action cannot reach the Mac now (it runs only there), else null. */
+  const refOffline = () =>
+    !clients.mac
+      ? "Your Mac is not paired with this phone, so nothing can be sent from here."
+      : link !== "online" || active !== "mac"
+        ? "Your phone is not reaching your Mac right now, so nothing can be sent from here. Your words are kept."
+        : null;
   /** The active host's client. */
   const client = $derived(active ? (clients[active] ?? null) : null);
   // Item 800: the host's saved prompts, read on connect and when the page
@@ -3349,6 +3357,9 @@
 
 <!-- Item 1014: Escape (a hardware keyboard, an iPad) closes the top layer, as a tap outside it does. -->
 <svelte:window onkeydown={escapeKey} />
+
+<!-- Item 993f: an event, email or doc name in any reply opens its card as a bottom sheet; its actions run on the Mac. -->
+<PhoneRefCards mac={() => clients.mac ?? null} offline={refOffline} />
 
 {#snippet chapterLines(list: readonly ShownChapter[])}
   <!-- Item 842: a chapter's divider (the Mac's ChapterRule, without its Rename and Remove: those are the Mac's). -->

@@ -14,7 +14,7 @@ export type MailMode = "reply" | "replyAll" | "forward";
  *  for anything that sends (993d wires `act`; without one every action is shown, disabled, "coming soon"). */
 export type RefAction =
   | { type: "rsvp"; answer: RsvpAnswer; note: string }
-  | { type: "send"; mode: MailMode; to: string; body: string; recipients?: { to: string[]; cc: string[] }; about?: string }
+  | { type: "send"; mode: MailMode; to: string; body: string; recipients?: { to: string[]; cc: string[] }; about?: string; /** 993f: the phone's tap for exactly this mail, minted at the start of its hold. */ tap?: string }
   | { type: "saveDraft"; mode: MailMode; to: string; body: string }
   | { type: "copyLink" }
   | { type: "readHere" }

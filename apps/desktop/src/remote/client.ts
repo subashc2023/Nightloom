@@ -6,6 +6,10 @@
  * is under `client.test.ts`; `Remote.svelte` is the screen over it.
  */
 import type { Source } from "../lib/listen";
+import type { RefActItem, RefActReceipt, RefHeads } from "../lib/api";
+import type { HomeReach } from "../lib/home";
+/** An action as the listener takes it (`ref_action::Act`). */
+export type RefWireAct = { type: "rsvp" | "saveDraft" | "send"; [k: string]: unknown };
 import type { HomeRoute, RoutePick, RoutesReply } from "../lib/homeRoutes";
 import type { HomeSource, SourceId } from "../lib/homeSources";
 import type { HomeTask } from "../lib/homeStage/host";
@@ -1122,6 +1126,42 @@ export class Client {
    *  its row; the macOS dialog waits for his press on the Mac. */
   async homeSourceAsk(id: SourceId): Promise<{ said: string }> {
     return (await this.call(`/home/sources/${id}/ask`, { method: "POST" })).json();
+  }
+
+  /** Item 993f: the accounts Home reaches, as the Mac's last check left them (nothing is run). */
+  async refReach(): Promise<HomeReach> {
+    return (await this.call("/home/ref/reach")).json();
+  }
+
+  /** Item 993f: an email's own headers, read on the Mac (the read-only `get_message`): who a mail really goes to. */
+  async refRead(item: RefActItem): Promise<RefHeads> {
+    return (await this.call("/home/ref/read", { method: "POST", body: JSON.stringify({ item }) })).json();
+  }
+
+  /** Item 993f: his press on the sheet's confirm — the Mac's one-time tap for exactly this action (for a mail, the
+   *  start of its hold). Nothing is sent by this. */
+  async refTap(item: RefActItem, act: RefWireAct): Promise<{ tap: string; hold_ms: number }> {
+    return (await this.call("/home/ref/tap", { method: "POST", body: JSON.stringify({ item, act }) })).json();
+  }
+
+  /** Item 993f: the tap let go — the Mac runs exactly the action it was minted for, once. Never retried. */
+  async refAct(tap: string, item: RefActItem, act: RefWireAct): Promise<RefActReceipt> {
+    return (await this.call("/home/ref/act", { method: "POST", body: JSON.stringify({ tap, item, act }) })).json();
+  }
+
+  /** Item 993f: his Undo — the tap goes (lost, it expires unspent on the Mac). */
+  async refUndo(tap: string): Promise<void> {
+    await this.call("/home/ref/undo", { method: "POST", body: JSON.stringify({ tap }) });
+  }
+
+  /** Item 993f: the "may have gone" lock the Mac keeps for both screens, and whether a send is on its way. */
+  async refLock(key: string): Promise<{ maybe: string | null; going: boolean; held: boolean }> {
+    return (await this.call("/home/ref/lock", { method: "POST", body: JSON.stringify({ key }) })).json();
+  }
+
+  /** Item 993f: he checked Gmail's Sent; the lock goes on the Mac too. */
+  async refChecked(key: string): Promise<void> {
+    await this.call("/home/ref/checked", { method: "POST", body: JSON.stringify({ key }) });
   }
 
   /** Item 741: the last note of every chat he has not opened since. */

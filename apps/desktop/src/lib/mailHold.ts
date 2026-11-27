@@ -56,8 +56,8 @@ export interface HoldToast {
 /** What the card is told when he undid a mail in its hold: nothing was sent, his words stay. */
 export class MailUndone extends Error {
   readonly undone = true;
-  constructor() {
-    super("Not sent: you undid it. Your words are still here.");
+  constructor(why: string = "Not sent: you undid it. Your words are still here.") {
+    super(why);
   }
 }
 

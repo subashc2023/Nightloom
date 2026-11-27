@@ -130,7 +130,7 @@ phoneMarked.use(evidenceBlock);
 // Item 991: an `<ask>` block is the Mac's quiet "Question for you" box on the phone too (it showed as loose text and
 // "- Yes …" lines); answering is the Needs-you list's, as on the Mac.
 phoneMarked.use(askTag);
-// Item 993a: an `<event>`, `<email>` or `<doc>` tag is a typed link (the phone's sheet opens it once built).
+// Item 993a: an `<event>`, `<email>` or `<doc>` tag is a typed link; the phone's sheet opens it (993f, PhoneRefCards).
 phoneMarked.use(refTag);
 
 /** Render assistant markdown to sanitized HTML. `breaks` keeps a single
