@@ -24,16 +24,17 @@ vi.mock("./api", async (importOriginal) => ({
   planUsage: vi.fn(async () => null),
   notify: vi.fn(async () => null),
   continueChat: vi.fn(async () => "chat-next"),
+  chatHistoryMeta: vi.fn(async () => null),
   continueSession: vi.fn(async () => ({ session: "chat-next", events: [], forked: true })),
   idleSeconds: vi.fn(async () => 0),
   powerHold: vi.fn(async () => null),
 }));
 
 const api = await import("./api");
-const { app, clearResumes, limitWakeDue, resumes, switchAside } = await import("./state.svelte");
+const { app, clearResumes, historyFrom, limitWakeDue, resumes, switchAside } = await import("./state.svelte");
 const { armAwayCheck, awayChains, checkAwayHandoffs, AWAY_CHECK_MS } = await import("./state/resumes.svelte");
 const { RESUME_MARGIN_MS } = await import("./limit");
-const { handoff, markAttended, markUnattended, noteActivity, noteAgentTurnEnd, resetHandoff, setMarkAt, NEVER, wrapUpToSend } = await import(
+const { handoff, markAttended, markUnattended, noteActivity, noteAgentTurnEnd, resetHandoff, setMarkAt, NEVER, withHistory, wrapUpToSend } = await import(
   "./handoff.svelte"
 );
 const composerSrc = (await import("./Composer.svelte?raw")).default;
@@ -184,7 +185,8 @@ describe("912 — a card that waits is wrapped up once he has left the Mac", () 
     turns.get(A)!(ok);
     await settle();
     expect(api.continueChat).toHaveBeenCalledWith(A, "p-college");
-    expect(send.mock.calls[1]![0]).toBe("Read HANDOFF.md, then run wave B.");
+    // Item 1025: the history pointer goes under the prompt.
+    expect(send.mock.calls[1]![0]).toBe(withHistory("Read HANDOFF.md, then run wave B.", historyFrom(A)));
     expect(send.mock.calls[1]![7]).toEqual({ chat: "chat-next", project: "p-college" });
     expect(awayChains()).toEqual({ [A]: "chat-next" });
     expect(held()).toBe(true);

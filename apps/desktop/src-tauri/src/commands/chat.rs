@@ -46,6 +46,37 @@ pub(crate) async fn chat_target(
     state.chats.target_at(id).ok_or_else(refused)
 }
 
+/// What the next chat's history pointer needs of chat `chat` of `project`
+/// (nightshift item 1025): its log path, title and mode, read from its own
+/// session — the held one, or its log in its own project's folder — so a
+/// chat continued off screen in another project is named as well as one the
+/// sidebar lists. `None` for a chat with no log (ephemeral, deleted).
+#[derive(Serialize)]
+pub(crate) struct ChatHistoryMeta {
+    id: String,
+    path: Option<String>,
+    title: Option<String>,
+    mode: nightloom_core::ChatMode,
+}
+
+#[tauri::command]
+pub(crate) async fn chat_history_meta(
+    state: State<'_, AppState>,
+    chat: String,
+    project: Option<String>,
+) -> Result<Option<ChatHistoryMeta>, String> {
+    let Ok(target) = chat_target(&state, &chat, project.as_deref()).await else {
+        return Ok(None);
+    };
+    let guard = target.lock().await;
+    Ok(guard.as_ref().map(|s| ChatHistoryMeta {
+        id: s.id.clone(),
+        path: s.log_path().map(|p| p.to_string_lossy().into_owned()),
+        title: s.title().map(str::to_string),
+        mode: s.mode(),
+    }))
+}
+
 /// Whether a message could be sent into chat `chat` of `project` now,
 /// off screen, without sending anything (backlog 535): the same two
 /// lookups [`send_agent`] makes for a send that names its chat — the

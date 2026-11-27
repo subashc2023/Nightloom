@@ -7,6 +7,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  PLAIN_READ_ORDER,
   PLAIN_WRAP_UP,
   READ_ORDER,
   WRAP_UP,
@@ -28,17 +29,20 @@ beforeEach(() => {
 });
 
 describe("1007: a project with no HANDOFF.md and no backlog/", () => {
-  it("gets a wrap-up that names neither file nor mdcheck, and still asks for the prompt", () => {
+  // ~~names neither file nor mdcheck; writesHandoffFile false; no read order~~ — item 1025 (blocker 2328
+  // answered "always"): it writes HANDOFF.md again; what stays from 1007 is no mdcheck and no backlog step.
+  it("gets a wrap-up that names no mdcheck or backlog, and still asks for the prompt", () => {
     const sent = wrapUpToSend("plain");
     expect(message("plain")).toBe(PLAIN_WRAP_UP);
-    for (const word of ["HANDOFF.md", "mdcheck", "backlog", "blockers/INDEX.md", "practices"]) expect(sent).not.toContain(word);
+    for (const word of ["mdcheck", "backlog", "blockers/INDEX.md", "practices"]) expect(sent).not.toContain(word);
     expect(sent).toContain("<handoff>");
     expect(sent).toContain("Hand-off contents (added by Nightloom):");
-    expect(writesHandoffFile("plain")).toBe(false);
+    expect(writesHandoffFile("plain")).toBe(true);
   });
 
-  it("its continuation opens with no read order naming those files", () => {
-    expect(readOrder("plain")).toBe("");
+  it("its continuation's read order names no index it does not keep", () => {
+    expect(readOrder("plain")).toBe(PLAIN_READ_ORDER);
+    expect(readOrder("plain")).not.toContain("INDEX.md");
   });
 
   it("an unknown project (no probe answer yet) reads as plain", () => {
