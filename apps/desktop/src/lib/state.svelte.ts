@@ -1621,6 +1621,14 @@ export function historyFrom(from: string | null): HistoryFrom | null {
   return { id: s.id, title: s.title, first_user: s.first_user, path: s.path, modified: s.modified, mode: s.mode ?? null };
 }
 
+/** Item 1025: the same from the chat's own session (`api.chatHistoryMeta`),
+ *  for a chat the sidebar does not list — one continued off screen in
+ *  another project. Null with no log, or for an incognito or ephemeral chat. */
+export function historyFromMeta(m: api.ChatHistoryMeta | null | undefined): HistoryFrom | null {
+  if (!m || !m.path || m.mode === "incognito" || m.mode === "ephemeral") return null;
+  return { id: m.id, title: m.title, path: m.path, mode: m.mode };
+}
+
 /** The new linked chat and everything that goes with it: what `continueChat`
  *  and the card's button share. `prompted`: it starts from a prompt, so the
  *  thread's + does not hand that prompt out again. Throws what the call threw. */

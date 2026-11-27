@@ -12,7 +12,7 @@ import { liveHost } from "../browse";
 import type { AgentTurnResult, SessionEvent, Usage } from "../types";
 import { chatHome } from "./asides.svelte";
 import { chatHomeOf } from "../chatHomeOf";
-import { type Segment, app, sendUntyped, refreshSessions, continueWithPrompt, historyFrom, backgroundName, chatRuns, sendInChat, addToast, turnWasStopped } from "../state.svelte";
+import { type Segment, app, sendUntyped, refreshSessions, continueWithPrompt, historyFrom, historyFromMeta, backgroundName, chatRuns, sendInChat, addToast, turnWasStopped } from "../state.svelte";
 
 /**
  * Resume a turn the usage limit paused (nightshift backlog 164): sends the
@@ -241,9 +241,7 @@ async function handOffUnattended(chat: string, prompt: string, home: { id: strin
   if (!awayNow(onScreen)) return null;
   if (handedOff.has(once) || chatRuns(chat)) return null;
   handedOff.add(once);
-  // Item 1025: off screen too, the pointer to the full history goes under it
-  // (on screen, `continueWithPrompt` adds it).
-  const text = withHistory(firstMessage("", prompt), historyFrom(chat));
+  const bare = firstMessage("", prompt);
   resumeLog(`handoff ${chat.slice(0, 8)} ${onScreen ? "on screen" : "off screen"} project=${home.id ?? "unfiled"}`);
   if (onScreen) {
     if (app.busy) {
@@ -267,6 +265,12 @@ async function handOffUnattended(chat: string, prompt: string, home: { id: strin
     resumeLog(`handoff ${chat.slice(0, 8)} not continued: ${String(e)}`);
     return null;
   }
+  // Item 1025: off screen too, the pointer to the full history goes under it
+  // (on screen, `continueWithPrompt` adds it). A chat in another project is
+  // not in the sidebar's list, so its own session names it.
+  let past = historyFrom(chat);
+  if (!past) past = historyFromMeta(await api.chatHistoryMeta(chat, home.id).catch(() => null));
+  const text = withHistory(bare, past);
   // Item 757: logged for scoring.
   noteHandoffOpened({ route: "unattended", from: chat, index: null, to: next, sent: text });
   const thread = threadFor(chat);

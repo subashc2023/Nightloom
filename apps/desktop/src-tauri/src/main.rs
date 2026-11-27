@@ -1713,6 +1713,7 @@ fn main() {
             commands::context::set_prompt_layers,
             commands::chat::start_chat,
             commands::chat::can_send_in_chat,
+            commands::chat::chat_history_meta,
             commands::chat::reserve_chat_agent,
             commands::chat::chat_home,
             commands::chat::arm_wake,

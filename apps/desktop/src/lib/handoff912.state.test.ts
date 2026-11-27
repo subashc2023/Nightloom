@@ -24,6 +24,7 @@ vi.mock("./api", async (importOriginal) => ({
   planUsage: vi.fn(async () => null),
   notify: vi.fn(async () => null),
   continueChat: vi.fn(async () => "chat-next"),
+  chatHistoryMeta: vi.fn(async () => null),
   continueSession: vi.fn(async () => ({ session: "chat-next", events: [], forked: true })),
   idleSeconds: vi.fn(async () => 0),
   powerHold: vi.fn(async () => null),

@@ -22,12 +22,19 @@ vi.mock("./api", async (importOriginal) => ({
   planUsage: vi.fn(async () => null),
   notify: vi.fn(async () => null),
   continueChat: vi.fn(async () => "chat-next"),
+  // Item 1025: the chat's own session names it off screen (another project's chat is not in the sidebar list).
+  chatHistoryMeta: vi.fn(async (chat: string, project: string | null) => ({
+    id: chat,
+    path: `/p/${project}/sessions/${chat}.jsonl`,
+    title: "College wave",
+    mode: "normal",
+  })),
   continueSession: vi.fn(async () => ({ session: "chat-next", events: [], forked: true })),
   idleSeconds: vi.fn(async () => 0),
 }));
 
 const api = await import("./api");
-const { app, clearResumes, historyFrom, limitWakeDue, resumeAfterLimit, resumes, sendInChat } = await import("./state.svelte");
+const { app, clearResumes, historyFrom, historyFromMeta, limitWakeDue, resumeAfterLimit, resumes, sendInChat } = await import("./state.svelte");
 const { RESUME_MARGIN_MS } = await import("./limit");
 const { RESUMES_KEY, readResumes } = await import("./chatResume");
 const { noteActivity, isUnattended, setMarkAt, NEVER, withHistory } = await import("./handoff.svelte");
@@ -475,8 +482,15 @@ describe("544 — an unattended chat hands off by itself; with him present the c
     await settle();
     expect(api.continueChat).toHaveBeenCalledWith(A, "p-college");
     expect(send).toHaveBeenCalledTimes(2);
-    // Item 1025: the history pointer goes under the prompt.
-    expect(send.mock.calls[1]![0]).toBe(withHistory("Read HANDOFF.md, then run wave B.", historyFrom(A)));
+    // Item 1025: the history pointer goes under the prompt — for a chat of another project, not in the sidebar
+    // list, named from its own session.
+    expect(historyFrom(A)).toBeNull();
+    expect(api.chatHistoryMeta).toHaveBeenCalledWith(A, "p-college");
+    const sent = send.mock.calls[1]![0] as string;
+    expect(sent.startsWith("Read HANDOFF.md, then run wave B.\n\nEarlier history (added by Nightloom):")).toBe(true);
+    expect(sent).toContain(`“College wave”, chat ${A}`);
+    expect(sent).toContain(`/p/p-college/sessions/${A}.jsonl`);
+    expect(sent).toContain('search_chats with scope "chain"');
     expect(send.mock.calls[1]![7]).toEqual({ chat: "chat-next", project: "p-college" });
     expect(app.background["chat-next"]?.project).toBe("p-college");
     // The new chat inherits the unattended state: its own pause, ask and hand-off go by themselves.
@@ -573,5 +587,15 @@ describe("544 — an unattended chat hands off by itself; with him present the c
     turns.get(A)!(ok);
     await settle();
     expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("1025: the off-screen pointer from the chat's own session", () => {
+  it("names a readable chat; never an incognito, ephemeral or log-less one", () => {
+    expect(historyFromMeta({ id: "x", path: "/p/x.jsonl", title: "T", mode: "normal" })?.path).toBe("/p/x.jsonl");
+    expect(historyFromMeta({ id: "x", path: "/p/x.jsonl", title: "T", mode: "incognito" })).toBeNull();
+    expect(historyFromMeta({ id: "x", path: null, title: "T", mode: "ephemeral" })).toBeNull();
+    expect(historyFromMeta({ id: "x", path: null, title: "T", mode: "normal" })).toBeNull();
+    expect(historyFromMeta(null)).toBeNull();
   });
 });
