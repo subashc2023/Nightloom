@@ -912,16 +912,78 @@ fn receipt_of(act: &Act, seen: &[Seen], spent: bool) -> Receipt {
     }
 }
 
-/// The journal of mails on their way (993e review, finding 7): an entry is
-/// written before a send's call and removed when that send's own call has
-/// ended, so one left over means Nightloom quit or died mid-call. `launch`
-/// names this run of the app (pid and start time); every entry starts with
-/// it. Returns the entry's path, for [`journal_end`].
+/// An action that was on its way when an earlier run quit or died, as the
+/// window is told of it (993e review 7; verify: quit mid-send locks the item).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unfinished {
+    /// The item's key as the window keys it (`refKey`: `kind:src:id`), so a
+    /// mail's Send can stay locked for that item; empty in an older entry.
+    #[serde(default)]
+    pub key: String,
+    /// What was going, in words that do not say it went: "a reply to a@x".
+    pub what: String,
+    /// The item's name as the reply showed it.
+    #[serde(default)]
+    pub item: String,
+    /// A mail (reply, reply to all, forward) — not an RSVP.
+    #[serde(default)]
+    pub mail: bool,
+}
+
+/// The window's key for an item (`refTag.ts` `refKey`).
+pub fn item_key(item: &Item) -> String {
+    format!("{}:{}:{}", item.kind, item.src, item.id)
+}
+
+/// What a journal entry says was going (re-review N6): never "Sent", since
+/// it may not have gone; an RSVP is an answer, not a mail.
+pub fn going_words(act: &Act) -> (String, bool) {
+    match act {
+        Act::Send {
+            mode,
+            to,
+            recipients,
+            ..
+        } => {
+            if mode == "forward" {
+                let who = address(to).unwrap_or_default();
+                (
+                    if who.is_empty() {
+                        "a forward".into()
+                    } else {
+                        format!("a forward to {who}")
+                    },
+                    true,
+                )
+            } else {
+                let who: Vec<String> = recipients
+                    .iter()
+                    .flat_map(|r| r.to.iter().chain(r.cc.iter()).cloned())
+                    .collect();
+                (
+                    if who.is_empty() {
+                        "a reply".into()
+                    } else {
+                        format!("a reply to {}", one_line(&who.join(", "), 160))
+                    },
+                    true,
+                )
+            }
+        }
+        Act::Rsvp { .. } => ("your answer to the invitation".into(), false),
+        Act::SaveDraft { .. } => ("a Gmail draft".into(), false),
+    }
+}
+
+/// The journal of actions on their way (993e review, finding 7): an entry
+/// is written before a sending call and removed when that call has ended,
+/// so one left over means Nightloom quit or died mid-call. `launch` names
+/// this run of the app (pid and start time); every entry starts with it.
+/// Returns the entry's path, for [`journal_end`].
 pub fn journal_begin(
     dir: &Path,
     launch: &str,
-    what: &str,
-    item: &str,
+    entry: &Unfinished,
     now: DateTime<Utc>,
 ) -> Result<std::path::PathBuf, String> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -931,25 +993,24 @@ pub fn journal_begin(
         now.timestamp_nanos_opt().unwrap_or_default(),
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    std::fs::write(
-        &path,
-        json!({ "what": what, "item": item, "at": now }).to_string(),
-    )
-    .map_err(|e| format!("could not write the journal entry: {e}"))?;
+    let mut v = serde_json::to_value(entry).map_err(|e| e.to_string())?;
+    v["at"] = json!(now);
+    std::fs::write(&path, v.to_string())
+        .map_err(|e| format!("could not write the journal entry: {e}"))?;
     Ok(path)
 }
 
-/// The send's own call ended (whatever came of it): its entry goes.
+/// The sending call ended (whatever came of it): its entry goes.
 pub fn journal_end(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
 /// The entries an earlier run left (it quit or died mid-call), read once
-/// and cleared, as lines for the window. This run's own entries are left
-/// alone (993e re-review, N5): they belong to calls still going — a
-/// webview reload re-reads the journal while the send runs on in Rust,
-/// and only that send's end removes its entry.
-pub fn journal_take(dir: &Path, launch: &str) -> Vec<String> {
+/// and cleared. This run's own entries are left alone (993e re-review,
+/// N5): they belong to calls still going — a webview reload re-reads the
+/// journal while the send runs on in Rust, and only that send's end
+/// removes its entry.
+pub fn journal_take(dir: &Path, launch: &str) -> Vec<Unfinished> {
     let mine = format!("{launch}-");
     let mut out = Vec::new();
     let mut entries: Vec<_> = std::fs::read_dir(dir)
@@ -970,12 +1031,19 @@ pub fn journal_take(dir: &Path, launch: &str) -> Vec<String> {
         if let Ok(text) = std::fs::read_to_string(&path)
             && let Ok(v) = serde_json::from_str::<Value>(&text)
         {
-            let what = v["what"].as_str().unwrap_or("A mail");
-            let item = v["item"].as_str().unwrap_or("");
-            out.push(if item.is_empty() {
-                what.to_string()
-            } else {
-                format!("{what} · {item}")
+            let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+            let what = s("what");
+            out.push(Unfinished {
+                key: s("key"),
+                // An entry from before this build: its words may say "Sent".
+                what: if what.is_empty() {
+                    "a mail".into()
+                } else {
+                    what
+                },
+                item: s("item"),
+                // Older entries carried no kind; they were written for mail.
+                mail: v["mail"].as_bool().unwrap_or(true),
             });
         }
         let _ = std::fs::remove_file(&path);

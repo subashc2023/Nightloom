@@ -9,7 +9,7 @@
 
 use crate::power;
 use nightloom_service::home::reach::{self, Status};
-use nightloom_service::ref_action::{self, Act, Call, Heads, Item, Receipt, Seen};
+use nightloom_service::ref_action::{self, Act, Call, Heads, Item, Receipt, Seen, Unfinished};
 use nightloom_service::{ClaudeCodeAgent, PassSpec, TurnEvent, project};
 use tauri::State;
 use tokio_util::sync::CancellationToken;
@@ -122,18 +122,15 @@ pub(crate) async fn ref_act(
     // entry, and the next launch says it may have gone (993e review, 7). It
     // is this send's own: only its end below removes it (re-review, N5).
     let journal = if call.sends {
-        let line = ref_action::receipt(
-            &act,
-            &[Seen::Result {
-                content: String::new(),
-                is_error: false,
-            }],
-            true,
-        )
-        .text;
-        journal_dir().and_then(|d| {
-            ref_action::journal_begin(&d, launch(), &line, &item.name, chrono::Utc::now()).ok()
-        })
+        let (what, mail) = ref_action::going_words(&act);
+        let entry = Unfinished {
+            key: ref_action::item_key(&item),
+            what,
+            item: item.name.clone(),
+            mail,
+        };
+        journal_dir()
+            .and_then(|d| ref_action::journal_begin(&d, launch(), &entry, chrono::Utc::now()).ok())
     } else {
         None
     };
@@ -218,7 +215,7 @@ fn launch() -> &'static str {
 /// the window to say they may have gone (993e review, finding 7). This
 /// run's own entries stay: their sends are still going (re-review, N5).
 #[tauri::command]
-pub(crate) fn ref_unfinished() -> Vec<String> {
+pub(crate) fn ref_unfinished() -> Vec<Unfinished> {
     journal_dir()
         .map(|d| ref_action::journal_take(&d, launch()))
         .unwrap_or_default()

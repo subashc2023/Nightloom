@@ -25,6 +25,7 @@
   import { accountOf, rsvpAnswerOf, rsvpOf } from "./refCard";
   import type { RefAction, RefReceipt, Rsvp, RsvpAnswer } from "./refCard";
   import type { HomeReach } from "./home";
+  import type { RefUnfinished } from "./api";
   import { MAIL_HOLD_MS, MailUndone, isMaybeSent, secondsLeft, startHold, type HoldToast } from "./mailHold";
   import type { MailHeads } from "./refCard";
   import { refRunStart } from "./refRuns.svelte";
@@ -58,8 +59,9 @@
     /** The read-only read of an email's own headers (993e review): who a reply really goes to. Without it no mail
      *  can be sent from a card (Send says why). */
     readMail?: (ref: Ref) => Promise<MailHeads>;
-    /** Mails on their way when the app last quit, read once at mount (993e review, finding 7). */
-    unfinished?: () => Promise<string[]>;
+    /** Card actions on their way when the app last quit, read once at mount (993e review, finding 7). A mail's
+     *  item gets the same kept "may have gone" lock as a send with no answer: Send stays off until he checked. */
+    unfinished?: () => Promise<RefUnfinished[]>;
     onaccounts?: () => void;
   } = $props();
 
@@ -227,8 +229,14 @@
 
   onMount(() => {
     void unfinished?.()
-      .then((lines) => {
-        for (const l of lines) toast?.(`Nightloom quit while a mail was going (${l}). It may have gone: check Sent in Gmail.`);
+      .then((left) => {
+        for (const u of left) {
+          const about = u.item ? ` (${u.item})` : "";
+          if (u.mail) {
+            toast?.(`Nightloom quit while ${u.what} was going${about}. It may have gone: check Sent in Gmail before sending again.`);
+            if (u.key) markMaybeSent(u.key, `Nightloom quit while ${u.what} was going. It may have gone: check Sent in Gmail before sending again.`);
+          } else toast?.(`Nightloom quit while ${u.what} was going${about}. It may have gone through: open the event to check.`);
+        }
       })
       .catch(() => {});
     const root = document.documentElement;

@@ -2729,8 +2729,16 @@ export interface RefHeads {
 export function refRead(item: RefActItem, binary?: string, safeMode?: boolean): Promise<RefHeads> {
   return invoke("ref_read", { item, binary, safeMode });
 }
-/** Mails that were on their way when Nightloom last quit (read once, then cleared). */
-export function refUnfinished(): Promise<string[]> {
+/** A card action that was on its way when Nightloom last quit or died (993e): the item's `refKey`, what was going
+ *  ("a reply to a@x", never "Sent"), the item's name, and whether it was a mail (an RSVP is not). */
+export interface RefUnfinished {
+  key: string;
+  what: string;
+  item: string;
+  mail: boolean;
+}
+/** Card actions that were on their way when Nightloom last quit (read once, then cleared). */
+export function refUnfinished(): Promise<RefUnfinished[]> {
   return invoke("ref_unfinished");
 }
 

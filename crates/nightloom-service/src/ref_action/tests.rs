@@ -816,25 +816,57 @@ fn headers_are_never_read_from_the_snippet_or_any_free_text() {
     assert!(h.cc.is_empty());
 }
 
+fn going(key: &str, what: &str, item: &str) -> Unfinished {
+    Unfinished {
+        key: key.into(),
+        what: what.into(),
+        item: item.into(),
+        mail: true,
+    }
+}
+
 /// Review 7 / re-review N5 (test gap T2): the journal entry is written
 /// before a send and removed only by that send's end; an earlier run's
-/// leftovers are read once and cleared; this run's live ones are left.
+/// leftovers are read once and cleared, with the item's key (so the window
+/// locks that item's Send); this run's live ones are left.
 #[test]
 fn the_journal_outlives_a_killed_send_and_never_eats_a_live_one() {
     let dir = tmp("journal");
     let now = Utc::now();
+    let k = "email:claude.ai Gmail 2117773e:19a0f3";
     // An earlier run died mid-call: its entry is still there.
-    let old = journal_begin(&dir, "41-100", "Sent to sam@example.com", "Budget", now).unwrap();
+    let old = journal_begin(
+        &dir,
+        "41-100",
+        &going(k, "a reply to sam@example.com", "Budget"),
+        now,
+    )
+    .unwrap();
     assert!(old.exists());
     // This run is sending now.
-    let live = journal_begin(&dir, "42-200", "Sent to p@example.com", "", now).unwrap();
+    let live = journal_begin(
+        &dir,
+        "42-200",
+        &going("email:x:1", "a reply to p@example.com", ""),
+        now,
+    )
+    .unwrap();
     // A run whose id has this one's as a prefix is still another run.
-    let other = journal_begin(&dir, "42-2000", "Sent to q@example.com", "", now).unwrap();
+    let other = journal_begin(
+        &dir,
+        "42-2000",
+        &going("email:x:2", "a forward to q@example.com", ""),
+        now,
+    )
+    .unwrap();
     let mut first = journal_take(&dir, "42-200");
-    first.sort();
+    first.sort_by(|a, b| a.key.cmp(&b.key));
     assert_eq!(
         first,
-        vec!["Sent to q@example.com", "Sent to sam@example.com · Budget"]
+        vec![
+            going(k, "a reply to sam@example.com", "Budget"),
+            going("email:x:2", "a forward to q@example.com", ""),
+        ]
     );
     assert!(!old.exists() && !other.exists());
     // A webview reload mid-send reads again: the live entry stays, unreported.
@@ -844,16 +876,56 @@ fn the_journal_outlives_a_killed_send_and_never_eats_a_live_one() {
     // The send's own end removes it.
     journal_end(&live);
     assert!(!live.exists());
-    // Killed before its end: the next run (a new id) is told, once.
-    let killed = journal_begin(&dir, "42-200", "Sent to p@example.com", "Re: hi", now).unwrap();
+    // Killed before its end: the next run (a new id) is told, once, with the key.
+    let killed = journal_begin(
+        &dir,
+        "42-200",
+        &going(k, "a reply to p@example.com", "Re: hi"),
+        now,
+    )
+    .unwrap();
     assert_eq!(
         journal_take(&dir, "43-300"),
-        vec!["Sent to p@example.com · Re: hi"]
+        vec![going(k, "a reply to p@example.com", "Re: hi")]
     );
     assert!(!killed.exists());
     assert!(journal_take(&dir, "43-300").is_empty());
+    // An entry from the build before keys: told, no key, counted as mail.
+    std::fs::write(
+        dir.join("40-1-1-0.json"),
+        json!({ "what": "Sent to a@example.com", "item": "X" }).to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        journal_take(&dir, "43-300"),
+        vec![going("", "Sent to a@example.com", "X")]
+    );
     // No folder yet: nothing, no panic.
     assert!(journal_take(&dir.join("absent"), "43-300").is_empty());
+}
+
+/// Verify gap + re-review N6: the entry names the window's item key and
+/// says what was going without saying it went; an RSVP is not a mail.
+#[test]
+fn a_journal_entry_names_the_item_key_and_never_says_sent() {
+    let it = email();
+    assert_eq!(item_key(&it), format!("email:{}:{}", it.src, it.id));
+    let (w, mail) = going_words(&reply(
+        "replyAll",
+        "x",
+        &["a@example.com"],
+        &["c@example.com"],
+        "hi",
+    ));
+    assert_eq!(
+        (w.as_str(), mail),
+        ("a reply to a@example.com, c@example.com", true)
+    );
+    let (w, mail) = going_words(&send("forward", "sam@example.com", "hi"));
+    assert_eq!((w.as_str(), mail), ("a forward to sam@example.com", true));
+    let (w, mail) = going_words(&accept(""));
+    assert!(!mail);
+    assert!(!w.contains("mail") && !w.starts_with("Sent"), "{w}");
 }
 
 // ---- Blocker 2304: a model turn, no click — no position lets a send run. ----

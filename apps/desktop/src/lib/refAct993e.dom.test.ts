@@ -19,7 +19,7 @@ import { refHoldToast } from "./refHoldToast";
 import appSrc from "../App.svelte?raw";
 import { makeRefAct, type RefActDeps } from "./refAct";
 import type { RefAction } from "./refCard";
-import type { RefActItem, RefActReceipt } from "./api";
+import type { RefActItem, RefActReceipt, RefUnfinished } from "./api";
 import type { HomeReach } from "./home";
 import { MailUndone, isUndone, makeHoldToast, secondsLeft, startHold, type HoldToast } from "./mailHold";
 import type { MailHeads } from "./refCard";
@@ -99,7 +99,7 @@ let host: ReturnType<typeof mount> | null = null;
 let page: HTMLElement;
 let reads = 0;
 let plain: string[] = [];
-function setup(d: RefActDeps, mailSend = true, o: { heads?: () => Promise<MailHeads>; noRead?: boolean; unfinished?: () => Promise<string[]> } = {}) {
+function setup(d: RefActDeps, mailSend = true, o: { heads?: () => Promise<MailHeads>; noRead?: boolean; unfinished?: () => Promise<RefUnfinished[]> } = {}) {
   page = document.createElement("div");
   page.innerHTML = `<div class="markdown">${renderReply(`Mail: ${EMAIL}. Doc: ${DOC}.`)}</div>`;
   document.body.appendChild(page);
@@ -410,9 +410,9 @@ describe("993e review fixes", () => {
   it("7: the call after the hold is listed as running work (the quit guard asks); a quit's leftovers are told at launch", async () => {
     let finish: () => void = () => {};
     const l = deps(() => new Promise<RefActReceipt>((ok) => (finish = () => ok({ outcome: "done", text: "Sent to priya@example.com" }))));
-    setup(l.d, true, { unfinished: async () => ["Sent to sam@example.com · Budget"] });
+    setup(l.d, true, { unfinished: async () => [{ key: "email:other:m_1", what: "a reply to sam@example.com", item: "Budget", mail: true }] });
     await settle(5);
-    expect(plain).toEqual(["Nightloom quit while a mail was going (Sent to sam@example.com · Budget). It may have gone: check Sent in Gmail."]);
+    expect(plain).toEqual(["Nightloom quit while a reply to sam@example.com was going (Budget). It may have gone: check Sent in Gmail before sending again."]);
     await draft("Reply", "Going.");
     await click(btn("Send to Priya S."));
     // In the hold nothing runs yet.
@@ -542,5 +542,37 @@ describe("993e re-review fixes", () => {
     expect(l.ran.length).toBe(1);
     void unmount(x2);
     app.toasts.splice(0);
+  });
+
+  it("verify: a journal entry left from an earlier run locks that item's Send until he checked; an RSVP's does not", async () => {
+    // The draft he had typed, kept from before the quit.
+    refDrafts.by[KEY] = { mode: "reply", body: "Typed before the quit.", to: "", note: "" };
+    const l = deps();
+    setup(l.d, true, {
+      unfinished: async () => [
+        { key: KEY, what: "a reply to priya@example.com", item: "Speaker confirmation", mail: true },
+        { key: "event:claude.ai Google Calendar:e_1", what: "your answer to the invitation", item: "Standup", mail: false },
+      ],
+    });
+    await settle(5);
+    expect(plain).toEqual([
+      "Nightloom quit while a reply to priya@example.com was going (Speaker confirmation). It may have gone: check Sent in Gmail before sending again.",
+      "Nightloom quit while your answer to the invitation was going (Standup). It may have gone through: open the event to check.",
+    ]);
+    expect(plain.join(" ")).not.toMatch(/Sent to|a mail was going/);
+    // Kept, so a second restart still holds it; the RSVP's item is not locked.
+    expect(readMaybe(localStorage.getItem(REF_MAYBE_KEY))[KEY]).toContain("Nightloom quit while a reply");
+    expect(refMaybe.by["event:claude.ai Google Calendar:e_1"]).toBeUndefined();
+    await click(link());
+    expect(card()!.querySelector(".rc-maybe")?.textContent).toContain("It may have gone");
+    await click(btn("Open draft"));
+    await settle(5);
+    expect(card()!.querySelector<HTMLTextAreaElement>(".rc-body")!.value).toBe("Typed before the quit.");
+    expect(btn("Send to")?.disabled).toBe(true);
+    await click(btn("Send to"));
+    await settle(HOLD + 200);
+    expect(l.ran).toEqual([]);
+    await click(btn("I checked: not sent"));
+    expect(btn("Send to")?.disabled).toBe(false);
   });
 });
