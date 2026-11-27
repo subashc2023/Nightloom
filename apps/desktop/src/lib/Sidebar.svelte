@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CacheDot from "./CacheDot.svelte"; // Item 1022: the cache dot before a chat's name
   import { home } from "./home.svelte";
   import { BY_HOME_TIP } from "./homeRoutes";
   import { BY_DOOR_GLYPH, byDoorTip } from "./door";
@@ -112,7 +113,7 @@
           use:tip={T.rowTip(s)}
         >
           <span class="snippet" class:barred={!!ctx?.look}
-            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: knows nothing about you, writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{#if home.startedByHome.includes(s.id)}<span class="mark by-home" role="img" aria-label={BY_HOME_TIP} data-by-home use:tip={BY_HOME_TIP}>⌂</span> {/if}{#if door.startedBy[s.id]}<span class="mark by-door" role="img" aria-label={byDoorTip(door.startedBy[s.id])} data-by-door use:tip={byDoorTip(door.startedBy[s.id])}>{BY_DOOR_GLYPH}</span> {/if}{#if fork}<span class="mark fork" role="img" aria-label={fork.tip} use:tip={fork.tip}>{FORK_GLYPH}</span> {/if}{#if waitsFor}<span class="mark sched" role="img" aria-label="scheduled message" data-sched-mark use:tip={`A message is scheduled here: it sends at ${scheduleWhen(dueAt(waitsFor))}`}>◷</span> {/if}{rowName(s, waitsFor?.text ?? null, readDraft(s.id).text)}</span
+            ><CacheDot session={s.id} />{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: knows nothing about you, writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{#if home.startedByHome.includes(s.id)}<span class="mark by-home" role="img" aria-label={BY_HOME_TIP} data-by-home use:tip={BY_HOME_TIP}>⌂</span> {/if}{#if door.startedBy[s.id]}<span class="mark by-door" role="img" aria-label={byDoorTip(door.startedBy[s.id])} data-by-door use:tip={byDoorTip(door.startedBy[s.id])}>{BY_DOOR_GLYPH}</span> {/if}{#if fork}<span class="mark fork" role="img" aria-label={fork.tip} use:tip={fork.tip}>{FORK_GLYPH}</span> {/if}{#if waitsFor}<span class="mark sched" role="img" aria-label="scheduled message" data-sched-mark use:tip={`A message is scheduled here: it sends at ${scheduleWhen(dueAt(waitsFor))}`}>◷</span> {/if}{rowName(s, waitsFor?.text ?? null, readDraft(s.id).text)}</span
           >
           {#if ctx?.look}
             <span class="cg" class:hot={ctx.look.past} aria-hidden="true"

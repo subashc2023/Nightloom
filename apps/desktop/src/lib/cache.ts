@@ -97,26 +97,43 @@ export function cacheState(
     const e = events[i];
     if (e.event !== "assistant_message") continue;
     if (!e.sent_at || !e.cache_ttl) return null;
-    const sentAt = Date.parse(e.sent_at);
-    if (!Number.isFinite(sentAt)) return null;
-    const ttl = TTL_MS[e.cache_ttl];
-    const own = sentAt + ttl;
-    // A keep-warm ping read the entry after the reply did (backlog 582):
-    // its hour runs from that read. `keptUntil` is when that one ends.
-    const kept = keptUntil != null && keptUntil > own;
-    let warmUntil = kept ? keptUntil : own;
-    // An aside read it later still (item 677): its lifetime runs from that.
-    const context = e.usage.input_tokens + e.usage.output_tokens;
-    let side: AsideRead | null = null;
-    for (const r of asides ?? []) if (asideRefreshes(r, sentAt, context) && (!side || r.at > side.at)) side = r;
-    const byAside = side !== null && side.at + ttl >= warmUntil;
-    if (byAside) warmUntil = side!.at + ttl;
-    const remainingMs = warmUntil - now;
-    const out: CacheState = { sentAt: kept || byAside ? warmUntil - ttl : sentAt, ttl: e.cache_ttl, warmUntil, remainingMs, warm: remainingMs > 0 };
-    if (byAside && context > 0) out.asideShare = Math.min(1, side!.read / context);
-    return out;
+    return cacheFrom(e.sent_at, e.cache_ttl, e.usage.input_tokens + e.usage.output_tokens, now, keptUntil, asides);
   }
   return null;
+}
+
+/**
+ * `cacheState`'s clock from the reply's three facts — its send (ISO8601),
+ * its lifetime and its context (input plus output) — so a chat that is not
+ * open is timed by the same rule off its listing (item 1022's cache dot,
+ * `SessionMeta.cache_sent_at` / `cache_ttl` / `context_used`). Null when
+ * the send does not parse.
+ */
+export function cacheFrom(
+  sentAtIso: string,
+  cacheTtl: CacheTtl,
+  context: number,
+  now: number,
+  keptUntil?: number | null,
+  asides?: readonly AsideRead[],
+): CacheState | null {
+  const sentAt = Date.parse(sentAtIso);
+  if (!Number.isFinite(sentAt)) return null;
+  const ttl = TTL_MS[cacheTtl];
+  const own = sentAt + ttl;
+  // A keep-warm ping read the entry after the reply did (backlog 582):
+  // its hour runs from that read. `keptUntil` is when that one ends.
+  const kept = keptUntil != null && keptUntil > own;
+  let warmUntil = kept ? keptUntil : own;
+  // An aside read it later still (item 677): its lifetime runs from that.
+  let side: AsideRead | null = null;
+  for (const r of asides ?? []) if (asideRefreshes(r, sentAt, context) && (!side || r.at > side.at)) side = r;
+  const byAside = side !== null && side.at + ttl >= warmUntil;
+  if (byAside) warmUntil = side!.at + ttl;
+  const remainingMs = warmUntil - now;
+  const out: CacheState = { sentAt: kept || byAside ? warmUntil - ttl : sentAt, ttl: cacheTtl, warmUntil, remainingMs, warm: remainingMs > 0 };
+  if (byAside && context > 0) out.asideShare = Math.min(1, side!.read / context);
+  return out;
 }
 
 /** Below this much left the display counts seconds rather than minutes. */

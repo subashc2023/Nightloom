@@ -130,7 +130,7 @@ export function isWarm(s: KeepWarmStatus | null | undefined, now: number): boole
 }
 
 /** Item 1006: why no more pings come while the cache's last hour runs. */
-function endingWords(s: KeepWarmStatus): string {
+export function endingWords(s: KeepWarmStatus): string {
   if (s.why === "sleep") return `no pings in your sleep${s.sleep ? ` (${sleepWords(s.sleep)})` : ""}`;
   return `no more pings — ${span(capOf(s))} since the last reply`;
 }

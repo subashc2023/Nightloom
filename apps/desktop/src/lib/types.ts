@@ -1082,6 +1082,12 @@ export interface SessionMeta {
    *  reply. The hand-off cue reads it for a row with no reading of its own. */
   context_used?: number;
   context_model?: string;
+  /** The newest reply's cache send (ISO8601) and lifetime (item 1022,
+   *  `SessionSummary::cache_sent_at` / `cache_ttl`): raw log, latest wins;
+   *  absent before a reply that touched the cache. The sidebar's and the
+   *  tab strip's cache dot read them for a chat that is not open. */
+  cache_sent_at?: string;
+  cache_ttl?: CacheTtl;
 }
 
 /** Where a fork came from — the parent's id and the cut, as the creation

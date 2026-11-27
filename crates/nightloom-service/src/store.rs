@@ -3,7 +3,7 @@
 //! `nightloom_core::Session`.
 
 use chrono::{DateTime, Utc};
-use nightloom_core::{ChatKind, ChatMode, ContentBlock, ForkedFrom, SessionEvent};
+use nightloom_core::{CacheTtl, ChatKind, ChatMode, ContentBlock, ForkedFrom, SessionEvent};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -87,6 +87,16 @@ pub struct SessionSummary {
     pub context_used: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_model: Option<String>,
+    /// The newest reply's prompt cache (nightshift item 1022): when its
+    /// request was sent and how long the entry it left lives — the pair
+    /// the window's cache timer reads off the log (`sent_at`, `cache_ttl`
+    /// on `assistant_message`), so the sidebar and the tab strip can show
+    /// each chat warm or cold without opening it. Latest in the raw log,
+    /// like `context_used`; `None` before the first reply that recorded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_sent_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl: Option<CacheTtl>,
 }
 
 fn is_normal(mode: &ChatMode) -> bool {
@@ -249,6 +259,9 @@ enum Peek {
     Reply {
         model: String,
         used: u64,
+        /// Item 1022: the reply's `sent_at` and `cache_ttl`, when recorded.
+        sent_at: Option<DateTime<Utc>>,
+        ttl: Option<CacheTtl>,
     },
     /// Everything else. Present so a line that gets past [`peek`]'s prefilter
     /// parses to "not interesting" rather than to an error.
@@ -298,9 +311,28 @@ fn peek_reply(line: &str) -> Option<Peek> {
     let u = line.rfind(key)?;
     let mut usage = serde_json::Deserializer::from_str(&line[u + key.len()..]).into_iter::<U>();
     let usage = usage.next()?.ok()?;
+    // Item 1022: `sent_at` and `cache_ttl` are written after `usage`, so
+    // they are looked for only past it — past the blocks, where no text or
+    // tool input can put a key spelled so.
+    let tail = &line[u + key.len()..];
+    let after = |k: &str| tail.find(k).map(|i| &tail[i + k.len()..]);
+    let sent_at = after(r#""sent_at":"#).and_then(|r| {
+        serde_json::Deserializer::from_str(r)
+            .into_iter::<DateTime<Utc>>()
+            .next()?
+            .ok()
+    });
+    let ttl = after(r#""cache_ttl":"#).and_then(|r| {
+        serde_json::Deserializer::from_str(r)
+            .into_iter::<CacheTtl>()
+            .next()?
+            .ok()
+    });
     Some(Peek::Reply {
         model,
         used: usage.input_tokens + usage.output_tokens,
+        sent_at,
+        ttl,
     })
 }
 
@@ -401,6 +433,11 @@ struct Summarizing {
     context_used: Option<u64>,
     #[serde(default)]
     context_model: Option<String>,
+    /// The newest reply's cache send and lifetime (item 1022); latest wins.
+    #[serde(default)]
+    cache_sent_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    cache_ttl: Option<CacheTtl>,
 }
 
 impl Summarizing {
@@ -433,9 +470,18 @@ impl Summarizing {
             // session unnamed, and the next turn records a fresh one after it.
             Peek::Title { text } => self.title = Some(text),
             Peek::Thread { thread } => self.thread = thread.filter(|t| !t.trim().is_empty()),
-            Peek::Reply { model, used } => {
+            Peek::Reply {
+                model,
+                used,
+                sent_at,
+                ttl,
+            } => {
                 self.context_used = Some(used);
                 self.context_model = Some(model);
+                // A reply that touched no cache left none: the newest
+                // reply's pair, absent fields included, is the one shown.
+                self.cache_sent_at = sent_at;
+                self.cache_ttl = ttl;
             }
             Peek::Other => {}
         }
@@ -461,6 +507,8 @@ impl Summarizing {
             last_message: self.last_message,
             context_used: self.context_used,
             context_model: self.context_model.clone(),
+            cache_sent_at: self.cache_sent_at,
+            cache_ttl: self.cache_ttl,
         }
     }
 
@@ -549,7 +597,7 @@ const LISTING_FILE: &str = ".listing.json";
 /// the thread binding (2026-10-02, backlog 281). 7 since the newest
 /// reply's fill (2026-11-10, item 597): an old entry would never learn the
 /// fill of replies it had already scanned.
-const LISTING_VERSION: u32 = 7;
+const LISTING_VERSION: u32 = 8;
 
 impl Listing {
     fn read(dir: &Path) -> BTreeMap<String, Cached> {
@@ -602,9 +650,17 @@ fn peek_at(event: &SessionEvent) -> Option<Peek> {
         SessionEvent::Thread { thread, .. } => Some(Peek::Thread {
             thread: thread.clone(),
         }),
-        SessionEvent::AssistantMessage { model, usage, .. } => Some(Peek::Reply {
+        SessionEvent::AssistantMessage {
+            model,
+            usage,
+            sent_at,
+            cache_ttl,
+            ..
+        } => Some(Peek::Reply {
             model: model.clone(),
             used: usage.input_tokens + usage.output_tokens,
+            sent_at: *sent_at,
+            ttl: *cache_ttl,
         }),
         _ => None,
     }
@@ -1124,6 +1180,8 @@ mod tests {
             last_message: None,
             context_used: None,
             context_model: None,
+            cache_sent_at: None,
+            cache_ttl: None,
         };
         assert_eq!(s.label(60), "can you help me rename a function everywhere");
 
@@ -1558,6 +1616,63 @@ mod tests {
             }
         }
         assert_eq!(acc.context_used, Some(310_000));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Item 1022: the listing carries the newest reply's cache send and
+    /// lifetime, read past its `usage` — a tool input spelling `sent_at`
+    /// does not fool it — and a later reply that touched no cache clears
+    /// them; the full-event path agrees.
+    #[test]
+    fn a_listing_carries_the_newest_replys_cache_clock() {
+        use nightloom_core::{CacheTtl, ContentBlock, Session, Usage};
+        let dir = scratch();
+        let mut s = Session::with_log(&dir).unwrap();
+        s.record_user("q");
+        s.record_assistant("model-a", vec![], Some("end_turn".into()), Usage::default());
+        let none = list(&dir).unwrap();
+        assert_eq!((none[0].cache_sent_at, none[0].cache_ttl), (None, None));
+        let sent = DateTime::parse_from_rfc3339("2026-11-27T15:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        s.record_user("q2");
+        s.record_assistant_timed(
+            "model-a",
+            vec![ContentBlock::ToolUse {
+                id: "t".into(),
+                name: "x".into(),
+                input: serde_json::json!({ "sent_at": "2001-01-01T00:00:00Z", "cache_ttl": "5m" }),
+                signature: None,
+            }],
+            Some("tool_use".into()),
+            Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_read_tokens: Some(900),
+                ..Default::default()
+            },
+            None,
+            sent,
+            Some(CacheTtl::OneHour),
+        );
+        let warm = list(&dir).unwrap();
+        assert_eq!(warm[0].cache_sent_at, Some(sent));
+        assert_eq!(warm[0].cache_ttl, Some(CacheTtl::OneHour));
+        let ev = Session::load(&warm[0].path).unwrap();
+        let mut acc = Summarizing::default();
+        for e in ev.events() {
+            if let Some(p) = peek_at(e) {
+                acc.saw(p);
+            }
+        }
+        assert_eq!(
+            (acc.cache_sent_at, acc.cache_ttl),
+            (Some(sent), Some(CacheTtl::OneHour))
+        );
+        s.record_user("q3");
+        s.record_assistant("model-a", vec![], Some("end_turn".into()), Usage::default());
+        let after = list(&dir).unwrap();
+        assert_eq!((after[0].cache_sent_at, after[0].cache_ttl), (None, None));
         fs::remove_dir_all(&dir).ok();
     }
 

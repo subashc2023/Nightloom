@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CacheDot from "./CacheDot.svelte"; // Item 1022: the cache dot before a chat's name
   /*
    * Item 913 (his ask, 2026-11-23: a screen "to look at all of the open … cache
    * things that are … saving my cache so that i can easily … extend or stop any
@@ -69,7 +70,7 @@
         {@const next = nextHold(s)}
         <li>
           <div class="who">
-            <span class="name">{titleOf(s.chat) ?? (homes[s.chat] || "a chat")}</span>
+            <span class="name"><CacheDot session={s.chat} />{titleOf(s.chat) ?? (homes[s.chat] || "a chat")}</span>
             <span class="line" use:tip={keeperLine(s, now)}>{keeperLine(s, now)}</span>
           </div>
           <div class="acts">

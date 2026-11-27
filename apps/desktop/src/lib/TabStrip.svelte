@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CacheDot from "./CacheDot.svelte"; // Item 1022: the cache dot before a chat's name
   import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
   import { dragScroll } from "./dragScroll";
@@ -105,6 +106,7 @@
           <span class="dot run" use:tip={"A turn is running"}></span>
         {/if}
         {#if f}<span class="fork" role="img" aria-label={f.tip} use:tip={f.tip}>{FORK_GLYPH}</span>{/if}
+        {#if t.content.kind === "chat"}<CacheDot session={t.content.session} />{:else if t.content.kind === "aside"}<CacheDot session={t.content.session} thread={t.content.thread} aside />{/if}
         <span class="name">{T.title(t)}</span>
       {/if}
       <!-- Item 867: on a note's tab the ring says its edits are not on disk yet. -->

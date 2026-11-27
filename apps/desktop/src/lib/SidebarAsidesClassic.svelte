@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CacheDot from "./CacheDot.svelte"; // Item 1022: the cache dot before a chat's name
   /**
   * A chat's open asides, listed under its sidebar row when its asides
   * toggle is open (item 265; the design is in `asideSidebar.svelte.ts`).
@@ -54,7 +55,7 @@
         use:tip={a.quote ? `About: ${quoteSummary(a.quote.text, 160)}` : "An aside asked from the composer"}
       >
         <span class="snippet"
-          ><span class="glyph" aria-hidden="true"><Icon name="think" size={11} /></span>{asideLabel(a)}</span
+          ><CacheDot session={T.session} thread={a.id} aside /><span class="glyph" aria-hidden="true"><Icon name="think" size={11} /></span>{asideLabel(a)}</span
         >
         <span class="meta">aside · {T.statusOf(a)}</span>
       </button>

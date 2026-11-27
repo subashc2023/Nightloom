@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CacheDot from "./CacheDot.svelte"; // Item 1022: the cache dot before a chat's name
   import { tip } from "./tip";
   import { dragScroll } from "./dragScroll";
   import { activateTab, app, closeTab, moveTab, splitTab } from "./state.svelte";
@@ -96,6 +97,7 @@
       {:else}
         {@const f = T.fork(t)}
         {#if f}<span class="fork" role="img" aria-label={f.tip} use:tip={f.tip}>{FORK_GLYPH}</span>{/if}
+        {#if t.content.kind === "chat"}<CacheDot session={t.content.session} />{:else if t.content.kind === "aside"}<CacheDot session={t.content.session} thread={t.content.thread} aside />{/if}
         <span class="name">{T.title(t)}</span>
       {/if}
       {#if T.needsYou(t)}
