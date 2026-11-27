@@ -45,6 +45,10 @@ pub const PASS_MATCHER: &str = "^mcp__.*";
 /// The pass, in the action's directory.
 pub const PASS_FILE: &str = "ref-pass.json";
 
+/// Where an expired pass is moved, so "never let through" stays told apart
+/// from "spent" (993e review, finding 6).
+pub const EXPIRED_FILE: &str = "ref-pass.expired";
+
 /// How long a pass lasts.
 pub const PASS_SECS: i64 = 120;
 
@@ -124,10 +128,26 @@ pub enum Act {
     },
     Send {
         mode: String,
+        /// A forward's one address, as he typed it. For a reply, display only.
         #[serde(default)]
         to: String,
         body: String,
+        /// Who a reply or a reply to all goes to, as read from the message
+        /// itself just before ([`read_call`], [`heads_of`]) and shown on the
+        /// confirm — never the reply's tag (993e review, finding 1). Pinned
+        /// in the pass, so the mail goes to exactly these.
+        #[serde(default)]
+        recipients: Option<Recipients>,
     },
+}
+
+/// A mail's addressees: plain addresses, as the message's own headers gave them.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+pub struct Recipients {
+    #[serde(default)]
+    pub to: Vec<String>,
+    #[serde(default)]
+    pub cc: Vec<String>,
 }
 
 /// The one connector call an action is.
@@ -272,7 +292,12 @@ pub fn call_for(item: &Item, act: &Act) -> Result<Call, String> {
         // before this command is ever called), and the body is the words
         // that were on screen: the pass pins its hash, so a body that
         // differs by one character is refused and the pass stays unspent.
-        Act::Send { mode, to, body } => {
+        Act::Send {
+            mode,
+            to,
+            body,
+            recipients,
+        } => {
             if item.kind != "email" {
                 return Err("only an email can be replied to or forwarded".into());
             }
@@ -284,10 +309,34 @@ pub fn call_for(item: &Item, act: &Act) -> Result<Call, String> {
             let mut input = Map::new();
             input.insert("messageId".into(), id.into());
             let (tool, words_key) = match mode.as_str() {
-                // Gmail answers the sender, or everyone on it, as the
-                // message itself names them: no address is guessed here.
+                // To exactly the people the confirm showed, read from the
+                // message itself: pinned, so Gmail's own choice (or a model's
+                // word) cannot change who gets it.
                 "reply" | "replyAll" => {
+                    let r = recipients.as_ref().ok_or(
+                        "who this goes to was not read from the message, so it cannot be sent",
+                    )?;
+                    let to: Vec<String> =
+                        r.to.iter()
+                            .map(String::as_str)
+                            .map(address)
+                            .collect::<Result<_, _>>()?;
+                    let cc: Vec<String> =
+                        r.cc.iter()
+                            .map(String::as_str)
+                            .map(address)
+                            .collect::<Result<_, _>>()?;
+                    if to.is_empty() {
+                        return Err("the message names no one to reply to".into());
+                    }
+                    if mode == "reply" && (to.len() != 1 || !cc.is_empty()) {
+                        return Err("a reply goes to one person; use Reply all for more".into());
+                    }
                     input.insert("replyAll".into(), (mode == "replyAll").into());
+                    input.insert("to".into(), json!(to));
+                    if !cc.is_empty() {
+                        input.insert("cc".into(), json!(cc));
+                    }
                     input.insert("body".into(), body.into());
                     ("reply", "body")
                 }
@@ -310,6 +359,190 @@ pub fn call_for(item: &Item, act: &Act) -> Result<Call, String> {
             })
         }
     }
+}
+
+/// The read a mail's confirm makes before Send can be pressed (993e review,
+/// finding 1): the message's own headers, through the connector's
+/// read-only `get_message` (`MINIMAL`: subject, sender, recipients, no
+/// body), run like any action — one pinned call in its own process.
+pub fn read_call(item: &Item) -> Result<Call, String> {
+    if item.kind != "email" {
+        return Err("only an email has recipients to read".into());
+    }
+    let id = clean_id("message id", &item.id)?;
+    Ok(Call {
+        tool: tool_on(&item.src, "get_message")?,
+        input: json!({ "messageId": id, "messageFormat": "MINIMAL" }),
+        words_key: None,
+        sends: false,
+    })
+}
+
+/// A message's own headers, as the card shows them.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct Heads {
+    /// The sender's address.
+    pub from: String,
+    /// The sender's name, when the message gave one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_name: Option<String>,
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// Display names by address (lower case), when the message gave them.
+    pub names: std::collections::BTreeMap<String, String>,
+}
+
+/// Every plain address in `text` (`"Priya S." <p@x.io>, q@y.io`).
+pub fn addresses_in(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for part in text.split([',', ';']) {
+        let part = part.trim();
+        let inner = match (part.rfind('<'), part.rfind('>')) {
+            (Some(a), Some(b)) if a < b => &part[a + 1..b],
+            _ => part,
+        };
+        if let Ok(a) = address(inner) {
+            out.push(a);
+        }
+    }
+    out
+}
+
+fn name_in(text: &str) -> Option<String> {
+    let a = text.rfind('<')?;
+    let n = text[..a].trim().trim_matches('"').trim();
+    (!n.is_empty()).then(|| n.to_string())
+}
+
+/// The tool result's JSON object: the text itself, or the text inside the
+/// MCP content blocks (`[{"type":"text","text":"{…}"}]`).
+fn result_object(content: &str) -> Option<Map<String, Value>> {
+    fn find(v: &Value, depth: u8) -> Option<Map<String, Value>> {
+        if depth > 4 {
+            return None;
+        }
+        match v {
+            Value::Object(m) if m.keys().any(|k| k == "sender" || k == "from") => Some(m.clone()),
+            Value::Object(m) => {
+                if let Some(Value::String(t)) = m.get("text")
+                    && let Ok(inner) = serde_json::from_str::<Value>(t)
+                {
+                    return find(&inner, depth + 1);
+                }
+                m.values().find_map(|x| find(x, depth + 1))
+            }
+            Value::Array(a) => a.iter().find_map(|x| find(x, depth + 1)),
+            Value::String(t) => serde_json::from_str::<Value>(t)
+                .ok()
+                .and_then(|i| find(&i, depth + 1)),
+            _ => None,
+        }
+    }
+    find(&serde_json::from_str::<Value>(content.trim()).ok()?, 0)
+}
+
+fn strings(v: Option<&Value>) -> Vec<String> {
+    match v {
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|x| match x {
+                Value::String(s) => Some(s.clone()),
+                Value::Object(o) => o
+                    .get("email")
+                    .or_else(|| o.get("address"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                _ => None,
+            })
+            .collect(),
+        Some(Value::Object(o)) => o
+            .get("email")
+            .or_else(|| o.get("address"))
+            .and_then(Value::as_str)
+            .map(|s| vec![s.to_string()])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// The headers in `get_message`'s result (`external`: its schema names
+/// `sender`, `toRecipients`, `ccRecipients`, `addressDisplayNames`,
+/// `subject`; the exact JSON shape is **not measured** — read defensively:
+/// strings or lists, `"Name" <addr>` or bare, `from`/`to`/`cc` too).
+/// No sender address → an error: Send stays off.
+pub fn heads_of(content: &str) -> Result<Heads, String> {
+    let m = result_object(content)
+        .ok_or("the message could not be read (no sender in what came back)")?;
+    let raw_from = strings(m.get("sender").or_else(|| m.get("from")));
+    let from_text = raw_from.first().cloned().unwrap_or_default();
+    let from = addresses_in(&from_text)
+        .into_iter()
+        .next()
+        .ok_or("the message's sender has no address that can be replied to")?;
+    let list = |keys: &[&str]| -> Vec<String> {
+        keys.iter()
+            .find_map(|k| m.get(*k))
+            .map(|v| {
+                strings(Some(v))
+                    .iter()
+                    .flat_map(|s| addresses_in(s))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut names = std::collections::BTreeMap::new();
+    match m.get("addressDisplayNames") {
+        Some(Value::Object(o)) => {
+            for (k, v) in o {
+                if let Some(n) = v.as_str().filter(|n| !n.trim().is_empty()) {
+                    names.insert(k.to_ascii_lowercase(), n.trim().to_string());
+                }
+            }
+        }
+        Some(Value::Array(a)) => {
+            for x in a {
+                if let Value::Object(o) = x {
+                    let addr = o
+                        .get("email")
+                        .or_else(|| o.get("address"))
+                        .and_then(Value::as_str);
+                    let name = o
+                        .get("displayName")
+                        .or_else(|| o.get("name"))
+                        .and_then(Value::as_str);
+                    if let (Some(a), Some(n)) = (addr, name) {
+                        names.insert(a.to_ascii_lowercase(), n.trim().to_string());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    for s in strings(m.get("toRecipients").or_else(|| m.get("to")))
+        .iter()
+        .chain(strings(m.get("ccRecipients").or_else(|| m.get("cc"))).iter())
+        .chain(std::iter::once(&from_text))
+    {
+        if let (Some(n), Some(a)) = (name_in(s), addresses_in(s).into_iter().next()) {
+            names.entry(a.to_ascii_lowercase()).or_insert(n);
+        }
+    }
+    let from_name = names.get(&from.to_ascii_lowercase()).cloned();
+    Ok(Heads {
+        from_name,
+        to: list(&["toRecipients", "to"]),
+        cc: list(&["ccRecipients", "cc"]),
+        subject: m
+            .get("subject")
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        names,
+        from,
+    })
 }
 
 /// The one-time pass, as written and as read.
@@ -433,7 +666,9 @@ pub fn decide(dir: &Path, stdin_json: &str, now: DateTime<Utc>) -> HookReply {
         return HookReply::deny(NO_PASS.into());
     };
     if now >= pass.expires {
-        let _ = std::fs::remove_file(&path);
+        if std::fs::rename(&path, dir.join(EXPIRED_FILE)).is_err() {
+            let _ = std::fs::remove_file(&path);
+        }
         return HookReply::deny(NO_PASS.into());
     }
     if !pass.covers(&call.tool_name, &call.tool_input) {
@@ -526,8 +761,33 @@ impl Seen {
 
 /// Whether the pass in `dir` was spent: the hook let the call through.
 pub fn spent(dir: &Path) -> bool {
-    !dir.join(PASS_FILE).exists()
+    !dir.join(PASS_FILE).exists() && !expired(dir)
 }
+
+/// Whether the pass in `dir` ran out of time unused.
+pub fn expired(dir: &Path) -> bool {
+    dir.join(EXPIRED_FILE).exists()
+}
+
+/// What an expired, never-used pass came to.
+pub const EXPIRED: &str = "Not sent (the approval expired). Nothing went; try again.";
+
+/// The receipt for the action in `dir`: [`receipt`], except that a pass
+/// that ran out of time unused says so ([`EXPIRED`]) rather than "may or
+/// may not have gone through".
+pub fn settle(act: &Act, seen: &[Seen], dir: &Path) -> Receipt {
+    let ran = seen.iter().any(|s| matches!(s, Seen::Result { .. }));
+    if expired(dir) && !ran {
+        return Receipt {
+            outcome: "error",
+            text: EXPIRED.into(),
+        };
+    }
+    receipt(act, seen, spent(dir))
+}
+
+/// What a mail whose fate is unknown says (993e review, finding 4).
+pub const MAYBE_SENT: &str = "It may have gone. Check Sent in Gmail before sending again.";
 
 fn one_line(s: &str, max: usize) -> String {
     let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -557,6 +817,20 @@ fn gone(content: &str) -> bool {
 /// refusal of the approved tool this turn, in order) and whether the pass
 /// was spent. Only a result that is not an error is `done`.
 pub fn receipt(act: &Act, seen: &[Seen], spent: bool) -> Receipt {
+    let r = receipt_of(act, seen, spent);
+    // A mail let through whose answer is not a success may still have gone
+    // (a timeout after Gmail took it): said as unknown, and the card holds
+    // Send for that item until he has checked (993e review, finding 4).
+    if matches!(act, Act::Send { .. }) && spent && r.outcome == "error" {
+        return Receipt {
+            outcome: "unknown",
+            text: format!("{MAYBE_SENT} ({})", r.text),
+        };
+    }
+    r
+}
+
+fn receipt_of(act: &Act, seen: &[Seen], spent: bool) -> Receipt {
     let ran = seen.iter().rev().find_map(|s| match s {
         Seen::Result { content, is_error } => Some((content, *is_error)),
         Seen::Denied { .. } => None,
@@ -574,13 +848,28 @@ pub fn receipt(act: &Act, seen: &[Seen], spent: bool) -> Receipt {
                     "Note saved as a draft · message not attached".into()
                 }
                 Act::SaveDraft { .. } => "Draft saved in Gmail".into(),
-                Act::Send { mode, to, .. } => {
-                    let to = one_line(to, 80);
+                // Who it went to: the addresses the call carried (read from
+                // the message, or his typed forward address) — never the
+                // reply's tag (993e review, finding 2).
+                Act::Send {
+                    mode,
+                    to,
+                    recipients,
+                    ..
+                } => {
+                    let who: Vec<String> = if mode == "forward" {
+                        address(to).into_iter().collect()
+                    } else {
+                        recipients
+                            .iter()
+                            .flat_map(|r| r.to.iter().chain(r.cc.iter()).cloned())
+                            .collect()
+                    };
                     let what = if mode == "forward" { "Forwarded" } else { "Sent" };
-                    if to.is_empty() {
+                    if who.is_empty() {
                         what.into()
                     } else {
-                        format!("{what} to {to}")
+                        format!("{what} to {}", one_line(&who.join(", "), 160))
                     }
                 }
             },

@@ -27,7 +27,9 @@ export type RunKind =
   | "capture"
   | "daily pass"
   | "interview"
-  | "nightshift";
+  | "nightshift"
+  /** A card's connector call (993e review): a mail, an RSVP, a draft. */
+  | "card action";
 
 export interface RunEntry {
   /** Stable across re-reads, for keyed lists. */

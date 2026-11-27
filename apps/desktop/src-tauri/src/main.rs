@@ -1676,6 +1676,8 @@ fn main() {
             inbox_sort::inbox_sort_list,
             inbox_sort::inbox_sort_plan,
             ref_action::ref_act,
+            ref_action::ref_read,
+            ref_action::ref_unfinished,
             listen::listen_audio,
             listen::listen_brief,
             listen::listen_parts,

@@ -112,7 +112,7 @@
   // Item 993c: the card a typed link (an event, an email, a doc named in a reply) opens.
   import RefCardHost from "./lib/RefCardHost.svelte";
   // Item 993d: what a click in that card does.
-  import { refAct, refHoldToast, refToast } from "./lib/refActApp";
+  import { refAct, refHoldToast, refRead, refToast, refUnfinished } from "./lib/refActApp";
   import { home as homeState, openHome as openHomeForRef } from "./lib/home.svelte";
   import { stage as homeStageKept } from "./lib/homeStage/stageState.svelte";
   import FeedbackBox from "./lib/FeedbackBox.svelte";
@@ -1141,7 +1141,7 @@
               <span class="toast-text" use:tip={"Click to copy"} onclick={(e) => { if (!(e.target as HTMLElement).closest("button")) void copyToast(t.id); }}>{t.text}{#if t.since}<ToastClock since={t.since} />{/if}{#if t.copied}<span class="toast-sep">{" · copied"}</span>{/if}{#if t.action}<span class="toast-sep">{" · "}</span><button
                   class="toast-action"
                   onclick={() => runToastAction(t.id)}>{t.action.label}</button>{/if}</span>
-              <button class="toast-x" aria-label="Dismiss" onclick={() => dismissToast(t.id)}>
+              <button class="toast-x" aria-label={t.xUndoes ? `${t.action?.label ?? "Undo"}: nothing is sent` : "Dismiss"} use:tip={t.xUndoes ? `${t.action?.label ?? "Undo"}: nothing is sent` : undefined} onclick={() => (t.xUndoes ? runToastAction(t.id) : dismissToast(t.id))}>
                 <Icon name="x" size={12} />
               </button>
             </div>
@@ -1202,7 +1202,7 @@
     <Palette />
     <!-- Item 993c: one card for every typed link in the window (replies, Home, asides). Its actions are 993d's:
          no `act` is passed yet, so each is shown, disabled, "coming soon". The signed-out notice leads to Home's Sources. -->
-    <RefCardHost reach={() => homeState.reach} loadReach={api.homeReach} act={refAct} mailSend={true} toast={refToast} holdToast={refHoldToast} onaccounts={() => void openHomeForRef().then(() => (homeStageKept.focus = "watch"))} />
+    <RefCardHost reach={() => homeState.reach} loadReach={api.homeReach} act={refAct} readMail={refRead} unfinished={refUnfinished} mailSend={true} toast={refToast} holdToast={refHoldToast} onaccounts={() => void openHomeForRef().then(() => (homeStageKept.focus = "watch"))} />
     <!-- His feedback to the agent (item 805): the draft outlives the box. -->
     {#if feedback.open}<FeedbackBox />{/if}
     <!-- The wrap-up's aside picker (nightshift item 285). -->

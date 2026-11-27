@@ -228,13 +228,14 @@ describe("993d: what came back", () => {
     await click(link("Speaker confirmation"));
     await click(btn("Reply"));
     await type(card()!.querySelector<HTMLTextAreaElement>(".rc-body")!, "Thanks —\nsee you there.");
-    expect(btn("Send to Priya S.")?.disabled).toBe(true);
-    await click(btn("Send to Priya S."));
+    // Off here: no mail send, and no read of who it goes to (993e).
+    expect(btn("Send to")?.disabled).toBe(true);
+    await click(btn("Send to"));
     await key("Enter");
     expect(l.log.ran).toEqual([]);
     await click(btn("Save as Gmail draft"));
     await settle(340);
-    expect(l.log.ran.map((x) => x.act)).toEqual([{ type: "saveDraft", mode: "reply", to: "Priya S.", body: "Thanks —\nsee you there." }]);
+    expect(l.log.ran.map((x) => x.act)).toEqual([{ type: "saveDraft", mode: "reply", to: "", body: "Thanks —\nsee you there." }]);
     expect(card()!.querySelector(".rc-stamp")?.textContent).toBe("Saved");
     expect(draftOf(`email:${GMAIL}:m_9`)).toBeNull();
     // A draft is not a send: the link gets no ✓.

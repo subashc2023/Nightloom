@@ -913,7 +913,8 @@ export const app = $state({
   },
   /** `action` (backlog 066) is the toast's one button — "Undo" on a
    *  removal or a rewind — and such a toast stays 8 s rather than 5. */
-  toasts: [] as { id: number; text: string; action?: { label: string; run: () => void }; copied?: boolean; since?: number }[],
+  // `xUndoes` (993e, blocker 2355): the toast's X runs its action (a mail's hold: X is Undo).
+  toasts: [] as { id: number; text: string; action?: { label: string; run: () => void }; copied?: boolean; since?: number; xUndoes?: boolean }[],
   /** Bumped whenever the undo stack changes, so the menu titles and the
    *  palette rows that read it re-derive (nightshift backlog 064). The
    *  stack itself is `history`, which is not reactive. */

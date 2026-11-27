@@ -46,8 +46,10 @@ function setup(opts: { act?: boolean | ((a: RefAction) => Promise<RefReceipt>); 
         return { stamp: "Sent", text: "Reply to Priya S." };
       }
     : undefined;
+  // Who a mail goes to is read from the message (993e review; mocked here, never a live read).
+  const READ = async () => ({ from: "priya@example.com", from_name: "Priya S.", to: [], cc: [], subject: "Speaker confirmation for Dec 4", names: {} });
   // The hold before a mail goes (993e) is its own test's (refAct993e); here the stand-in answers at once.
-  host = mount(RefCardHost, { target: document.body, props: { reach: () => opts.reach ?? REACH, act, holdMs: 0 } });
+  host = mount(RefCardHost, { target: document.body, props: { reach: () => opts.reach ?? REACH, act, holdMs: 0, readMail: act ? READ : undefined } });
   flushSync();
 }
 const link = (name: string) => [...page.querySelectorAll<HTMLElement>("a.nl-ref")].find((a) => a.textContent === name)!;
@@ -243,7 +245,7 @@ describe("993c: with actions wired (993d's side, here a stand-in)", () => {
     await click(btn("Reply"));
     const body = () => card()!.querySelector<HTMLTextAreaElement>(".rc-body")!;
     expect(card()!.querySelector(".rc-q")?.textContent).toBe("Reply · nothing sent yet");
-    expect(card()!.querySelector(".rc-to")?.textContent).toBe("To: Priya S.");
+    expect(card()!.querySelector(".rc-to")?.textContent).toBe("To: Priya S. <priya@example.com>");
     expect(btn("Send to Priya S.")?.disabled).toBe(true);
     await type(body(), "Hi Priya — confirmed, thank you!");
     expect(btn("Send to Priya S.")?.disabled).toBe(false);
@@ -280,7 +282,7 @@ describe("993c: with actions wired (993d's side, here a stand-in)", () => {
     fail = false;
     await key("Enter", body(), { metaKey: true });
     await settle(340);
-    expect(sentActions.at(-1)?.a).toEqual({ type: "send", mode: "reply", to: "Priya S.", body: "Hi Priya — confirmed, thank you!" });
+    expect(sentActions.at(-1)?.a).toEqual({ type: "send", mode: "reply", to: "Priya S.", body: "Hi Priya — confirmed, thank you!", recipients: { to: ["priya@example.com"], cc: [] }, about: "Speaker confirmation for Dec 4" });
     expect(card()!.querySelector(".rc-stamp")?.textContent).toBe("Sent");
     expect(draftOf(K)).toBeNull();
   });

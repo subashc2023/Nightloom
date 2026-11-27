@@ -62,3 +62,35 @@ export class MailUndone extends Error {
 }
 
 export const isUndone = (e: unknown): e is MailUndone => typeof e === "object" && e !== null && (e as { undone?: unknown }).undone === true;
+
+/** A mail let through with no success back (993e review, finding 4): it may have gone. Send stays off for that
+ *  item until he says he checked Gmail's Sent. */
+export class MaybeSent extends Error {
+  readonly maybe = true;
+}
+export const isMaybeSent = (e: unknown): e is MaybeSent => typeof e === "object" && e !== null && (e as { maybe?: unknown }).maybe === true;
+
+type ToastRow = { id: number; since?: number; xUndoes?: boolean };
+/** The hold toast over the app's toast calls (`refHoldToast.ts`); its X is the Undo while the hold runs
+ *  (blocker 2355). */
+export function makeHoldToast(t: {
+  progress: (text: string, action: { label: string; run: () => void }) => number;
+  find: (id: number) => ToastRow | undefined;
+  update: (id: number, text: string) => void;
+  settle: (id: number, text: string) => void;
+}): HoldToast {
+  return {
+    start: (text, undo) => {
+      const id = t.progress(text, { label: "Undo", run: undo });
+      const row = t.find(id);
+      if (row) {
+        // The words count down; a clock counting up beside them would contradict them.
+        delete row.since;
+        row.xUndoes = true;
+      }
+      return id;
+    },
+    update: t.update,
+    settle: t.settle,
+  };
+}

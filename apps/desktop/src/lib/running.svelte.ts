@@ -12,6 +12,7 @@ import { app, runningWork } from "./state.svelte";
 import { noteEdits } from "./noteEdit.svelte";
 import { UNFILED } from "./drafts.svelte";
 import { quitLines, quoteLine, sortRuns, type RunEntry } from "./running";
+import { refRunEntries } from "./refRuns.svelte";
 
 /** A note edit's key is `noteDraftKey`'s: `<project>:<scope>:<name>` for a
  *  project's notes and instructions, `<scope>:<name>` for the rest. */
@@ -56,7 +57,7 @@ export function noteEditRuns(): RunEntry[] {
 /** Everything running now, in every project: the one list both the
  *  Running-tasks panel and the quit guard read. */
 export function allRunning(now: number = Date.now()): RunEntry[] {
-  return sortRuns([...runningWork(now), ...noteEditRuns()]);
+  return sortRuns([...runningWork(now), ...noteEditRuns(), ...refRunEntries()]);
 }
 
 /** The quit dialog (308): open while a quit waits on his answer. */

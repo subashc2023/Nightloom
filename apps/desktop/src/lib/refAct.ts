@@ -14,7 +14,8 @@
  */
 import type { Ref } from "./refTag";
 import { RSVP_CHOICES, type RefAction, type RefReceipt } from "./refCard";
-import type { RefActItem, RefActReceipt } from "./api";
+import type { RefActItem, RefActReceipt, RefHeads } from "./api";
+import { MaybeSent } from "./mailHold";
 
 export interface RefActDeps {
   /** The item's page in his browser. */
@@ -24,6 +25,8 @@ export interface RefActDeps {
   copy: (text: string) => Promise<unknown>;
   /** The one command that reaches a connector. */
   run: (item: RefActItem, act: Extract<RefAction, { type: "rsvp" | "saveDraft" | "send" }>, binary?: string, safeMode?: boolean) => Promise<RefActReceipt>;
+  /** The read-only read of an email's headers (993e review, finding 1). */
+  read?: (item: RefActItem, binary?: string, safeMode?: boolean) => Promise<RefHeads>;
   /** The rail's Claude Code binary and safe mode, as every one-shot turn takes them. */
   agent?: () => { binary?: string; safeMode?: boolean };
 }
@@ -56,10 +59,23 @@ export function makeRefAct(d: RefActDeps): (ref: Ref, a: RefAction) => Promise<R
     const agent = d.agent?.() ?? {};
     const r = await d.run(itemOf(ref), a, agent.binary, agent.safeMode);
     if (r.outcome === "not_found") return { stamp: "Gone", text: r.text, gone: true };
+    if (r.outcome === "unknown") throw new MaybeSent(r.text);
     if (r.outcome !== "done") throw new Error(r.text);
     if (a.type === "rsvp") return { stamp: "Sent", text: `${RSVP_CHOICES.find((c) => c.answer === a.answer)?.done ?? r.text} · ${ref.name}`, rsvp: a.answer };
     if (a.type === "saveDraft") return { stamp: "Saved", text: r.text };
-    // A mail (993e): the connector's own word of who it went to ("Sent to Priya S."), and what it was about.
-    return { stamp: "Sent", text: ref.name ? `${r.text} · ${ref.name}` : r.text };
+    // A mail (993e): the service's receipt names the addresses the call carried (read from the message, or his
+    // typed forward address — never the tag's), then the subject as the message itself gave it.
+    const about = a.type === "send" ? (a.about ?? ref.name) : ref.name;
+    return { stamp: "Sent", text: about ? `${r.text} · ${about}` : r.text };
+  };
+}
+
+/** The card's read of an email's own headers, on the rail's binary and safe mode. */
+export function makeRefRead(d: RefActDeps): ((ref: Ref) => Promise<RefHeads>) | undefined {
+  const read = d.read;
+  if (!read) return undefined;
+  return (ref) => {
+    const agent = d.agent?.() ?? {};
+    return read(itemOf(ref), agent.binary, agent.safeMode);
   };
 }

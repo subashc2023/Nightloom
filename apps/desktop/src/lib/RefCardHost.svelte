@@ -25,7 +25,9 @@
   import { accountOf, rsvpAnswerOf, rsvpOf } from "./refCard";
   import type { RefAction, RefReceipt, Rsvp, RsvpAnswer } from "./refCard";
   import type { HomeReach } from "./home";
-  import { MAIL_HOLD_MS, MailUndone, secondsLeft, startHold, type HoldToast } from "./mailHold";
+  import { MAIL_HOLD_MS, MailUndone, isMaybeSent, secondsLeft, startHold, type HoldToast } from "./mailHold";
+  import type { MailHeads } from "./refCard";
+  import { refRunStart } from "./refRuns.svelte";
 
   let {
     reach,
@@ -35,6 +37,8 @@
     toast,
     holdToast,
     holdMs = MAIL_HOLD_MS,
+    readMail,
+    unfinished,
     onaccounts,
   }: {
     /** What Home reaches, when the app already holds it. */
@@ -50,6 +54,11 @@
     holdToast?: HoldToast;
     /** How long a mail waits for an Undo before it goes. */
     holdMs?: number;
+    /** The read-only read of an email's own headers (993e review): who a reply really goes to. Without it no mail
+     *  can be sent from a card (Send says why). */
+    readMail?: (ref: Ref) => Promise<MailHeads>;
+    /** Mails on their way when the app last quit, read once at mount (993e review, finding 7). */
+    unfinished?: () => Promise<string[]>;
     onaccounts?: () => void;
   } = $props();
 
@@ -66,6 +75,20 @@
   const holds = $state<Record<string, { until: number; to: string; undo: () => void }>>({});
   // A mail past its hold, by item, until the connector answered: no second one meanwhile.
   const going = new Set<string>();
+  // A mail let through with no success back, by item: Send stays off until he says he checked (review, 4).
+  const maybe = $state<Record<string, string>>({});
+  // Each email's headers, read once a session (a failed read is tried again on the next open).
+  const headsRead = new Map<string, Promise<MailHeads>>();
+  function headsOf(ref: Ref): Promise<MailHeads> {
+    const k = refKey(ref);
+    let p = headsRead.get(k);
+    if (!p) {
+      p = readMail!(ref);
+      headsRead.set(k, p);
+      p.catch(() => headsRead.delete(k));
+    }
+    return p;
+  }
 
   const linksOf = (k: string) => [...document.querySelectorAll<HTMLElement>("a.nl-ref")].filter((a) => {
     const r = refFromEl(a);
@@ -77,7 +100,14 @@
     if (a.type === "send") return sendHeld(ref, a);
     const k = refKey(ref);
     const before = answers[k] ?? rsvpOf(ref.fields.rsvp);
-    const r = await act!(ref, a);
+    const reaches = a.type === "rsvp" || a.type === "saveDraft";
+    const end = reaches ? refRunStart(a.type === "rsvp" ? `Answering ${ref.name}` : `Saving a draft · ${ref.name}`) : () => {};
+    let r: RefReceipt;
+    try {
+      r = await act!(ref, a);
+    } finally {
+      end();
+    }
     if (r.gone) {
       gone.add(k);
       for (const el of linksOf(k)) mark(el, "ref-gone", true);
@@ -96,6 +126,7 @@
   async function sendHeld(ref: Ref, a: Extract<RefAction, { type: "send" }>): Promise<RefReceipt> {
     const k = refKey(ref);
     if (holds[k] || going.has(k)) throw new Error("this mail is already on its way");
+    if (maybe[k]) throw new Error("it may have gone already: check Sent in Gmail first");
     const who = a.to.trim() || "them";
     const h = startHold(holdMs);
     const words = () => `Sending to ${who} in ${secondsLeft(h.until)} s`;
@@ -111,6 +142,7 @@
     }
     going.add(k);
     if (tid !== undefined) holdToast?.settle(tid, `Sending to ${who}…`);
+    const end = refRunStart(`Sending mail to ${who}`);
     try {
       const r = await act!(ref, a);
       if (r.gone) {
@@ -123,9 +155,14 @@
       if (tid !== undefined) holdToast?.settle(tid, r.text);
       return r;
     } catch (e) {
-      if (tid !== undefined) holdToast?.settle(tid, `Not sent to ${who}: ${String(e instanceof Error ? e.message : e)}`);
+      const why = String(e instanceof Error ? e.message : e);
+      if (isMaybeSent(e)) {
+        maybe[k] = why;
+        if (tid !== undefined) holdToast?.settle(tid, `To ${who}: ${why}`);
+      } else if (tid !== undefined) holdToast?.settle(tid, `Not sent to ${who}: ${why}`);
       throw e;
     } finally {
+      end();
       going.delete(k);
     }
   }
@@ -187,6 +224,11 @@
   }
 
   onMount(() => {
+    void unfinished?.()
+      .then((lines) => {
+        for (const l of lines) toast?.(`Nightloom quit while a mail was going (${l}). It may have gone: check Sent in Gmail.`);
+      })
+      .catch(() => {});
     const root = document.documentElement;
     root.dataset.refCards = "1";
     const onClick = (e: MouseEvent) => {
@@ -219,10 +261,10 @@
 
   // The reply was drawn again (a streaming turn, a tab switch) and the link is a new element: the card stays where
   // it is until he closes it; if the link is gone altogether, so is the mark, and nothing else changes.
-  function sent(): void {
-    if (!open) return;
-    done.add(refKey(open.ref));
-    mark(open.anchor, "ref-done", true);
+  // The card's own item, never whichever card is open when an action finishes (993e review, finding 5).
+  function sent(k: string): void {
+    done.add(k);
+    for (const el of linksOf(k)) mark(el, "ref-done", true);
   }
 </script>
 
@@ -239,7 +281,11 @@
       rsvpNow={answers[refKey(open.ref)] ?? null}
       onclose={() => close()}
       onaccounts={onaccounts ? () => (close(false), onaccounts()) : undefined}
-      ondone={sent}
+      ondone={((k) => () => sent(k))(refKey(open.ref))}
+      readHeads={readMail ? ((r) => () => headsOf(r))(open.ref) : undefined}
+      me={known?.accounts.find((x) => x.connector === open?.ref.src)?.address ?? null}
+      maybeSent={maybe[refKey(open.ref)] ?? null}
+      onchecked={((k) => () => delete maybe[k])(refKey(open.ref))}
     />
   {/key}
 {/if}

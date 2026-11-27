@@ -24,6 +24,12 @@
    * (`mailHold`, kept by the host): the card counts down "Sending to … in 5 s" with an Undo, and Esc means Undo
    * too; the words are locked while it counts, so what goes is what he saw. Undone: nothing was called, the confirm
    * and his words stay. Sent: the receipt names who it went to.
+   *
+   * Who a mail goes to is read from the message itself (993e review, finding 1): opening Reply, Reply all or
+   * Forward reads the email's real headers through the connector's read-only `get_message` (`readHeads`), and
+   * the confirm shows those people — never the reply's tag — and sends to exactly them (pinned in the pass).
+   * Until the read is back, or if it fails, Send stays off with the reason. A mail whose fate is unknown (let
+   * through, no success back) keeps Send off for the item until he says he checked Gmail's Sent.
    */
   import { onMount, tick } from "svelte";
   import AskLock from "./AskLock.svelte";
@@ -35,7 +41,8 @@
   import { MAIL_WORD, KIND_WORD, RSVP_CHOICES, accountWarn, asOfWords, detailRows, mailTo, openElsewhere, rsvpConfirm, rsvpOf, rsvpPill, whenLine } from "./refCard";
   import type { AccountState, MailMode, RefAction, RefReceipt, Rsvp, RsvpAnswer } from "./refCard";
   import { draftOf, dropDraft, keepDraft } from "./refDrafts.svelte";
-  import { MAIL_HOLD_MS, isUndone, secondsLeft } from "./mailHold";
+  import { MAIL_HOLD_MS, isMaybeSent, isUndone, secondsLeft } from "./mailHold";
+  import { mailRecipients, personWords, sendToWords, type MailHeads } from "./refCard";
 
   let {
     ref,
@@ -45,6 +52,10 @@
     act,
     mailSend = true,
     mailHold = null,
+    readHeads,
+    me = null,
+    maybeSent = null,
+    onchecked,
     rsvpNow = null,
     onclose,
     onaccounts,
@@ -63,6 +74,13 @@
     mailSend?: boolean;
     /** A mail of this item in its hold (993e, the host's): when it goes, and its Undo. */
     mailHold?: { until: number; to: string; undo: () => void } | null;
+    /** Reads the email's own headers (993e review). Absent: no mail can be sent from here. */
+    readHeads?: () => Promise<MailHeads>;
+    /** His own address on this account, left out of a reply to all. */
+    me?: string | null;
+    /** A mail of this item may have gone (unknown outcome): why, until he says he checked. */
+    maybeSent?: string | null;
+    onchecked?: () => void;
     /** His answer as the window last knew it (an RSVP sent or undone this session), over the link's own. */
     rsvpNow?: Rsvp | null;
     onclose: () => void;
@@ -109,8 +127,37 @@
   const to = $derived(draft?.to ?? "");
   const pendingAnswer = $derived(pending?.type === "rsvp" ? pending.answer : null);
   const mailMode = $derived(pending?.type === "mail" ? pending.mode : null);
-  const sendTo = $derived(mailMode ? mailTo(ref, mailMode, to) : "");
-  const canSend = $derived(!busy && !mailHold && (pending?.type === "rsvp" || (!!body.trim() && !!sendTo)));
+  // The email's real headers, for every mail mode (993e review, finding 1).
+  let heads = $state<{ state: "idle" | "reading" | "ok" | "failed"; h?: MailHeads; why?: string }>({ state: "idle" });
+  const recipients = $derived(heads.h && (mailMode === "reply" || mailMode === "replyAll") ? mailRecipients(heads.h, mailMode, me) : null);
+  const sendTo = $derived(!mailMode ? "" : mailMode === "forward" ? mailTo(ref, mailMode, to) : heads.h && recipients ? sendToWords(heads.h, recipients) : "");
+  const headsOk = $derived(heads.state === "ok" && (mailMode === "forward" || (recipients?.to.length ?? 0) > 0));
+  const canSend = $derived(!busy && !mailHold && (pending?.type === "rsvp" || (!!body.trim() && !!sendTo && headsOk && !maybeSent)));
+  const sendWhy = $derived(
+    !mailSend
+      ? "Sending from here is not built yet\nSave as Gmail draft works"
+      : maybeSent
+        ? "It may have gone already\nCheck Sent in Gmail first"
+        : !readHeads
+          ? "Who this goes to cannot be checked here\nSave as Gmail draft works"
+          : heads.state === "reading"
+            ? "Checking who this goes to…"
+            : heads.state === "failed"
+              ? `Could not read who this goes to\n${heads.why ?? ""}`
+              : !body.trim()
+                ? "Nothing written yet"
+                : !sendTo
+                  ? "Say who gets it first"
+                  : `Sends exactly the words above (⌘↵)\nUndo for ${Math.round(MAIL_HOLD_MS / 1000)} s after`,
+  );
+  function loadHeads(): void {
+    if (!readHeads || heads.state === "reading" || heads.state === "ok") return;
+    heads = { state: "reading" };
+    readHeads().then(
+      (h) => (heads = { state: "ok", h }),
+      (e) => (heads = { state: "failed", why: String(e instanceof Error ? e.message : e) }),
+    );
+  }
   // He undid a mail in its hold: said once, under the confirm.
   let undoneNote = $state<string | null>(null);
   // The countdown's clock, ticking only while a mail is held.
@@ -137,6 +184,7 @@
     pending = p;
     view = "confirm";
     if (p.type === "mail" && draft?.mode !== p.mode) keepDraft(key, { mode: p.mode });
+    if (p.type === "mail") loadHeads();
     await tick();
     (p.type === "mail" ? bodyBox : noteBox)?.focus({ preventScroll: true });
   }
@@ -152,6 +200,9 @@
 
   async function run(action: RefAction, which: string, after?: () => void): Promise<void> {
     if (!act || busy) return;
+    // This card's own item and callbacks, taken now: a card closed while its action runs must not, when it ends,
+    // mark or drop whatever item the card open by then shows (993e review, finding 5).
+    const done = ondone;
     busy = which;
     failed = null;
     undoneNote = null;
@@ -165,10 +216,12 @@
       if (r.rsvp) answered = r.rsvp;
       view = "details";
       pending = null;
-      if (r.stamp === "Sent") ondone?.();
+      if (r.stamp === "Sent") done?.();
     } catch (e) {
       // Undone in its hold (993e): nothing was called; the confirm and his words stay.
       if (isUndone(e)) undoneNote = e.message;
+      // It may have gone: the host holds Send for the item and the card says so (maybeSent).
+      else if (isMaybeSent(e)) failed = null;
       // Nothing is dropped on a failure: the confirm and his words stay, with the reason.
       else failed = String(e instanceof Error ? e.message : e);
     } finally {
@@ -181,12 +234,20 @@
   function send(): void {
     if (!pending || !canSend) return;
     if (pending.type === "mail" && !mailSend) return;
-    if (pending.type === "rsvp") void run({ type: "rsvp", answer: pending.answer, note: note.trim() }, "send", () => dropDraft(key, "note"));
-    else void run({ type: "send", mode: pending.mode, to: sendTo, body }, "send", () => dropDraft(key, "mail"));
+    const k = key;
+    if (pending.type === "rsvp") void run({ type: "rsvp", answer: pending.answer, note: note.trim() }, "send", () => dropDraft(k, "note"));
+    else
+      void run(
+        { type: "send", mode: pending.mode, to: sendTo, body, ...(recipients ? { recipients: { to: [...recipients.to], cc: [...recipients.cc] } } : {}), about: heads.h?.subject ?? ref.name },
+        "send",
+        () => dropDraft(k, "mail"),
+      );
   }
   function saveDraft(): void {
     if (pending?.type !== "mail" || !body.trim() || busy) return;
-    void run({ type: "saveDraft", mode: pending.mode, to: sendTo, body }, "save", () => dropDraft(key, "mail"));
+    const k = key;
+    // A reply's draft is threaded by Gmail (no address); a forward's carries his typed one.
+    void run({ type: "saveDraft", mode: pending.mode, to: pending.mode === "forward" ? sendTo : "", body }, "save", () => dropDraft(k, "mail"));
   }
   function discard(): void {
     dropDraft(key, "mail");
@@ -299,8 +360,23 @@
         <div class="rc-draft">
           {#if pending.mode === "forward"}
             <label class="rc-to">To: <input type="text" placeholder="Who gets it — an address" aria-label="Forward to" value={to} oninput={(e) => keepDraft(key, { to: e.currentTarget.value })} disabled={busy !== null} /></label>
+          {:else if heads.state === "ok" && recipients && heads.h}
+            {@const hh = heads.h}
+            <div class="rc-to" data-real-to>To: {recipients.to.map((a) => personWords(hh, a)).join(", ")}</div>
+            {#if recipients.cc.length > 0}<div class="rc-to" data-real-cc>Cc: {recipients.cc.map((a) => personWords(hh, a)).join(", ")}</div>{/if}
+          {:else if heads.state === "failed"}
+            <div class="rc-to rc-bad" role="alert">To: could not be read from the message — {heads.why}. Nothing can be sent until it is.</div>
           {:else}
-            <div class="rc-to">To: {sendTo}</div>
+            <div class="rc-to rc-dim">To: reading who this goes to…</div>
+          {/if}
+          {#if pending.mode === "forward"}
+            {#if heads.state === "ok" && heads.h}
+              <div class="rc-to rc-dim" data-real-fwd>Forwarding: {heads.h.subject ?? ref.name} · from {personWords(heads.h, heads.h.from)}</div>
+            {:else if heads.state === "failed"}
+              <div class="rc-to rc-bad" role="alert">The message could not be read — {heads.why}. Nothing can be forwarded until it is.</div>
+            {:else}
+              <div class="rc-to rc-dim">Reading the message…</div>
+            {/if}
           {/if}
           <textarea class="rc-body" rows="5" placeholder="Write your {MAIL_WORD[pending.mode].toLowerCase()}…" aria-label="Your {MAIL_WORD[pending.mode].toLowerCase()}" value={body} oninput={(e) => keepDraft(key, { mode: pending?.type === "mail" ? pending.mode : null, body: e.currentTarget.value })} bind:this={bodyBox} disabled={busy !== null}></textarea>
         </div>
@@ -313,7 +389,7 @@
           </div>
         {:else}
           <div class="rc-row">
-            <button type="button" class="ns-btn accent rc-b" class:rc-lockrow={busy === "send"} disabled={!mailSend || (!canSend && busy !== "send")} use:tip={!mailSend ? "Sending from here is not built yet\nSave as Gmail draft works" : !body.trim() ? "Nothing written yet" : !sendTo ? "Say who gets it first" : `Sends exactly the words above (⌘↵)\nUndo for ${Math.round(MAIL_HOLD_MS / 1000)} s after`} onclick={send}>Send to {sendTo || "…"} <span class="rc-ret">⌘↵</span></button>
+            <button type="button" class="ns-btn accent rc-b" class:rc-lockrow={busy === "send"} disabled={!mailSend || (!canSend && busy !== "send")} use:tip={sendWhy} onclick={send}>Send to {sendTo || "…"} <span class="rc-ret">⌘↵</span></button>
             <button type="button" class="ns-btn rc-b" class:rc-lockrow={busy === "save"} disabled={(!body.trim() || busy !== null) && busy !== "save"} onclick={saveDraft}>Save as Gmail draft</button>
             <span class="rc-gap"></span>
             <button type="button" class="ns-btn ghost rc-b rc-danger" disabled={busy !== null} onclick={() => (body.trim() || to.trim() ? (discarding = true) : discard())}>Discard</button>
@@ -323,6 +399,13 @@
       {/if}
       {#if failed}<div class="rc-warn in" role="alert"><span>That did not go through: {failed}. Nothing was dropped.</span></div>{/if}
       {#if undoneNote && !mailHold}<div class="rc-note rc-undone" role="status">{undoneNote}</div>{/if}
+    </div>
+  {/if}
+
+  {#if maybeSent}
+    <div class="rc-warn rc-maybe" role="alert">
+      <span>{maybeSent}</span>
+      <button type="button" class="ns-btn small rc-b" use:tip={"Only after you looked in Gmail's Sent\nand it is not there"} onclick={() => onchecked?.()}>I checked: not sent</button>
     </div>
   {/if}
 
@@ -535,6 +618,12 @@
     background: var(--accent);
     transform-origin: left;
     animation: rc-drain var(--rc-hold-ms, 5000ms) linear forwards;
+  }
+  .rc-to.rc-dim {
+    color: var(--dim);
+  }
+  .rc-to.rc-bad {
+    color: var(--failed);
   }
   .rc-hold-t b {
     font-variant-numeric: tabular-nums;
