@@ -14,7 +14,7 @@
     endContentDrag,
   } from "./state.svelte";
   import Icon from "./Icon.svelte";
-  import { homeFirst, isHome } from "./home";
+  import { dropdownProjects, isHome } from "./home";
 
   let { close }: { close: () => void } = $props();
 
@@ -65,7 +65,7 @@
 <div class="menu hud-m" role="menu" in:hudIn|global out:hudOut|global>
   <div class="head hud-head">Projects</div>
   <div class="list">
-    {#each homeFirst(app.projects) as p (p.id)}
+    {#each dropdownProjects(app.projects) as p (p.id)}
       <div class="row hud-row" class:active={app.project?.id === p.id} class:hud-cur={app.project?.id === p.id}>
         {#if renaming === p.id}
           <!-- svelte-ignore a11y_autofocus -->
@@ -141,6 +141,8 @@
           </div>
         {/if}
       </div>
+    {:else}
+      <p class="note">No projects yet.</p>
     {/each}
   </div>
 
