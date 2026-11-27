@@ -130,10 +130,15 @@ export const START_PROMPT_TAG = "start-prompt";
  * long file. Never a new file over one that is there, never a rewrite.
  */
 export const HANDOFF_FILE_CARE =
-  "Insert the section with an edit at the top of the file; do not read the whole file or write it out again, however " +
-  "long it is. If the file is there but cannot be read (an iCloud placeholder that is not downloaded) or the folder " +
-  "cannot be written, do not create a new HANDOFF.md over it: say so in one line and put the section in the start " +
-  "prompt instead.";
+  // ~~"Insert the section with an edit at the top of the file; do not read the whole file or write it out
+  // again … If the file is there but cannot be read (an iCloud placeholder that is not downloaded) …"~~ —
+  // 1025 review (LOW 1, LOW 2): an edit needs a read first, and a placeholder reads as "no file".
+  "Before you treat a HANDOFF.md that seems missing or will not read as \"no file\", check it with `ls -lO HANDOFF.md` " +
+  "if you have a shell: a `dataless` flag means an iCloud placeholder that is not downloaded. If the file does not " +
+  "exist, create it with your file-writing tool. If it exists, read only its first ~40 lines (the newest section is at " +
+  "the top) and insert the new section there with an edit; never read the whole file or write it out again, however " +
+  "long it is. If the file is a placeholder or cannot be read, or the folder cannot be written, do not create a new " +
+  "HANDOFF.md over it: say so in one line and put the whole section in the start prompt instead.";
 
 /**
  * The close of a code chat's wrap-up (backlog 431): practices §2's wrap-up
@@ -232,29 +237,51 @@ export const WRAP_UP =
  * for them. His own Settings text, when he has one, is sent as he wrote it
  * in every project.
  */
-export const PLAIN_WRAP_UP =
-  "This chat's context window is nearly full, so let's hand off to a new chat. Before anything else:\n" +
-  "1. Finish or save whatever edit is half-done, so every file is in a coherent state. If a subagent you launched " +
-  "has not reported yet, wait for it and fold its report in before you go on.\n" +
-  "2. Fix any fact this chat made outdated in the project's instructions or notes (CLAUDE.md or other .md files, " +
-  "where the project has them; in notes, strike the old claim with today's date and put the new one beside it, never " +
-  "delete). Fix facts only; do not trim or restructure.\n" +
-  "3. Add a new section at the top of HANDOFF.md, the file at the top of the project folder (create the file if there " +
-  "is none; never delete or rewrite the sections already in it), headed " +
-  "`## STATE AS OF <date time AM/PM> — <one line>`, for the chat that continues this one — complete enough that a " +
-  "fresh session can carry on without this conversation — with the sub-headings listed under \"Hand-off contents\" " +
-  "below. Under Done, give what was measured with its numbers; under Blocked, every question still waiting on me, in " +
-  `a full sentence with what it holds. ${HANDOFF_FILE_CARE}\n` +
-  "4. Only if the project folder is a git repository: commit by path, naming each file this chat changed, and " +
-  "HANDOFF.md, in `git add` (never `git add -A` or `git add .`, never `git stash`), its message saying what landed, " +
-  "with no AI attribution line; push only if the project's instructions say to. A folder that is not a git " +
-  "repository skips this and runs no command for it.\n" +
-  "5. End your reply with a short start prompt for the new chat. It is that chat's whole first message — " +
-  "nothing is added above it — so after its Goal line say what to read, one file per command: the newest HANDOFF.md " +
-  "section by its line range; then what changed since the section was written, any other file to read, and what to " +
-  "do first. If an answer of mine truly matters before that, say in it which question to ask me first. " +
-  `${HANDOFF_ASK}\n` +
-  "Then stop; do not start the next step.";
+export function plainWrapUp(folder = true): string {
+  const step3 = folder
+    ? "3. Add a new section at the top of HANDOFF.md, the file at the top of the project folder (create the file if " +
+      "there is none; never delete or rewrite the sections already in it), headed "
+    : // 1025 review (MEDIUM 2): a chat with no project folder writes no HANDOFF.md wherever its shell happens to be.
+      "3. This chat has no project folder, so write no HANDOFF.md anywhere; put the section in the start prompt " +
+      "instead, headed ";
+  const tail = folder ? ` ${HANDOFF_FILE_CARE}` : "";
+  const git = folder
+    ? "4. Only if the project folder is a git repository: commit by path, naming each file this chat changed, and " +
+      "HANDOFF.md, in `git add` (never `git add -A` or `git add .`, never `git stash`), its message saying what landed, " +
+      "with no AI attribution line; push only if the project's instructions say to. A folder that is not a git " +
+      "repository skips this and runs no command for it.\n"
+    : "4. Only if this chat changed files inside a git repository: commit them there by path, naming each file in " +
+      "`git add` (never `git add -A` or `git add .`, never `git stash`), its message saying what landed, with no AI " +
+      "attribution line; push only if that repository's instructions say to. Otherwise skip this and run no command for it.\n";
+  const reads = folder
+    ? "so after its Goal line say what to read, one file per command: the newest HANDOFF.md section by its line range " +
+      "(or, if you put the section in the prompt instead, the section itself in full); then "
+    : "so after its Goal line it carries the section above in full; then ";
+  return (
+    "This chat's context window is nearly full, so let's hand off to a new chat. Before anything else:\n" +
+    "1. Finish or save whatever edit is half-done, so every file is in a coherent state. If a subagent you launched " +
+    "has not reported yet, wait for it and fold its report in before you go on.\n" +
+    "2. Fix any fact this chat made outdated in the project's instructions or notes (CLAUDE.md or other .md files, " +
+    "where the project has them; in notes, strike the old claim with today's date and put the new one beside it, never " +
+    "delete). Fix facts only; do not trim or restructure.\n" +
+    step3 +
+    "`## STATE AS OF <date time AM/PM> — <one line>`, for the chat that continues this one — complete enough that a " +
+    "fresh session can carry on without this conversation — with the sub-headings listed under \"Hand-off contents\" " +
+    "below. Under Done, give what was measured with its numbers; under Blocked, every question still waiting on me, in " +
+    `a full sentence with what it holds.${tail}\n` +
+    git +
+    "5. End your reply with a short start prompt for the new chat. It is that chat's whole first message — " +
+    "nothing is added above it — " +
+    reads +
+    "what changed since the section was written, any other file to read, and what to do first. If an answer of mine " +
+    "truly matters before that, say in it which question to ask me first. " +
+    `${HANDOFF_ASK}\n` +
+    "Then stop; do not start the next step."
+  );
+}
+export const PLAIN_WRAP_UP = plainWrapUp(true);
+/** 1025 review (MEDIUM 2): the plain wrap-up for a chat with no project folder. */
+export const FOLDERLESS_WRAP_UP = plainWrapUp(false);
 
 /**
  * ~~The fixed prompt above the model's start prompt~~ — item 520
@@ -278,8 +305,11 @@ export const READ_ORDER =
  * those files").
  */
 export const PLAIN_READ_ORDER =
-  "This chat continues an earlier one that handed off. Read first the newest `## STATE AS OF` section of HANDOFF.md, " +
-  "by its line range — not the whole file. The queue is that section's last list.";
+  "This chat continues an earlier one that handed off. Read first the newest `## STATE AS OF` section of HANDOFF.md " +
+  "at the top of the project folder, by its line range — not the whole file. The queue is that section's last list. " +
+  // 1025 review (LOW 3): the wrap-up may have fallen back to its prompt, or never run.
+  "If there is no HANDOFF.md, the earlier chat saved no hand-off file: find what it did with search_chats (scope " +
+  "\"chain\") and read_chat instead, and ask me what to do first.";
 
 /** The marker the history pointer opens with, so it is added once. */
 export const HISTORY_MARK = "Earlier history (added by Nightloom):";
@@ -1212,6 +1242,22 @@ export function noteCodeProject(chat: string | null, code: boolean): void {
   else delete codeOf[chat];
 }
 
+/** The chats found to have no project folder (1025 review, MEDIUM 2): an
+ *  unfiled chat, or a project about no folder. Unknown reads as a folder. */
+const folderless = $state<Record<string, true>>({});
+
+/** Note whether the chat has a project folder, as the composer's probe finds it. */
+export function noteProjectFolder(chat: string | null, has: boolean): void {
+  if (!chat) return;
+  if (has) delete folderless[chat];
+  else folderless[chat] = true;
+}
+
+/** Whether the chat has a project folder (unknown: yes). */
+export function hasProjectFolder(chat: string | null): boolean {
+  return !(chat && folderless[chat] === true);
+}
+
 /** Whether the chat's project was found to be a code project. */
 export function codeProjectFor(chat: string | null): boolean {
   return !!chat && codeOf[chat] === true;
@@ -1253,7 +1299,8 @@ function baseMessage(chat: string | null): string {
  */
 export function defaultMessageFor(chat: string | null): string {
   if (stored.message !== null) return stored.message;
-  return codeProjectFor(chat) ? WRAP_UP : PLAIN_WRAP_UP;
+  if (codeProjectFor(chat)) return WRAP_UP;
+  return hasProjectFolder(chat) ? PLAIN_WRAP_UP : FOLDERLESS_WRAP_UP;
 }
 
 /** The Settings read order as this chat opens with it (item 1007): his own;
@@ -1262,7 +1309,9 @@ export function defaultMessageFor(chat: string | null): string {
  *  elsewhere (item 1025: every project's hand-off writes one). */
 export function defaultReadOrderFor(chat: string | null): string {
   if (stored.readOrder !== null) return stored.readOrder;
-  return codeProjectFor(chat) ? READ_ORDER : PLAIN_READ_ORDER;
+  if (codeProjectFor(chat)) return READ_ORDER;
+  // 1025 review (MEDIUM 2): no folder, no file to read; the prompt carries it.
+  return hasProjectFolder(chat) ? PLAIN_READ_ORDER : "";
 }
 
 /** The chat's thread's research wrap-up, flags included; null when unbound. */
@@ -1452,6 +1501,7 @@ export function setGoal(chat: string | null, text: string): void {
  *  (HANDOFF.md or a backlog/), thread or not; elsewhere the hand-off's
  *  sections go in the prompt~~ — item 1025 (blocker 2328: "always"). */
 export function writesHandoffFile(chat: string | null): boolean {
+  if (!hasProjectFolder(chat)) return false;
   return !threadFor(chat) || codeProjectFor(chat);
 }
 

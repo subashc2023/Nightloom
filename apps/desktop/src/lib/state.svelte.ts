@@ -1611,11 +1611,14 @@ export async function continueChat(): Promise<void> {
 }
 
 /** Item 1025: the chat being continued, as the history pointer names it —
- *  its listing row when the sidebar holds one, else its id alone. */
+ *  its listing row. ~~else its id alone~~ — 1025 review (MEDIUM 1): a chat
+ *  with no row (ephemeral, an incognito one not listed yet, another
+ *  project's) or no log gets no pointer, never a dead or leaking one. */
 export function historyFrom(from: string | null): HistoryFrom | null {
   if (!from) return null;
   const s = app.sessions.find((x) => x.id === from);
-  return s ? { id: s.id, title: s.title, first_user: s.first_user, path: s.path, modified: s.modified, mode: s.mode ?? null } : { id: from };
+  if (!s || !s.path || s.mode === "incognito") return null;
+  return { id: s.id, title: s.title, first_user: s.first_user, path: s.path, modified: s.modified, mode: s.mode ?? null };
 }
 
 /** The new linked chat and everything that goes with it: what `continueChat`

@@ -5,7 +5,11 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  FOLDERLESS_WRAP_UP,
   HANDOFF_FILE_CARE,
+  PLAIN_READ_ORDER,
+  noteProjectFolder,
+  readOrder,
   HISTORY_MARK,
   PLAIN_WRAP_UP,
   WRAP_UP,
@@ -26,6 +30,33 @@ beforeEach(() => {
   noteCodeProject("code", true);
   noteThread("plain", null);
   noteThread("code", null);
+  noteProjectFolder("plain", true);
+  noteProjectFolder("code", true);
+});
+
+describe("1025 review: a chat with no project folder (MEDIUM 2)", () => {
+  it("writes no HANDOFF.md; the section goes in the start prompt; no read order points at a file", () => {
+    noteProjectFolder("nofolder", false);
+    const sent = wrapUpToSend("nofolder");
+    expect(sent).toContain("This chat has no project folder, so write no HANDOFF.md anywhere");
+    expect(sent).not.toContain("Add a new section at the top of HANDOFF.md");
+    expect(writesHandoffFile("nofolder")).toBe(false);
+    expect(readOrder("nofolder")).toBe("");
+    expect(FOLDERLESS_WRAP_UP).not.toContain("mdcheck");
+  });
+
+  it("a folder found later gets the plain wrap-up back", () => {
+    noteProjectFolder("nofolder", true);
+    expect(wrapUpToSend("nofolder")).toContain("Add a new section at the top of HANDOFF.md");
+  });
+});
+
+describe("1025 review: the read order is true after a fallback (LOW 3)", () => {
+  it("says what to do when there is no HANDOFF.md", () => {
+    expect(PLAIN_READ_ORDER).toContain("If there is no HANDOFF.md");
+    expect(PLAIN_READ_ORDER).toContain("search_chats");
+    expect(PLAIN_WRAP_UP).toContain("if you put the section in the prompt instead, the section itself in full");
+  });
 });
 
 describe("1025: a hand-off in a project without HANDOFF.md", () => {
@@ -56,8 +87,13 @@ describe("1025: a hand-off in a project without HANDOFF.md", () => {
 
   it("the side cases are in both built-ins: never a rewrite, never a new file over a placeholder", () => {
     for (const t of [WRAP_UP, PLAIN_WRAP_UP]) {
-      expect(t).toContain("do not read the whole file or write it out again");
+      expect(t).toContain("never read the whole file or write it out again");
       expect(t).toContain("do not create a new HANDOFF.md over it");
+      // Review LOW 1 and LOW 2: create vs edit, and the dataless check.
+      expect(t).toContain("If the file does not exist, create it with your file-writing tool.");
+      expect(t).toContain("read only its first ~40 lines");
+      expect(t).toContain("`ls -lO HANDOFF.md`");
+      expect(t).toContain("`dataless`");
     }
   });
 });

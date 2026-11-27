@@ -310,8 +310,8 @@ describe("Continue on a bound chat", () => {
     expect(handoff.stage).toBe("wrapped");
     await continueChat();
     expect(app.activeSessionId).toBe("chat-next");
-    // Item 1025: the history pointer goes under the prompt.
-    expect(readDraft("chat-next").text.startsWith("Start with T-04.\n\nEarlier history (added by Nightloom):")).toBe(true);
+    // Item 1025 review (MEDIUM 1): an unlisted chat gets no history pointer.
+    expect(readDraft("chat-next").text).toBe("Start with T-04.");
     expect(threadFor("chat-next")).toBe("stuart-brainstorm");
     expect(api.threadUpkeep).toHaveBeenCalledWith("stuart-brainstorm", true);
   });
