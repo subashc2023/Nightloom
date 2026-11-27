@@ -1404,11 +1404,16 @@ fn has_reason(input: &Value, label: &str, also: &[&str]) -> bool {
         })
 }
 
-/// What `Choose` does with a launch's model (540): Opus is the floor, so a
-/// launch naming no model, or sonnet or haiku without "the user asked for"
-/// it, runs on opus (with `Some(note)` telling the model why); Fable needs
-/// a reason line or the launch is refused. A fork and a checkpoint run the
-/// chat's own model, as before.
+/// What `Choose` does with a launch's model: a launch naming no model runs
+/// on opus; Fable needs a reason line or the launch is refused; opus,
+/// sonnet and haiku are left as named — the Subagents layer gives the
+/// model the table by kind (nightshift 1024, 918's measured table: haiku
+/// for lookups and searches, sonnet for small edits and reviews, opus for
+/// builds and research). ~~Opus is the floor: sonnet or haiku without "the
+/// user asked for" it runs on opus, with a note (540)~~ — 2026-11-27 (1024;
+/// his ack of 918's table, 2026-11-26, and "what about nightloom?"). A fork
+/// and a checkpoint run the chat's own model, as before. The note slot is
+/// kept for a later rule; nothing fills it now.
 pub fn choose_model(input: &Value) -> Result<(SpawnModel, Option<String>), String> {
     let kind = input.get("subagent_type").and_then(Value::as_str);
     if matches!(kind, Some("fork")) || kind == Some(super::fork::CHECKPOINT_AGENT) {
@@ -1431,22 +1436,8 @@ pub fn choose_model(input: &Value) -> Result<(SpawnModel, Option<String>), Strin
                      search, survey or read-and-summarise helper), and a Fable launch says why on \
                      a line of its \
                      prompt: \"{FABLE_LABEL} <the reason this task needs it>\". Add the line and \
-                     launch again, or launch it on opus (Opus 5.5), the default for everything \
-                     else."
-                ))
-            }
-        }
-        Some(m) if m.contains("sonnet") || m.contains("haiku") => {
-            if has_reason(input, "user asked for", &[]) {
-                Ok((SpawnModel::Leave, None))
-            } else {
-                Ok((
-                    SpawnModel::Set("opus"),
-                    Some(format!(
-                        "Nightloom ran this helper on opus, not {m}: no helper runs below Opus \
-                         5.5 unless the user asked for it in this chat (then say so on a line: \
-                         \"User asked for {m}\")."
-                    )),
+                     launch again, or launch it on opus (Opus 5.5), the default — or haiku for a \
+                     lookup or search, sonnet for a small edit or review."
                 ))
             }
         }
@@ -6045,11 +6036,12 @@ mod tests {
     }
 
     /// 540 under Choose: no model named runs on opus; opus is left; fable
-    /// without a "Why Fable:" line is refused and with one is left; sonnet
-    /// is raised to opus with a note unless the user asked for it; a fork
-    /// keeps the chat's model. `Same` still pins the chat's.
+    /// without a "Why Fable:" line is refused and with one is left; a fork
+    /// keeps the chat's model. `Same` still pins the chat's. ~~sonnet is
+    /// raised to opus with a note unless the user asked for it~~ — 1024
+    /// (918's table): sonnet and haiku are left as named, with no note.
     #[test]
-    fn choose_makes_opus_the_floor_and_asks_fable_for_a_reason() {
+    fn choose_defaults_to_opus_and_asks_fable_for_a_reason() {
         use super::SpawnModel::*;
         use serde_json::json;
         let pick = |v: serde_json::Value| super::choose_model(&v);
@@ -6068,12 +6060,23 @@ mod tests {
             pick(json!({"prompt": "Why Fable: a twelve-file systems build\ngo", "model": "fable"})),
             Ok((Leave, None))
         );
-        let (m, note) = pick(json!({"prompt": "go", "model": "sonnet"})).unwrap();
-        assert_eq!(m, Set("opus"));
-        assert!(note.unwrap().contains("unless the user asked"));
+        // 1024: a lookup on haiku and a small edit on sonnet run as named.
+        assert_eq!(
+            pick(json!({"prompt": "go", "model": "sonnet"})),
+            Ok((Leave, None))
+        );
+        assert_eq!(
+            pick(json!({"prompt": "go", "model": "haiku"})),
+            Ok((Leave, None))
+        );
         assert_eq!(
             pick(json!({"prompt": "User asked for haiku\ngo", "model": "haiku"})),
             Ok((Leave, None))
+        );
+        let refused = pick(json!({"prompt": "go", "model": "fable"})).unwrap_err();
+        assert!(
+            refused.contains("haiku for a lookup or search"),
+            "{refused}"
         );
         assert_eq!(
             pick(json!({"prompt": "go", "subagent_type": "fork"})),
@@ -6098,6 +6101,18 @@ mod tests {
         // The refused Fable launch took no count: only the first one did.
         let spawns = std::fs::read_to_string(dir.join(super::SPAWNS_FILE)).unwrap_or_default();
         assert_eq!(spawns.trim(), "1");
+        // 1024: a haiku lookup goes through on haiku, not raised to opus.
+        let r = super::decide_with(
+            &dir,
+            &agent_call(json!({"prompt": "Estimated context: 100k\ngo", "model": "haiku"})),
+            None,
+        );
+        assert_ne!(r.decision(), "deny");
+        assert!(
+            r.updated_input()
+                .is_none_or(|i| i.get("model").and_then(|m| m.as_str()) == Some("haiku")),
+            "a haiku launch stays on haiku"
+        );
         // Same pins the chat's model whatever was asked, as before.
         let limits = super::SubagentLimits {
             model: super::SubagentModel::Same,

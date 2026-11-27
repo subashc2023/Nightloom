@@ -13,7 +13,7 @@
    * limits and sent on Apply. Keys, folder pickers and the CLI update stay
    * on the Mac.
    */
-  import { SUBAGENT_MODELS, SUBAGENT_MODEL_LABELS, thinkingSupport, type SubagentLimits, type SubagentModel } from "../lib/catalog";
+  import { HELPER_MODEL_TABLE, SUBAGENT_MODELS, SUBAGENT_MODEL_LABELS, thinkingSupport, type SubagentLimits, type SubagentModel } from "../lib/catalog";
   import { modelsOr } from "../lib/modelList";
   import type { Look } from "./look";
   import { MAX_SEATS, councilProblem, type CouncilSeat, type Rail, type RailPatch } from "./client";
@@ -204,6 +204,12 @@
             {/each}
           </div>
           <small>{SUBAGENT_MODEL_LABELS[shown.model] ?? ""}</small>
+          {#if shown.model === "choose"}
+            <!-- Nightshift 1024: the table, one line per kind, as on the Mac. -->
+            {#each HELPER_MODEL_TABLE as row (row.kind)}
+              <small>{row.kind}: {row.model}</small>
+            {/each}
+          {/if}
         </div>
       </div>
       {#if limits}

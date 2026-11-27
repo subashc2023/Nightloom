@@ -40,6 +40,7 @@
     MODEL_KEYS,
     SUBAGENT_MODELS,
     SUBAGENT_MODEL_LABELS,
+    HELPER_MODEL_TABLE,
     switchOf,
     formatWindow,
     modelsFor,
@@ -853,6 +854,14 @@
       {/each}
     </select>
   </label>
+  {/if}
+  <!-- Nightshift 1024: the rule "Main picks" gives, one line per kind. -->
+  {#if app.draft.agentLimits.model === "choose"}
+    <ul class="helper-table" aria-label="which model each kind of helper runs on">
+      {#each HELPER_MODEL_TABLE as row (row.kind)}
+        <li><span class="k">{row.kind}</span><span class="m">{row.model}</span></li>
+      {/each}
+    </ul>
   {/if}
   <!-- Fork mode (nightshift backlog 104, pass 3; blocker 288, his
        answer: "per-chat switch, on"). On, the turn carries
@@ -2302,6 +2311,24 @@
   /* The subagents' model (backlog 165, pass 2): one select on its row. */
   .limits-model {
     margin: 0 0 0.5rem;
+  }
+  /* Nightshift 1024: the helper-model table under "Subagents use". */
+  .helper-table {
+    list-style: none;
+    margin: -0.25rem 0 0.5rem;
+    padding: 0;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--dim);
+  }
+  .helper-table li {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: space-between;
+  }
+  .helper-table .m {
+    color: var(--ink);
+    flex-shrink: 0;
   }
   .limits-model-select {
     flex: 1;

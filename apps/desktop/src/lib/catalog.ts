@@ -824,12 +824,27 @@ export function allOn(): LimitsOff {
  *  (nightshift 257, blockers 584, 585). */
 export type SubagentModel = "choose" | "same" | "sonnet";
 export const SUBAGENT_MODELS: readonly SubagentModel[] = ["choose", "same", "sonnet"];
-/** The rail's words for each (blocker 584's wording). */
+/** The rail's words for each (blocker 584's wording; ~~"by the rule"~~
+ *  "by kind of task" since nightshift 1024). */
 export const SUBAGENT_MODEL_LABELS: Readonly<Record<SubagentModel, string>> = Object.freeze({
-  choose: "Main agent chooses, by the rule",
+  choose: "Main agent chooses, by kind of task",
   same: "Always the chat's model",
   sonnet: "Sonnet 5 · read-heavy scans",
 });
+
+/** Nightshift 1024: the rule "Main agent chooses" gives the model, one
+ *  line per kind of task — 918's measured table (haiku 13/13 on a search,
+ *  sonnet 4/4 on a review and the cleanest edit, about 1/40 and 1/2 of
+ *  Opus's cost), which he acknowledged 2026-11-26. The words the model
+ *  reads are `prompt.rs` `subagents_segment`; this is what the rail shows.
+ *  The hook enforces only the default (none named → Opus) and Fable's
+ *  reason line. */
+export const HELPER_MODEL_TABLE: readonly { readonly kind: string; readonly model: string }[] = Object.freeze([
+  { kind: "Lookups and searches", model: "Haiku" },
+  { kind: "Small edits and small reviews", model: "Sonnet" },
+  { kind: "Builds, research, review before a ship; none named", model: "Opus" },
+  { kind: "Hardest builds and research, with a reason", model: "Fable" },
+]);
 
 /** The defaults, the backend's (`brief::SubagentLimits::default`): the
  *  6 of the first cap; ~~the CLI's own 20 at once~~ 4 at once (blocker
