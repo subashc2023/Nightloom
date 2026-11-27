@@ -125,6 +125,10 @@ pub struct ProjectRow {
     pub name: String,
     /// The project open on the Mac.
     pub active: bool,
+    /// Home (item 763): the phone has its own Home button, so its Projects
+    /// list leaves this one out (item 1016). Absent from an older host.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub home: bool,
 }
 
 /// A new chat from the phone (item 246): the first message, and the
@@ -2018,6 +2022,23 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    /// Item 1016: `home` marks Home on the wire only when true; an older
+    /// host's row (no field) reads as not Home.
+    #[test]
+    fn a_project_row_flags_home_only_when_it_is_home() {
+        let row = |home| ProjectRow {
+            id: "p".into(),
+            name: "n".into(),
+            active: false,
+            home,
+        };
+        assert!(serde_json::to_string(&row(false)).is_ok_and(|j| !j.contains("home")));
+        assert!(serde_json::to_string(&row(true)).is_ok_and(|j| j.contains("\"home\":true")));
+        let old: ProjectRow =
+            serde_json::from_str(r#"{"id":"p","name":"n","active":false}"#).unwrap();
+        assert!(!old.home);
+    }
+
     /// Item 604: the Home Screen icon's pairing rides a `data:` manifest the
     /// page builds on the phone (`homeScreen.ts`), so no host ever sees it.
     /// The static manifest the hosts serve stays token-free, and neither the
@@ -2194,11 +2215,13 @@ mod tests {
                     id: "p1".into(),
                     name: "nightloom".into(),
                     active: true,
+                    home: false,
                 },
                 ProjectRow {
                     id: "p2".into(),
                     name: "keepsake".into(),
                     active: false,
+                    home: false,
                 },
             ])
         }
@@ -2486,6 +2509,7 @@ mod tests {
                 id: "p3".into(),
                 name: req.name,
                 active: false,
+                home: false,
             })
         }
         async fn project_open(&self, id: &str) -> Result<ProjectRow, String> {
@@ -2496,6 +2520,7 @@ mod tests {
                 id: id.into(),
                 name: "keepsake".into(),
                 active: true,
+                home: false,
             })
         }
         async fn project_rename(&self, id: &str, name: &str) -> Result<ProjectRow, String> {
@@ -2506,6 +2531,7 @@ mod tests {
                 id: id.into(),
                 name: name.into(),
                 active: false,
+                home: false,
             })
         }
         async fn project_forget(&self, id: &str) -> Result<(), String> {

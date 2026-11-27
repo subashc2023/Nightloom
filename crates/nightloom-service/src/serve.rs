@@ -1884,6 +1884,7 @@ impl Host for ServeHost {
             .into_iter()
             .map(|p| ProjectRow {
                 active: open.as_deref() == Some(p.id.as_str()),
+                home: p.source.as_deref() == Some(crate::home::SOURCE),
                 id: p.id,
                 name: p.name,
             })
@@ -1894,6 +1895,7 @@ impl Host for ServeHost {
             if rows.iter().all(|r| r.id != m.id) {
                 rows.push(ProjectRow {
                     active: open.as_deref() == Some(m.id.as_str()),
+                    home: false,
                     id: m.id,
                     name: m.name,
                 });
@@ -1904,6 +1906,7 @@ impl Host for ServeHost {
             0,
             ProjectRow {
                 active: open.is_none(),
+                home: false,
                 id: NO_PROJECT_ID.into(),
                 name: NO_PROJECT_NAME.into(),
             },
@@ -2281,6 +2284,7 @@ impl Host for ServeHost {
         )?;
         Ok(ProjectRow {
             active: active.as_deref() == Some(made.id.as_str()),
+            home: false,
             id: made.id,
             name: made.name,
         })
@@ -2295,6 +2299,7 @@ impl Host for ServeHost {
             *active = None;
             return Ok(ProjectRow {
                 active: true,
+                home: false,
                 id: NO_PROJECT_ID.into(),
                 name: NO_PROJECT_NAME.into(),
             });

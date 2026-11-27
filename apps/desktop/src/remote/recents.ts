@@ -65,7 +65,7 @@ export interface ProjectSummary {
  *  after the read ones. */
 export function projectSummaries(projects: ProjectRow[], chatsBy: Record<string, ChatRow[]>): ProjectSummary[] {
   const rows = projects
-    .filter((p) => p.id !== UNFILED)
+    .filter((p) => p.id !== UNFILED && !p.home)
     .map((p, i) => {
       const list = chatsBy[p.id];
       const newest = list && list.length > 0 ? list.reduce((a, b) => (when(b) > when(a) ? b : a)) : null;

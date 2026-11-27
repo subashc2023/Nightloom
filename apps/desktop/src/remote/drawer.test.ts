@@ -105,6 +105,11 @@ describe("the Projects list (A4)", () => {
     expect(projectSummaries(projects, {}).map((p) => p.chats)).toEqual([null, null]);
   });
 
+  it("leaves Home out (item 1016): the drawer has its own Home button", () => {
+    const withHome: ProjectRow[] = [...projects, { id: "h", name: "Home", active: false, home: true }];
+    expect(projectSummaries(withHome, {}).map((p) => p.id)).toEqual(projectSummaries(projects, {}).map((p) => p.id));
+  });
+
   it("says 1 chat, not 1 chats", () => {
     expect(chatCount(1)).toBe("1 chat");
     expect(chatCount(0)).toBe("0 chats");
