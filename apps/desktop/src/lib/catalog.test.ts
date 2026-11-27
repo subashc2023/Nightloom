@@ -366,3 +366,17 @@ describe("modelChipLabel (backlog 204)", () => {
     expect(modelChipLabel({ agentMode: false, agentModel: "", model: "", connected: undefined })).toBe("model");
   });
 });
+
+import { HELPER_MODEL_TABLE } from "./catalog";
+
+// Nightshift 1024: the rail's helper-model table is 918's, one line per kind.
+describe("HELPER_MODEL_TABLE (nightshift 1024)", () => {
+  it("names Haiku for lookups, Sonnet for small edits and reviews, Opus for builds and research", () => {
+    const by = Object.fromEntries(HELPER_MODEL_TABLE.map((r) => [r.model, r.kind]));
+    expect(by.Haiku).toMatch(/lookups and searches/i);
+    expect(by.Sonnet).toMatch(/small edits and small reviews/i);
+    expect(by.Opus).toMatch(/builds, research/i);
+    expect(by.Fable).toMatch(/with a reason/i);
+    expect(DEFAULT_LIMITS.model).toBe("choose");
+  });
+});

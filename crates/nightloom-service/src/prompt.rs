@@ -642,13 +642,21 @@ fn subagents_segment(reusable: bool, model: crate::agent::brief::SubagentModel) 
         // systems build, hard research)"~~ — 2026-11-10 (nightshift 573,
         // 537b's re-look): "hard research" let a chat call seven web-search
         // helpers Fable work, so gathering is named as Opus work outright.
+        // ~~"Search, survey and read-and-summarise helpers run on opus,
+        // however broad or many. sonnet or haiku only if the user asked"~~
+        // — 2026-11-27 (nightshift 1024): 918's measured table, which he
+        // acknowledged 2026-11-26 ("yeah that sounds good"), then "what
+        // about nightloom?": haiku finds, sonnet does small edits and
+        // reviews, opus builds and researches. The hook no longer raises a
+        // sonnet or haiku launch to opus.
         SubagentModel::Choose => {
-            "Model, named on each launch: opus (Opus 5.5) by default; a launch naming none \
-             runs on it. fable (Fable 5.2) only for a multi-file systems build or hard research \
-             that is a hard reasoning problem, with a line \"Why Fable: <reason>\", or it is \
-             refused. Search, survey and read-and-summarise helpers run on opus, however broad \
-             or many. sonnet or haiku only if the user asked (a line \"User asked for \
-             sonnet\"), else it runs on opus. Forks run this chat's model."
+            "Model, named on each launch, by kind of task: haiku (Haiku 5.5) for lookups and \
+             searches (files, lines, matches, a known section); sonnet (Sonnet 5.5) for a small \
+             edit or a small review (one file or a short diff); opus (Opus 5.5) for builds, \
+             research and the review before anything ships, and the default when none is named; \
+             fable (Fable 5.2) only for a multi-file systems build or hard research that is a \
+             hard reasoning problem, with a line \"Why Fable: <reason>\", or it is refused. \
+             Forks run this chat's model."
         }
         SubagentModel::Same => {
             "Every subagent runs this chat's model: Nightloom sets it on each launch, \
@@ -863,11 +871,11 @@ pub fn subagent_rules_body(rules: &SubagentRules<'_>) -> String {
     );
     out.push_str(match l.model {
         SubagentModel::Choose => {
-            "- Subagents' model: yours to choose on each launch, within the user's rule: opus by \
-             default and for every search, survey or read-and-summarise helper; fable only for a \
-             multi-file systems build or hard research that is a hard reasoning problem, with a \
-             \"Why Fable:\" line (refused without); sonnet or haiku only if the user asked \
-             (otherwise run on opus).\n"
+            "- Subagents' model: yours to choose on each launch, by the kind of task (the \
+             user's rule): haiku for lookups and searches; sonnet for small edits and small \
+             reviews; opus for builds, research and the review before anything ships, and for a \
+             launch naming none; fable only for a multi-file systems build or hard research \
+             that is a hard reasoning problem, with a \"Why Fable:\" line (refused without).\n"
         }
         SubagentModel::Same => "- Subagents' model: always this chat's; Nightloom sets it.\n",
         SubagentModel::Sonnet => {
@@ -3520,12 +3528,14 @@ As of now — the front.
         assert!(!with(false).contains(REF_NOTE));
     }
 
-    /// Nightshift 573: under `Choose`, both layers name gathering — search,
-    /// survey, read-and-summarise — as Opus work, and keep Fable for a
+    /// Nightshift 573: under `Choose`, both layers keep Fable for a
     /// multi-file systems build or hard research that is a hard reasoning
-    /// problem; the hook's refusal says the same.
+    /// problem. ~~Both name gathering — search, survey, read-and-summarise —
+    /// as Opus work~~ — 1024: both give 918's table by kind (haiku lookups
+    /// and searches, sonnet small edits and reviews, opus builds and
+    /// research, the default).
     #[test]
-    fn the_choose_wording_keeps_search_and_survey_helpers_on_opus() {
+    fn the_choose_wording_gives_the_model_table_by_kind() {
         use crate::agent::brief::{SubagentLimits, SubagentModel};
         let dir = temp_dir("agent-choose-wording");
         std::fs::write(dir.join("AGENTS.md"), "a project rule").unwrap();
@@ -3550,12 +3560,20 @@ As of now — the front.
         .render_flat()
         .unwrap();
         let sub = &text[text.find("<subagents>").unwrap()..text.find("</subagents>").unwrap()];
+        for kind in [
+            "haiku (Haiku 5.5) for lookups and searches",
+            "sonnet (Sonnet 5.5) for a small edit",
+            "or a small review",
+            "opus (Opus 5.5) for builds, research",
+            "the default when none is named",
+        ] {
+            assert!(sub.contains(kind), "{kind}: {sub}");
+        }
         assert!(
-            sub.contains(
-                "Search, survey and read-and-summarise helpers run on opus, however broad or many."
-            ),
+            !sub.contains("read-and-summarise helpers run on opus"),
             "{sub}"
         );
+        assert!(!sub.contains("only if the user asked"), "{sub}");
         assert!(
             sub.contains("only for a multi-file systems build or hard research that is a hard reasoning problem"),
             "{sub}"
@@ -3563,12 +3581,14 @@ As of now — the front.
         assert!(!sub.contains("the very hardest tasks"), "{sub}");
         let rules =
             &text[text.find("<subagent-rules>").unwrap()..text.find("</subagent-rules>").unwrap()];
-        assert!(
-            rules.contains(
-                "opus by default and for every search, survey or read-and-summarise helper"
-            ),
-            "{rules}"
-        );
+        for kind in [
+            "haiku for lookups and searches",
+            "sonnet for small edits and small reviews",
+            "opus for builds, research and the review before anything ships",
+        ] {
+            assert!(rules.contains(kind), "{kind}: {rules}");
+        }
+        assert!(!rules.contains("only if the user asked"), "{rules}");
         assert!(
             rules.contains("fable only for a multi-file systems build or hard research that is a hard reasoning problem"),
             "{rules}"
@@ -3650,8 +3670,10 @@ As of now — the front.
         // gathering named as Opus work; 353 measured with `reusable` on.
         // ~~360~~ — 385 since 2026-11-25 (nightshift 965): "launch one
         // helper of a kind, then the rest" (practices §3, blocker 2018).
+        // ~~385~~ — 1024 (2026-11-27): 918's table by kind replaced the
+        // Opus-floor sentence; 391 measured with `reusable` on.
         assert!(
-            words(SegmentKind::Subagents) <= 385,
+            words(SegmentKind::Subagents) <= 400,
             "{}",
             words(SegmentKind::Subagents)
         );
@@ -3723,10 +3745,11 @@ As of now — the front.
             let choose = say(SubagentModel::Choose);
             // ~~"fable only after", "only for mechanical work", "which and
             // why"~~ — 2026-11-10 (540, blocker 1732): Opus the default,
-            // Fable with a written reason, nothing below Opus unasked.
-            assert!(choose.contains("opus (Opus 5.5) by default"), "{choose}");
+            // Fable with a written reason, ~~nothing below Opus unasked~~
+            // (1024: 918's table, haiku and sonnet by kind).
+            assert!(choose.contains("opus (Opus 5.5) for builds"), "{choose}");
             assert!(choose.contains("Why Fable: <reason>"), "{choose}");
-            assert!(choose.contains("only if the user asked"), "{choose}");
+            assert!(choose.contains("haiku (Haiku 5.5) for lookups"), "{choose}");
             let same = say(SubagentModel::Same);
             assert!(
                 same.contains("Every subagent runs this chat's model"),

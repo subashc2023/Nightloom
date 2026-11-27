@@ -1,7 +1,8 @@
 /**
  * Blocker 1757 (nightshift item 540; his answer, 2026-11-10: "Yes, switch
  * them"): the helper-model rule (Opus by default, Fable only with a written
- * reason, never below Opus unless he asks) is enforced under "Choose", and
+ * reason, ~~never below Opus unless he asks~~ haiku and sonnet by kind of
+ * task since nightshift 1024) is enforced under "Choose", and
  * 136 of his 145 chats were on "Same as the chat". Once, at the app's start:
  *
  * - the window's own setting (`agentLimits.model`, the one every chat's
