@@ -332,7 +332,13 @@ pub fn call_for(item: &Item, act: &Act) -> Result<Call, String> {
                     if mode == "reply" && (to.len() != 1 || !cc.is_empty()) {
                         return Err("a reply goes to one person; use Reply all for more".into());
                     }
-                    input.insert("replyAll".into(), (mode == "replyAll").into());
+                    // Always `replyAll: false`, Reply all included (993e
+                    // re-review, N1): with it on, an unset `cc` leaves
+                    // Gmail's own reply-all CC list in force, so a Cc the
+                    // read missed would get the mail unshown. Off, Gmail
+                    // adds no one: the mail goes to exactly the `to` and
+                    // `cc` below, the people the card showed.
+                    input.insert("replyAll".into(), false.into());
                     input.insert("to".into(), json!(to));
                     if !cc.is_empty() {
                         input.insert("cc".into(), json!(cc));
@@ -416,31 +422,33 @@ fn name_in(text: &str) -> Option<String> {
     (!n.is_empty()).then(|| n.to_string())
 }
 
-/// The tool result's JSON object: the text itself, or the text inside the
-/// MCP content blocks (`[{"type":"text","text":"{…}"}]`).
+/// `get_message`'s message object, from the result's documented places only
+/// (993e re-review, N4): the result itself when it is the message (it has
+/// `sender`), or the `text` of an MCP `text` block holding it — a bare list
+/// of blocks, or a result's `content` list — or `structuredContent`. Never
+/// from inside another field: a message's own `snippet`, `subject` or body
+/// is the sender's text, and JSON written there is not the headers.
 fn result_object(content: &str) -> Option<Map<String, Value>> {
-    fn find(v: &Value, depth: u8) -> Option<Map<String, Value>> {
-        if depth > 4 {
-            return None;
-        }
+    fn message(v: &Value) -> Option<Map<String, Value>> {
         match v {
-            Value::Object(m) if m.keys().any(|k| k == "sender" || k == "from") => Some(m.clone()),
-            Value::Object(m) => {
-                if let Some(Value::String(t)) = m.get("text")
-                    && let Ok(inner) = serde_json::from_str::<Value>(t)
-                {
-                    return find(&inner, depth + 1);
-                }
-                m.values().find_map(|x| find(x, depth + 1))
-            }
-            Value::Array(a) => a.iter().find_map(|x| find(x, depth + 1)),
-            Value::String(t) => serde_json::from_str::<Value>(t)
-                .ok()
-                .and_then(|i| find(&i, depth + 1)),
+            Value::Object(m) if m.contains_key("sender") => Some(m.clone()),
             _ => None,
         }
     }
-    find(&serde_json::from_str::<Value>(content.trim()).ok()?, 0)
+    fn in_blocks(v: &Value) -> Option<Map<String, Value>> {
+        v.as_array()?.iter().find_map(|b| {
+            if b.get("type").and_then(Value::as_str) != Some("text") {
+                return None;
+            }
+            let t = b.get("text")?.as_str()?;
+            message(&serde_json::from_str::<Value>(t.trim()).ok()?)
+        })
+    }
+    let v = serde_json::from_str::<Value>(content.trim()).ok()?;
+    message(&v)
+        .or_else(|| in_blocks(&v))
+        .or_else(|| v.get("content").and_then(in_blocks))
+        .or_else(|| v.get("structuredContent").and_then(message))
 }
 
 fn strings(v: Option<&Value>) -> Vec<String> {
@@ -453,6 +461,7 @@ fn strings(v: Option<&Value>) -> Vec<String> {
                 Value::Object(o) => o
                     .get("email")
                     .or_else(|| o.get("address"))
+                    .or_else(|| o.get("emailAddress"))
                     .and_then(Value::as_str)
                     .map(str::to_string),
                 _ => None,
@@ -461,6 +470,7 @@ fn strings(v: Option<&Value>) -> Vec<String> {
         Some(Value::Object(o)) => o
             .get("email")
             .or_else(|| o.get("address"))
+            .or_else(|| o.get("emailAddress"))
             .and_then(Value::as_str)
             .map(|s| vec![s.to_string()])
             .unwrap_or_default(),
@@ -471,12 +481,13 @@ fn strings(v: Option<&Value>) -> Vec<String> {
 /// The headers in `get_message`'s result (`external`: its schema names
 /// `sender`, `toRecipients`, `ccRecipients`, `addressDisplayNames`,
 /// `subject`; the exact JSON shape is **not measured** — read defensively:
-/// strings or lists, `"Name" <addr>` or bare, `from`/`to`/`cc` too).
+/// strings or lists, `"Name" <addr>` or bare; only those documented names,
+/// never `from`/`to`/`cc` or any other field (993e re-review, N4)).
 /// No sender address → an error: Send stays off.
 pub fn heads_of(content: &str) -> Result<Heads, String> {
     let m = result_object(content)
         .ok_or("the message could not be read (no sender in what came back)")?;
-    let raw_from = strings(m.get("sender").or_else(|| m.get("from")));
+    let raw_from = strings(m.get("sender"));
     let from_text = raw_from.first().cloned().unwrap_or_default();
     let from = addresses_in(&from_text)
         .into_iter()
@@ -521,9 +532,9 @@ pub fn heads_of(content: &str) -> Result<Heads, String> {
         }
         _ => {}
     }
-    for s in strings(m.get("toRecipients").or_else(|| m.get("to")))
+    for s in strings(m.get("toRecipients"))
         .iter()
-        .chain(strings(m.get("ccRecipients").or_else(|| m.get("cc"))).iter())
+        .chain(strings(m.get("ccRecipients")).iter())
         .chain(std::iter::once(&from_text))
     {
         if let (Some(n), Some(a)) = (name_in(s), addresses_in(s).into_iter().next()) {
@@ -533,8 +544,8 @@ pub fn heads_of(content: &str) -> Result<Heads, String> {
     let from_name = names.get(&from.to_ascii_lowercase()).cloned();
     Ok(Heads {
         from_name,
-        to: list(&["toRecipients", "to"]),
-        cc: list(&["ccRecipients", "cc"]),
+        to: list(&["toRecipients"]),
+        cc: list(&["ccRecipients"]),
         subject: m
             .get("subject")
             .and_then(Value::as_str)
@@ -899,6 +910,77 @@ fn receipt_of(act: &Act, seen: &[Seen], spent: bool) -> Receipt {
             },
         },
     }
+}
+
+/// The journal of mails on their way (993e review, finding 7): an entry is
+/// written before a send's call and removed when that send's own call has
+/// ended, so one left over means Nightloom quit or died mid-call. `launch`
+/// names this run of the app (pid and start time); every entry starts with
+/// it. Returns the entry's path, for [`journal_end`].
+pub fn journal_begin(
+    dir: &Path,
+    launch: &str,
+    what: &str,
+    item: &str,
+    now: DateTime<Utc>,
+) -> Result<std::path::PathBuf, String> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    std::fs::create_dir_all(dir).map_err(|e| format!("could not make the journal folder: {e}"))?;
+    let path = dir.join(format!(
+        "{launch}-{}-{}.json",
+        now.timestamp_nanos_opt().unwrap_or_default(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::write(
+        &path,
+        json!({ "what": what, "item": item, "at": now }).to_string(),
+    )
+    .map_err(|e| format!("could not write the journal entry: {e}"))?;
+    Ok(path)
+}
+
+/// The send's own call ended (whatever came of it): its entry goes.
+pub fn journal_end(path: &Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+/// The entries an earlier run left (it quit or died mid-call), read once
+/// and cleared, as lines for the window. This run's own entries are left
+/// alone (993e re-review, N5): they belong to calls still going — a
+/// webview reload re-reads the journal while the send runs on in Rust,
+/// and only that send's end removes its entry.
+pub fn journal_take(dir: &Path, launch: &str) -> Vec<String> {
+    let mine = format!("{launch}-");
+    let mut out = Vec::new();
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name.starts_with(&mine) || !name.ends_with(".json") {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && let Ok(v) = serde_json::from_str::<Value>(&text)
+        {
+            let what = v["what"].as_str().unwrap_or("A mail");
+            let item = v["item"].as_str().unwrap_or("");
+            out.push(if item.is_empty() {
+                what.to_string()
+            } else {
+                format!("{what} · {item}")
+            });
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+    out
 }
 
 #[cfg(test)]

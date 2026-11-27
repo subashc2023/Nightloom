@@ -282,7 +282,7 @@ describe("993c: with actions wired (993d's side, here a stand-in)", () => {
     fail = false;
     await key("Enter", body(), { metaKey: true });
     await settle(340);
-    expect(sentActions.at(-1)?.a).toEqual({ type: "send", mode: "reply", to: "Priya S.", body: "Hi Priya — confirmed, thank you!", recipients: { to: ["priya@example.com"], cc: [] }, about: "Speaker confirmation for Dec 4" });
+    expect(sentActions.at(-1)?.a).toEqual({ type: "send", mode: "reply", to: "Priya S. <priya@example.com>", body: "Hi Priya — confirmed, thank you!", recipients: { to: ["priya@example.com"], cc: [] }, about: "Speaker confirmation for Dec 4" });
     expect(card()!.querySelector(".rc-stamp")?.textContent).toBe("Sent");
     expect(draftOf(K)).toBeNull();
   });

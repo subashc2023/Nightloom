@@ -7,9 +7,16 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
+// The app's store, as the toasts read it: only its toast list. The whole store's module graph starts the app's own
+// effects (asides), which have no app to run in here; the toasts' functions, refHoldToast and ToastX are the real ones.
+vi.mock("./state.svelte", () => ({ app: { toasts: [] } }));
+import { app } from "./state.svelte";
 import RefCardHost from "./RefCardHost.svelte";
 import { renderReply } from "./markdown";
-import { draftOf, resetDrafts } from "./refDrafts.svelte";
+import { REF_DRAFTS_KEY, REF_MAYBE_KEY, draftOf, readDrafts, readMaybe, refDrafts, refMaybe, resetDrafts } from "./refDrafts.svelte";
+import ToastX from "./ToastX.svelte";
+import { refHoldToast } from "./refHoldToast";
+import appSrc from "../App.svelte?raw";
 import { makeRefAct, type RefActDeps } from "./refAct";
 import type { RefAction } from "./refCard";
 import type { RefActItem, RefActReceipt } from "./api";
@@ -165,24 +172,24 @@ describe("993e: a mail goes only from his click, after the hold", () => {
     await click(btn("Send to Priya S."));
     // The hold: shown on the card and on a toast, words locked, nothing called.
     expect(l.ran).toEqual([]);
-    expect(holdRow()?.textContent).toContain("Sending to Priya S. in");
+    expect(holdRow()?.textContent).toContain("Sending to Priya S. <priya@example.com> in");
     expect(card()!.querySelector<HTMLTextAreaElement>(".rc-body")!.disabled).toBe(true);
     expect(toasts.length).toBe(1);
-    expect(toasts[0].text).toMatch(/^Sending to Priya S\. in \d s$/);
+    expect(toasts[0].text).toMatch(/^Sending to Priya S\. <priya@example\.com> in \d s$/);
     expect(toasts[0].undo).toBeTypeOf("function");
     // A second click in the hold sends nothing more.
     await click(btn("Send to Priya S."));
     await key("Enter", { metaKey: true });
     expect(l.ran).toEqual([]);
     await settle(HOLD + 400);
-    expect(l.ran.map((x) => x.act)).toEqual([{ type: "send", mode: "reply", to: "Priya S.", body: "Thanks —\nsee you there.", recipients: { to: ["priya@example.com"], cc: [] }, about: "Re: Speaker confirmation" }]);
+    expect(l.ran.map((x) => x.act)).toEqual([{ type: "send", mode: "reply", to: "Priya S. <priya@example.com>", body: "Thanks —\nsee you there.", recipients: { to: ["priya@example.com"], cc: [] }, about: "Re: Speaker confirmation" }]);
     expect(l.ran[0].item).toEqual({ kind: "email", id: "m_9", src: GMAIL, cal: undefined, name: "Speaker confirmation" });
     // The receipt says who it went to; the draft is gone; the link gets its ✓.
     expect(card()!.querySelector(".rc-stamp")?.textContent).toBe("Sent");
     expect(card()!.querySelector(".rc-rt")?.textContent).toBe("Sent to Priya S. · Re: Speaker confirmation");
     expect(draftOf(KEY)).toBeNull();
     expect(link().classList.contains("ref-done")).toBe(true);
-    expect(toasts[0].settled).toEqual(["Sending to Priya S.…", "Sent to Priya S. · Re: Speaker confirmation"]);
+    expect(toasts[0].settled).toEqual(["Sending to Priya S. <priya@example.com>…", "Sent to Priya S. · Re: Speaker confirmation"]);
     expect(toasts[0].undo).toBeUndefined();
   });
 
@@ -190,7 +197,7 @@ describe("993e: a mail goes only from his click, after the hold", () => {
     const l = deps();
     setup(l.d);
     await draft("Reply all", "Yes, works for me.");
-    await click(btn("Send to Priya S. and 1 more"));
+    await click(btn("Send to Priya S. <priya@example.com> and 1 more"));
     await click(holdRow()!.querySelector("button"));
     await settle(HOLD + 200);
     expect(l.ran).toEqual([]);
@@ -198,12 +205,12 @@ describe("993e: a mail goes only from his click, after the hold", () => {
     expect(card()!.querySelector(".rc-undone")?.textContent).toContain("Not sent");
     expect(card()!.querySelector<HTMLTextAreaElement>(".rc-body")!.value).toBe("Yes, works for me.");
     expect(draftOf(KEY)?.body).toBe("Yes, works for me.");
-    expect(toasts[0].settled).toEqual(["Not sent to Priya S. and 1 more: undone. Your words are kept in the card."]);
+    expect(toasts[0].settled).toEqual(["Not sent to Priya S. <priya@example.com> and 1 more: undone. Your words are kept in the card."]);
     // He can send it after all: a fresh hold, then the one call.
-    await click(btn("Send to Priya S. and 1 more"));
+    await click(btn("Send to Priya S. <priya@example.com> and 1 more"));
     await settle(HOLD + 400);
     // Every real recipient, his own address left out.
-    expect(l.ran.map((x) => x.act)).toEqual([{ type: "send", mode: "replyAll", to: "Priya S. and 1 more", body: "Yes, works for me.", recipients: { to: ["priya@example.com"], cc: ["lin@example.edu"] }, about: "Re: Speaker confirmation" }]);
+    expect(l.ran.map((x) => x.act)).toEqual([{ type: "send", mode: "replyAll", to: "Priya S. <priya@example.com> and 1 more", body: "Yes, works for me.", recipients: { to: ["priya@example.com"], cc: ["lin@example.edu"] }, about: "Re: Speaker confirmation" }]);
   });
 
   it("Undo on the toast, and Esc in the card, stop it too", async () => {
@@ -234,7 +241,7 @@ describe("993e: a mail goes only from his click, after the hold", () => {
     expect(card()).toBeNull();
     expect(toasts[0].undo).toBeTypeOf("function");
     await click(link());
-    expect(holdRow()?.textContent).toContain("Sending to Priya S. in");
+    expect(holdRow()?.textContent).toContain("Sending to Priya S. <priya@example.com> in");
     // No new mail can start while one is held.
     expect(btn("Reply")?.disabled).toBe(false);
     await click(btn("Reply"));
@@ -285,7 +292,7 @@ describe("993e: a mail goes only from his click, after the hold", () => {
     expect(card()!.querySelector("[role=alert]")?.textContent).toContain("rate limited");
     expect(draftOf(KEY)?.body).toBe("Try me.");
     expect(link().classList.contains("ref-done")).toBe(false);
-    expect(toasts[0].text).toBe("Not sent to Priya S.: the connector said: rate limited");
+    expect(toasts[0].text).toBe("Not sent to Priya S. <priya@example.com>: the connector said: rate limited");
   });
 
   it("with mail send off, Send to … stays disabled and nothing is held or called", async () => {
@@ -367,7 +374,7 @@ describe("993e review fixes", () => {
     expect(l.ran.length).toBe(1);
     expect(card()!.querySelector(".rc-maybe")?.textContent).toContain("It may have gone. Check Sent in Gmail");
     expect(card()!.textContent).not.toContain("Not sent");
-    expect(toasts[0].text).toMatch(/^To Priya S\.: It may have gone/);
+    expect(toasts[0].text).toMatch(/^To Priya S\. <priya@example\.com>: It may have gone/);
     expect(btn("Send to Priya S.")?.disabled).toBe(true);
     await click(btn("Send to Priya S."));
     await settle(HOLD + 200);
@@ -411,7 +418,7 @@ describe("993e review fixes", () => {
     // In the hold nothing runs yet.
     expect(Object.values(refRuns)).toEqual([]);
     await settle(HOLD + 100);
-    expect(Object.values(refRuns).map((r) => r.doing)).toEqual(["Sending mail to Priya S."]);
+    expect(Object.values(refRuns).map((r) => r.doing)).toEqual(["Sending mail to Priya S. <priya@example.com>"]);
     finish();
     await settle(400);
     expect(Object.values(refRuns)).toEqual([]);
@@ -434,5 +441,106 @@ describe("993e review fixes", () => {
     expect(undone).toBe(1);
     ht.settle(id, "Sent to priya@example.com");
     expect(rows[0].xUndoes).toBeUndefined();
+  });
+});
+
+describe("993e re-review fixes", () => {
+  it("N3: the Send button and the hold toast name the address beside the display name", async () => {
+    const l = deps();
+    setup(l.d);
+    await draft("Reply", "Hi.");
+    expect(btn("Send to")?.textContent).toContain("Send to Priya S. <priya@example.com>");
+    await click(btn("Send to"));
+    expect(toasts[0].text).toMatch(/^Sending to Priya S\. <priya@example\.com> in \d s$/);
+    await settle(HOLD + 300);
+    expect(l.ran.length).toBe(1);
+    // Reply all: the first person with their address, then how many more.
+    expect(sendToWords(HEADS, mailRecipients(HEADS, "replyAll", "me@school.edu"))).toBe("Priya S. <priya@example.com> and 1 more");
+    // A name made to look like someone else's address still shows the real one beside it.
+    const fake: MailHeads = { ...HEADS, from: "eve@evil.io", from_name: "boss@corp.com", names: {} };
+    expect(sendToWords(fake, mailRecipients(fake, "reply", "me@school.edu"))).toBe("boss@corp.com <eve@evil.io>");
+  });
+
+  it("N2: a mail that may have gone keeps Send locked with the warning across a reload or restart, until he checked", async () => {
+    const l = deps(() => ({ outcome: "unknown", text: "It may have gone. Check Sent in Gmail before sending again. (nothing came back)" }));
+    setup(l.d);
+    await draft("Reply", "Maybe twice?");
+    await click(btn("Send to"));
+    await settle(HOLD + 400);
+    expect(l.ran.length).toBe(1);
+    // Kept beside the draft, in storage.
+    expect(readMaybe(localStorage.getItem(REF_MAYBE_KEY))[KEY]).toContain("It may have gone");
+    expect(readDrafts(localStorage.getItem(REF_DRAFTS_KEY))[KEY]?.body).toBe("Maybe twice?");
+    // A restart: the window is gone, and what comes back is only what storage held.
+    void unmount(host!);
+    host = null;
+    document.body.innerHTML = "";
+    refMaybe.by = {};
+    refDrafts.by = {};
+    refMaybe.by = readMaybe(localStorage.getItem(REF_MAYBE_KEY));
+    refDrafts.by = readDrafts(localStorage.getItem(REF_DRAFTS_KEY));
+    setup(l.d);
+    await click(link());
+    expect(card()!.querySelector(".rc-maybe")?.textContent).toContain("It may have gone");
+    await click(btn("Open draft"));
+    await settle(5);
+    expect(btn("Send to")?.disabled).toBe(true);
+    await click(btn("Send to"));
+    await settle(HOLD + 200);
+    expect(l.ran.length).toBe(1);
+    // Only his "I checked: not sent" unlocks it, and that is kept too.
+    await click(btn("I checked: not sent"));
+    expect(card()!.querySelector(".rc-maybe")).toBeNull();
+    expect(readMaybe(localStorage.getItem(REF_MAYBE_KEY))[KEY]).toBeUndefined();
+    expect(btn("Send to")?.disabled).toBe(false);
+  });
+
+  it("T1: App.svelte's real X on the hold toast is the Undo — no send; after the hold it is a plain close", async () => {
+    // App.svelte draws every toast's X as ToastX.
+    expect(appSrc).toMatch(/\{#each app\.toasts as t \(t\.id\)\}[\s\S]*?<ToastX \{t\} \/>[\s\S]*?\{\/each\}/);
+    app.toasts.splice(0);
+    const l = deps(() => ({ outcome: "done", text: "Sent to priya@example.com" }));
+    page = document.createElement("div");
+    page.innerHTML = `<div class="markdown">${renderReply(`Mail: ${EMAIL}.`)}</div>`;
+    document.body.appendChild(page);
+    host = mount(RefCardHost, { target: document.body, props: { reach: () => REACH, act: makeRefAct(l.d), holdToast: refHoldToast, holdMs: HOLD, readMail: async () => HEADS } });
+    flushSync();
+    await draft("Reply", "Hold on.");
+    await click(btn("Send to"));
+    const row = app.toasts.find((t) => t.text.startsWith("Sending to"))!;
+    expect(row.xUndoes).toBe(true);
+    const xs = document.createElement("div");
+    document.body.appendChild(xs);
+    const x = mount(ToastX, { target: xs, props: { t: row } });
+    flushSync();
+    const xb = xs.querySelector<HTMLButtonElement>("button.toast-x")!;
+    expect(xb.getAttribute("aria-label")).toBe("Undo: nothing is sent");
+    await click(xb);
+    await settle(HOLD + 300);
+    expect(l.ran).toEqual([]);
+    expect(app.toasts.some((t) => t.text.startsWith("Not sent to") && t.text.includes("undone"))).toBe(true);
+    void unmount(x);
+    xs.innerHTML = "";
+
+    // A press on the toast is outside the card, so the card closed (as in the app); his words are kept.
+    expect(draftOf(KEY)?.body).toBe("Hold on.");
+    // Sent this time: once the hold is over, the X only closes the toast; it runs nothing.
+    await click(link());
+    if (!btn("Send to")) await click(btn("Open draft"));
+    await click(btn("Send to"));
+    await settle(HOLD + 300);
+    expect(l.ran.length).toBe(1);
+    const done = app.toasts.find((t) => t.text.startsWith("Sent to priya@example.com"))!;
+    expect(done.xUndoes).toBeFalsy();
+    const x2 = mount(ToastX, { target: xs, props: { t: done } });
+    flushSync();
+    const xb2 = xs.querySelector<HTMLButtonElement>("button.toast-x")!;
+    expect(xb2.getAttribute("aria-label")).toBe("Dismiss");
+    await click(xb2);
+    expect(app.toasts.includes(done)).toBe(false);
+    await settle(HOLD + 200);
+    expect(l.ran.length).toBe(1);
+    void unmount(x2);
+    app.toasts.splice(0);
   });
 });

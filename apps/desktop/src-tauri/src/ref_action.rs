@@ -119,18 +119,9 @@ pub(crate) async fn ref_act(
 ) -> Result<Receipt, String> {
     let call = ref_action::call_for(&item, &act)?;
     // A mail on its way is written down first: a quit mid-call leaves this
-    // file, and the next launch says it may have gone (993e review, 7).
-    let journal = journal_dir().map(|d| {
-        d.join(format!(
-            "{}-{}.json",
-            std::process::id(),
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ))
-    });
-    if call.sends
-        && let Some(path) = &journal
-    {
-        let _ = std::fs::create_dir_all(path.parent().unwrap_or(path));
+    // entry, and the next launch says it may have gone (993e review, 7). It
+    // is this send's own: only its end below removes it (re-review, N5).
+    let journal = if call.sends {
         let line = ref_action::receipt(
             &act,
             &[Seen::Result {
@@ -140,12 +131,12 @@ pub(crate) async fn ref_act(
             true,
         )
         .text;
-        let _ = std::fs::write(
-            path,
-            serde_json::json!({ "what": line, "item": item.name, "at": chrono::Utc::now() })
-                .to_string(),
-        );
-    }
+        journal_dir().and_then(|d| {
+            ref_action::journal_begin(&d, launch(), &line, &item.name, chrono::Utc::now()).ok()
+        })
+    } else {
+        None
+    };
     let out = run_call(&power, &item, &call, binary, safe_mode).await;
     let done = match out {
         Err(e) => Err(e),
@@ -164,7 +155,7 @@ pub(crate) async fn ref_act(
         }
     };
     if let Some(path) = &journal {
-        let _ = std::fs::remove_file(path);
+        ref_action::journal_end(path);
     }
     done
 }
@@ -209,29 +200,26 @@ fn journal_dir() -> Option<std::path::PathBuf> {
     project::config_dir().map(|c| c.join("ref-actions").join("going"))
 }
 
+/// This run of the app, as the journal names it: the pid and when the
+/// first entry was asked for (a later run with a reused pid differs).
+fn launch() -> &'static str {
+    static LAUNCH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    LAUNCH.get_or_init(|| {
+        format!(
+            "{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        )
+    })
+}
+
 /// The mails that were on their way when Nightloom last quit or died
 /// (their journal entries outlived the call): read once and cleared, for
-/// the window to say they may have gone (993e review, finding 7).
+/// the window to say they may have gone (993e review, finding 7). This
+/// run's own entries stay: their sends are still going (re-review, N5).
 #[tauri::command]
 pub(crate) fn ref_unfinished() -> Vec<String> {
-    let Some(dir) = journal_dir() else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-        let path = e.path();
-        if let Ok(text) = std::fs::read_to_string(&path)
-            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
-        {
-            let what = v["what"].as_str().unwrap_or("A mail");
-            let item = v["item"].as_str().unwrap_or("");
-            out.push(if item.is_empty() {
-                what.to_string()
-            } else {
-                format!("{what} · {item}")
-            });
-        }
-        let _ = std::fs::remove_file(&path);
-    }
-    out
+    journal_dir()
+        .map(|d| ref_action::journal_take(&d, launch()))
+        .unwrap_or_default()
 }

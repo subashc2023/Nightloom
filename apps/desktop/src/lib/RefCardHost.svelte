@@ -28,6 +28,7 @@
   import { MAIL_HOLD_MS, MailUndone, isMaybeSent, secondsLeft, startHold, type HoldToast } from "./mailHold";
   import type { MailHeads } from "./refCard";
   import { refRunStart } from "./refRuns.svelte";
+  import { clearMaybeSent, markMaybeSent, refMaybe } from "./refDrafts.svelte";
 
   let {
     reach,
@@ -75,8 +76,9 @@
   const holds = $state<Record<string, { until: number; to: string; undo: () => void }>>({});
   // A mail past its hold, by item, until the connector answered: no second one meanwhile.
   const going = new Set<string>();
-  // A mail let through with no success back, by item: Send stays off until he says he checked (review, 4).
-  const maybe = $state<Record<string, string>>({});
+  // A mail let through with no success back, by item: Send stays off until he says he checked (review, 4). Kept
+  // beside the draft in storage, so a reload or restart keeps it (re-review, N2).
+  const maybe = $derived(refMaybe.by);
   // Each email's headers, read once a session (a failed read is tried again on the next open).
   const headsRead = new Map<string, Promise<MailHeads>>();
   function headsOf(ref: Ref): Promise<MailHeads> {
@@ -157,7 +159,7 @@
     } catch (e) {
       const why = String(e instanceof Error ? e.message : e);
       if (isMaybeSent(e)) {
-        maybe[k] = why;
+        markMaybeSent(k, why);
         if (tid !== undefined) holdToast?.settle(tid, `To ${who}: ${why}`);
       } else if (tid !== undefined) holdToast?.settle(tid, `Not sent to ${who}: ${why}`);
       throw e;
@@ -285,7 +287,7 @@
       readHeads={readMail ? ((r) => () => headsOf(r))(open.ref) : undefined}
       me={known?.accounts.find((x) => x.connector === open?.ref.src)?.address ?? null}
       maybeSent={maybe[refKey(open.ref)] ?? null}
-      onchecked={((k) => () => delete maybe[k])(refKey(open.ref))}
+      onchecked={((k) => () => clearMaybeSent(k))(refKey(open.ref))}
     />
   {/key}
 {/if}

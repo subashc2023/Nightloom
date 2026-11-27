@@ -260,11 +260,12 @@ export function personWords(h: MailHeads, addr: string): string {
 export function personShort(h: MailHeads, addr: string): string {
   return h.names[low(addr)] ?? (low(addr) === low(h.from) ? h.from_name : undefined) ?? addr;
 }
-/** The Send button's "to …": the first person, and how many more. */
+/** The Send button's "to …" (and the hold toast's): the first person with their address beside the name — a
+ *  display name is the sender's to set, so it is never shown alone (993e re-review, N3) — and how many more. */
 export function sendToWords(h: MailHeads, r: { to: string[]; cc: string[] }): string {
   const all = [...r.to, ...r.cc];
   if (all.length === 0) return "";
-  return all.length === 1 ? personShort(h, all[0]) : `${personShort(h, all[0])} and ${all.length - 1} more`;
+  return all.length === 1 ? personWords(h, all[0]) : `${personWords(h, all[0])} and ${all.length - 1} more`;
 }
 
 /** Who a mail goes to, as the Send button names them: the sender for a reply, his typed recipient for a forward.
