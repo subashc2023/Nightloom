@@ -194,6 +194,7 @@ import { loadNoteDrafts, noteDraftsWriter, type DraftBase } from "./noteDraftSto
 import { saveDelay } from "./drafts.svelte";
 import { restoreAsideNotes, takeAsideNote } from "./asideNotes.svelte";
 import { resolveAsideApproval } from "./asideAsk.svelte";
+import { loadCentreMode, loadNeedsSeen, type CentreMode } from "./oneButton";
 export { TOAST_MS, ACTION_TOAST_MS, IMPORTANT_TOAST_MS, addToast, dismissToast, runToastAction, holdToast, releaseToast, copyToast, progressToast, updateToast, settleToast };
 export { rewindTo, setAsideRewound, keepRewound, restoreRewound, keepRewindFiles, undoRestore };
 export { menuInterceptors, runMenuCommand, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits };
@@ -825,6 +826,9 @@ export const app = $state({
     seen: loadCentreSeen(),
     /** Item 969: the digest days he has open in the panel (kept while the app runs, across both bells). */
     openDays: [] as string[],
+    /** Item 1026: the one button's mode he last used, and the Needs-you number when he last looked at it. */
+    mode: loadCentreMode() as CentreMode,
+    needsSeen: loadNeedsSeen(),
     dismissed: loadDismissed(),
     daily: loadDailyPrefs() as DailyPrefs,
     /** ms since the epoch, or null when no daily pass has run. */

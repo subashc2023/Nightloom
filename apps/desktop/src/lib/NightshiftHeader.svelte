@@ -15,7 +15,6 @@
   import { blockerCounts } from "./needsYou";
   import { clock12, spanWords, tally } from "./nightshiftFace";
   import { relativeTime } from "./time";
-  import NotificationCentre from "./NotificationCentre.svelte";
 
   const row = $derived(app.nightshift.rows.find((r) => r.id === app.nightshift.selected) ?? null);
   const info = $derived(row?.nightshift ?? null);
@@ -105,7 +104,7 @@
     {/if}
     <span class="spacer"></span>
     <!-- The bell (nightshift backlog 069): this page draws no top bar. -->
-    <NotificationCentre />
+    <!-- Item 1026: the bell is the tab strip's one button now (NeedsYouBadge), over this page too. -->
     {#if info && heldBlockers > 0}
       <button type="button" class="ns-btn wait" use:tip={bc.decided > 0 ? `${bc.decided} more went ahead on their default\nIn Blockers, to say if wrong` : ""} onclick={() => go("blockers")}>
         <span class="k">{heldBlockers}</span> blocker{heldBlockers === 1 ? "" : "s"} wait{heldBlockers === 1 ? "s" : ""} on you

@@ -9,7 +9,6 @@
   import { tip } from "./tip";
   import ZoomChip from "./ZoomChip.svelte";
   import { displayName } from "./modelSeen";
-  import NotificationCentre from "./NotificationCentre.svelte";
   import ForYouButton from "./ForYouButton.svelte";
   import { makeMainChat } from "./versions.svelte";
   import ThreadChip from "./ThreadChip.svelte";
@@ -221,7 +220,7 @@
          him, a dot for new ones. -->
     {#if T.bell}
       <ForYouButton />
-      <NotificationCentre />
+      <!-- Item 1026: the bell joined the Needs-you pill as one button on the tab strip (NeedsYouBadge). -->
     {/if}
   </div>
 

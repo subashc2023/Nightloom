@@ -32,12 +32,60 @@
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import CliUpdateActions from "./CliUpdateActions.svelte";
   import { portal, anchorBelow } from "./portal";
+  // Item 1026 (his pick, B): the bell and the Needs-you pill are one button; the card has two modes.
+  import { needs, needsNow, replyTo, reviewProposalRow, setDraft } from "./needsBoard.svelte";
+  import { badgeWords, groupNeeds, type NeedRow } from "./needsYou";
+  import { withNote } from "./askQuestions";
+  import { keyPicks } from "./cardKeys";
+  import { openRun } from "./state/running.svelte";
+  import { home } from "./home.svelte";
+  import { faceOf, openingMode, saveCentreMode, saveNeedsSeen, type CentreMode } from "./oneButton";
 
   // Item 969: the bell is a daily digest — no number, a dot while a row is new; proposals and blockers are
   // counted in Needs you (item 968), so the bell lists neither.
   const bell = $derived(bellList(app.centre.notices, app.centre.seen, new Date()));
   /** What waits on him, left to Needs you: one quiet line at the panel's foot. Item 995: the pill's one number. */
   const asks = $derived(homeNeedsNow().waiting);
+
+  // Item 1026: the one face — the amber number whenever anything needs him, else the bell (its dot while new).
+  const rows = $derived(needsNow());
+  const badge = $derived(badgeWords(rows, home.cards.length));
+  const face = $derived(faceOf(badge, bell.fresh));
+  /** Needs you now's rows: what waits on him, then what is ready for review. */
+  const needGroups = $derived(groupNeeds(rows).filter((g) => (g.state === "waiting" || g.state === "review") && g.rows.length > 0));
+  const faceTip = $derived(
+    face.kind === "needs"
+      ? ["Needs you — what waits on you, in every project", ...rows.filter((r) => r.state === "waiting").slice(0, 8).map((r) => `· ${r.tag} · ${r.title}`)].join("\n")
+      : bell.fresh
+        ? "Something new happened\nDreams, memory, pages, releases"
+        : face.review
+          ? "Ready for your review\nNothing waits on you"
+          : "What happened lately\nNothing new",
+  );
+  function setMode(m: CentreMode): void {
+    app.centre.mode = m;
+    saveCentreMode(m);
+  }
+  // Looking at Needs you now marks the number seen, so it opens on his last mode until the number grows.
+  $effect(() => {
+    if (!app.centre.open || app.centre.mode !== "needs") return;
+    const n = badge?.waiting ? badge.n : 0;
+    if (n !== app.centre.needsSeen) {
+      app.centre.needsSeen = n;
+      saveNeedsSeen(n);
+    }
+  });
+  function answer(row: NeedRow, label: string): void {
+    void replyTo(row, withNote(label, needs.drafts[row.id]), []).then((ok) => {
+      if (ok) setDraft(row.id, "");
+    });
+  }
+  async function openRow(row: NeedRow): Promise<void> {
+    app.centre.open = false;
+    if (row.chat) await openRun({ session: row.chat, project: row.project, onScreen: false });
+    else if (row.kind === "proposal") await reviewProposalRow(row);
+  }
+  const when = (at: number | null) => (at ? relativeTime(new Date(at).toISOString()) : "");
 
   /** The dream notice whose diff is open, and the diff itself. */
   let shown = $state<string | null>(null);
@@ -79,7 +127,13 @@
 
   function toggle() {
     app.centre.open = !app.centre.open;
-    if (app.centre.open) void refreshCentre();
+    if (!app.centre.open) return;
+    // The strip's other cards give way, as the pill's click did (753).
+    app.showRail = false;
+    app.showContext = false;
+    app.showTasks = false;
+    setMode(openingMode(app.centre.mode, badge?.waiting ? badge.n : 0, app.centre.needsSeen));
+    void refreshCentre();
   }
 
   // A click outside the panel or the bell closes it, the top bar's
@@ -260,17 +314,33 @@
     </div>
   {/snippet}
 
-  <button
-    class="ns-btn ghost small centre-bell"
-    class:on={bell.fresh}
-    bind:this={bellEl}
-    use:tip={bell.fresh ? "Something new happened\nDreams, memory, pages, releases" : "What happened lately\nNothing new"}
-    aria-label={bell.fresh ? "What happened — something new" : "What happened"}
-    aria-expanded={app.centre.open}
-    onclick={toggle}
-  >
-    🔔{#if bell.fresh}<span class="centre-dot" aria-hidden="true"></span>{/if}
-  </button>
+  <!-- Item 1026: one face. The number wins; else the bell, its dot while a digest row is new. -->
+  {#if face.kind === "needs" && badge}
+    <button
+      class="need-badge waiting"
+      class:open={app.centre.open}
+      bind:this={bellEl}
+      aria-label={`${badge.n} ${badge.word} — open the needs-you list`}
+      aria-expanded={app.centre.open}
+      use:tip={faceTip}
+      onclick={toggle}
+    >
+      {#if badge.n > 0}<span class="n">{badge.n}</span>{/if}<span class="word">{badge.word}</span>
+    </button>
+  {:else}
+    <button
+      class="ns-btn ghost small centre-bell"
+      class:on={bell.fresh}
+      class:open={app.centre.open}
+      bind:this={bellEl}
+      use:tip={faceTip}
+      aria-label={bell.fresh ? "What happened — something new" : face.kind === "bell" && face.review ? "Needs you and what happened — to review" : "Needs you and what happened"}
+      aria-expanded={app.centre.open}
+      onclick={toggle}
+    >
+      🔔{#if bell.fresh}<span class="centre-dot" aria-hidden="true"></span>{/if}{#if face.kind === "bell" && face.review}<span class="review">to review</span>{/if}
+    </button>
+  {/if}
 
   {#if app.centre.open}
     <div
@@ -281,12 +351,64 @@
       out:hudOut|global
       style="top: {panelPos.top}px; left: {panelPos.left}px; width: {panelPos.width}px"
     >
+      <div class="centre-modes" role="tablist" aria-label="Needs you and what happened">
+        <button class="mode" class:on={app.centre.mode === "needs"} role="tab" aria-selected={app.centre.mode === "needs"} onclick={() => setMode("needs")}
+          >Needs you now<span class="mode-n">{badge?.waiting ? badge.n : 0}</span></button
+        >
+        <button class="mode" class:on={app.centre.mode === "digest"} role="tab" aria-selected={app.centre.mode === "digest"} onclick={() => setMode("digest")}
+          >What happened{#if bell.fresh}<span class="centre-dot small" aria-hidden="true"></span><span class="mode-n">new</span>{/if}</button
+        >
+        <span class="spacer"></span>
+        <button class="ns-btn ghost small" use:tip={"Close"} aria-label="Close" onclick={() => (app.centre.open = false)}>×</button>
+      </div>
+
+      {#if app.centre.mode === "needs"}
+        <div class="centre-body needs-body" role="tabpanel" use:keyPicks={{ scope: ".ny-row", pick: ".answer" }}>
+          {#if needGroups.length === 0}
+            <p class="centre-empty">Nothing waits on you.</p>
+          {/if}
+          {#each needGroups as g (g.state)}
+            <div class="ny-group" data-state={g.state}><span class="ny-name">{g.label}</span><span class="ny-count">{g.rows.length}</span></div>
+            {#each g.rows as row (row.id)}
+              <div class="ny-row" class:asks={!!row.ask} data-state={g.state} tabindex="-1">
+                <span class="ny-tag">{row.tag}</span>
+                <div class="ny-main">
+                  <div class="ny-title">{row.title}</div>
+                  {#if row.detail}<div class="ny-detail">{plainLine(row.detail)}</div>{/if}
+                  {#if row.ask && row.ask.options.length}
+                    <div class="ny-answers">
+                      {#each row.ask.options as o, k (o)}
+                        <button class="answer" class:first={k === 0} disabled={!!needs.sending[row.id]} use:tip={"Send this answer"} onclick={() => answer(row, o)}>{o}</button>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+                <span class="ny-when">{when(row.at)}</span>
+                {#if row.chat || row.kind === "proposal"}
+                  <button class="ns-btn ghost small" onclick={() => void openRow(row)}>{row.chat ? "Open" : "Review"}</button>
+                {:else}
+                  <span></span>
+                {/if}
+              </div>
+            {/each}
+          {/each}
+          {#if home.cards.length > 0}
+            <button class="centre-else" onclick={openNeeds}
+              ><span>{home.cards.length === 1 ? "1 Start card from Home" : `${home.cards.length} Start cards from Home`}</span><span class="centre-else-go">in the full board →</span></button
+            >
+          {/if}
+        </div>
+        <div class="centre-foot">
+          <span class="centre-last">A reply in words, a file or a follow-up: the full board</span>
+          <span class="spacer"></span>
+          <button class="ns-btn small" use:tip={"Every project's waiting, review and working rows\nAnswer in place, with a reply box"} onclick={openNeeds}>Open the full board</button>
+        </div>
+      {:else}
       <div class="centre-head">
         <span class="centre-title">What happened</span>
         <span class="spacer"></span>
         {#if bell.fresh}<button class="ns-btn ghost small" use:tip={"Clears the dot\nEvery row stays until 7 days old"} onclick={() => markCentreSeen(bell.ids)}>Mark all seen</button>{/if}
         <button class="ns-btn ghost small" use:tip={"Re-read every source"} onclick={() => void refreshCentre()}>Refresh</button>
-        <button class="ns-btn ghost small" use:tip={"Close"} aria-label="Close" onclick={() => (app.centre.open = false)}>×</button>
       </div>
 
       <div class="centre-body">
@@ -316,8 +438,8 @@
           </section>
         {/each}
         {#if asks > 0}
-          <button class="centre-else" use:tip={"Everything that waits on you\nListed and answered in Needs you"} onclick={openNeeds}
-            ><span>{asks === 1 ? "1 thing needs you" : `${asks} things need you`}</span><span class="centre-else-go">in Needs you →</span></button
+          <button class="centre-else" use:tip={"Everything that waits on you\nAnswered in Needs you now"} onclick={() => setMode("needs")}
+            ><span>{asks === 1 ? "1 thing needs you" : `${asks} things need you`}</span><span class="centre-else-go">in Needs you now →</span></button
           >
         {/if}
       </div>
@@ -360,6 +482,7 @@
           {#if app.centre.lastDaily}· last ran {relativeTime(new Date(app.centre.lastDaily).toISOString())}{/if}
         </span>
       </div>
+      {/if}
     </div>
   {/if}
 </span>
@@ -665,6 +788,266 @@
     from {
       opacity: 0;
       transform: translateY(4px);
+    }
+  }
+
+  /* ---- Item 1026: the one button's face and its two modes ---- */
+  .need-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 9px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 120ms, box-shadow 120ms, transform 80ms ease-out;
+  }
+  .need-badge:hover,
+  .need-badge.open {
+    border-color: var(--accent-ink);
+  }
+  .need-badge:active {
+    transform: scale(0.97);
+  }
+  .need-badge:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .n {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+  .centre-bell.open {
+    background: var(--well);
+  }
+  .review {
+    margin-left: 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink2);
+  }
+  .centre-modes {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    padding: 8px 12px 0;
+    border-bottom: 1px solid var(--line2);
+    flex: none;
+  }
+  .centre-modes .spacer {
+    flex: 1;
+  }
+  .centre-modes > .ns-btn {
+    align-self: center;
+    margin-bottom: 4px;
+  }
+  .mode {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 29px;
+    margin-bottom: -1px;
+    padding: 0 12px;
+    border: 1px solid var(--line2);
+    border-bottom-color: var(--line2);
+    border-radius: 6px 6px 0 0;
+    background: var(--sheet);
+    color: var(--dim);
+    font: 500 12.5px var(--sans);
+    cursor: pointer;
+    transition: color 120ms, background 120ms;
+  }
+  .mode:hover {
+    color: var(--ink);
+  }
+  .mode.on {
+    z-index: 1;
+    color: var(--ink);
+    background: var(--raised);
+    border-bottom-color: var(--raised);
+  }
+  .mode:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .mode-n {
+    color: var(--ink2);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .ny-group {
+    display: flex;
+    gap: 8px;
+    padding: 10px 2px 5px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink2);
+  }
+  .ny-group[data-state="waiting"] {
+    color: var(--accent-ink);
+  }
+  .ny-count {
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .ny-row {
+    display: grid;
+    grid-template-columns: 5.5rem minmax(0, 1fr) auto auto;
+    gap: 10px;
+    align-items: start;
+    padding: 8px 6px;
+    border-top: 1px solid var(--line2);
+  }
+  .ny-row:focus {
+    outline: none;
+  }
+  .ny-tag {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink2);
+    padding-top: 2px;
+    overflow-wrap: anywhere;
+  }
+  .ny-row[data-state="waiting"] .ny-tag {
+    color: var(--accent-ink);
+  }
+  .ny-main {
+    min-width: 0;
+  }
+  .ny-title {
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .ny-detail {
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--ink2);
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .ny-when {
+    color: var(--dim);
+    font-size: 11.5px;
+    white-space: nowrap;
+    padding-top: 2px;
+  }
+  .ny-answers {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .answer {
+    font: inherit;
+    font-size: 12.5px;
+    padding: 3px 11px;
+    border-radius: 999px;
+    border: 1px solid var(--line2);
+    background: none;
+    color: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 120ms, box-shadow 120ms, transform 80ms ease-out;
+  }
+  .answer.first {
+    border-color: var(--accent-ink);
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+  }
+  .answer:hover:not(:disabled) {
+    border-color: var(--accent-ink);
+  }
+  .answer:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+  .answer:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  /* Jarvis: the switch is Home's tabs (amber top edge on the open one), the group heads wear Needs you's
+     brackets, a waiting row its amber lead. Classic keeps the plain rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .mode {
+    border-color: color-mix(in srgb, var(--line2) 80%, transparent);
+    border-bottom-color: var(--line2);
+    border-radius: 7px 7px 0 0;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--raised) 70%, var(--sheet)), var(--sheet));
+    font: 500 10.5px var(--mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .mode.on {
+    color: var(--accent-ink);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 16%, var(--raised)), var(--raised) 92%);
+    border-color: color-mix(in srgb, var(--accent) 50%, var(--line2));
+    border-bottom-color: var(--raised);
+    box-shadow: 0 -4px 14px color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .mode.on::before {
+    content: "";
+    position: absolute;
+    left: -1px;
+    right: -1px;
+    top: -1px;
+    height: 2px;
+    border-radius: 7px 7px 0 0;
+    background: var(--accent);
+    box-shadow: var(--glow-accent, none);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .mode-n {
+    letter-spacing: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ny-group {
+    letter-spacing: 0.16em;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ny-name::before {
+    content: "[ ";
+    color: var(--bracket, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ny-count::after {
+    content: " ]";
+    color: var(--bracket, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ny-row[data-state="waiting"] {
+    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ny-row.asks {
+    box-shadow: inset 2px 0 0 var(--accent);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .answer:hover:not(:disabled) {
+    box-shadow: var(--glow-accent, none);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .ny-row {
+      animation: ny-in 0.5s cubic-bezier(0.3, 0.6, 0.3, 1) both;
+    }
+  }
+  @keyframes ny-in {
+    0% {
+      clip-path: inset(0 0 100% 0);
+    }
+    100% {
+      clip-path: inset(0 0 0 0);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .need-badge:active,
+    .answer:active:not(:disabled) {
+      transform: none;
     }
   }
 </style>
