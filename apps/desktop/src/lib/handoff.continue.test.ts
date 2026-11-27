@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { readDraft } from "./drafts.svelte";
 import {
+  HISTORY_MARK,
   READ_ORDER,
   beginWrapUp,
   clearDefaultReadOrder,
@@ -14,7 +15,7 @@ import {
   setDefaultReadOrder,
   setReadOrder,
 } from "./handoff.svelte";
-import { app, continueChat } from "./state.svelte";
+import { app, continueChat, historyFrom } from "./state.svelte";
 import type { SessionEvent } from "./types";
 
 /**
@@ -85,6 +86,7 @@ describe("the automated hand-off against a scripted engine", () => {
     expect(vi.mocked(api.continueSession)).toHaveBeenCalledTimes(1);
     expect(app.activeSessionId).toBe("chat-next");
     const box = readDraft("chat-next").text;
+    // Item 1025 review (MEDIUM 1): a chat the sidebar does not list gets no history pointer.
     expect(box).toBe("Changed since: the parser test is red. First fix src/parse.ts.");
     // Nothing sent: the new chat's log is what the backend returned.
     expect(app.events).toEqual([]);
@@ -117,5 +119,42 @@ describe("the automated hand-off against a scripted engine", () => {
     runScript("chat-blank", REPLY);
     await continueChat();
     expect(readDraft("chat-next").text).toBe("Changed since: the parser test is red. First fix src/parse.ts.");
+  });
+
+  it("item 1025: names the previous chat's title and log when the sidebar lists it", async () => {
+    runScript("chat-listed", REPLY);
+    app.sessions = [
+      { id: "chat-listed", path: "/tmp/sessions/chat-listed.jsonl", modified: "2026-11-26T22:00:00Z", user_turns: 3, first_user: "go", title: "Parser work" },
+    ];
+    await continueChat();
+    const box = readDraft("chat-next").text;
+    expect(box.startsWith("Changed since: the parser test is red. First fix src/parse.ts.\n\n" + HISTORY_MARK)).toBe(true);
+    expect(box).toContain('search_chats with scope "chain"');
+    expect(box).toContain("“Parser work”, chat chat-listed, 2026-11-26");
+    expect(box).toContain("/tmp/sessions/chat-listed.jsonl");
+    app.sessions = [];
+  });
+
+  it("1025 review (MEDIUM 1): historyFrom has nothing for an unlisted, incognito or log-less chat", () => {
+    app.sessions = [
+      { id: "listed", path: "/tmp/l.jsonl", modified: "2026-11-26T22:00:00Z", user_turns: 1, first_user: "go", title: "L" },
+      { id: "incog", path: "/tmp/i.jsonl", modified: "2026-11-26T22:00:00Z", user_turns: 1, first_user: "go", title: "I", mode: "incognito" },
+      { id: "nolog", path: "", modified: "2026-11-26T22:00:00Z", user_turns: 1, first_user: "go", title: "N" },
+    ];
+    expect(historyFrom("listed")?.path).toBe("/tmp/l.jsonl");
+    expect(historyFrom("unlisted")).toBeNull();
+    expect(historyFrom("incog")).toBeNull();
+    expect(historyFrom("nolog")).toBeNull();
+    app.sessions = [];
+  });
+
+  it("1025 review: an incognito chat, though listed, gets no pointer", async () => {
+    runScript("chat-incog", REPLY);
+    app.sessions = [
+      { id: "chat-incog", path: "/tmp/sessions/chat-incog.jsonl", modified: "2026-11-26T22:00:00Z", user_turns: 3, first_user: "go", title: "Secret", mode: "incognito" },
+    ];
+    await continueChat();
+    expect(readDraft("chat-next").text).not.toContain(HISTORY_MARK);
+    app.sessions = [];
   });
 });

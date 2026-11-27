@@ -144,6 +144,11 @@ export function homeFirst<T extends { source?: string | null }>(ps: readonly T[]
   return home.length === 0 ? [...ps] : [...home, ...ps.filter((p) => !isHome(p))];
 }
 
+/** The projects dropdown's rows (item 1016): Home is not one — its row sits above the dropdown. */
+export function dropdownProjects<T extends { source?: string | null }>(ps: readonly T[]): T[] {
+  return ps.filter((p) => !isHome(p));
+}
+
 /**
  * The ⌘P palette's number keys (item 763 finish): every other project keeps
  * the number it had before Home existed (his muscle memory) — their own

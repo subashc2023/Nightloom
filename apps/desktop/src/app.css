@@ -667,8 +667,10 @@ button {
   color: var(--dim);
   overflow-wrap: anywhere;
 }
-/* Item 1007: the hand-off also saves memory — said on the card, on its own line. */
-.markdown .handoff-go .handoff-memory-line {
+/* Item 1007: the hand-off also saves memory — said on the card, on its own line.
+   Item 1025: so is the pointer to this chat's full history. */
+.markdown .handoff-go .handoff-memory-line,
+.markdown .handoff-go .handoff-history-line {
   flex: 1 1 100%;
   min-width: 0;
   color: var(--dim);

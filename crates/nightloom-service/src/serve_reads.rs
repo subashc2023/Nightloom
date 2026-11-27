@@ -452,6 +452,7 @@ fn row(project: &Project, active: Option<&str>) -> ProjectRow {
         id: project.id.clone(),
         name: project.name.clone(),
         active: active == Some(project.id.as_str()),
+        home: project.source.as_deref() == Some(crate::home::SOURCE),
     }
 }
 

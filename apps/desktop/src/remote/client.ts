@@ -745,6 +745,8 @@ export interface ProjectRow {
   name: string;
   /** The project open on the Mac. */
   active: boolean;
+  /** Item 1016: this is Home (the drawer has its own button); absent from an older host. */
+  home?: boolean;
 }
 
 export class ApiError extends Error {

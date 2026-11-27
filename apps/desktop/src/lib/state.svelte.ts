@@ -22,6 +22,8 @@ import {
   readOrder,
   sentHere,
   threadFor,
+  withHistory,
+  type HistoryFrom,
 } from "./handoff.svelte";
 import {
   enqueueMessage,
@@ -1587,7 +1589,8 @@ export async function continueChat(): Promise<void> {
     // Item 520: the model's prompt alone when there is one (it names its own
     // reads); the read order only stands in for a missing prompt.
     const opened = await openContinuation(from, !!start);
-    const first = start ? firstMessage("", start) : firstMessage(readOrder(from), null);
+    // Item 1025: and where the chat just left can be read in full.
+    const first = withHistory(start ? firstMessage("", start) : firstMessage(readOrder(from), null), historyFrom(from));
     if (first) setDraftText(opened, first);
     // Item 757: logged for scoring, as put in the box.
     noteHandoffOpened({ route: "box", from, index: null, to: opened, sent: first ?? "" });
@@ -1605,6 +1608,25 @@ export async function continueChat(): Promise<void> {
     return;
   }
   void refreshSessions();
+}
+
+/** Item 1025: the chat being continued, as the history pointer names it —
+ *  its listing row. ~~else its id alone~~ — 1025 review (MEDIUM 1): a chat
+ *  with no row (ephemeral, an incognito one not listed yet, another
+ *  project's) or no log gets no pointer, never a dead or leaking one. */
+export function historyFrom(from: string | null): HistoryFrom | null {
+  if (!from) return null;
+  const s = app.sessions.find((x) => x.id === from);
+  if (!s || !s.path || s.mode === "incognito") return null;
+  return { id: s.id, title: s.title, first_user: s.first_user, path: s.path, modified: s.modified, mode: s.mode ?? null };
+}
+
+/** Item 1025: the same from the chat's own session (`api.chatHistoryMeta`),
+ *  for a chat the sidebar does not list — one continued off screen in
+ *  another project. Null with no log, or for an incognito or ephemeral chat. */
+export function historyFromMeta(m: api.ChatHistoryMeta | null | undefined): HistoryFrom | null {
+  if (!m || !m.path || m.mode === "incognito" || m.mode === "ephemeral") return null;
+  return { id: m.id, title: m.title, path: m.path, mode: m.mode };
 }
 
 /** The new linked chat and everything that goes with it: what `continueChat`
@@ -1682,7 +1704,8 @@ export async function continueWithPrompt(
   try {
     // ~~`firstMessage(readOrder(from), prompt)`~~ — item 520 (2026-11-09): two
     // prompts that repeated each other; the card's prompt is sent alone.
-    const text = firstMessage("", prompt);
+    // Item 1025: the pointer to this chat's full history goes under it.
+    const text = withHistory(firstMessage("", prompt), historyFrom(from));
     let opened: string;
     try {
       opened = await openContinuation(from, true);

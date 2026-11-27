@@ -109,6 +109,8 @@
     cap,
     codeProbePaths,
     codeProjectFor,
+    writesHandoffFile,
+    noteProjectFolder,
     noteCodeProject,
     neverHandsOff,
   } from "./handoff.svelte";
@@ -1130,6 +1132,8 @@
   const projectRoot = $derived(app.project?.root ?? null);
   function probeCodeProject(chat: string | null, root: string | null): void {
     if (!chat) return;
+    // 1025 review (MEDIUM 2): no folder, so the wrap-up writes no HANDOFF.md.
+    noteProjectFolder(chat, !!root);
     if (!root) {
       noteCodeProject(chat, false);
       return;
@@ -1150,8 +1154,9 @@
   });
   /** A thread chat in a code project also writes HANDOFF.md (blocker 1568). */
   const threadAndHandoff = $derived(threadHandoff && codeProjectFor(app.activeSessionId));
-  /** Item 1007: the project keeps a HANDOFF.md or a backlog/, so the built-in wrap-up writes one; elsewhere it names neither. */
-  const codeHere = $derived(codeProjectFor(app.activeSessionId));
+  /** Item 1007: the project keeps a HANDOFF.md or a backlog/, so the built-in wrap-up writes one; elsewhere it names neither.
+   *  ~~codeProjectFor~~ — item 1025: every chat's wrap-up writes one now but a thread chat in a project that keeps none. */
+  const codeHere = $derived(writesHandoffFile(app.activeSessionId));
   /** The wrap-up this chat would send: its own edit, else its thread's, else the Settings default. */
   const wrapUpText = $derived(message(app.activeSessionId));
   /** The read order this chat's continuation opens with (backlog 193). */
@@ -5051,7 +5056,7 @@
   {:else if !aside && handoff.noStartPromptChat !== null && handoff.noStartPromptChat === app.activeSessionId && !text}
     <!-- The continued chat whose box was left empty (backlog 086 pass 2):
          the note lives here, under the box, until he types. -->
-    <div class="hint">continued from the earlier chat — its wrap-up reply had no &lt;handoff&gt; prompt, so the box is empty; say which files to read first{#if codeHere} (HANDOFF.md is in the project){/if}</div>
+    <div class="hint">continued from the earlier chat — its wrap-up reply had no &lt;handoff&gt; prompt, so the box is empty; say which files to read first{#if codeProjectFor(app.activeSessionId)} (HANDOFF.md is in the project){:else if codeHere} (HANDOFF.md, if the wrap-up could write one){/if}</div>
   {/if}
 </div>
 

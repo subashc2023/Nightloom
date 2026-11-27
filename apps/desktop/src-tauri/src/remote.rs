@@ -621,6 +621,7 @@ impl Host for DesktopHost {
             .into_iter()
             .map(|p| ProjectRow {
                 active: open.as_deref() == Some(p.id.as_str()),
+                home: p.source.as_deref() == Some(nightloom_service::home::SOURCE),
                 id: p.id,
                 name: p.name,
             })

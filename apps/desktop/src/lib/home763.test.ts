@@ -13,6 +13,7 @@ import {
   handOffsOf,
   homeCount,
   homeFirst,
+  dropdownProjects,
   isHome,
   isScanMessage,
   kTokens,
@@ -266,5 +267,20 @@ describe("the run log on the hand-off divider (items 789, 791)", () => {
 
   it("draws nothing for a brief from before the run log", () => {
     expect(lastCarried("## Hand-off (in place)\n\n## His words\n- hi")).toBeNull();
+  });
+});
+
+describe("1016 — the projects dropdown has no Home row", () => {
+  it("dropdownProjects drops Home and keeps the rest in order", () => {
+    const ps = [{ id: "a" }, { id: "h", source: HOME_SOURCE }, { id: "b" }];
+    expect(dropdownProjects(ps).map((p) => p.id)).toEqual(["a", "b"]);
+    expect(dropdownProjects([{ id: "h", source: HOME_SOURCE }])).toEqual([]);
+  });
+  it("ProjectMenu lists through dropdownProjects, and both sidebars keep the Home row above it", async () => {
+    const menu = (await import("./ProjectMenu.svelte?raw")).default;
+    expect(menu).toContain("dropdownProjects(app.projects)");
+    expect(menu).not.toContain("homeFirst(app.projects)");
+    for (const f of [(await import("./Sidebar.svelte?raw")).default, (await import("./SidebarClassic.svelte?raw")).default])
+      expect(f).toContain("<HomeRow");
   });
 });

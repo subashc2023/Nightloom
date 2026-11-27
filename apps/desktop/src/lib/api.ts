@@ -670,6 +670,19 @@ export function playwrightForChat(chat: string, on?: boolean): Promise<{ install
   return invoke("playwright_for_chat", { chat, on });
 }
 
+/** Item 1025: a chat's log path, title and mode read from its own session —
+ *  held, or its log in `project`'s folder — for the next chat's history
+ *  pointer; null for a chat with no log. */
+export interface ChatHistoryMeta {
+  id: string;
+  path: string | null;
+  title: string | null;
+  mode: ChatMode;
+}
+export function chatHistoryMeta(chat: string, project: string | null): Promise<ChatHistoryMeta | null> {
+  return invoke<ChatHistoryMeta | null>("chat_history_meta", { chat, project });
+}
+
 export function listSessions(): Promise<SessionMeta[]> {
   return invoke<SessionMeta[]>("list_sessions").then((l) => (Array.isArray(l) ? l.map(shownFirst) : l));
 }

@@ -104,6 +104,7 @@ impl Host for FakeHost {
             id: self.project.clone(),
             name: "Lanternfish".into(),
             active: false,
+            home: false,
         }])
     }
     async fn transcript(
