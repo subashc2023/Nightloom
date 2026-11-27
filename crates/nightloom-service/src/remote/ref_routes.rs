@@ -5,8 +5,10 @@
 //! |---|---|
 //! | `GET /home/ref/reach` | the accounts Home reaches, as the last check left them (nothing is run) |
 //! | `POST /home/ref/read` | `{item}`: an email's own headers (the read-only `get_message`), for who a mail goes to |
-//! | `POST /home/ref/tap` | `{item, act}`: his press on the sheet's confirm → `{tap, hold_ms}` ([`crate::ref_gate`]) |
-//! | `POST /home/ref/act` | `{tap, item, act}`: the tap let go (for a mail, after its hold) → the receipt |
+//! | `POST /home/ref/key` | `{public}`: where this phone's key stands → `{state: allowed \| waiting \| none, id, code?}` |
+//! | `POST /home/ref/enroll` | `{public, name}`: the phone asks to be allowed; the Mac shows the ask and its code. Allows nothing |
+//! | `POST /home/ref/tap` | `{item, act, key}`: his press on the sheet's confirm, from an allowed phone → `{tap, challenge, hold_ms}` ([`crate::ref_gate`]) |
+//! | `POST /home/ref/act` | `{tap, item, act, sig}`: the tap let go (for a mail, after its hold), signed by that phone → the receipt |
 //! | `POST /home/ref/undo` | `{tap}`: his Undo; the tap goes |
 //! | `POST /home/ref/lock` | `{key, mark?}`: `{maybe, going, held}` (a `mark` is kept first) — the "may have gone" lock and whether a send is on its way |
 //! | `POST /home/ref/checked` | `{key}`: he checked Gmail's Sent; the lock goes |
@@ -16,6 +18,13 @@
 //! pinned argument, the same words — and the Mac then runs 993d/993e's
 //! path unchanged (one pass, the hook, the send guard). A host without the
 //! Mac's runner (the away server) refuses all but `reach` and `lock`.
+//!
+//! **The bearer alone taps nothing** (item 993g, blocker 2359): it is one
+//! secret shared by every phone and kept on the Mac, so a process on the
+//! Mac could hold it. `/tap` mints only for a phone he allowed, and `/act`
+//! runs only with that phone's signature over the tap and its challenge
+//! ([`crate::phone_keys`]). **No route here allows a phone**: `/enroll`
+//! asks, and the Allow is his click in the Mac's window.
 
 use std::sync::Arc;
 
@@ -35,6 +44,8 @@ pub(super) fn router() -> Router<Arc<Shared>> {
     Router::new()
         .route("/home/ref/reach", get(reach))
         .route("/home/ref/read", post(read))
+        .route("/home/ref/key", post(key))
+        .route("/home/ref/enroll", post(enroll))
         .route("/home/ref/tap", post(tap))
         .route("/home/ref/act", post(act))
         .route("/home/ref/undo", post(undo))
@@ -77,9 +88,71 @@ async fn read(State(shared): State<Arc<Shared>>, Json(b): Json<ReadBody>) -> Res
 }
 
 #[derive(Deserialize)]
+struct PhoneBody {
+    /// The phone's public key: the uncompressed P-256 point, base64url.
+    public: String,
+    /// What the phone calls itself, for the Mac's list.
+    #[serde(default)]
+    name: String,
+}
+
+/// The phones of this host, read (the first time, from the Keychain, off
+/// the async threads); or the refusal for a host that has none, or whose
+/// store could not be read: then nothing is allowed.
+async fn keys_of(shared: &Shared) -> Result<Arc<crate::phone_keys::Keys>, Box<Response>> {
+    let none = || Box::new(answer::<()>(Err(NOT_AVAILABLE.into())));
+    if !shared.host.ref_acts() {
+        return Err(none());
+    }
+    let keys = shared.host.phone_keys().ok_or_else(none)?;
+    let k = keys.clone();
+    match tokio::task::spawn_blocking(move || k.allowed().map(|_| ())).await {
+        Ok(Ok(())) => Ok(keys),
+        Ok(Err(e)) => Err(Box::new(no(e))),
+        Err(e) => Err(Box::new(no(e.to_string()))),
+    }
+}
+
+async fn key(State(shared): State<Arc<Shared>>, Json(b): Json<PhoneBody>) -> Response {
+    let keys = match keys_of(&shared).await {
+        Ok(k) => k,
+        Err(r) => return *r,
+    };
+    if let Err(e) = crate::phone_keys::key_id(&b.public) {
+        return bad(e);
+    }
+    answer(keys.standing(&b.public, chrono::Utc::now()))
+}
+
+/// The phone asks to be allowed. The ask waits on the Mac; nothing here,
+/// and no other route, allows it.
+async fn enroll(State(shared): State<Arc<Shared>>, Json(b): Json<PhoneBody>) -> Response {
+    let keys = match keys_of(&shared).await {
+        Ok(k) => k,
+        Err(r) => return *r,
+    };
+    if let Err(e) = crate::phone_keys::key_id(&b.public) {
+        return bad(e);
+    }
+    match keys.ask(&b.public, &b.name, chrono::Utc::now()) {
+        Ok((standing, new)) => {
+            if let Some(ask) = new {
+                shared.host.phone_key_asked(&ask);
+            }
+            Json(standing).into_response()
+        }
+        Err(e) => answer::<()>(Err(e)),
+    }
+}
+
+#[derive(Deserialize)]
 struct TapBody {
     item: Item,
     act: Act,
+    /// The id of this phone's key ([`crate::phone_keys::key_id`]). Without
+    /// an allowed one, no tap is minted.
+    #[serde(default)]
+    key: Option<String>,
 }
 
 /// Refused before anything is minted or run.
@@ -88,8 +161,16 @@ fn no(why: String) -> Response {
 }
 
 async fn tap(State(shared): State<Arc<Shared>>, Json(b): Json<TapBody>) -> Response {
-    if !shared.host.ref_acts() {
-        return answer::<()>(Err(NOT_AVAILABLE.into()));
+    let keys = match keys_of(&shared).await {
+        Ok(k) => k,
+        Err(r) => return *r,
+    };
+    let phone = b.key.unwrap_or_default();
+    match keys.is_allowed(&phone) {
+        Ok(true) => {}
+        Ok(false) => return no(crate::phone_keys::NOT_ALLOWED.into()),
+        // The Keychain could not be read: nothing is allowed.
+        Err(e) => return no(e),
     }
     let call = match ref_action::call_for(&b.item, &b.act) {
         Ok(c) => c,
@@ -104,7 +185,7 @@ async fn tap(State(shared): State<Arc<Shared>>, Json(b): Json<TapBody>) -> Respo
     {
         return no(format!("It may have gone already: {why}"));
     }
-    match ref_gate::with(|g| g.tap(&key, &call, chrono::Utc::now())) {
+    match ref_gate::with(|g| g.tap(&key, &call, &phone, chrono::Utc::now())) {
         Ok(t) => Json(t).into_response(),
         Err(e) => no(e),
     }
@@ -117,12 +198,17 @@ struct ActBody {
     tap: Option<String>,
     item: Item,
     act: Act,
+    /// The phone's signature over the tap and its challenge (base64url).
+    /// Without the allowed phone's own, nothing runs (993g).
+    #[serde(default)]
+    sig: Option<String>,
 }
 
 async fn act(State(shared): State<Arc<Shared>>, Json(b): Json<ActBody>) -> Response {
-    if !shared.host.ref_acts() {
-        return answer::<()>(Err(NOT_AVAILABLE.into()));
-    }
+    let keys = match keys_of(&shared).await {
+        Ok(k) => k,
+        Err(r) => return *r,
+    };
     let call = match ref_action::call_for(&b.item, &b.act) {
         Ok(c) => c,
         Err(e) => return bad(e),
@@ -131,7 +217,11 @@ async fn act(State(shared): State<Arc<Shared>>, Json(b): Json<ActBody>) -> Respo
     let Some(tap) = b.tap.filter(|t| !t.is_empty()) else {
         return no(ref_gate::NO_TAP.into());
     };
-    if let Err(e) = ref_gate::with(|g| g.redeem(&tap, &key, &call, chrono::Utc::now())) {
+    // The keys are read again here, so a phone he removed during a hold
+    // sends nothing.
+    let sig = b.sig.unwrap_or_default();
+    let signed = |phone: &str, message: &str| keys.verify(phone, message, &sig);
+    if let Err(e) = ref_gate::with(|g| g.redeem(&tap, &key, &call, chrono::Utc::now(), signed)) {
         return no(e);
     }
     let out = shared.host.ref_act(b.item, b.act).await;

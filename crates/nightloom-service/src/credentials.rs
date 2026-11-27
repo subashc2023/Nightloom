@@ -429,6 +429,39 @@ pub fn set_remote_token(token: &str) -> Result<(), CredentialError> {
 }
 
 // ---------------------------------------------------------------------------
+// The phones allowed to send from a card (nightshift item 993g)
+// ---------------------------------------------------------------------------
+
+/// The entry holding the public keys of the phones he allowed to send
+/// (`phone_keys.rs`): JSON, written only by the Mac window's Allow and
+/// Remove. In the Keychain, not a file, so a chat's shell cannot add one.
+const PHONE_KEYS_ENTRY: &str = "remote:phone-keys";
+
+/// Whether the allowed phones live in the Keychain here. Not under a dev
+/// home or the env token (item 1003: a dev build never reaches the
+/// installed app's Keychain), and never in this crate's tests.
+pub fn phone_keys_in_keychain() -> bool {
+    !cfg!(test) && matches!(current_remote_source(), RemoteTokenSource::Keychain)
+}
+
+/// The allowed phones as stored; `Ok(None)` when none were, `Err` when the
+/// Keychain could not say (locked): the caller then allows nothing.
+pub fn phone_keys() -> Result<Option<String>, CredentialError> {
+    if !phone_keys_in_keychain() {
+        return Err(CredentialError::DevHome);
+    }
+    store::try_get(PHONE_KEYS_ENTRY)
+}
+
+/// Store the allowed phones (the Mac window's Allow or Remove).
+pub fn set_phone_keys(json: &str) -> Result<(), CredentialError> {
+    if !phone_keys_in_keychain() {
+        return Err(CredentialError::DevHome);
+    }
+    store::set(PHONE_KEYS_ENTRY, json)
+}
+
+// ---------------------------------------------------------------------------
 // The Notion integration's token (nightshift backlog 319, 2026-10-06)
 // ---------------------------------------------------------------------------
 

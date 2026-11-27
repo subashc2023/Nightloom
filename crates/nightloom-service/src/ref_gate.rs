@@ -12,6 +12,14 @@
 //! window crate's one [`crate::ref_action::mint`] caller, the pass, the
 //! hook, the guard (blocker 2304).
 //!
+//! **The tap is signed by the phone** (item 993g, blocker 2359). The
+//! bearer both requests carry is shared and kept on the Mac, so it cannot
+//! say the press was his. A tap is minted only for a phone he allowed on
+//! the Mac ([`crate::phone_keys`]), with a fresh challenge; `/act` runs
+//! only with that phone's signature over the tap's id and the challenge.
+//! A tap is spent when redeemed, so a signature works once; a tap that
+//! expired takes its challenge with it.
+//!
 //! **One send per item across both screens.** One tap per item at a time;
 //! one send going per item; a tap minted before the other screen's send for
 //! that item finished is refused when redeemed; the Mac window's own send
@@ -57,6 +65,11 @@ pub fn is_mail(call: &Call) -> bool {
 struct Tap {
     key: String,
     fp: String,
+    /// The allowed phone this tap was minted for: only its signature
+    /// redeems it (993g).
+    phone: String,
+    /// What that phone signs, beside the tap's id; made here, never reused.
+    challenge: String,
     sends: bool,
     at: DateTime<Utc>,
     expires: DateTime<Utc>,
@@ -66,6 +79,9 @@ struct Tap {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Tapped {
     pub tap: String,
+    /// The Mac's challenge for this tap: the phone signs
+    /// [`crate::phone_keys::tap_message`] of the two (993g).
+    pub challenge: String,
     /// How long the phone holds a mail before it lets it go (0: not a mail).
     pub hold_ms: i64,
 }
@@ -88,8 +104,15 @@ impl Gate {
         self.taps.values().any(|t| t.key == key)
     }
 
-    /// His press on the phone's confirm: a one-time tap for exactly `call`.
-    pub fn tap(&mut self, key: &str, call: &Call, now: DateTime<Utc>) -> Result<Tapped, String> {
+    /// His press on the phone's confirm: a one-time tap for exactly `call`,
+    /// for the allowed phone `phone` (the caller checked it is allowed).
+    pub fn tap(
+        &mut self,
+        key: &str,
+        call: &Call,
+        phone: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Tapped, String> {
         self.sweep(now);
         if self.going.contains(key) {
             return Err("this is already on its way".into());
@@ -99,11 +122,18 @@ impl Gate {
         }
         let hold = if is_mail(call) { HOLD_MS } else { 0 };
         let id = uuid::Uuid::new_v4().simple().to_string();
+        let challenge = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
         self.taps.insert(
             id.clone(),
             Tap {
                 key: key.to_string(),
                 fp: fingerprint(call),
+                phone: phone.to_string(),
+                challenge: challenge.clone(),
                 sends: hold > 0,
                 at: now,
                 expires: now + Duration::milliseconds(hold + TAP_GRACE_MS),
@@ -111,18 +141,25 @@ impl Gate {
         );
         Ok(Tapped {
             tap: id,
+            challenge,
             hold_ms: hold,
         })
     }
 
     /// The tap let go: spent here, whatever comes of the call. `Ok` means
     /// the call may run now, and the item is marked going until [`end`].
+    ///
+    /// `signed(phone, message)` says whether the request carries the
+    /// allowed phone's signature over `message` (the tap's id and its
+    /// challenge, [`crate::phone_keys::tap_message`]); it is asked only for
+    /// a live tap for exactly this call, and a refusal leaves the tap his.
     pub fn redeem(
         &mut self,
         id: &str,
         key: &str,
         call: &Call,
         now: DateTime<Utc>,
+        signed: impl FnOnce(&str, &str) -> Result<(), String>,
     ) -> Result<(), String> {
         self.sweep(now);
         let Some(t) = self.taps.get(id).cloned() else {
@@ -134,6 +171,7 @@ impl Gate {
                 "This is not what you tapped, so nothing was sent. {NO_TAP}"
             ));
         }
+        signed(&t.phone, &crate::phone_keys::tap_message(id, &t.challenge))?;
         if t.sends && now < t.at + Duration::milliseconds(HOLD_MS - HOLD_SLACK_MS) {
             return Err("The hold had not ended, so nothing was sent.".into());
         }
@@ -271,6 +309,12 @@ mod tests {
         "2026-11-27T14:00:00Z".parse().unwrap()
     }
     const KEY: &str = "email:claude.ai Gmail 2117773e:m1";
+    /// The allowed phone the taps here are minted for.
+    const PHONE: &str = "phone-1";
+    /// A request that carries the phone's signature.
+    fn yes(_: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
 
     #[test]
     fn a_redeem_needs_his_tap_for_exactly_that_call_after_the_hold() {
@@ -278,25 +322,28 @@ mod tests {
         let call = call_for(&it, &reply("Yes, Thursday works.")).unwrap();
         let mut g = Gate::default();
         // No tap at all: nothing runs.
-        assert_eq!(g.redeem("made-up", KEY, &call, t0()).unwrap_err(), NO_TAP);
-        let t = g.tap(KEY, &call, t0()).unwrap();
+        assert_eq!(
+            g.redeem("made-up", KEY, &call, t0(), yes).unwrap_err(),
+            NO_TAP
+        );
+        let t = g.tap(KEY, &call, PHONE, t0()).unwrap();
         assert_eq!(t.hold_ms, HOLD_MS);
         // Another body under his tap: refused, the tap stays his.
         let other = call_for(&it, &reply("Yes, Friday works.")).unwrap();
         let s = t0() + Duration::seconds(6);
         assert!(
-            g.redeem(&t.tap, KEY, &other, s)
+            g.redeem(&t.tap, KEY, &other, s, yes)
                 .unwrap_err()
                 .contains("not what you tapped")
         );
         // Before the hold ended: refused.
         assert!(
-            g.redeem(&t.tap, KEY, &call, t0() + Duration::seconds(2))
+            g.redeem(&t.tap, KEY, &call, t0() + Duration::seconds(2), yes)
                 .is_err()
         );
         // After it: once.
-        g.redeem(&t.tap, KEY, &call, s).unwrap();
-        assert!(g.redeem(&t.tap, KEY, &call, s).is_err());
+        g.redeem(&t.tap, KEY, &call, s, yes).unwrap();
+        assert!(g.redeem(&t.tap, KEY, &call, s, yes).is_err());
         g.end(KEY, true, s);
     }
 
@@ -305,17 +352,17 @@ mod tests {
         let call = call_for(&item("m2"), &reply("ok")).unwrap();
         let key = "email:claude.ai Gmail 2117773e:m2";
         let mut g = Gate::default();
-        let t = g.tap(key, &call, t0()).unwrap();
+        let t = g.tap(key, &call, PHONE, t0()).unwrap();
         g.undo(&t.tap);
         assert_eq!(
-            g.redeem(&t.tap, key, &call, t0() + Duration::seconds(6))
+            g.redeem(&t.tap, key, &call, t0() + Duration::seconds(6), yes)
                 .unwrap_err(),
             NO_TAP
         );
         // A phone that comes back after the tap's grace finds it gone.
-        let t = g.tap(key, &call, t0()).unwrap();
+        let t = g.tap(key, &call, PHONE, t0()).unwrap();
         let late = t0() + Duration::milliseconds(HOLD_MS + TAP_GRACE_MS + 1);
-        assert_eq!(g.redeem(&t.tap, key, &call, late).unwrap_err(), NO_TAP);
+        assert_eq!(g.redeem(&t.tap, key, &call, late, yes).unwrap_err(), NO_TAP);
     }
 
     #[test]
@@ -323,9 +370,9 @@ mod tests {
         let call = call_for(&item("m3"), &reply("ok")).unwrap();
         let key = "email:claude.ai Gmail 2117773e:m3";
         let mut g = Gate::default();
-        let t = g.tap(key, &call, t0()).unwrap();
+        let t = g.tap(key, &call, PHONE, t0()).unwrap();
         // A second tap while the first is held: refused.
-        assert!(g.tap(key, &call, t0()).is_err());
+        assert!(g.tap(key, &call, PHONE, t0()).is_err());
         // The Mac's own send while the phone holds one: refused.
         assert!(g.begin_here(key, t0()).unwrap_err().contains("phone"));
         g.undo(&t.tap);
@@ -333,12 +380,12 @@ mod tests {
         // tap in real life: its own hold ran in the window).
         let mut g = Gate::default();
         g.begin_here(key, t0()).unwrap();
-        assert!(g.tap(key, &call, t0()).is_err(), "a send is going");
+        assert!(g.tap(key, &call, PHONE, t0()).is_err(), "a send is going");
         g.end(key, true, t0() + Duration::seconds(1));
-        let t = g.tap(key, &call, t0()).unwrap();
+        let t = g.tap(key, &call, PHONE, t0()).unwrap();
         // A tap minted before the other screen's send ended is refused.
         assert!(
-            g.redeem(&t.tap, key, &call, t0() + Duration::seconds(6))
+            g.redeem(&t.tap, key, &call, t0() + Duration::seconds(6), yes)
                 .is_err()
         );
     }
@@ -352,5 +399,52 @@ mod tests {
         maybe_clear(&dir, KEY);
         assert_eq!(maybe_of(&dir, KEY), None);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Item 993g: a redeem runs only with the signature of the phone the
+    /// tap was minted for, over that tap's id and its own challenge; the
+    /// tap is one-time, so the same signature never works twice, and an
+    /// expired tap's challenge is gone with it.
+    #[test]
+    fn a_redeem_needs_the_phones_signature_over_this_tap_and_its_challenge() {
+        let call = call_for(&item("m5"), &reply("ok")).unwrap();
+        let key = "email:claude.ai Gmail 2117773e:m5";
+        let mut g = Gate::default();
+        let t = g.tap(key, &call, PHONE, t0()).unwrap();
+        assert_eq!(t.challenge.len(), 64);
+        let s = t0() + Duration::seconds(6);
+        // No signature (the bearer alone): refused, and the tap is still his.
+        let no = |_: &str, _: &str| Err::<(), String>("not signed".into());
+        assert_eq!(
+            g.redeem(&t.tap, key, &call, s, no).unwrap_err(),
+            "not signed"
+        );
+        // The signature is asked for this phone, over this tap and challenge.
+        let mut asked = None;
+        g.redeem(&t.tap, key, &call, s, |phone, msg| {
+            asked = Some((phone.to_string(), msg.to_string()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            asked.unwrap(),
+            (
+                PHONE.to_string(),
+                crate::phone_keys::tap_message(&t.tap, &t.challenge)
+            )
+        );
+        // Replayed: the tap is spent, the signature is never even asked for.
+        let never = |_: &str, _: &str| -> Result<(), String> { panic!("a spent tap asks nothing") };
+        assert_eq!(g.redeem(&t.tap, key, &call, s, never).unwrap_err(), NO_TAP);
+        g.end(key, false, s);
+        // A new tap has a new challenge.
+        let t2 = g.tap(key, &call, PHONE, s).unwrap();
+        assert_ne!(t2.challenge, t.challenge);
+        // Stale: past the tap's life its challenge signs nothing.
+        let late = s + Duration::milliseconds(HOLD_MS + TAP_GRACE_MS + 1);
+        assert_eq!(
+            g.redeem(&t2.tap, key, &call, late, never).unwrap_err(),
+            NO_TAP
+        );
     }
 }

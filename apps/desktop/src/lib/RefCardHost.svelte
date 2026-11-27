@@ -52,6 +52,7 @@
     onaccounts,
     sheet = false,
     offline,
+    offlineAct,
     armSend,
     disarm,
     lockOf,
@@ -81,6 +82,8 @@
     sheet?: boolean;
     /** Why nothing can reach the Mac now (the phone offline, or reaching only the away server), else null. */
     offline?: () => string | null;
+    /** A way out of `offline`, when there is one (993g: the phone asks to be allowed to send). */
+    offlineAct?: () => { label: string; run: () => void } | null;
     /** The phone (993f): his Send's one-time tap from the Mac, for exactly this mail, at the start of its hold. */
     armSend?: (ref: Ref, a: Extract<RefAction, { type: "send" }>) => Promise<{ tap: string }>;
     /** The tap dropped (his Undo, or the hold stopped). */
@@ -371,6 +374,7 @@
       onchecked={((k) => () => (untold.delete(k), clearMaybeSent(k), checked?.(k)))(refKey(open.ref))}
       {sheet}
       offline={offline?.() ?? null}
+      offlineAct={offlineAct?.() ?? null}
     />
   {/key}
 {/if}

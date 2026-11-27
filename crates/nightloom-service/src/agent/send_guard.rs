@@ -115,7 +115,13 @@ pub const NO_NESTED_CLAUDE: &str = "Not run: starting Claude Code from the shell
 /// the listener's bearer lives (`find-generic-password`, `dump-keychain`).
 /// Blocker 2304: a model must not mint the phone's tap itself. A string
 /// match over the call's JSON, a tripwire like [`CLAUDE_IN_SHELL`].
-pub const REF_IN_SHELL: &str = "home/ref/|find-(generic|internet)-password|dump-keychain";
+///
+/// Item 993g: the wall is now the phone's signature (`phone_keys.rs`); this
+/// stays as the tripwire in front of it, and also refuses writing or
+/// deleting a Keychain item from the shell (`add-`/`delete-generic-password`),
+/// since the allowed phones' public keys are kept there.
+pub const REF_IN_SHELL: &str =
+    "home/ref/|(find|add|delete)-(generic|internet)-password|dump-keychain";
 
 /// What the model reads when the shell would reach the card routes or the Keychain.
 pub const NO_REF_ROUTE: &str = "Not run: the listener's card routes and the Keychain are refused from the shell here, because a call through them could send mail or answer invitations without his own click. Say what you would send and for whom; he can send it from the card.";
@@ -390,6 +396,9 @@ mod tests {
             "security find-generic-password -s nightloom -w",
             "security find-internet-password -s x",
             "security dump-keychain",
+            // 993g: the allowed phones live in the Keychain; a shell must not put one there.
+            "security add-generic-password -A -s nightloom -a remote:phone-keys -w x",
+            "security delete-generic-password -s nightloom -a remote:phone-keys",
         ] {
             assert_eq!(run(cmd).as_deref(), Some(NO_REF_ROUTE), "refused: {cmd}");
         }

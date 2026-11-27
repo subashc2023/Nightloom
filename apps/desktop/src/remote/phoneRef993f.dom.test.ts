@@ -14,6 +14,7 @@ import { Unreachable, type Client } from "./client";
 import type { HomeReach } from "../lib/home";
 import type { MailHeads } from "../lib/refCard";
 import type { RefActItem, RefActReceipt } from "../lib/api";
+import { NEEDS_HTTPS, newPair, phoneName, publicOf, signWith, tapMessage, type PhoneSigner } from "./phoneKey";
 
 const GMAIL = "claude.ai Gmail 2117773e";
 // The tag names Priya S.; the real message is from Client Co (the 993e review's case).
@@ -29,17 +30,31 @@ const REACH: HomeReach = {
 };
 
 type Call = [string, ...unknown[]];
-function fakeMac(o: { act?: () => Promise<RefActReceipt>; lock?: string | null } = {}) {
+type Standing = "allowed" | "waiting" | "none";
+function fakeMac(o: { act?: () => Promise<RefActReceipt>; lock?: string | null; standing?: Standing } = {}) {
   const calls: Call[] = [];
-  // The lock as the Mac keeps it for both screens.
-  const server = { lock: o.lock ?? null };
+  // The lock as the Mac keeps it for both screens; and where this phone's key stands there (993g).
+  const server = { lock: o.lock ?? null, standing: o.standing ?? ("allowed" as Standing) };
   let taps = 0;
+  const stand = () => ({ state: server.standing, id: "key-1", ...(server.standing === "waiting" ? { code: "123456" } : {}) });
   const c = {
+    refKey: async (pub: string) => (calls.push(["key", pub]), stand()),
+    refEnroll: async (pub: string, name: string) => {
+      calls.push(["enroll", pub, name]);
+      // Asking never allows: the phone waits for the Mac's own Allow.
+      if (server.standing === "none") server.standing = "waiting";
+      return stand();
+    },
     refReach: async () => (calls.push(["reach"]), REACH),
     refRead: async (item: RefActItem) => (calls.push(["read", item.id]), HEADS),
-    refTap: async (item: RefActItem, act: unknown) => (calls.push(["tap", item.id, act]), { tap: `tap-${++taps}`, hold_ms: 5000 }),
-    refAct: async (tap: string, item: RefActItem, act: unknown) => {
+    refTap: async (item: RefActItem, act: unknown, key: string) => {
+      calls.push(["tap", item.id, act]);
+      calls.push(["tapKey", key]);
+      return { tap: `tap-${++taps}`, challenge: `challenge-${taps}`, hold_ms: 5000 };
+    },
+    refAct: async (tap: string, item: RefActItem, act: unknown, sig: string) => {
       calls.push(["act", tap, item.id, act]);
+      calls.push(["sig", tap, sig]);
       return o.act ? o.act() : { outcome: "done", text: "Sent to client@co.example" };
     },
     refUndo: async (tap: string) => void calls.push(["undo", tap]),
@@ -56,11 +71,25 @@ function fakeMac(o: { act?: () => Promise<RefActReceipt>; lock?: string | null }
 let host: ReturnType<typeof mount> | null = null;
 let page: HTMLElement;
 let away: string | null = null;
-function setup(mac: Client | null) {
+/** This page's key as a stub: a key already made (or not), and a signature that says what it signed. */
+function fakeSigner(o: { made?: boolean; cannot?: string | null } = {}): PhoneSigner & { made: boolean } {
+  const k = {
+    made: o.made ?? true,
+    cannot: () => o.cannot ?? null,
+    have: async () => (k.made ? "PUBLIC" : null),
+    make: async () => ((k.made = true), "PUBLIC"),
+    sign: async (m: string) => {
+      if (!k.made) throw new Error("no key");
+      return `signed(${m})`;
+    },
+  };
+  return k;
+}
+function setup(mac: Client | null, signer: PhoneSigner = fakeSigner()) {
   page = document.createElement("div");
   page.innerHTML = `<div class="md">${renderMarkdown(`Mail: ${EMAIL}.`, { breaks: true, localImagesAsText: true })}</div>`;
   document.body.appendChild(page);
-  host = mount(PhoneRefCards, { target: document.body, props: { mac: () => mac, offline: () => away, holdMs: HOLD } });
+  host = mount(PhoneRefCards, { target: document.body, props: { mac: () => mac, offline: () => away, holdMs: HOLD, signer, pollMs: 40 } });
   flushSync();
 }
 const link = () => page.querySelector<HTMLElement>("a.nl-ref")!;
@@ -228,3 +257,102 @@ describe("993f: the phone's sheet", () => {
     expect(card()!.querySelector(".rc-maybe")?.textContent).toContain("It may have gone");
   });
 });
+
+describe("993g: the tap is signed by a key only this phone holds", () => {
+  it("an allowed phone's mail goes with its key's id on the tap and its signature over that tap and the Mac's challenge", async () => {
+    const m = fakeMac();
+    setup(m.c);
+    await reply("Thanks.");
+    await click(btn("Send to Client Co"));
+    await settle(5);
+    expect(m.of("tapKey")).toEqual([["tapKey", "key-1"]]);
+    // Nothing is signed or let go during the hold.
+    expect(m.of("sig")).toEqual([]);
+    await settle(HOLD + 400);
+    expect(m.of("sig")).toEqual([["sig", "tap-1", `signed(${tapMessage("tap-1", "challenge-1")})`]]);
+  });
+
+  it("a phone not allowed yet reads only: the actions are off, and Allow this phone to send asks the Mac and shows its code", async () => {
+    const m = fakeMac({ standing: "none" });
+    const signer = fakeSigner({ made: false });
+    setup(m.c, signer);
+    await click(link());
+    await settle(5);
+    // Read-only: the details are there, every connector action is off, nothing was asked of the Mac's gate.
+    expect(card()!.textContent).toContain("Speaker confirmation");
+    expect(btn("Reply")?.disabled).toBe(true);
+    expect(card()!.textContent).toContain("not allowed to send yet");
+    expect(m.of("key")).toEqual([]);
+    // His press: the key is made here and the Mac is asked. Asking allows nothing.
+    await click(btn("Allow this phone to send"));
+    await settle(5);
+    expect(signer.made).toBe(true);
+    expect(m.of("enroll").length).toBe(1);
+    expect(m.of("enroll")[0][1]).toBe("PUBLIC");
+    expect(card()!.textContent).toContain("123 456");
+    expect(card()!.textContent).toContain("press Allow");
+    expect(btn("Reply")?.disabled).toBe(true);
+    expect(m.of("tap")).toEqual([]);
+    // He presses Allow on the Mac: the phone sees it by itself and the actions come on.
+    m.server.standing = "allowed";
+    await settle(120);
+    expect(btn("Reply")?.disabled).toBe(false);
+    expect(card()!.textContent).not.toContain("123 456");
+    await click(btn("Reply"));
+    await settle(5);
+    await type(card()!.querySelector<HTMLTextAreaElement>(".rc-body")!, "Now it goes.");
+    await click(btn("Send to Client Co"));
+    await settle(HOLD + 400);
+    expect(m.of("act").length).toBe(1);
+  });
+
+  it("a phone removed on the Mac goes back to read-only the next time it looks, and taps nothing", async () => {
+    const m = fakeMac({ standing: "none" });
+    setup(m.c, fakeSigner({ made: true }));
+    await click(link());
+    await settle(5);
+    expect(m.of("key")).toEqual([["key", "PUBLIC"]]);
+    expect(btn("Reply")?.disabled).toBe(true);
+    expect(btn("Allow this phone to send")).toBeTruthy();
+    expect(m.of("tap")).toEqual([]);
+  });
+
+  it("the plain http page cannot hold a key: it reads, says why it cannot send, and offers no ask", async () => {
+    const m = fakeMac();
+    setup(m.c, fakeSigner({ cannot: NEEDS_HTTPS }));
+    await click(link());
+    await settle(5);
+    expect(btn("Reply")?.disabled).toBe(true);
+    expect(card()!.textContent).toContain("https://");
+    expect(btn("Allow this phone to send")).toBeUndefined();
+    expect(m.of("enroll")).toEqual([]);
+    expect(m.of("tap")).toEqual([]);
+  });
+
+  it("the key cannot be read out, and its signature is what the Mac verifies (P-256, SHA-256, 64 bytes)", async () => {
+    const pair = await newPair();
+    expect(pair.privateKey.extractable).toBe(false);
+    await expect(crypto.subtle.exportKey("pkcs8", pair.privateKey)).rejects.toBeTruthy();
+    await expect(crypto.subtle.exportKey("jwk", pair.privateKey)).rejects.toBeTruthy();
+    const pub = await publicOf(pair);
+    const raw = Uint8Array.from(atob(pub.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+    expect(raw.length).toBe(65);
+    expect(raw[0]).toBe(4);
+    const msg = tapMessage("tap-1", "challenge-1");
+    expect(msg).toBe("nightloom-tap-v1\ntap-1\nchallenge-1");
+    const sig = Uint8Array.from(atob((await signWith(pair, msg)).replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+    expect(sig.length).toBe(64);
+    // Verified as the Mac does: from the public half alone.
+    const mac = await crypto.subtle.importKey("raw", raw, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]);
+    const ok = (m: string) => crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, mac, sig, new TextEncoder().encode(m));
+    expect(await ok(msg)).toBe(true);
+    expect(await ok(tapMessage("tap-1", "challenge-2"))).toBe(false);
+  });
+
+  it("names the page for the Mac's list: Safari and the Home Screen icon are two phones", () => {
+    const iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
+    expect(phoneName(iphone, false)).toBe("iPhone · Safari");
+    expect(phoneName(iphone, true)).toBe("iPhone · Home Screen app");
+  });
+});
+

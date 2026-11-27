@@ -154,6 +154,7 @@
     type SelfTest,
   } from "./awaySettings";
   import { maskedLink, phoneLine, phoneWanted } from "./phoneSettings";
+  import PhoneKeys from "./PhoneKeys.svelte";
   import {
     MAX_SEATS as COUNCIL_MAX_SEATS,
     MIN_SEATS as COUNCIL_MIN_SEATS,
@@ -2763,6 +2764,12 @@
         Mac's Tailscale address and nothing else. The turn still runs here.
       </p>
 
+      <!-- Item 993g: the phones allowed to send from a card; a phone's ask waits here for his Allow. -->
+      <section class="card">
+        <div class="ch"><span class="t">Phones allowed to send</span></div>
+        <PhoneKeys />
+      </section>
+
       <section class="card">
         <div class="ch"><span class="t">This Mac's listener</span></div>
         <label class="handoff-row">
@@ -2805,7 +2812,7 @@
           The phone's key. Scan the code with the camera — Safari opens the
           page with the token in it, once — or paste the text into the page.
           Regenerate when a phone should stop having it; every phone then
-          scans again.
+          scans again, and asks again before it can send.
         </p>
         {#if remote?.qr_svg}
           <div class="remote-qr">{@html remote.qr_svg}</div>

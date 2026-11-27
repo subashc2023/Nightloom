@@ -68,6 +68,7 @@
     now = () => new Date(),
     sheet = false,
     offline = null,
+    offlineAct = null,
   }: {
     ref: Ref;
     /** The link in the reply the card opens from (and folds back into). */
@@ -100,6 +101,8 @@
     sheet?: boolean;
     /** Why nothing can reach the Mac from here now (the phone, 993f), else null. */
     offline?: string | null;
+    /** A way out of `offline`, when there is one (993g: "Allow this phone to send"). */
+    offlineAct?: { label: string; run: () => void } | null;
   } = $props();
 
   const SOON = "Coming soon";
@@ -331,6 +334,7 @@
     {#if warn}
       <div class="rc-warn" role="status">
         <span>{warn}</span>
+        {#if offline && offlineAct}<button type="button" class="ns-btn small rc-b rc-allow" onclick={offlineAct.run}>{offlineAct.label}</button>{/if}
         {#if accountState !== "failed" && onaccounts}<button type="button" class="ns-btn small rc-b" onclick={onaccounts}>{accountState === "signin" ? "Sign in again…" : "Open Sources…"}</button>{/if}
       </div>
     {/if}

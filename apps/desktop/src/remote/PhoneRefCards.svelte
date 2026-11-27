@@ -7,15 +7,113 @@
    * The hold bar and the toasts are this page's own (the phone has no Mac toasts): a mail's hold shows here with its
    * Undo whether or not the sheet is open, so closing the sheet never leaves a mail going with no Undo in sight.
    * Drafts are the phone's own (`refDrafts`, this page's storage) and are kept whatever the link does.
+   *
+   * **This phone must be allowed to send** (item 993g): a tap is signed with a key only this page holds
+   * (`phoneKey.ts`), and the Mac takes it only from a phone he allowed in the Mac's window. Until then the sheet
+   * reads (details, Open, Copy), its actions are off with the reason, and "Allow this phone to send" asks the Mac:
+   * the code shown here is the one the Mac shows beside its Allow. Drafts typed meanwhile are kept.
    */
+  import { onMount } from "svelte";
+  import { NEEDS_HTTPS, phoneName, spacedCode, webSigner, type PhoneSigner } from "./phoneKey";
   import RefCardHost from "../lib/RefCardHost.svelte";
   import { MAIL_HOLD_MS, type HoldToast } from "../lib/mailHold";
-  import type { Client } from "./client";
+  import { ApiError, type Client } from "./client";
   import { phoneRefCards } from "./phoneRefAct";
 
-  let { mac, offline, holdMs = MAIL_HOLD_MS }: { mac: () => Client | null; offline: () => string | null; holdMs?: number } = $props();
+  let {
+    mac,
+    offline,
+    holdMs = MAIL_HOLD_MS,
+    signer = webSigner(),
+    pollMs = 4000,
+  }: { mac: () => Client | null; offline: () => string | null; holdMs?: number; signer?: PhoneSigner; pollMs?: number } = $props();
 
-  const hands = phoneRefCards(() => mac());
+  // Where this phone's key stands on the Mac. "unknown" until the Mac was asked; "cannot" on a page with no WebCrypto.
+  // `said` is the Mac's own refusal to say (its Keychain could not be read): then nothing is allowed.
+  type Stand = { state: "unknown" | "allowed" | "waiting" | "none" | "cannot"; id?: string; code?: string; said?: string };
+  let stand = $state<Stand>({ state: "unknown" });
+  let asking = $state(false);
+  let seq = 0;
+
+  /** Ask the Mac where this phone's key stands. A phone with no key yet has none to ask about. */
+  async function look(): Promise<void> {
+    if (signer.cannot()) return void (stand = { state: "cannot" });
+    const c = mac();
+    if (!c) return;
+    const n = ++seq;
+    try {
+      const pub = await signer.have();
+      const s = pub ? await c.refKey(pub) : null;
+      if (n === seq) stand = s ? { state: s.state, id: s.id, code: s.code } : { state: "none" };
+    } catch (e) {
+      // The Mac answered and would not say (its Keychain is locked, or it is an older build): nothing is allowed, and
+      // the sheet says why. Not reached at all: what was known stands; the next look tries again.
+      if (n === seq && e instanceof ApiError) stand = { state: "unknown", said: e.message || `Your Mac answered ${e.status}, so this phone cannot send yet.` };
+    }
+  }
+
+  /** His "Allow this phone to send": the key is made here if there is none, and the Mac is asked. */
+  async function ask(): Promise<void> {
+    const c = mac();
+    if (!c || asking || signer.cannot()) return;
+    asking = true;
+    const n = ++seq;
+    try {
+      const s = await c.refEnroll(await signer.make(), phoneName());
+      if (n === seq) stand = { state: s.state, id: s.id, code: s.code };
+    } catch (e) {
+      toast(`Could not ask your Mac: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      asking = false;
+    }
+  }
+
+  // Look when the Mac is reachable (again), when the page comes back to the front, and while waiting for his Allow.
+  $effect(() => {
+    if (offline() === null) void look();
+  });
+  $effect(() => {
+    if (stand.state !== "waiting") return;
+    const t = setInterval(() => document.visibilityState === "visible" && offline() === null && void look(), pollMs);
+    return () => clearInterval(t);
+  });
+  onMount(() => {
+    const again = () => document.visibilityState === "visible" && offline() === null && void look();
+    document.addEventListener("visibilitychange", again);
+    return () => document.removeEventListener("visibilitychange", again);
+  });
+
+  /** Why this phone cannot send now: the link first, then its own standing. Null when it can. */
+  function why(): string | null {
+    const lost = offline();
+    if (lost) return lost;
+    switch (stand.state) {
+      case "allowed":
+        return null;
+      case "cannot":
+        return NEEDS_HTTPS;
+      case "waiting":
+        return `Waiting for your Mac. Open Nightloom there (Settings → Phone) and press Allow beside the code ${spacedCode(stand.code ?? "")}. Your words are kept.`;
+      case "none":
+        return "This phone can read here, and is not allowed to send yet. Your words are kept.";
+      case "unknown":
+        return stand.said ?? "Checking with your Mac that this phone may send…";
+    }
+  }
+  function whyAct(): { label: string; run: () => void } | null {
+    if (offline()) return null;
+    if (stand.state === "none") return { label: asking ? "Asking your Mac…" : "Allow this phone to send", run: () => void ask() };
+    if (stand.state === "waiting" || (stand.state === "unknown" && stand.said)) return { label: "Check again", run: () => void look() };
+    return null;
+  }
+
+  const hands = phoneRefCards(() => mac(), {
+    get signer() {
+      return signer;
+    },
+    id: () => (stand.state === "allowed" ? (stand.id ?? null) : null),
+    refused: () => void look(),
+  });
 
   type Bar = { id: number; text: string; label?: string; run?: () => void };
   let bars = $state<Bar[]>([]);
@@ -52,7 +150,8 @@
   {toast}
   {holdToast}
   {holdMs}
-  {offline}
+  offline={why}
+  offlineAct={whyAct}
   armSend={hands.armSend}
   disarm={hands.disarm}
   lockOf={hands.lockOf}

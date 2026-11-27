@@ -2630,6 +2630,36 @@ export function remoteToken(regenerate: boolean): Promise<RemoteStatus> {
   return invoke("remote_token", { regenerate });
 }
 
+/** Item 993g: a phone in Settings → Phone's lists. An ask carries the code both screens show. */
+export interface PhoneKeyRow {
+  id: string;
+  name: string;
+  code: string | null;
+  at: string;
+}
+/** Item 993g: the phones asking to send from a card and the phones allowed; `error` when the Keychain could not be
+ *  read (then no phone can send). */
+export interface PhoneKeys {
+  asked: PhoneKeyRow[];
+  allowed: PhoneKeyRow[];
+  error: string | null;
+}
+export function phoneKeysList(): Promise<PhoneKeys> {
+  return invoke("phone_keys_list");
+}
+/** Item 993g: his Allow click (Settings → Phone). The only way a phone becomes allowed to send; called from
+ *  `PhoneKeys.svelte` and nowhere else. */
+export function phoneKeyAllow(id: string): Promise<PhoneKeys> {
+  return invoke("phone_key_allow", { id });
+}
+export function phoneKeyDeny(id: string): Promise<PhoneKeys> {
+  return invoke("phone_key_deny", { id });
+}
+/** Item 993g: he removed an allowed phone; it sends nothing until allowed again. */
+export function phoneKeyRevoke(id: string): Promise<PhoneKeys> {
+  return invoke("phone_key_revoke", { id });
+}
+
 /** The window's answer to a phone's `remote-send` (backlog 132): the
  *  listener is waiting on it to answer the phone — sent, queued behind
  *  the chat's turn, or not taken and why. */
