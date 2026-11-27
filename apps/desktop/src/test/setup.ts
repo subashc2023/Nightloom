@@ -8,34 +8,7 @@
  * in-memory stand-in with the four methods those modules call, reset between
  * files by vitest's fresh module registry rather than by anything here.
  */
-class MemoryStorage {
-  private map = new Map<string, string>();
-
-  getItem(key: string): string | null {
-    return this.map.has(key) ? this.map.get(key)! : null;
-  }
-
-  setItem(key: string, value: string): void {
-    this.map.set(key, String(value));
-  }
-
-  removeItem(key: string): void {
-    this.map.delete(key);
-  }
-
-  clear(): void {
-    this.map.clear();
-  }
-
-  // `zoom.ts`'s migration (item 619) walks the keys.
-  get length(): number {
-    return this.map.size;
-  }
-
-  key(i: number): string | null {
-    return [...this.map.keys()][i] ?? null;
-  }
-}
+import { MemoryStorage } from "./memoryStorage";
 
 Object.defineProperty(globalThis, "localStorage", {
   value: new MemoryStorage(),
