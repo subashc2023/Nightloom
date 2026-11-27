@@ -86,7 +86,7 @@
     /** The tap dropped (his Undo, or the hold stopped). */
     disarm?: (tap: string) => void;
     /** The "may have gone" lock the Mac keeps for both screens, read when a card opens. */
-    lockOf?: (ref: Ref) => Promise<string | null>;
+    lockOf?: (ref: Ref, mark?: string | null) => Promise<string | null>;
     /** He checked Gmail's Sent: the kept lock goes on the Mac too. */
     checked?: (key: string) => void;
   } = $props();
@@ -107,6 +107,8 @@
   // A mail let through with no success back, by item: Send stays off until he says he checked (review, 4). Kept
   // beside the draft in storage, so a reload or restart keeps it (re-review, N2).
   const maybe = $derived(refMaybe.by);
+  // A "may have gone" set on this screen that the Mac has not been told of yet, by item (993f).
+  const untold = new Map<string, string>();
   // Each email's headers, read once a session (a failed read is tried again on the next open).
   const headsRead = new Map<string, Promise<MailHeads>>();
   function headsOf(ref: Ref): Promise<MailHeads> {
@@ -215,6 +217,8 @@
       const why = String(e instanceof Error ? e.message : e);
       if (isMaybeSent(e)) {
         markMaybeSent(k, why);
+        // Told to the Mac when it next answers (the phone may have lost it as the mail went).
+        if (lockOf) untold.set(k, why);
         if (tid !== undefined) holdToast?.settle(tid, `To ${who}: ${why}`);
       } else if (tid !== undefined) holdToast?.settle(tid, `Not sent to ${who}: ${why}`);
       throw e;
@@ -253,10 +257,17 @@
     open = { ref, anchor: a, n: ++seq };
     mark(a, "ref-open", true);
     if (gone.has(refKey(ref))) mark(a, "ref-gone", true);
-    // The lock the Mac keeps for both screens (993f): an unknown outcome on the other screen locks Send here too.
+    // The lock the Mac keeps for both screens (993f), synced both ways: a lock set here the Mac was not told of
+    // goes first, then this screen mirrors the Mac's — set on either, cleared by "I checked" on either. A Mac that
+    // cannot be asked leaves this screen's lock as it is.
     const lk = refKey(ref);
-    void lockOf?.(ref)
-      .then((why) => why && markMaybeSent(lk, why))
+    const toTell = untold.get(lk) ?? null;
+    void lockOf?.(ref, toTell)
+      .then((why) => {
+        untold.delete(lk);
+        if (why) markMaybeSent(lk, why);
+        else clearMaybeSent(lk);
+      })
       .catch(() => {});
     if (!reach?.() && !read && loadReach)
       void loadReach()
@@ -357,7 +368,7 @@
       readHeads={readMail ? ((r) => () => headsOf(r))(open.ref) : undefined}
       me={known?.accounts.find((x) => x.connector === open?.ref.src)?.address ?? null}
       maybeSent={maybe[refKey(open.ref)] ?? null}
-      onchecked={((k) => () => (clearMaybeSent(k), checked?.(k)))(refKey(open.ref))}
+      onchecked={((k) => () => (untold.delete(k), clearMaybeSent(k), checked?.(k)))(refKey(open.ref))}
       {sheet}
       offline={offline?.() ?? null}
     />

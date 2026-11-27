@@ -31,6 +31,8 @@ const REACH: HomeReach = {
 type Call = [string, ...unknown[]];
 function fakeMac(o: { act?: () => Promise<RefActReceipt>; lock?: string | null } = {}) {
   const calls: Call[] = [];
+  // The lock as the Mac keeps it for both screens.
+  const server = { lock: o.lock ?? null };
   let taps = 0;
   const c = {
     refReach: async () => (calls.push(["reach"]), REACH),
@@ -41,10 +43,14 @@ function fakeMac(o: { act?: () => Promise<RefActReceipt>; lock?: string | null }
       return o.act ? o.act() : { outcome: "done", text: "Sent to client@co.example" };
     },
     refUndo: async (tap: string) => void calls.push(["undo", tap]),
-    refLock: async (key: string) => (calls.push(["lock", key]), { maybe: o.lock ?? null, going: false, held: false }),
+    refLock: async (key: string, mark?: string | null) => {
+      calls.push(["lock", key]);
+      if (mark) (calls.push(["told", key, mark]), (server.lock = mark));
+      return { maybe: server.lock, going: false, held: false };
+    },
     refChecked: async (key: string) => void calls.push(["checked", key]),
   };
-  return { c: c as unknown as Client, calls, of: (k: string) => calls.filter((x) => x[0] === k) };
+  return { c: c as unknown as Client, calls, server, of: (k: string) => calls.filter((x) => x[0] === k) };
 }
 
 let host: ReturnType<typeof mount> | null = null;
@@ -186,6 +192,31 @@ describe("993f: the phone's sheet", () => {
     expect(card()!.querySelector(".rc-maybe")).toBeTruthy();
     await click(btn("I checked: not sent"));
     expect(m.of("checked")).toEqual([["checked", KEY]]);
+  });
+
+  it("the lock syncs both ways: a lock set here is told to the Mac on the next open; one cleared there clears here", async () => {
+    const m = fakeMac({ act: () => Promise.reject(new Unreachable("TypeError: Load failed")) });
+    setup(m.c);
+    await reply("Confirmed.");
+    await click(btn("Send to Client Co"));
+    await settle(HOLD + 400);
+    expect(refMaybe.by[KEY]).toContain("may have gone");
+    // Closed and opened again: the Mac is told of this screen's lock.
+    document.querySelector(".ref-shade")!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await settle(10);
+    await click(link());
+    await settle(5);
+    expect(m.of("told")).toEqual([["told", KEY, refMaybe.by[KEY]]]);
+    expect(m.server.lock).toContain("may have gone");
+    // He checks on the Mac: the next open here mirrors it, and Send is back.
+    m.server.lock = null;
+    document.querySelector(".ref-shade")!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await settle(10);
+    await click(link());
+    await settle(5);
+    expect(refMaybe.by[KEY]).toBeUndefined();
+    expect(card()!.querySelector(".rc-maybe")).toBeNull();
+    expect(m.of("told").length).toBe(1);
   });
 
   it("a lock the Mac keeps (set on the other screen) locks Send here when the sheet opens", async () => {

@@ -290,8 +290,12 @@ pub(crate) fn ref_unfinished() -> Vec<Unfinished> {
 /// screens (993f): set by an unknown outcome on either, cleared by "I
 /// checked: not sent" on either.
 #[tauri::command]
-pub(crate) fn ref_lock(key: String) -> Option<String> {
-    project::config_dir().and_then(|c| ref_gate::maybe_of(&c, &key))
+pub(crate) fn ref_lock(key: String, mark: Option<String>) -> Option<String> {
+    let config = project::config_dir()?;
+    if let Some(why) = mark.as_deref().filter(|w| !w.is_empty()) {
+        ref_gate::maybe_mark(&config, &key, why);
+    }
+    ref_gate::maybe_of(&config, &key)
 }
 
 /// He checked Gmail's Sent (on the Mac's card): the lock goes for both screens.

@@ -2717,8 +2717,8 @@ export function refAct(item: RefActItem, act: { type: "rsvp" | "saveDraft" | "se
 
 /** Item 993f: the "may have gone" lock the Mac keeps for both screens (set by an unknown outcome on the Mac or the
  *  phone), or null. */
-export function refLock(key: string): Promise<string | null> {
-  return invoke("ref_lock", { key });
+export function refLock(key: string, mark?: string | null): Promise<string | null> {
+  return invoke("ref_lock", { key, mark: mark ?? null });
 }
 /** Item 993f: he checked Gmail's Sent on the Mac's card: the lock goes for both screens. */
 export function refChecked(key: string): Promise<void> {

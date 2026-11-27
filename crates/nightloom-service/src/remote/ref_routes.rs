@@ -8,7 +8,7 @@
 //! | `POST /home/ref/tap` | `{item, act}`: his press on the sheet's confirm → `{tap, hold_ms}` ([`crate::ref_gate`]) |
 //! | `POST /home/ref/act` | `{tap, item, act}`: the tap let go (for a mail, after its hold) → the receipt |
 //! | `POST /home/ref/undo` | `{tap}`: his Undo; the tap goes |
-//! | `POST /home/ref/lock` | `{key}`: `{maybe, going, held}` — the "may have gone" lock and whether a send is on its way |
+//! | `POST /home/ref/lock` | `{key, mark?}`: `{maybe, going, held}` (a `mark` is kept first) — the "may have gone" lock and whether a send is on its way |
 //! | `POST /home/ref/checked` | `{key}`: he checked Gmail's Sent; the lock goes |
 //!
 //! **Nothing here sends without his tap** (blocker 2304): `/act` runs
@@ -159,6 +159,10 @@ async fn undo(Json(b): Json<UndoBody>) -> Response {
 #[derive(Deserialize)]
 struct KeyBody {
     key: String,
+    /// The other screen's own "may have gone" for this item, not yet told
+    /// to the Mac (the phone lost the Mac as a mail went): kept first.
+    #[serde(default)]
+    mark: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -169,10 +173,11 @@ struct Lock {
 }
 
 async fn lock(State(shared): State<Arc<Shared>>, Json(b): Json<KeyBody>) -> Response {
-    let maybe = shared
-        .host
-        .home_config()
-        .and_then(|c| ref_gate::maybe_of(&c, &b.key));
+    let config = shared.host.home_config();
+    if let (Some(c), Some(why)) = (&config, b.mark.as_deref().filter(|w| !w.is_empty())) {
+        ref_gate::maybe_mark(c, &b.key, why);
+    }
+    let maybe = config.and_then(|c| ref_gate::maybe_of(&c, &b.key));
     let (going, held) = ref_gate::with(|g| g.busy(&b.key, chrono::Utc::now()));
     Json(Lock { maybe, going, held }).into_response()
 }

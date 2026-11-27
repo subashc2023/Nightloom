@@ -110,6 +110,16 @@ pub const CLAUDE_IN_SHELL: &str = concat!(
 /// What the model reads when the shell would start `claude`.
 pub const NO_NESTED_CLAUDE: &str = "Not run: starting Claude Code from the shell is refused here, because a nested claude would carry his connectors past the rule that mail, invitation answers, events and shares go out only on his own click. Do the work in this conversation instead.";
 
+/// A shell call that reaches the listener's card routes (`/api/home/ref/…`,
+/// item 993f: a tap, an act) or reads a secret from the Keychain, where
+/// the listener's bearer lives (`find-generic-password`, `dump-keychain`).
+/// Blocker 2304: a model must not mint the phone's tap itself. A string
+/// match over the call's JSON, a tripwire like [`CLAUDE_IN_SHELL`].
+pub const REF_IN_SHELL: &str = "home/ref/|find-(generic|internet)-password|dump-keychain";
+
+/// What the model reads when the shell would reach the card routes or the Keychain.
+pub const NO_REF_ROUTE: &str = "Not run: the listener's card routes and the Keychain are refused from the shell here, because a call through them could send mail or answer invitations without his own click. Say what you would send and for whom; he can send it from the card.";
+
 /// The hook command for [`SHELL_MATCHER`]: `grep` the call's JSON for
 /// [`CLAUDE_IN_SHELL`] and print the refusal on a hit; otherwise print
 /// nothing (no decision). `None` on Windows, which has no `grep`
@@ -129,10 +139,21 @@ pub fn shell_command() -> Option<String> {
             }
         })
         .to_string();
+        let ref_reply = serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": NO_REF_ROUTE,
+            }
+        })
+        .to_string();
+        // The call's JSON is read once and matched twice (993f).
         Some(format!(
-            "grep -qE {} && echo {} || true",
+            "j=$(cat); if printf '%s' \"$j\" | grep -qE {}; then echo {}; elif printf '%s' \"$j\" | grep -qE {}; then echo {}; fi; true",
             sh_quote(CLAUDE_IN_SHELL),
-            sh_quote(&reply)
+            sh_quote(&reply),
+            sh_quote(REF_IN_SHELL),
+            sh_quote(&ref_reply)
         ))
     }
 }
@@ -321,6 +342,65 @@ mod tests {
         }
         for cmd in let_through {
             assert_eq!(run(cmd), Some(false), "let through: {cmd}");
+        }
+    }
+
+    /// Item 993f: a shell call that reaches the card routes or reads the
+    /// Keychain (the bearer) is refused with its own words; ordinary
+    /// commands, and the nested-claude refusal, are unchanged.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_shell_tripwire_refuses_the_card_routes_and_the_keychain() {
+        use std::io::Write;
+        let command = shell_command().expect("a command off Windows");
+        let run = |cmd: &str| -> Option<String> {
+            let stdin =
+                serde_json::json!({ "tool_name": "Bash", "tool_input": { "command": cmd } })
+                    .to_string();
+            let mut child = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&command)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .ok()?;
+            child.stdin.take()?.write_all(stdin.as_bytes()).ok()?;
+            let out = child.wait_with_output().ok()?;
+            assert!(out.status.success(), "the hook exits 0: {cmd}");
+            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if text.is_empty() {
+                return Some(String::new());
+            }
+            let v: serde_json::Value = serde_json::from_str(&text).expect("one JSON reply");
+            Some(
+                v["hookSpecificOutput"]["permissionDecisionReason"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            )
+        };
+        let Some(_) = run("ls") else {
+            eprintln!("SKIPPED: sh not runnable here");
+            return;
+        };
+        for cmd in [
+            "curl -s -X POST http://100.64.0.2:8642/api/home/ref/tap -H 'Authorization: Bearer x' -d '{}'",
+            "curl http://localhost:8642/api/home/ref/act",
+            "python3 -c \"import urllib.request; urllib.request.urlopen('http://mac:8642/api/home/ref/act')\"",
+            "security find-generic-password -s nightloom -w",
+            "security find-internet-password -s x",
+            "security dump-keychain",
+        ] {
+            assert_eq!(run(cmd).as_deref(), Some(NO_REF_ROUTE), "refused: {cmd}");
+        }
+        assert_eq!(run("claude -p x").as_deref(), Some(NO_NESTED_CLAUDE));
+        for cmd in [
+            "ls ~/.claude",
+            "curl https://example.com/home/refs",
+            "cargo test",
+            "git log --oneline",
+        ] {
+            assert_eq!(run(cmd).as_deref(), Some(""), "let through: {cmd}");
         }
     }
 

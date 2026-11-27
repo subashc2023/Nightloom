@@ -1155,8 +1155,8 @@ export class Client {
   }
 
   /** Item 993f: the "may have gone" lock the Mac keeps for both screens, and whether a send is on its way. */
-  async refLock(key: string): Promise<{ maybe: string | null; going: boolean; held: boolean }> {
-    return (await this.call("/home/ref/lock", { method: "POST", body: JSON.stringify({ key }) })).json();
+  async refLock(key: string, mark?: string | null): Promise<{ maybe: string | null; going: boolean; held: boolean }> {
+    return (await this.call("/home/ref/lock", { method: "POST", body: JSON.stringify({ key, mark: mark ?? null }) })).json();
   }
 
   /** Item 993f: he checked Gmail's Sent; the lock goes on the Mac too. */

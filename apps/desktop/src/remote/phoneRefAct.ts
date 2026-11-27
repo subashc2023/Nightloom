@@ -91,7 +91,11 @@ export function phoneRefCards(mac: () => Client | null) {
       }
     },
     disarm: (tap: string) => void mac()?.refUndo(tap).catch(() => {}),
-    lockOf: async (ref: Ref) => (await mac()?.refLock(refKey(ref)))?.maybe ?? null,
+    lockOf: async (ref: Ref, mark?: string | null) => {
+      const c = mac();
+      if (!c) throw new Error(NO_MAC);
+      return (await c.refLock(refKey(ref), mark)).maybe ?? null;
+    },
     checked: (key: string) => void mac()?.refChecked(key).catch(() => {}),
     loadReach: async () => {
       const c = mac();

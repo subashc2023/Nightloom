@@ -33,6 +33,6 @@ export const refToast = addToast;
 export { refHoldToast } from "./refHoldToast";
 
 /** Item 993f: the "may have gone" lock the Mac keeps for both screens (the phone's sheet may have set it). */
-export const refLockOf = (ref: Ref) => api.refLock(refKey(ref)).catch(() => null);
+export const refLockOf = (ref: Ref, mark?: string | null) => api.refLock(refKey(ref), mark);
 /** Item 993f: "I checked: not sent" on the Mac clears the lock for the phone too. */
 export const refCheckedHere = (key: string) => void api.refChecked(key).catch(() => {});
