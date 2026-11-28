@@ -87,8 +87,9 @@
    *  found), and the column's width — what a moved card is drawn from. */
   let passageTops = $state<Record<number, number | null>>({});
   let frameWidth = $state(0);
-  /** Each composer card's `bottom` in the stack above the composer. */
-  let footBottoms = $state<Record<number, number>>({});
+  // ~~Each composer card's `bottom` in the stack above the composer.~~
+  // (struck 2026-11-27, item 1035: composer cards sit in the column's flow
+  // and scroll with the text; nothing is stuck, so no `bottom` is kept.)
   /** Item 1008: the transcript viewport's height — a composer card's room. */
   let footRoom = $state(0);
   const footIds = $derived(shown.filter((a) => !placements[a.id]).map((a) => a.id));
@@ -189,18 +190,10 @@
     placements = next;
     passageTops = tops734;
     frameWidth = hostRect.width;
-    // The composer cards: the newest nearest the composer, each one's
-    // `bottom` the heights of those under it.
+    // ~~The composer cards: the newest nearest the composer, each one's
+    // `bottom` the heights of those under it.~~ (struck 2026-11-27, item
+    // 1035: they are in the column's flow, one under another.)
     await tick();
-    const foot = shown.filter((a) => !next[a.id]);
-    const bottoms: Record<number, number> = {};
-    let below = 8;
-    for (let i = foot.length - 1; i >= 0; i--) {
-      const id = foot[i]!.id;
-      bottoms[id] = below;
-      below += (cards[id]?.element()?.offsetHeight ?? 0) + CARD_GAP;
-    }
-    footBottoms = bottoms;
     footRoom = vp.clientHeight;
     // A draft just opened: its box takes the caret once it is placed.
     const f = app.asideFocus;
@@ -281,7 +274,6 @@
     aside={a}
     placement={placements[a.id] ?? null}
     front={a.id === frontId}
-    footBottom={footIds.length > 1 ? (footBottoms[a.id] ?? null) : null}
     footCount={footIds.length}
     {footRoom}
     frame={inner}

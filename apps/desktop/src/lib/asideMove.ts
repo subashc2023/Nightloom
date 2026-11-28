@@ -81,3 +81,25 @@ export function cleanMoved(v: unknown): AsideMoved | null {
   if (m.from !== "passage" && m.from !== "column") return null;
   return { left: m.left as number, top: m.top as number, width: m.width as number, from: m.from };
 }
+
+/**
+ * Item 1035 (repeat of 734): how a chat's aside card is positioned — one
+ * rule for every state, so no state can pin it to the screen. 734 fixed a
+ * dragged card; a card with no passage on screen (a composer aside, or one
+ * whose passage cannot be found after a reload, a relaunch or a hand-off)
+ * was still `position: sticky` at the viewport's foot (blocker 225's
+ * default) and stayed put while the chat scrolled under it. Now:
+ * - in the side panel: `static`, the panel's furniture;
+ * - while the pointer holds it: `fixed`, so the drag follows the pointer;
+ * - placed under its passage, or moved: `absolute` in the column;
+ * - otherwise: `relative`, in the column's flow as its last child — at the
+ *   chat's foot, above the composer, scrolling with the text.
+ * Never `sticky`; `fixed` only while held. Pure.
+ */
+export type CardPosition = "static" | "fixed" | "absolute" | "relative";
+export function cardPosition(s: { panel: boolean; holding: boolean; placed: boolean; moved: boolean }): CardPosition {
+  if (s.panel) return "static";
+  if (s.holding) return "fixed";
+  if (s.placed || s.moved) return "absolute";
+  return "relative";
+}
