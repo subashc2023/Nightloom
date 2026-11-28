@@ -281,6 +281,7 @@ export function startMove(e: PointerEvent, h: MoveHandlers): void {
     window.removeEventListener("pointerup", up, true);
     window.removeEventListener("pointercancel", cancel, true);
     window.removeEventListener("keydown", key, true);
+    window.removeEventListener("blur", cancel);
     document.body.style.userSelect = prevSelect;
   }
   function cancel() {
@@ -292,4 +293,8 @@ export function startMove(e: PointerEvent, h: MoveHandlers): void {
   window.addEventListener("pointerup", up, true);
   window.addEventListener("pointercancel", cancel, true);
   window.addEventListener("keydown", key, true);
+  // Item 1035: the window losing focus mid-move (⌘Tab, a dialog) can eat
+  // the release; without this the card stayed held — `position: fixed`,
+  // pinned to the screen — until the next click. Back to where it began.
+  window.addEventListener("blur", cancel);
 }

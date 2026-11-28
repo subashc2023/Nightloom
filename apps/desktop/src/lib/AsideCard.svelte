@@ -16,7 +16,7 @@
   } from "./state.svelte";
   import type { TabContent } from "./tabs";
   import { outcome, startMove } from "./floatingMove";
-  import { landMoved, placeMoved } from "./asideMove";
+  import { cardPosition, landMoved, placeMoved } from "./asideMove";
   import { expandAside, minimizeAside } from "./state/asides.svelte";
   import { foldMotion } from "./foldMotion";
   import { asideLabel } from "./asides";
@@ -101,7 +101,6 @@
     panel = false,
     session = null,
     front = true,
-    footBottom = null,
     footCount = 1,
     footRoom = 0,
     frame = null,
@@ -116,10 +115,11 @@
     session?: string | null;
     /** The card an Escape from elsewhere in the window closes (176). */
     front?: boolean;
-    /** Several composer cards (176): this one's `bottom` in the sticky
-     *  stack above the composer — the heights of the cards below it —
-     *  and how many share the stack's room. */
-    footBottom?: number | null;
+    /** Several composer cards (176): ~~this one's `bottom` in the sticky
+     *  stack above the composer — the heights of the cards below it —~~
+     *  (struck 2026-11-27, item 1035: the cards are in the column's flow,
+     *  not stuck, so the `footBottom` prop is gone) how many share the
+     *  stack's room. */
     footCount?: number;
     /** Item 1008: the transcript viewport's height, the room a composer
      *  card grows into (`footCardMax`); 0 while unmeasured. */
@@ -239,6 +239,11 @@
       : placeMoved(aside.moved, frameWidth > 0 ? frameWidth : aside.moved.width, passageTop),
   );
   const pos = $derived(dragPos ?? moved);
+  /** Item 1035: the card's `position`, from one pure rule (`cardPosition`)
+   *  — never sticky, fixed only while held, so it scrolls with the text. */
+  const position = $derived(
+    cardPosition({ panel, holding: dragPos !== null, placed: placement !== null, moved: moved !== null }),
+  );
   /** Whatever may change the card's room, so the box measures again. */
 
   function headDown(e: PointerEvent): void {
@@ -425,7 +430,7 @@
         : !panel && footCount > 1
           ? `max(200px, calc(60vh / ${footCount}))`
           : undefined}
-  style:bottom={!pos && !placement && !panel && footBottom !== null ? `${footBottom}px` : undefined}
+  style:position={position}
   onkeydown={cardKeys}
 >
   {#if minimized}
@@ -646,11 +651,13 @@
        not read as a second chat. */
     background: var(--aside-tint);
   }
-  /* Above the composer (blocker 225): the column's last child, stuck to
-     the viewport's foot, so it stays while he scrolls up to read. */
+  /* Above the composer (blocker 225): the column's last child, ~~stuck to
+     the viewport's foot, so it stays while he scrolls up to read~~ (struck
+     2026-11-27, item 1035: "this fuckin aside is stuck on my screen") — in
+     the column's flow at the chat's foot, so it scrolls with the text;
+     several sit one under another (`cardPosition`, set inline too). */
   .aside-card.foot {
-    position: sticky;
-    bottom: 8px;
+    position: relative;
     align-self: flex-end;
     width: min(440px, 100%);
     max-height: 50vh;
