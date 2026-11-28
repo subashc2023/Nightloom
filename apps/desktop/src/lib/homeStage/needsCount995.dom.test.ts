@@ -103,7 +103,9 @@ describe("995: one Needs-you number on every surface", () => {
     needs.shipped = [shipped("960")];
     const { bar, stage } = draw();
     expect(bar.querySelector(".need-badge .n")).toBeNull();
-    expect(bar.querySelector(".need-badge .word")?.textContent).toBe("to review");
+    // Item 1026: no number, so the face is the bell with "to review" beside it.
+    expect(bar.querySelector(".need-badge")).toBeNull();
+    expect(bar.querySelector(".centre-bell .review")?.textContent).toBe("to review");
     expect(stage.querySelector('.h9-tab .cnt')).toBeNull();
     expect(stage.querySelector("[data-home-line]")?.textContent).toMatch(/^Nothing needs you/);
     expect(stage.querySelector(".w-else-t")?.textContent).toBe("1 shipped item to review");

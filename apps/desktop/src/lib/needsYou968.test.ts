@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { badgeWords, blockerCounts, groupNeeds, homeNeeds, isHeld, needRows, waitingCount, type NeedSources, type OpenBlocker, type PendingProposal, type ShippedItem } from "./needsYou";
 import type { RunEntry } from "./running";
 import view from "./NeedsYou.svelte?raw";
-import badge from "./NeedsYouBadge.svelte?raw";
+import badge from "./NotificationCentre.svelte?raw"; // item 1026: the one button draws the number
 import header from "./NightshiftHeader.svelte?raw";
 import headerClassic from "./NightshiftHeaderClassic.svelte?raw";
 import sidebarLogic from "./sidebar/logic.svelte.ts?raw";

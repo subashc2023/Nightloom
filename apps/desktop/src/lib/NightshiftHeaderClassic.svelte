@@ -9,7 +9,6 @@
   import { app } from "./state.svelte";
   import { sameMorning } from "./nightshift";
   import NightshiftStateChip from "./NightshiftStateChip.svelte";
-  import NotificationCentre from "./NotificationCentre.svelte";
   import { blockerCounts } from "./needsYou";
 
   const row = $derived(
@@ -48,7 +47,7 @@
   <span class="spacer"></span>
   <!-- The bell (nightshift backlog 069): the top bar is not drawn on this
        page, so the same component sits here. -->
-  <NotificationCentre />
+  <!-- Item 1026: the bell is the tab strip's one button now (NeedsYouBadge), over this page too. -->
   <div class="seg" role="tablist" aria-label="Start or Review">
     <button
       role="tab"
