@@ -73,6 +73,8 @@ export interface StageHost {
   watchBrowser(): void;
   /** The live picture's component, where the host has one. */
   BrowserView: Component<{ session: string }> | null;
+  /** Item 771: "Left behind?" on the Steps rail — the Mac's only (it reads the window's chats); absent on the phone. */
+  LeftBehind?: Component | null;
 }
 
 const none: StageHost = {

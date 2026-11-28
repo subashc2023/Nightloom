@@ -97,6 +97,14 @@ pub struct SessionSummary {
     pub cache_sent_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_ttl: Option<CacheTtl>,
+    /// When the newest reply was written (nightshift item 771): the latest
+    /// reply line's `at`. The window's "left it?" nudge compares it with
+    /// when he last opened the chat and last saw its foot, so a rename or a
+    /// thread binding that touches the file never reads as a new reply.
+    /// `None` before the first reply, and for a log listed before the field
+    /// until it grows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reply: Option<DateTime<Utc>>,
 }
 
 fn is_normal(mode: &ChatMode) -> bool {
@@ -262,6 +270,8 @@ enum Peek {
         /// Item 1022: the reply's `sent_at` and `cache_ttl`, when recorded.
         sent_at: Option<DateTime<Utc>>,
         ttl: Option<CacheTtl>,
+        /// The line's `at` (item 771); `None` when it does not parse.
+        at: Option<DateTime<Utc>>,
     },
     /// Everything else. Present so a line that gets past [`peek`]'s prefilter
     /// parses to "not interesting" rather than to an error.
@@ -328,11 +338,21 @@ fn peek_reply(line: &str) -> Option<Peek> {
             .next()?
             .ok()
     });
+    // Item 771: `at` is the reply event's last field, so its last
+    // `"at":` is the real one, as with `usage`.
+    let key = r#""at":"#;
+    let at = line.rfind(key).and_then(|a| {
+        serde_json::Deserializer::from_str(&line[a + key.len()..])
+            .into_iter::<DateTime<Utc>>()
+            .next()?
+            .ok()
+    });
     Some(Peek::Reply {
         model,
         used: usage.input_tokens + usage.output_tokens,
         sent_at,
         ttl,
+        at,
     })
 }
 
@@ -438,6 +458,9 @@ struct Summarizing {
     cache_sent_at: Option<DateTime<Utc>>,
     #[serde(default)]
     cache_ttl: Option<CacheTtl>,
+    /// The newest reply's time (item 771); latest wins.
+    #[serde(default)]
+    last_reply: Option<DateTime<Utc>>,
 }
 
 impl Summarizing {
@@ -475,6 +498,7 @@ impl Summarizing {
                 used,
                 sent_at,
                 ttl,
+                at,
             } => {
                 self.context_used = Some(used);
                 self.context_model = Some(model);
@@ -482,6 +506,9 @@ impl Summarizing {
                 // reply's pair, absent fields included, is the one shown.
                 self.cache_sent_at = sent_at;
                 self.cache_ttl = ttl;
+                if at.is_some() {
+                    self.last_reply = self.last_reply.max(at);
+                }
             }
             Peek::Other => {}
         }
@@ -509,6 +536,7 @@ impl Summarizing {
             context_model: self.context_model.clone(),
             cache_sent_at: self.cache_sent_at,
             cache_ttl: self.cache_ttl,
+            last_reply: self.last_reply,
         }
     }
 
@@ -596,8 +624,9 @@ const LISTING_FILE: &str = ".listing.json";
 /// since the kind (2026-09-16, nightshift backlog 102), likewise. 5 since
 /// the thread binding (2026-10-02, backlog 281). 7 since the newest
 /// reply's fill (2026-11-10, item 597): an old entry would never learn the
-/// fill of replies it had already scanned.
-const LISTING_VERSION: u32 = 8;
+/// fill of replies it had already scanned. 9 since the newest reply's time
+/// (2026-11-27, item 771), so every listing rebuilds with `last_reply`.
+const LISTING_VERSION: u32 = 9;
 
 impl Listing {
     fn read(dir: &Path) -> BTreeMap<String, Cached> {
@@ -655,12 +684,14 @@ fn peek_at(event: &SessionEvent) -> Option<Peek> {
             usage,
             sent_at,
             cache_ttl,
+            at,
             ..
         } => Some(Peek::Reply {
             model: model.clone(),
             used: usage.input_tokens + usage.output_tokens,
             sent_at: *sent_at,
             ttl: *cache_ttl,
+            at: Some(*at),
         }),
         _ => None,
     }
@@ -1182,6 +1213,7 @@ mod tests {
             context_model: None,
             cache_sent_at: None,
             cache_ttl: None,
+            last_reply: None,
         };
         assert_eq!(s.label(60), "can you help me rename a function everywhere");
 
@@ -1593,7 +1625,7 @@ mod tests {
             vec![ContentBlock::ToolUse {
                 id: "t".into(),
                 name: "x".into(),
-                input: serde_json::json!({ "usage": { "input_tokens": 7, "output_tokens": 7 } }),
+                input: serde_json::json!({ "usage": { "input_tokens": 7, "output_tokens": 7 }, "at": "1999-01-01T00:00:00Z" }),
                 signature: None,
             }],
             Some("tool_use".into()),
@@ -1616,6 +1648,12 @@ mod tests {
             }
         }
         assert_eq!(acc.context_used, Some(310_000));
+        // Item 771: the newest reply's time, off the raw line and the
+        // full-event path alike; a tool input's "at" does not fool it.
+        let raw_at = second[0].last_reply.expect("a reply time");
+        assert_eq!(acc.last_reply, Some(raw_at));
+        assert!(raw_at >= first[0].last_reply.expect("the first reply's time"));
+        assert!(second[0].last_message.is_some_and(|m| m <= raw_at));
         fs::remove_dir_all(&dir).ok();
     }
 

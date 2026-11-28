@@ -29,8 +29,20 @@ import { DragToNotes } from "../dragToNotes";
 import { type ChatKind, type ChatMode, type NightshiftInfo, type NightshiftRow, type SessionMeta } from "../types";
 import { exactTime, relativeTime } from "../time";
 import { sameMorning } from "../nightshift";
+import { splitSettled } from "../leftBehind";
+import { setSettled, settledChat } from "../leftBehind.svelte";
 
 export type SidebarLogicProps = Record<string, never>;
+
+/** Item 771: whether the sidebar's Settled section is open (folded by default), kept across launches. */
+const SETTLED_OPEN_KEY = "nightloom.sidebar.settledOpen";
+function loadSettledOpen(): boolean {
+  try {
+    return localStorage.getItem(SETTLED_OPEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 // The row menu's *Move to thread ▸* (the project's threads; one click
 // binds) and *Move to project ▸* (backlog 370: every other project, and
@@ -98,7 +110,26 @@ export function sidebarLogic(props: () => SidebarLogicProps) {
   const reveal = $derived(
     activeMain && app.sessions.some((s) => s.id === activeMain && !!s.forked_from) ? activeMain : null,
   );
-  const rows = $derived(sidebarRows(sidebarSessions(app.sessions, versions.map), forksOpen, reveal));
+  const allRows = $derived(sidebarRows(sidebarSessions(app.sessions, versions.map), forksOpen, reveal));
+  // Item 771: a chat he settled ("Left it", or the row menu's Settle) leaves the list for Settled at its foot,
+  // folded; a message he writes there takes it back.
+  const settledSplit = $derived.by(() => {
+    const said = new Map(app.sessions.map((x) => [x.id, x.last_message]));
+    return splitSettled(allRows, (id) => settledChat(id, said.get(id)));
+  });
+  const rows = $derived(settledSplit.live);
+  const settledRows = $derived(settledSplit.settled);
+  let settledOpen = $state(loadSettledOpen());
+  /** Folded, the open chat still shows under the heading (as a closed thread holding it does, item 454). */
+  const settledShown = $derived(settledOpen ? settledRows : settledRows.filter((r) => r.meta.id === app.activeSessionId));
+  function toggleSettled() {
+    settledOpen = !settledOpen;
+    try {
+      localStorage.setItem(SETTLED_OPEN_KEY, settledOpen ? "1" : "0");
+    } catch {
+      /* the fold is kept this launch */
+    }
+  }
   /** The row is lit: its chat is in front, or a version it replaced is. */
   function rowLit(id: string): boolean {
     if (chatSelected(id)) return true;
@@ -571,6 +602,12 @@ export function sidebarLogic(props: () => SidebarLogicProps) {
     app.openNext = how;
     void openSession(s.id);
   }
+  /** Item 771: the row menu's Settle, or Back to chats on a settled row. */
+  function rowSettle() {
+    const s = rowMenu?.s;
+    rowMenu = null;
+    if (s) setSettled(s.id, !settledChat(s.id, s.last_message));
+  }
   function rowRename() {
     const s = rowMenu?.s;
     rowMenu = null;
@@ -1024,6 +1061,20 @@ export function sidebarLogic(props: () => SidebarLogicProps) {
       return rowOthers;
     },
     rowRename,
+    rowSettle,
+    get rowMenuSettled() {
+      return !!rowMenu && settledChat(rowMenu.s.id, rowMenu.s.last_message);
+    },
+    get settledRows() {
+      return settledRows;
+    },
+    get settledOpen() {
+      return settledOpen;
+    },
+    get settledShown() {
+      return settledShown;
+    },
+    toggleSettled,
     rowSaveMemory,
     get rowSub() {
       return rowSub;

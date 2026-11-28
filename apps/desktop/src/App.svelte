@@ -133,6 +133,7 @@
   import Icon from "./lib/Icon.svelte";
   import { externalHref } from "./lib/extlink";
   import LaunchScreen from "./lib/LaunchScreen.svelte";
+  import LeftItCard from "./lib/LeftItCard.svelte";
   import { launch } from "./lib/launch.svelte";
   import { startScheduleRuntime } from "./lib/scheduleRuntime";
 
@@ -1128,6 +1129,8 @@
       <!-- The waiting notices (nightshift item 523) share the toasts'
            corner and stack: under the passing toasts, staying until closed
            or answered. -->
+      <!-- Item 771: "Left it?" — once a day, a couple of seconds, in the toasts' corner while it is empty. -->
+      <div class="left-corner"><LeftItCard /></div>
       {#if app.toasts.length > 0 || app.pendingApprovals.length > 0 || Object.keys(app.background).length > 0}
         <div class="toasts">
           {#each app.toasts as t (t.id)}
@@ -1546,6 +1549,13 @@
     justify-content: center;
     background: rgba(13, 13, 20, 0.65);
     z-index: 20;
+  }
+  .left-corner {
+    position: absolute;
+    bottom: 0.75rem;
+    right: 0.75rem;
+    z-index: 30;
+    pointer-events: none;
   }
   .toasts {
     position: absolute;

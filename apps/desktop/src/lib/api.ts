@@ -687,6 +687,12 @@ export function listSessions(): Promise<SessionMeta[]> {
   return invoke<SessionMeta[]>("list_sessions").then((l) => (Array.isArray(l) ? l.map(shownFirst) : l));
 }
 
+/** Item 771: every project's chats plus the unfiled ones, each with its project (`list_every_session`). */
+export type ProjectChat = SessionMeta & { project: { id: string; name: string } | null };
+export function listEverySession(): Promise<ProjectChat[]> {
+  return invoke<ProjectChat[]>("list_every_session").then((l) => (Array.isArray(l) ? l.map(shownFirst) : []));
+}
+
 /** Item 515: a chat named by its first message never shows the note for
  *  the CLI (`[Attached a file — saved for you …]`): his words, else the
  *  file names. In memory only; the log and the CLI keep the note. */

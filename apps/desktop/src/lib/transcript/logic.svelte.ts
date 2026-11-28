@@ -43,6 +43,7 @@ import { loadReplyUsage, replyUsageOf } from "../replyUsage.svelte";
 import { cacheState } from "../cache";
 import { lastReply } from "../cacheCost";
 import { holdWhileDrawing, leaveScroll, moveScroll, recallScroll, rememberScroll, NEW_SCROLL_KEY } from "../scroll.svelte";
+import { noteFoot, noteLeft as noteLeftChat, noteOpened, peekReplyJump, takeReplyJump } from "../leftBehind.svelte";
 import { BUFFER_SCREENS, FILL_SCREENS, FIRST_ITEMS, firstWindow, grown, wantsMore, windowFor, windowWants } from "../transcriptWindow.svelte";
 import { presence, watchPresence } from "../away.svelte";
 import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "../attachFiles.svelte";
@@ -1718,6 +1719,8 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
     scrollFrame = requestAnimationFrame(() => {
       scrollFrame = 0;
       if (viewport) rememberScroll(sessionKey, viewport.scrollTop, pinned, drawFrom);
+      // Item 771: the foot in view is the chat read to the end.
+      if (viewport && atBottom()) noteFoot(sessionKey);
       measureNav();
       // Near the top of what is drawn: the next batches above.
       if (viewport && wantsMore(drawFrom, viewport.scrollTop, viewport.clientHeight, BUFFER_SCREENS / 2))
@@ -1770,6 +1773,8 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
       });
     }
     const entry = recallScroll(key);
+    // Item 771: opened now ("left it?" compares this with the newest reply).
+    untrack(() => noteOpened(key));
     pinned = entry?.pinned ?? true;
     const place = entry?.holds?.length ? { holds: entry.holds, scrollTop: entry.top } : null;
     void tick().then(() => {
@@ -1814,6 +1819,8 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
   function noteLeft(key: string): void {
     const place = viewport?.isConnected && viewport.clientHeight > 0 ? readingPlace() : null;
     const last = recallScroll(key);
+    // Item 771: he leaves it now — at its foot or not, and where he stopped.
+    noteLeftChat(key, !!place && atBottom(), place ? { top: place.scrollTop, holds: place.holds } : last ? { top: last.top, holds: last.holds } : null);
     if (place) leaveScroll(key, place.scrollTop, drawnFrom ?? last?.from, place.holds);
     else if (last) leaveScroll(key, last.top, last.from, last.holds);
   }
@@ -1827,6 +1834,14 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
   onDestroy(() => {
     if (drawnKey !== null && drawnKey !== NEW_SCROLL_KEY) noteLeft(drawnKey);
   });
+  // Item 771: a quit while he sits in a chat is his leaving it too.
+  const onPageHide = () => {
+    if (drawnKey !== null && drawnKey !== NEW_SCROLL_KEY && viewport?.isConnected) noteLeftChat(drawnKey, atBottom(), null);
+  };
+  if (typeof window !== "undefined") {
+    window.addEventListener("pagehide", onPageHide);
+    onDestroy(() => window.removeEventListener("pagehide", onPageHide));
+  }
 
   // Unmounted with an editor open — the pane's active tab became a note,
   // the live tab went to the other pane — the draft is stashed for the
@@ -2124,6 +2139,19 @@ export function transcriptLogic(props: () => TranscriptLogicProps) {
     const c = chapterList.find((x) => x.key === key) ?? chapterList.find((x) => x.kind === "start");
     takeChapterJump();
     if (c) setTimeout(() => void jumpToChapter(c), 120);
+  });
+
+  // Item 771: "left it?"'s Open on a reply he never opened lands at the reply's start, not the foot.
+  $effect(() => {
+    if (inAside || !chatId || !peekReplyJump(chatId) || navTicks.length === 0) return;
+    takeReplyJump();
+    const ticks = untrack(() => navTicks);
+    let lastUser = -1;
+    ticks.forEach((t, i) => {
+      if (t.role === "user") lastUser = i;
+    });
+    const at = ticks.findIndex((t, i) => i > lastUser && t.role === "assistant");
+    if (at >= 0) setTimeout(() => void jumpTo(at, true), 120);
   });
 
   function anchorTop(index: number): number | null {

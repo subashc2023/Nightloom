@@ -1088,6 +1088,11 @@ export interface SessionMeta {
    *  tab strip's cache dot read them for a chat that is not open. */
   cache_sent_at?: string;
   cache_ttl?: CacheTtl;
+  /** When the newest reply was written (item 771, `SessionSummary::last_reply`): what "a reply came since he
+   *  opened it" compares with. Absent before a reply. */
+  last_reply?: string;
+  /** His newest message's time (item 300 B8, `SessionSummary::last_message`). */
+  last_message?: string;
 }
 
 /** Where a fork came from — the parent's id and the cut, as the creation
