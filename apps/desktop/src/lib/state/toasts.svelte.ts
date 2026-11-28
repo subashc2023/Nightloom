@@ -31,10 +31,11 @@ function arm(id: number, ms: number): void {
   timers.set(id, { timer: setTimeout(() => dismissToast(id), ms), left: ms, since: Date.now() });
 }
 
-export function addToast(text: string, action?: { label: string; run: () => void }): void {
+/** `ms`: its own stay instead of `toastMs`'s (item 771's 10 s Undo). */
+export function addToast(text: string, action?: { label: string; run: () => void }, ms?: number): void {
   const id = ++toastSeq;
   app.toasts.push(action ? { id, text, action } : { id, text });
-  arm(id, toastMs(text, action));
+  arm(id, ms ?? toastMs(text, action));
 }
 
 /**

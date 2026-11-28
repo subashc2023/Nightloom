@@ -500,6 +500,13 @@
           ondrop={(e) => T.groups.length > 0 && T.onDropChat(e, null)}
         >
           {#each T.loose as r (r.meta.id)}{@render chatRow(r)}{/each}
+          {#if T.settledRows.length > 0}
+            <!-- Item 771: the settled chats, folded at the foot (the Jarvis twin's Settled). -->
+            <button class="loose-head section-head settled-head" aria-expanded={T.settledOpen} use:tip={"Chats you left\nWrite in one and it comes back"} onclick={T.toggleSettled}>
+              <span aria-hidden="true">{T.settledOpen ? "▾" : "▸"}</span> Settled · {T.settledRows.length}
+            </button>
+            {#each T.settledShown as r (r.meta.id)}{@render chatRow(r)}{/each}
+          {/if}
         </div>
       </div>
       {#if T.threadMenu}
@@ -550,6 +557,7 @@
           <button role="menuitem" onclick={() => T.rowOpen("beside")}>Open beside <span class="row-key">drag</span></button>
           <div class="row-sep"></div>
           <button role="menuitem" onclick={T.rowRename}>Rename</button>
+          <button role="menuitem" use:tip={T.rowMenuSettled ? "Back in the list with your other chats" : "Out of the list, into Settled at its foot\nWrite in it and it comes back"} onclick={T.rowSettle}>{T.rowMenuSettled ? "Back to chats" : "Settle"}</button>
           {#if canMakeMain(app.sessions, versions.map, T.rowMenu.s.id)}
             <!-- Item 299: the fork takes this chat's place; the chat it
                  replaces stays a version (‹ › under the edited message). -->
@@ -1780,6 +1788,20 @@
   }
   /* Backlog 292: "Threads" over the groups and "Not in a thread" over the
      rest, the same small uppercase label. */
+  /* Item 771: Settled's heading, a button in the section heads' look. */
+  .settled-head {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+    border: 0;
+    background: none;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+  }
+  .settled-head:hover {
+    color: var(--text, inherit);
+  }
   .section-head {
     padding: 6px 8px 2px;
     font-size: 11px;

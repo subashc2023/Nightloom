@@ -1082,6 +1082,11 @@ export interface SessionMeta {
    *  reply. The hand-off cue reads it for a row with no reading of its own. */
   context_used?: number;
   context_model?: string;
+  /** When the newest reply was written (item 771, `SessionSummary::last_reply`): what "a reply came since he
+   *  opened it" compares with. Absent before a reply. */
+  last_reply?: string;
+  /** His newest message's time (item 300 B8, `SessionSummary::last_message`). */
+  last_message?: string;
 }
 
 /** Where a fork came from — the parent's id and the cut, as the creation

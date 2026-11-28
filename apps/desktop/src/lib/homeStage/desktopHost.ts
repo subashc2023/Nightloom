@@ -10,6 +10,7 @@ import { home, homeProject } from "../home.svelte";
 import { isScanMessage, skippedScanToday } from "../home";
 import { phase, readStatus, startBrowsers } from "../claudeBrowser.svelte";
 import ClaudeBrowserView from "../ClaudeBrowserView.svelte";
+import LeftBehind from "./LeftBehind.svelte";
 import { briefOf } from "./brief";
 import type { StageHost } from "./host";
 import type { Ev } from "./steps";
@@ -57,4 +58,5 @@ export const desktopHost: StageHost = {
     void readStatus(s);
   },
   BrowserView: ClaudeBrowserView as unknown as StageHost["BrowserView"],
+  LeftBehind: LeftBehind as unknown as StageHost["LeftBehind"],
 };

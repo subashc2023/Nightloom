@@ -71,6 +71,7 @@ export const TRANSCRIPT_FEATURES: Record<string, Where> = {
   "keep-warm notice": mainOnly("the chat's cache; the aside rides it"),
   "connect error card, error banner": mainOnly("the chat's connection; an aside's error is a note under its exchange, in the same look"),
   "continued-from line": mainOnly("a chat's lineage"),
+  "left-it open at the newest reply (item 771)": mainOnly("the nudge asks about listed chats; an aside is a thread inside one"),
   "session-cut notice (item 703), resumed": mainOnly("an aside runs no subagents to cut"),
   "queued / stalled notice, one aside at a time": asideOnly,
   "stopped-here mark, error under an exchange": asideOnly,
@@ -123,7 +124,8 @@ export const KIND_GUARDS = {
   isChat: 18,
   inPane: 8,
   // 8 since item 799: the chapters' scope (an aside keys its renames by its fold name).
-  inAside: 8,
+  // 9 since item 771: "left it?"'s Open at the newest reply, the chat's only.
+  inAside: 9,
   "src.chatActions": 10,
 } as const;
 

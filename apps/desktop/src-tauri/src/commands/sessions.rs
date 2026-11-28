@@ -16,6 +16,40 @@ pub(crate) async fn list_sessions(
     blocking(move || store::list(&dir)).await
 }
 
+/// Every project's chats plus the unfiled ones, each with its project
+/// (nightshift item 771): the "left it?" nudge looks across them all, as
+/// search's `all` scope does, so a reply he never opened in another project
+/// still counts. On the blocking pool, like the listing above; each folder's
+/// listing is the store's cached, incremental one.
+#[derive(Serialize)]
+pub(crate) struct ProjectChat {
+    project: Option<store::search::ProjectRef>,
+    #[serde(flatten)]
+    session: SessionSummary,
+}
+
+#[tauri::command]
+pub(crate) async fn list_every_session(
+    state: State<'_, AppState>,
+) -> Result<Vec<ProjectChat>, String> {
+    let projects = state.workspaces.lock().await.registry.projects();
+    let sources = store::search::all_sources(&projects, &state.default_log_dir);
+    blocking(move || {
+        let mut all = Vec::new();
+        for src in sources {
+            // One unreadable folder must not hide every other project's chats.
+            for session in store::list(&src.dir).unwrap_or_default() {
+                all.push(ProjectChat {
+                    project: src.project.clone(),
+                    session,
+                });
+            }
+        }
+        Ok::<_, String>(all)
+    })
+    .await
+}
+
 /// The same chats, filtered to the ones that mention `query`.
 ///
 /// A backend call rather than a filter over the list the sidebar already

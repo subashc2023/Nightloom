@@ -527,6 +527,14 @@
             <div class="ns-cap section-cap" role="heading" aria-level="3">{sec.label}<b class="cap-n">{sec.count}</b></div>
             {#each sec.rows as r (r.meta.id)}{@render chatRow(r)}{/each}
           {/each}
+          {#if T.settledRows.length > 0}
+            <!-- Item 771: the chats he settled ("Left it?"'s Left it, or the row menu's Settle), folded at the
+                 list's foot; a message written in one takes it back. -->
+            <button class="ns-cap section-cap settled-cap" aria-expanded={T.settledOpen} use:tip={"Chats you left\nWrite in one and it comes back"} onclick={T.toggleSettled}>
+              <span class="chev" class:open={T.settledOpen} aria-hidden="true">▸</span>Settled<b class="cap-n">{T.settledRows.length}</b>
+            </button>
+            {#each T.settledShown as r (r.meta.id)}{@render chatRow(r)}{/each}
+          {/if}
         </div>
       </div>
       {#if T.threadMenu}
@@ -581,6 +589,7 @@
           <button role="menuitem" onclick={() => T.rowOpen("beside")}>Open beside <span class="row-key">drag</span></button>
           <div class="row-sep"></div>
           <button role="menuitem" onclick={T.rowRename}>Rename</button>
+          <button role="menuitem" use:tip={T.rowMenuSettled ? "Back in the list with your other chats" : "Out of the list, into Settled at its foot\nWrite in it and it comes back"} onclick={T.rowSettle}>{T.rowMenuSettled ? "Back to chats" : "Settle"}</button>
           {#if canMakeMain(app.sessions, versions.map, T.rowMenu.s.id)}
             <!-- Item 299: the fork takes this chat's place; the chat it
                  replaces stays a version (‹ › under the edited message). -->
@@ -1407,6 +1416,28 @@
   .section-cap {
     flex: none;
     padding: 15px 10px 6px;
+  }
+  /* Item 771: Settled's heading is its fold: the ruled cap, as a button. */
+  .settled-cap {
+    width: 100%;
+    border: 0;
+    background: none;
+    cursor: pointer;
+    text-align: left;
+    border-radius: var(--r1);
+    transition: color 120ms;
+  }
+  .settled-cap:hover {
+    color: var(--ink);
+  }
+  .settled-cap .chev {
+    display: inline-block;
+    color: var(--dim);
+    font-size: 9px;
+    transition: transform 160ms ease;
+  }
+  .settled-cap .chev.open {
+    transform: rotate(90deg);
   }
   .session-list > .section-cap:first-child,
   .loose:first-child > .section-cap:first-child {

@@ -1642,6 +1642,7 @@ fn main() {
             commands::connect::connect,
             commands::agent::connect_agent,
             commands::sessions::list_sessions,
+            commands::sessions::list_every_session,
             commands::sessions::search_sessions,
             commands::sessions::search_everywhere,
             commands::sessions::rename_session,

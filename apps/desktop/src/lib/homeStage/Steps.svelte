@@ -48,6 +48,8 @@
 </script>
 
 <div class="sp">
+  <!-- Item 771: once a day, the chats he has not gone back to, above the rail's own steps (the Mac's host only). -->
+  {#if stageHost.now.LeftBehind}{@const LB = stageHost.now.LeftBehind}<LB />{/if}
   <div class="sp-list" bind:this={box} {onscroll}>
     {#each rows as r, ri (r.key)}
       {@const open = !!ui.open[r.key]}
