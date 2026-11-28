@@ -43,6 +43,6 @@ describe("993g: enrollment cannot complete without the Mac window's command", ()
       const code = readFileSync(p, "utf8").split(/^#\[cfg\(test\)\]/m)[0];
       for (const line of code.split("\n")) if (/\.allow\(&/.test(line) && !line.trim().startsWith("//")) callers.push(`${p.slice(root.length + 1)}: ${line.trim()}`);
     }
-    expect(callers).toEqual(["apps/desktop/src-tauri/src/remote.rs: phone_keys().allow(&id, chrono::Utc::now())?;"]);
+    expect(callers).toEqual(["apps/desktop/src-tauri/src/remote.rs: phone_keys().allow(&id, &code, chrono::Utc::now())?;"]);
   });
 });

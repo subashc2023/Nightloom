@@ -22,7 +22,7 @@ import type { RefActItem } from "../lib/api";
 import { itemOf, makeRefAct, makeRefRead, type RefActDeps } from "../lib/refAct";
 import { MaybeSent } from "../lib/mailHold";
 import { ApiError, Unreachable, type Client, type RefWireAct } from "./client";
-import { tapMessage, type PhoneSigner } from "./phoneKey";
+import { checkedMessage, tapMessage, type PhoneSigner } from "./phoneKey";
 
 export const NO_MAC = "Your Mac is not paired with this phone, so nothing can be sent from here.";
 export const LOST_AS_SENT = "Your phone lost your Mac as the mail was let go. It may have gone: check Sent in Gmail before sending again.";
@@ -140,7 +140,16 @@ export function phoneRefCards(mac: () => Client | null, key: PhoneTapKey) {
       if (!c) throw new Error(NO_MAC);
       return (await c.refLock(refKey(ref), mark)).maybe ?? null;
     },
-    checked: (key: string) => void mac()?.refChecked(key).catch(() => {}),
+    // "I checked: not sent": the Mac's lock goes only with this phone's signature over the item and a fresh challenge
+    // (review 2026-11-27, finding 3). A phone not allowed to send cannot clear it; the Mac's card can.
+    checked: (item: string) =>
+      void (async () => {
+        const c = mac();
+        const id = key.id();
+        if (!c || !id) return;
+        const { challenge } = await c.refChecking(item, id);
+        await c.refChecked(item, id, challenge, await key.signer.sign(checkedMessage(item, challenge)));
+      })().catch(() => {}),
     loadReach: async () => {
       const c = mac();
       if (!c) throw new Error(NO_MAC);

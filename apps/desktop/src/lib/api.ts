@@ -2630,11 +2630,11 @@ export function remoteToken(regenerate: boolean): Promise<RemoteStatus> {
   return invoke("remote_token", { regenerate });
 }
 
-/** Item 993g: a phone in Settings → Phone's lists. An ask carries the code both screens show. */
+/** Item 993g: a phone in Settings → Phone's lists. No code: only the phone shows an ask's code, and he types it here
+ *  (review 2026-11-27, finding 1). */
 export interface PhoneKeyRow {
   id: string;
   name: string;
-  code: string | null;
   at: string;
 }
 /** Item 993g: the phones asking to send from a card and the phones allowed; `error` when the Keychain could not be
@@ -2647,10 +2647,11 @@ export interface PhoneKeys {
 export function phoneKeysList(): Promise<PhoneKeys> {
   return invoke("phone_keys_list");
 }
-/** Item 993g: his Allow click (Settings → Phone). The only way a phone becomes allowed to send; called from
- *  `PhoneKeys.svelte` and nowhere else. */
-export function phoneKeyAllow(id: string): Promise<PhoneKeys> {
-  return invoke("phone_key_allow", { id });
+/** Item 993g: his Allow click (Settings → Phone), with the code he typed from his phone's screen. The only way a
+ *  phone becomes allowed to send; called from `PhoneKeys.svelte` and nowhere else. A wrong code is refused (three
+ *  drop the ask). */
+export function phoneKeyAllow(id: string, code: string): Promise<PhoneKeys> {
+  return invoke("phone_key_allow", { id, code });
 }
 export function phoneKeyDeny(id: string): Promise<PhoneKeys> {
   return invoke("phone_key_deny", { id });

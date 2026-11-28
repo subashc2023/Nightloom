@@ -816,8 +816,10 @@ impl Host for DesktopHost {
     }
 
     /// Item 993g: a phone asked to be allowed. The window is told to show
-    /// the ask (Settings → Phone, with its code) and a notification says
-    /// so. Nothing is allowed here: that is `phone_key_allow`, his click.
+    /// the ask (Settings → Phone) and a notification says so. **The code is
+    /// never shown on the Mac** (review 2026-11-27, finding 1): only the
+    /// phone shows it, and he types it beside Allow. Nothing is allowed
+    /// here: that is `phone_key_allow`, his typed code and click.
     fn phone_key_asked(&self, ask: &nightloom_service::phone_keys::Asked) {
         let _ = self.app.emit(PHONE_KEY_ASKED, &ask.id);
         use tauri_plugin_notification::NotificationExt;
@@ -827,9 +829,8 @@ impl Host for DesktopHost {
             .builder()
             .title("A phone asks to send from Nightloom")
             .body(format!(
-                "{} · code {}. Settings → Phone is open at it: press Allow only if your phone shows this code.",
-                ask.name,
-                spaced(&ask.code)
+                "{} asks. Settings → Phone is open at it: type the code your phone shows to allow it. If you did not just ask on your phone, press Don't allow.",
+                ask.name
             ))
             .show();
     }
@@ -2315,22 +2316,13 @@ pub(crate) fn phone_keys() -> Arc<nightloom_service::phone_keys::Keys> {
         .clone()
 }
 
-/// A six-digit code as both screens show it: "123 456".
-fn spaced(code: &str) -> String {
-    match code.len() {
-        6 => format!("{} {}", &code[..3], &code[3..]),
-        _ => code.to_string(),
-    }
-}
-
 /// A phone in Settings → Phone's list.
 #[derive(Serialize, Clone, Debug)]
 pub struct PhoneRow {
     pub id: String,
     pub name: String,
-    /// Asked: the code both screens show. Allowed: none.
-    pub code: Option<String>,
-    /// When it asked, or when he allowed it.
+    /// When it asked, or when he allowed it. (No code: the Mac never shows
+    /// an ask's code; he types the one his phone shows.)
     pub at: String,
 }
 
@@ -2352,7 +2344,6 @@ fn phone_rows() -> PhoneKeys {
         .map(|a| PhoneRow {
             id: a.id,
             name: a.name,
-            code: Some(spaced(&a.code)),
             at: a.asked.to_rfc3339(),
         })
         .collect();
@@ -2362,7 +2353,6 @@ fn phone_rows() -> PhoneKeys {
                 .map(|k| PhoneRow {
                     id: k.id,
                     name: k.name,
-                    code: None,
                     at: k.added.to_rfc3339(),
                 })
                 .collect(),
@@ -2383,13 +2373,19 @@ pub async fn phone_keys_list() -> Result<PhoneKeys, String> {
     crate::blocking(|| Ok::<_, String>(phone_rows())).await
 }
 
-/// **His Allow click in the Mac's window** (item 993g, blocker 2359): the
+/// **His Allow click in the Mac's window**, with the code he typed from
+/// his phone's screen (item 993g, blocker 2359; review 2026-11-27): the
 /// one caller of `Keys::allow`. A window command, so nothing outside the
-/// window (a model's shell, the listener's routes) can reach it.
+/// window (a model's shell, the listener's routes) can reach it. A wrong
+/// code is refused (three drop the ask).
 #[tauri::command]
-pub async fn phone_key_allow(app: AppHandle, id: String) -> Result<PhoneKeys, String> {
+pub async fn phone_key_allow(
+    app: AppHandle,
+    id: String,
+    code: String,
+) -> Result<PhoneKeys, String> {
     let out = crate::blocking(move || {
-        phone_keys().allow(&id, chrono::Utc::now())?;
+        phone_keys().allow(&id, &code, chrono::Utc::now())?;
         Ok::<_, String>(phone_rows())
     })
     .await;

@@ -11,7 +11,8 @@
    * **This phone must be allowed to send** (item 993g): a tap is signed with a key only this page holds
    * (`phoneKey.ts`), and the Mac takes it only from a phone he allowed in the Mac's window. Until then the sheet
    * reads (details, Open, Copy), its actions are off with the reason, and "Allow this phone to send" asks the Mac:
-   * the code shown here is the one the Mac shows beside its Allow. Drafts typed meanwhile are kept.
+   * the code shown here (and only here: the Mac never shows it) is what he types on the Mac beside Allow. Drafts typed
+   * meanwhile are kept.
    */
   import { onMount } from "svelte";
   import { NEEDS_HTTPS, phoneName, spacedCode, webSigner, type PhoneSigner } from "./phoneKey";
@@ -93,7 +94,7 @@
       case "cannot":
         return NEEDS_HTTPS;
       case "waiting":
-        return `Waiting for your Mac. Open Nightloom there (Settings → Phone) and press Allow beside the code ${spacedCode(stand.code ?? "")}. Your words are kept.`;
+        return `Waiting for your Mac. Open Nightloom there (Settings → Phone), type this code beside Allow, and press Allow: ${spacedCode(stand.code ?? "")}. Your words are kept.`;
       case "none":
         return "This phone can read here, and is not allowed to send yet. Your words are kept.";
       case "unknown":

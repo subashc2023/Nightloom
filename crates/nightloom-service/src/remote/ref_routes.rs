@@ -6,12 +6,13 @@
 //! | `GET /home/ref/reach` | the accounts Home reaches, as the last check left them (nothing is run) |
 //! | `POST /home/ref/read` | `{item}`: an email's own headers (the read-only `get_message`), for who a mail goes to |
 //! | `POST /home/ref/key` | `{public}`: where this phone's key stands → `{state: allowed \| waiting \| none, id, code?}` |
-//! | `POST /home/ref/enroll` | `{public, name}`: the phone asks to be allowed; the Mac shows the ask and its code. Allows nothing |
+//! | `POST /home/ref/enroll` | `{public, name}`: the phone asks to be allowed; the Mac shows the ask (the code only the phone shows; he types it on the Mac). Allows nothing. One new ask a minute, five a day, per bearer; refused while three wait |
 //! | `POST /home/ref/tap` | `{item, act, key}`: his press on the sheet's confirm, from an allowed phone → `{tap, challenge, hold_ms}` ([`crate::ref_gate`]) |
 //! | `POST /home/ref/act` | `{tap, item, act, sig}`: the tap let go (for a mail, after its hold), signed by that phone → the receipt |
 //! | `POST /home/ref/undo` | `{tap}`: his Undo; the tap goes |
-//! | `POST /home/ref/lock` | `{key, mark?}`: `{maybe, going, held}` (a `mark` is kept first) — the "may have gone" lock and whether a send is on its way |
-//! | `POST /home/ref/checked` | `{key}`: he checked Gmail's Sent; the lock goes |
+//! | `POST /home/ref/lock` | `{key, mark?}`: `{maybe, going, held}` (a `mark` is kept first) — the "may have gone" lock and whether a send is on its way. Only ever adds a lock |
+//! | `POST /home/ref/checking` | `{key, phone}`: a one-time challenge for an allowed phone's "I checked" |
+//! | `POST /home/ref/checked` | `{key, phone, challenge, sig}`: he checked Gmail's Sent, signed by that phone over the item and the challenge; the lock goes |
 //!
 //! **Nothing here sends without his tap** (blocker 2304): `/act` runs
 //! only a call a live, unspent tap was minted for — the same tool, every
@@ -50,6 +51,7 @@ pub(super) fn router() -> Router<Arc<Shared>> {
         .route("/home/ref/act", post(act))
         .route("/home/ref/undo", post(undo))
         .route("/home/ref/lock", post(lock))
+        .route("/home/ref/checking", post(checking))
         .route("/home/ref/checked", post(checked))
 }
 
@@ -134,14 +136,17 @@ async fn enroll(State(shared): State<Arc<Shared>>, Json(b): Json<PhoneBody>) -> 
     if let Err(e) = crate::phone_keys::key_id(&b.public) {
         return bad(e);
     }
-    match keys.ask(&b.public, &b.name, chrono::Utc::now()) {
+    match keys.ask_over_listener(&shared.token, &b.public, &b.name, chrono::Utc::now()) {
         Ok((standing, new)) => {
             if let Some(ask) = new {
                 shared.host.phone_key_asked(&ask);
             }
             Json(standing).into_response()
         }
-        Err(e) => answer::<()>(Err(e)),
+        Err(crate::phone_keys::Refused::Limit(e)) => {
+            (StatusCode::TOO_MANY_REQUESTS, e).into_response()
+        }
+        Err(crate::phone_keys::Refused::Store(e)) => answer::<()>(Err(e)),
     }
 }
 
@@ -221,10 +226,22 @@ async fn act(State(shared): State<Arc<Shared>>, Json(b): Json<ActBody>) -> Respo
     // sends nothing.
     let sig = b.sig.unwrap_or_default();
     let signed = |phone: &str, message: &str| keys.verify(phone, message, &sig);
-    if let Err(e) = ref_gate::with(|g| g.redeem(&tap, &key, &call, chrono::Utc::now(), signed)) {
-        return no(e);
-    }
+    let run = match ref_gate::with(|g| g.redeem(&tap, &key, &call, chrono::Utc::now(), signed)) {
+        Ok(run) => run,
+        Err(e) => return no(e),
+    };
+    // If the phone's connection drops now, this future is dropped mid-call
+    // and the lines after the await never run: the guard then settles the
+    // item (no longer going; a mail locked as "may have gone") once the
+    // hold and the call's deadline have passed (review finding 4).
+    let going = ref_gate::Going::new(
+        &key,
+        run,
+        shared.host.home_config(),
+        ref_gate::is_mail(&call),
+    );
     let out = shared.host.ref_act(b.item, b.act).await;
+    going.ended();
     let done = matches!(&out, Ok(r) if r.outcome == "done");
     ref_gate::with(|g| g.end(&key, done, chrono::Utc::now()));
     if let (Ok(r), Some(config)) = (&out, shared.host.home_config())
@@ -272,7 +289,66 @@ async fn lock(State(shared): State<Arc<Shared>>, Json(b): Json<KeyBody>) -> Resp
     Json(Lock { maybe, going, held }).into_response()
 }
 
-async fn checked(State(shared): State<Arc<Shared>>, Json(b): Json<KeyBody>) -> Response {
+#[derive(Deserialize)]
+struct CheckingBody {
+    key: String,
+    /// The id of this phone's key: only an allowed phone gets a challenge.
+    #[serde(default)]
+    phone: String,
+}
+
+#[derive(Serialize)]
+struct Checking {
+    challenge: String,
+}
+
+/// An allowed phone's "I checked: not sent", first half: a one-time
+/// challenge for it to sign (review 2026-11-27, finding 3).
+async fn checking(State(shared): State<Arc<Shared>>, Json(b): Json<CheckingBody>) -> Response {
+    let keys = match keys_of(&shared).await {
+        Ok(k) => k,
+        Err(r) => return *r,
+    };
+    match keys.is_allowed(&b.phone) {
+        Ok(true) => {}
+        Ok(false) => return no(crate::phone_keys::NOT_ALLOWED.into()),
+        Err(e) => return no(e),
+    }
+    let challenge = ref_gate::with(|g| g.check(&b.key, &b.phone, chrono::Utc::now()));
+    Json(Checking { challenge }).into_response()
+}
+
+#[derive(Deserialize)]
+struct CheckedBody {
+    key: String,
+    #[serde(default)]
+    phone: String,
+    #[serde(default)]
+    challenge: String,
+    /// The phone's signature over the item and the challenge.
+    #[serde(default)]
+    sig: String,
+}
+
+/// He checked Gmail's Sent, on an allowed phone: the lock goes. **The
+/// bearer alone clears nothing** (review finding 3): without that phone's
+/// signature over this item and a live challenge, the lock stays.
+async fn checked(State(shared): State<Arc<Shared>>, Json(b): Json<CheckedBody>) -> Response {
+    let keys = match keys_of(&shared).await {
+        Ok(k) => k,
+        Err(r) => return *r,
+    };
+    let Some(phone) = ref_gate::with(|g| g.take_check(&b.challenge, &b.key, chrono::Utc::now()))
+        .filter(|p| *p == b.phone)
+    else {
+        return no(
+            "No check of yours from an allowed phone stands behind this, so the lock stays.".into(),
+        );
+    };
+    let message = crate::phone_keys::checked_message(&b.key, &b.challenge);
+    if let Err(e) = keys.verify(&phone, &message, &b.sig) {
+        return no(e);
+    }
     if let Some(c) = shared.host.home_config() {
         ref_gate::maybe_clear(&c, &b.key);
     }

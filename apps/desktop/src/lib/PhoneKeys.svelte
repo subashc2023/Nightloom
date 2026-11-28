@@ -4,9 +4,11 @@
    *
    * A reply, a forward, an RSVP or a saved draft from the phone's sheet runs on the Mac only when the phone signed
    * its tap with a key that never leaves that phone. A phone gets that right here and nowhere else: it asks (its
-   * sheet's "Allow this phone to send"), the ask shows below with a six-digit code the phone shows too, and **his
-   * Allow click on this row** is what allows it (`phone_key_allow`, a window command: nothing outside this window
-   * can call it — not the listener, not a model's shell). Remove takes the right away again; it asks first.
+   * sheet's "Allow this phone to send"), the ask shows below, the phone shows a six-digit code, and **he types that
+   * code on this row and presses Allow** (`phone_key_allow`, a window command: nothing outside this window can call
+   * it — not the listener, not a model's shell). The Mac never shows the code (review 2026-11-27, finding 1): an ask
+   * a process on the Mac made has no code on his phone, so there is nothing for him to type. Three wrong codes drop
+   * the ask. Remove takes the right away again; it asks first.
    */
   import { onMount } from "svelte";
   import * as api from "./api";
@@ -14,7 +16,7 @@
 
   type Deps = {
     list: () => Promise<PhoneKeys>;
-    allow: (id: string) => Promise<PhoneKeys>;
+    allow: (id: string, code: string) => Promise<PhoneKeys>;
     deny: (id: string) => Promise<PhoneKeys>;
     revoke: (id: string) => Promise<PhoneKeys>;
     /** Calls `again` when the Mac says the lists changed; returns the stop. */
@@ -39,6 +41,10 @@
   let failed = $state<string | null>(null);
   // The allowed phone whose Remove was pressed once: the row asks before it goes.
   let removing = $state<string | null>(null);
+  // The code he is typing for each ask, by the ask's id (kept while the lists reload).
+  let typed = $state<Record<string, string>>({});
+  const digits = (s: string) => s.replace(/\D/g, "");
+  const ready = (id: string) => digits(typed[id] ?? "").length === 6;
 
   async function read(): Promise<void> {
     try {
@@ -53,6 +59,7 @@
     failed = null;
     try {
       keys = await call(id);
+      delete typed[id];
     } catch (e) {
       failed = String(e);
       await read();
@@ -80,7 +87,7 @@
 
 <p class="pk-note">
   A phone can read everything once it is paired. To send from a card (a reply, a forward, an RSVP, a saved draft) it must
-  also be allowed here: press "Allow this phone to send" on the phone, then Allow below. Nothing else can allow a phone.
+  also be allowed here: press "Allow this phone to send" on the phone, then type the code it shows beside Allow below. Nothing else can allow a phone.
 </p>
 
 {#if keys?.error}<p class="pk-err" role="alert">{keys.error}</p>{/if}
@@ -90,11 +97,22 @@
   <div class="pk-row pk-ask" data-phone-ask={r.id}>
     <div class="pk-who">
       <span class="pk-name">{r.name} asks to send</span>
-      <span class="pk-code" aria-label="Code {r.code}">{r.code}</span>
-      <span class="pk-sub">Asked {when(r)}. Allow only if you just pressed it on your phone and the phone shows this code.</span>
+      <span class="pk-sub">Asked {when(r)}. Type the six-digit code your phone shows. No code on your phone? You did not ask: press Don't allow.</span>
     </div>
     <div class="pk-acts">
-      <button type="button" class="ns-btn accent" disabled={busy !== null} onclick={() => void run(r.id, deps.allow)}>Allow</button>
+      <input
+        class="pk-code"
+        type="text"
+        inputmode="numeric"
+        autocomplete="off"
+        maxlength="7"
+        placeholder="123 456"
+        aria-label="The code your phone shows"
+        value={typed[r.id] ?? ""}
+        oninput={(e) => (typed[r.id] = (e.currentTarget as HTMLInputElement).value)}
+        onkeydown={(e) => e.key === "Enter" && ready(r.id) && void run(r.id, (id) => deps.allow(id, digits(typed[id] ?? "")))}
+      />
+      <button type="button" class="ns-btn accent" disabled={busy !== null || !ready(r.id)} onclick={() => void run(r.id, (id) => deps.allow(id, digits(typed[id] ?? "")))}>Allow</button>
       <button type="button" class="ns-btn" disabled={busy !== null} onclick={() => void run(r.id, deps.deny)}>Don't allow</button>
     </div>
   </div>
@@ -159,9 +177,19 @@
     font-weight: 500;
   }
   .pk-code {
+    width: 8.5em;
+    padding: 5px 8px;
     font-family: var(--mono);
-    font-size: 22px;
+    font-size: 16px;
     letter-spacing: 0.08em;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+  .pk-code:focus {
+    outline: none;
+    border-color: var(--accent);
   }
   .pk-acts {
     display: flex;

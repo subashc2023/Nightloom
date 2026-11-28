@@ -16,6 +16,9 @@ export const NEEDS_HTTPS = "Sending from here needs the https:// link (Settings 
 
 /** What a phone signs for one tap (`phone_keys.rs` `tap_message`). */
 export const tapMessage = (tap: string, challenge: string) => `nightloom-tap-v1\n${tap}\n${challenge}`;
+/** What a phone signs for "I checked: not sent" on an item (`phone_keys.rs` `checked_message`): clearing the Mac's
+ *  "may have gone" lock needs this phone's signature, not just the paired token (review 2026-11-27, finding 3). */
+export const checkedMessage = (key: string, challenge: string) => `nightloom-checked-v1\n${key}\n${challenge}`;
 
 export function b64url(bytes: ArrayBuffer | Uint8Array): string {
   const u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -132,5 +135,5 @@ function isStandalone(): boolean {
   return (navigator as Navigator & { standalone?: boolean }).standalone === true || !!window.matchMedia?.("(display-mode: standalone)").matches;
 }
 
-/** A six-digit code as both screens show it: "123 456". */
+/** A six-digit code as the phone shows it: "123 456" (the Mac never shows it; he types it there). */
 export const spacedCode = (code: string) => (code.length === 6 ? `${code.slice(0, 3)} ${code.slice(3)}` : code);

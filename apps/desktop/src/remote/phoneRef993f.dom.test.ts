@@ -14,7 +14,7 @@ import { Unreachable, type Client } from "./client";
 import type { HomeReach } from "../lib/home";
 import type { MailHeads } from "../lib/refCard";
 import type { RefActItem, RefActReceipt } from "../lib/api";
-import { NEEDS_HTTPS, newPair, phoneName, publicOf, signWith, tapMessage, type PhoneSigner } from "./phoneKey";
+import { checkedMessage, NEEDS_HTTPS, newPair, phoneName, publicOf, signWith, tapMessage, type PhoneSigner } from "./phoneKey";
 
 const GMAIL = "claude.ai Gmail 2117773e";
 // The tag names Priya S.; the real message is from Client Co (the 993e review's case).
@@ -63,7 +63,8 @@ function fakeMac(o: { act?: () => Promise<RefActReceipt>; lock?: string | null; 
       if (mark) (calls.push(["told", key, mark]), (server.lock = mark));
       return { maybe: server.lock, going: false, held: false };
     },
-    refChecked: async (key: string) => void calls.push(["checked", key]),
+    refChecking: async (key: string, phone: string) => (calls.push(["checking", key, phone]), { challenge: "check-1" }),
+    refChecked: async (key: string, phone: string, challenge: string, sig: string) => void calls.push(["checked", key, phone, challenge, sig]),
   };
   return { c: c as unknown as Client, calls, server, of: (k: string) => calls.filter((x) => x[0] === k) };
 }
@@ -220,7 +221,11 @@ describe("993f: the phone's sheet", () => {
     expect(refMaybe.by[KEY]).toContain("may have gone");
     expect(card()!.querySelector(".rc-maybe")).toBeTruthy();
     await click(btn("I checked: not sent"));
-    expect(m.of("checked")).toEqual([["checked", KEY]]);
+    await settle(5);
+    // Review 2026-11-27 (finding 3): the Mac's lock is cleared only with this phone's signature over the item and the
+    // Mac's fresh challenge, never the token alone.
+    expect(m.of("checking")).toEqual([["checking", KEY, "key-1"]]);
+    expect(m.of("checked")).toEqual([["checked", KEY, "key-1", "check-1", `signed(${checkedMessage(KEY, "check-1")})`]]);
   });
 
   it("the lock syncs both ways: a lock set here is told to the Mac on the next open; one cleared there clears here", async () => {

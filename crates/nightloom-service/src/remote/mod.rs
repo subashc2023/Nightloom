@@ -2721,8 +2721,8 @@ mod tests {
         fn allowed_phone(&self) -> crate::phone_keys::test_phone::Phone {
             let p = crate::phone_keys::test_phone::Phone::new();
             let now = chrono::Utc::now();
-            self.keys.ask(&p.public(), "iPhone · Safari", now).unwrap();
-            self.keys.allow(&p.id(), now).unwrap();
+            let (_, ask) = self.keys.ask(&p.public(), "iPhone · Safari", now).unwrap();
+            self.keys.allow(&p.id(), &ask.unwrap().code, now).unwrap();
             p
         }
     }
@@ -2987,13 +2987,68 @@ mod tests {
         )
         .await;
         assert_eq!(status, 403);
+        // Review 2026-11-27 finding 3: the bearer alone clears nothing —
+        // not bare, not with a made-up challenge, not with a phone he never
+        // allowed, not with his phone's signature over another item.
+        let phone = _host.allowed_phone();
+        let stranger = crate::phone_keys::test_phone::Phone::new();
+        let challenge = |who: String| {
+            let (c, base, token) = (c.clone(), base.clone(), token.clone());
+            let key = key.clone();
+            async move {
+                let (status, v) = post_json(
+                    &c,
+                    format!("{base}/checking"),
+                    &token,
+                    serde_json::json!({ "key": key, "phone": who }),
+                )
+                .await;
+                (
+                    status,
+                    v["challenge"].as_str().unwrap_or_default().to_string(),
+                )
+            }
+        };
+        assert_eq!(
+            challenge(stranger.id()).await.0,
+            403,
+            "not an allowed phone"
+        );
+        let (_, ch) = challenge(phone.id()).await;
+        let other = crate::phone_keys::checked_message("email:other", &ch);
+        for body in [
+            serde_json::json!({ "key": key }),
+            serde_json::json!({ "key": key, "phone": phone.id(), "challenge": "made-up",
+                "sig": phone.sign(&crate::phone_keys::checked_message(&key, "made-up")) }),
+            serde_json::json!({ "key": key, "phone": phone.id(), "challenge": ch, "sig": phone.sign(&other) }),
+        ] {
+            let (status, v) = post_json(&c, format!("{base}/checked"), &token, body).await;
+            assert_eq!(status, 403, "{v}");
+        }
+        let (_, ch) = challenge(phone.id()).await;
         let (status, _) = post_json(
             &c,
             format!("{base}/checked"),
             &token,
-            serde_json::json!({ "key": key }),
+            serde_json::json!({ "key": key, "phone": phone.id(), "challenge": ch,
+                "sig": stranger.sign(&crate::phone_keys::checked_message(&key, &ch)) }),
         )
         .await;
+        assert_eq!(status, 403, "another key's signature");
+        // A mark over the bearer only adds; the lock still stands.
+        let (_, v) = post_json(
+            &c,
+            format!("{base}/lock"),
+            &token,
+            serde_json::json!({ "key": key, "mark": "" }),
+        )
+        .await;
+        assert_eq!(v["maybe"], "It may have gone.", "{v}");
+        // His allowed phone's own signature over this item and a fresh challenge.
+        let (_, ch) = challenge(phone.id()).await;
+        let body = serde_json::json!({ "key": key, "phone": phone.id(), "challenge": ch,
+            "sig": phone.sign(&crate::phone_keys::checked_message(&key, &ch)) });
+        let (status, _) = post_json(&c, format!("{base}/checked"), &token, body.clone()).await;
         assert_eq!(status, 204);
         let (_, v) = post_json(
             &c,
@@ -3003,6 +3058,44 @@ mod tests {
         )
         .await;
         assert!(v["maybe"].is_null(), "{v}");
+        // The same signed check again is spent.
+        crate::ref_gate::maybe_mark(&config, &key, "It may have gone.");
+        let (status, _) = post_json(&c, format!("{base}/checked"), &token, body).await;
+        assert_eq!(status, 403, "a challenge is one check");
+        server.stop().await;
+    }
+
+    /// Review 2026-11-27 finding 1: over the listener a bearer gets one new
+    /// ask a minute (429 after), and the waiting ask is never pushed out.
+    #[tokio::test]
+    async fn asks_over_the_listener_are_rate_limited_and_never_push_one_out() {
+        let (server, host, token) = ref_up().await;
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let mine = crate::phone_keys::test_phone::Phone::new();
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/enroll"),
+            &token,
+            serde_json::json!({ "public": mine.public(), "name": "iPhone · Safari" }),
+        )
+        .await;
+        assert_eq!(status, 200, "{v}");
+        for _ in 0..5 {
+            let spam = crate::phone_keys::test_phone::Phone::new();
+            let (status, _) = post_json(
+                &c,
+                format!("{base}/enroll"),
+                &token,
+                serde_json::json!({ "public": spam.public(), "name": "iPhone · Home Screen app" }),
+            )
+            .await;
+            assert_eq!(status, 429);
+        }
+        let waiting = host.keys.asked(chrono::Utc::now());
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].id, mine.id());
+        assert_eq!(host.asks.lock().unwrap().len(), 1, "the Mac was told once");
         server.stop().await;
     }
 
@@ -3201,7 +3294,9 @@ mod tests {
         let (status, _) = post_json(&c, format!("{base}/tap"), &token, tap.clone()).await;
         assert_eq!(status, 403, "asked is not allowed");
         // What the Mac window's command does on his click.
-        host.keys.allow(&phone.id(), chrono::Utc::now()).unwrap();
+        host.keys
+            .allow(&phone.id(), &code, chrono::Utc::now())
+            .unwrap();
         let (_, v) = post_json(&c, format!("{base}/key"), &token, me).await;
         assert_eq!(v["state"], "allowed");
         let (status, _) = post_json(&c, format!("{base}/tap"), &token, tap).await;

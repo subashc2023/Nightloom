@@ -1158,8 +1158,8 @@ export class Client {
     return (await this.call("/home/ref/key", { method: "POST", body: JSON.stringify({ public: publicKey }) })).json();
   }
 
-  /** Item 993g: this phone asks to be allowed to send. The Mac shows the ask with its code; only his Allow click
-   *  there allows it. */
+  /** Item 993g: this phone asks to be allowed to send. The Mac shows the ask; the code comes back here only, and he
+   *  types it on the Mac beside Allow. */
   async refEnroll(publicKey: string, name: string): Promise<PhoneStanding> {
     return (await this.call("/home/ref/enroll", { method: "POST", body: JSON.stringify({ public: publicKey, name }) })).json();
   }
@@ -1179,9 +1179,15 @@ export class Client {
     return (await this.call("/home/ref/lock", { method: "POST", body: JSON.stringify({ key, mark: mark ?? null }) })).json();
   }
 
-  /** Item 993f: he checked Gmail's Sent; the lock goes on the Mac too. */
-  async refChecked(key: string): Promise<void> {
-    await this.call("/home/ref/checked", { method: "POST", body: JSON.stringify({ key }) });
+  /** Review 2026-11-27 (finding 3): a one-time challenge for this allowed phone's "I checked". */
+  async refChecking(key: string, phone: string): Promise<{ challenge: string }> {
+    return (await this.call("/home/ref/checking", { method: "POST", body: JSON.stringify({ key, phone }) })).json();
+  }
+
+  /** Item 993f: he checked Gmail's Sent; the lock goes on the Mac too — only with this allowed phone's signature over
+   *  the item and the Mac's challenge (the token alone clears nothing). */
+  async refChecked(key: string, phone: string, challenge: string, sig: string): Promise<void> {
+    await this.call("/home/ref/checked", { method: "POST", body: JSON.stringify({ key, phone, challenge, sig }) });
   }
 
   /** Item 741: the last note of every chat he has not opened since. */

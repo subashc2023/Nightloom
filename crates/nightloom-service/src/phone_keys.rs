@@ -11,8 +11,14 @@
 //! **The key** is a P-256 key pair made by the phone's browser (WebCrypto,
 //! not extractable, kept in the page's IndexedDB). The phone shows its
 //! public half to the Mac ([`Keys::ask`], `POST /home/ref/enroll`), which
-//! only *asks*: the key waits, with a six-digit code shown on both
-//! screens, until **his Allow click in the Mac's window** ([`Keys::allow`]).
+//! only *asks*: the key waits, with a six-digit code shown **on the phone
+//! only**, until **he types that code in the Mac's window and presses
+//! Allow** ([`Keys::allow`]). The Mac never shows the code, so an ask a
+//! process on the Mac made (with its own key) cannot be allowed by his
+//! looking at two matching screens: he has no code for it (review
+//! 2026-11-27, finding 1). Three wrong codes drop the ask; asks over the
+//! listener are rate-limited per bearer ([`Keys::ask_over_listener`]); a
+//! new ask never pushes out a waiting one.
 //! No listener route calls `allow`; the window's command is its one caller
 //! (`phone_key_allow` in the desktop crate), and a model cannot call a
 //! window command.
@@ -30,8 +36,18 @@ use std::sync::Mutex;
 
 /// How many phones may be allowed at once.
 pub const MAX_ALLOWED: usize = 8;
-/// How many asks wait at once; a newer one pushes out the oldest.
+/// How many asks wait at once; while this many wait, a new one is refused
+/// (the oldest is kept: a spam ask never pushes out his real one).
 pub const MAX_ASKED: usize = 3;
+/// Wrong codes typed on the Mac before an ask is dropped.
+pub const MAX_MISSES: u8 = 3;
+/// Asks over the listener, per bearer: at most one a minute ...
+pub const ASKS_PER_MINUTE: usize = 1;
+/// ... and five a day.
+pub const ASKS_PER_DAY: usize = 5;
+/// How long a store that could not be read (a locked Keychain) is not
+/// asked again: a burst of the phone's requests reads it once.
+pub const REFUSAL_SECS: u64 = 30;
 /// How long an ask waits for his Allow.
 pub const ASK_HOURS: i64 = 24;
 
@@ -57,12 +73,17 @@ pub struct PhoneKey {
 pub struct Asked {
     pub id: String,
     pub name: String,
-    /// Six digits, shown on the phone and on the Mac: he allows only the
-    /// ask whose code his phone shows.
-    pub code: String,
+    /// Six digits, shown **on the phone only** ([`Standing::Waiting`]); he
+    /// types them on the Mac to allow it. Never serialized and not `pub`
+    /// outside this crate, so the Mac's window cannot show it.
+    #[serde(skip)]
+    pub(crate) code: String,
     pub asked: DateTime<Utc>,
     #[serde(skip)]
     public: String,
+    /// Wrong codes typed for this ask so far.
+    #[serde(skip)]
+    misses: u8,
 }
 
 /// Where a phone's key stands.
@@ -71,7 +92,8 @@ pub struct Asked {
 pub enum Standing {
     /// He allowed it on the Mac.
     Allowed { id: String },
-    /// Asked; waiting for his Allow.
+    /// Asked; waiting for his Allow. `code` is for the phone's screen (the
+    /// listener answers this to the phone that asked).
     Waiting { id: String, code: String },
     /// Never asked, refused, revoked or expired.
     None { id: String },
@@ -128,7 +150,15 @@ pub struct Keys {
     /// The store as last read or written here, so a tap does not read the
     /// Keychain each time.
     known: Mutex<Option<Vec<PhoneKey>>>,
+    /// The store's last refusal and when: not asked again for
+    /// `refusal_for` (a locked Keychain is read once per burst, review
+    /// finding 7).
+    refused: Mutex<Option<(std::time::Instant, String)>>,
+    refusal_for: std::time::Duration,
     asked: Mutex<Vec<Asked>>,
+    /// When each bearer's asks over the listener were taken (by the
+    /// bearer's SHA-256), for the rate limit.
+    asks_by: Mutex<std::collections::HashMap<String, Vec<DateTime<Utc>>>>,
 }
 
 impl Keys {
@@ -136,7 +166,10 @@ impl Keys {
         Self {
             store,
             known: Mutex::new(None),
+            refused: Mutex::new(None),
+            refusal_for: std::time::Duration::from_secs(REFUSAL_SECS),
             asked: Mutex::new(Vec::new()),
+            asks_by: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -150,20 +183,37 @@ impl Keys {
         }
     }
 
-    /// Every phone he allowed.
+    /// Every phone he allowed. Read from the store once and kept; a
+    /// refusal (a locked Keychain) is kept for [`REFUSAL_SECS`], so the
+    /// phone's requests in that time do not each read the Keychain again.
     pub fn allowed(&self) -> Result<Vec<PhoneKey>, String> {
         let mut known = self.known.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(k) = known.as_ref() {
             return Ok(k.clone());
         }
-        let read = self.store.load()?;
-        *known = Some(read.clone());
-        Ok(read)
+        let mut refused = self.refused.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((at, why)) = refused.as_ref()
+            && at.elapsed() < self.refusal_for
+        {
+            return Err(why.clone());
+        }
+        match self.store.load() {
+            Ok(read) => {
+                *refused = None;
+                *known = Some(read.clone());
+                Ok(read)
+            }
+            Err(why) => {
+                *refused = Some((std::time::Instant::now(), why.clone()));
+                Err(why)
+            }
+        }
     }
 
     fn keep(&self, keys: Vec<PhoneKey>) -> Result<(), String> {
         self.store.save(&keys)?;
         *self.known.lock().unwrap_or_else(|p| p.into_inner()) = Some(keys);
+        *self.refused.lock().unwrap_or_else(|p| p.into_inner()) = None;
         Ok(())
     }
 
@@ -188,17 +238,72 @@ impl Keys {
 
     /// The phone asks to be allowed. **Nothing is allowed by this**: the
     /// key waits for [`Keys::allow`]. The same key asking again keeps its
-    /// code. `Ok(Some(_))` is a new ask, for the Mac to show.
+    /// code. `Ok(Some(_))` is a new ask, for the Mac to show. While
+    /// [`MAX_ASKED`] asks wait, a new one is refused (the waiting ones
+    /// stay). The listener's route goes through [`Keys::ask_over_listener`].
     pub fn ask(
         &self,
         public: &str,
         name: &str,
         now: DateTime<Utc>,
-    ) -> Result<(Standing, Option<Asked>), String> {
-        let standing = self.standing(public, now)?;
+    ) -> Result<(Standing, Option<Asked>), Refused> {
+        self.ask_inner(public, name, None, now)
+    }
+
+    /// [`Keys::ask`] from the listener, limited per bearer (`bearer`, the
+    /// token the request carried): at most [`ASKS_PER_MINUTE`] new ask a
+    /// minute and [`ASKS_PER_DAY`] a day. Asking again for a key already
+    /// waiting is not a new ask and is not counted.
+    pub fn ask_over_listener(
+        &self,
+        bearer: &str,
+        public: &str,
+        name: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(Standing, Option<Asked>), Refused> {
+        let who = crate::sync::manifest::sha256_hex(bearer.as_bytes());
+        self.ask_inner(public, name, Some(&who), now)
+    }
+
+    fn ask_inner(
+        &self,
+        public: &str,
+        name: &str,
+        bearer: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<(Standing, Option<Asked>), Refused> {
+        let standing = self.standing(public, now).map_err(Refused::Store)?;
         let Standing::None { id } = standing else {
             return Ok((standing, None));
         };
+        let mut a = self.asked.lock().unwrap_or_else(|p| p.into_inner());
+        a.retain(|x| x.asked + Duration::hours(ASK_HOURS) > now);
+        if a.len() >= MAX_ASKED {
+            return Err(Refused::Limit(format!(
+                "{MAX_ASKED} phones are asking already. Allow or refuse them on your Mac (Settings → Phone), then ask again."
+            )));
+        }
+        if let Some(who) = bearer {
+            let mut by = self.asks_by.lock().unwrap_or_else(|p| p.into_inner());
+            let times = by.entry(who.to_string()).or_default();
+            times.retain(|t| *t + Duration::days(1) > now);
+            if times
+                .iter()
+                .filter(|t| **t + Duration::minutes(1) > now)
+                .count()
+                >= ASKS_PER_MINUTE
+            {
+                return Err(Refused::Limit(
+                    "Your Mac was asked a moment ago. Wait a minute, then ask again.".into(),
+                ));
+            }
+            if times.len() >= ASKS_PER_DAY {
+                return Err(Refused::Limit(format!(
+                    "Your Mac was asked {ASKS_PER_DAY} times today. Ask again tomorrow, or allow the phone that is asking."
+                )));
+            }
+            times.push(now);
+        }
         let code = format!("{:06}", uuid::Uuid::new_v4().as_u128() % 1_000_000);
         let ask = Asked {
             id: id.clone(),
@@ -206,22 +311,41 @@ impl Keys {
             code: code.clone(),
             asked: now,
             public: public.to_string(),
+            misses: 0,
         };
-        let mut a = self.asked.lock().unwrap_or_else(|p| p.into_inner());
-        while a.len() >= MAX_ASKED {
-            a.remove(0);
-        }
         a.push(ask.clone());
         Ok((Standing::Waiting { id, code }, Some(ask)))
     }
 
-    /// **His Allow click in the Mac's window**, and nothing else: the ask
-    /// `id` becomes an allowed phone, kept in the store. The window's
-    /// command is the one caller; no listener route reaches this.
-    pub fn allow(&self, id: &str, now: DateTime<Utc>) -> Result<PhoneKey, String> {
-        let ask = self.asked(now).into_iter().find(|a| a.id == id).ok_or(
-            "That phone is no longer asking. Press \"Allow this phone to send\" on it again.",
-        )?;
+    /// **He typed his phone's code in the Mac's window and pressed Allow**,
+    /// and nothing else: the ask `id` becomes an allowed phone, kept in the
+    /// store, only when `code` is the one the phone shows. A wrong code is
+    /// counted; the [`MAX_MISSES`]th drops the ask. The window's command is
+    /// the one caller; no listener route reaches this.
+    pub fn allow(&self, id: &str, code: &str, now: DateTime<Utc>) -> Result<PhoneKey, String> {
+        const GONE: &str =
+            "That phone is no longer asking. Press \"Allow this phone to send\" on it again.";
+        let typed: String = code.chars().filter(|c| c.is_ascii_digit()).collect();
+        let ask = {
+            let mut a = self.asked.lock().unwrap_or_else(|p| p.into_inner());
+            a.retain(|x| x.asked + Duration::hours(ASK_HOURS) > now);
+            let i = a.iter().position(|x| x.id == id).ok_or(GONE)?;
+            if !same_code(&typed, &a[i].code) {
+                a[i].misses += 1;
+                if a[i].misses >= MAX_MISSES {
+                    a.remove(i);
+                    return Err(format!(
+                        "That was not the code {MAX_MISSES} times, so this ask is gone. If it was your phone, press \"Allow this phone to send\" on it again."
+                    ));
+                }
+                let left = MAX_MISSES - a[i].misses;
+                return Err(format!(
+                    "That is not the code this phone shows. Type the six digits on your phone's screen ({left} {} left).",
+                    if left == 1 { "try" } else { "tries" }
+                ));
+            }
+            a[i].clone()
+        };
         let mut keys = self.allowed()?;
         if keys.len() >= MAX_ALLOWED {
             return Err(format!(
@@ -286,6 +410,39 @@ impl Keys {
 /// for it (`phoneKey.ts` `tapMessage`).
 pub fn tap_message(tap: &str, challenge: &str) -> String {
     format!("nightloom-tap-v1\n{tap}\n{challenge}")
+}
+
+/// What the phone signs for "I checked: not sent" on an item: the item's
+/// key and the Mac's challenge for it (`phoneKey.ts` `checkedMessage`).
+/// Clearing the "may have gone" lock needs this (review finding 3).
+pub fn checked_message(key: &str, challenge: &str) -> String {
+    format!("nightloom-checked-v1\n{key}\n{challenge}")
+}
+
+/// Why an ask was refused: the store could not be read, or a limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refused {
+    Store(String),
+    Limit(String),
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::Store(s) | Refused::Limit(s) => f.write_str(s),
+        }
+    }
+}
+
+/// Whether the typed code is the ask's, without stopping at the first
+/// different digit.
+fn same_code(typed: &str, code: &str) -> bool {
+    typed.len() == code.len()
+        && typed
+            .bytes()
+            .zip(code.bytes())
+            .fold(0u8, |d, (a, b)| d | (a ^ b))
+            == 0
 }
 
 fn unb64(s: &str) -> Option<Vec<u8>> {
@@ -362,6 +519,14 @@ mod tests {
     fn keys() -> Keys {
         Keys::new(Box::<MemoryStore>::default())
     }
+    /// The code the phone `id` shows (only the phone is ever told it).
+    fn code_of(k: &Keys, id: &str) -> String {
+        k.asked(t0())
+            .into_iter()
+            .find(|a| a.id == id)
+            .map(|a| a.code)
+            .unwrap()
+    }
 
     #[test]
     fn asking_allows_nothing_until_his_allow() {
@@ -388,7 +553,7 @@ mod tests {
             NOT_ALLOWED
         );
         // His click on the Mac.
-        let key = k.allow(&p.id(), t0()).unwrap();
+        let key = k.allow(&p.id(), &code_of(&k, &p.id()), t0()).unwrap();
         assert_eq!(key.name, "iPhone · Safari");
         assert!(k.asked(t0()).is_empty());
         assert_eq!(
@@ -403,7 +568,7 @@ mod tests {
         let k = keys();
         let (mine, other) = (Phone::new(), Phone::new());
         k.ask(&mine.public(), "mine", t0()).unwrap();
-        k.allow(&mine.id(), t0()).unwrap();
+        k.allow(&mine.id(), &code_of(&k, &mine.id()), t0()).unwrap();
         let msg = tap_message("t1", "c1");
         // Another key's signature under his phone's id.
         assert_eq!(
@@ -442,7 +607,7 @@ mod tests {
         let k = keys();
         k.ask(public, "node", t0()).unwrap();
         let id = key_id(public).unwrap();
-        k.allow(&id, t0()).unwrap();
+        k.allow(&id, &code_of(&k, &id), t0()).unwrap();
         k.verify(&id, &tap_message("tap-vector", "challenge-vector"), sig)
             .unwrap();
         assert!(
@@ -458,9 +623,9 @@ mod tests {
         k.ask(&p.public(), "p", t0()).unwrap();
         // An ask he never answered is gone after a day.
         let late = t0() + Duration::hours(ASK_HOURS) + Duration::seconds(1);
-        assert!(k.allow(&p.id(), late).is_err());
+        assert!(k.allow(&p.id(), "000000", late).is_err());
         k.ask(&p.public(), "p", t0()).unwrap();
-        k.allow(&p.id(), t0()).unwrap();
+        k.allow(&p.id(), &code_of(&k, &p.id()), t0()).unwrap();
         let msg = tap_message("t", "c");
         k.verify(&p.id(), &msg, &p.sign(&msg)).unwrap();
         k.revoke(&p.id()).unwrap();
@@ -471,10 +636,10 @@ mod tests {
         // Don't allow: the ask goes and cannot be allowed afterwards.
         k.ask(&p.public(), "p", t0()).unwrap();
         k.deny(&p.id());
-        assert!(k.allow(&p.id(), t0()).is_err());
+        assert!(k.allow(&p.id(), "000000", t0()).is_err());
         // A regenerated token: every phone and ask goes.
         k.ask(&p.public(), "p", t0()).unwrap();
-        k.allow(&p.id(), t0()).unwrap();
+        k.allow(&p.id(), &code_of(&k, &p.id()), t0()).unwrap();
         k.clear().unwrap();
         assert!(k.allowed().unwrap().is_empty());
     }
@@ -508,12 +673,154 @@ mod tests {
         assert!(key_id("").is_err());
         let k = keys();
         let phones: Vec<Phone> = (0..MAX_ASKED + 1).map(|_| Phone::new()).collect();
-        for p in &phones {
+        for p in &phones[..MAX_ASKED] {
             k.ask(&p.public(), "x\u{7}\n", t0()).unwrap();
         }
+        // Review 2026-11-27 finding 1: a new ask while three wait is
+        // refused, and the oldest (his real one, say) is kept.
+        assert!(matches!(
+            k.ask(&phones[MAX_ASKED].public(), "spam", t0()),
+            Err(Refused::Limit(_))
+        ));
         let waiting = k.asked(t0());
         assert_eq!(waiting.len(), MAX_ASKED);
-        assert!(waiting.iter().all(|a| a.id != phones[0].id()));
+        assert!(waiting.iter().any(|a| a.id == phones[0].id()));
+        assert!(waiting.iter().all(|a| a.id != phones[MAX_ASKED].id()));
         assert!(waiting.iter().all(|a| a.name == "x"));
+        // One answered makes room again.
+        k.deny(&phones[1].id());
+        k.ask(&phones[MAX_ASKED].public(), "late", t0()).unwrap();
+    }
+
+    /// Review 2026-11-27 finding 1: the code is shown only on the phone
+    /// (the Mac's list carries none), he types it on the Mac to allow, and
+    /// three wrong codes drop that ask.
+    #[test]
+    fn allowing_needs_the_code_the_phone_shows_and_three_misses_drop_the_ask() {
+        let k = keys();
+        let p = Phone::new();
+        let (s, new) = k.ask(&p.public(), "iPhone · Safari", t0()).unwrap();
+        let Standing::Waiting { code: shown, .. } = s else {
+            panic!("{s:?}")
+        };
+        // What the Mac's window gets of an ask has no code in it.
+        let wire = serde_json::to_value(new.unwrap()).unwrap();
+        assert!(wire.get("code").is_none(), "{wire}");
+        assert!(!wire.to_string().contains(&shown), "{wire}");
+        let wrong = if shown == "000000" {
+            "111111"
+        } else {
+            "000000"
+        };
+        assert!(
+            k.allow(&p.id(), wrong, t0())
+                .unwrap_err()
+                .contains("2 tries left")
+        );
+        assert!(
+            k.allow(&p.id(), "", t0())
+                .unwrap_err()
+                .contains("1 try left")
+        );
+        assert!(!k.is_allowed(&p.id()).unwrap());
+        // The right code with spaces, as the phone shows it, works.
+        let spaced = format!("{} {}", &shown[..3], &shown[3..]);
+        k.allow(&p.id(), &spaced, t0()).unwrap();
+        assert!(k.is_allowed(&p.id()).unwrap());
+
+        let q = Phone::new();
+        k.ask(&q.public(), "q", t0()).unwrap();
+        let right = code_of(&k, &q.id());
+        for _ in 0..MAX_MISSES {
+            assert!(k.allow(&q.id(), "12345x", t0()).is_err());
+        }
+        assert!(k.asked(t0()).is_empty(), "three misses drop the ask");
+        assert!(
+            k.allow(&q.id(), &right, t0())
+                .unwrap_err()
+                .contains("no longer asking")
+        );
+        assert!(!k.is_allowed(&q.id()).unwrap());
+    }
+
+    /// Review 2026-11-27 finding 1: over the listener, one new ask a
+    /// minute and five a day per bearer; re-asking for a waiting key is
+    /// not counted; another bearer has its own count.
+    #[test]
+    fn asks_over_the_listener_are_limited_per_bearer() {
+        let k = keys();
+        let mut t = t0();
+        let one = Phone::new();
+        k.ask_over_listener("bearer-a", &one.public(), "a", t)
+            .unwrap();
+        // The same key again: no new ask, not refused.
+        let (s, new) = k
+            .ask_over_listener("bearer-a", &one.public(), "a", t)
+            .unwrap();
+        assert!(matches!(s, Standing::Waiting { .. }) && new.is_none());
+        k.deny(&one.id());
+        let two = Phone::new();
+        assert!(matches!(
+            k.ask_over_listener("bearer-a", &two.public(), "b", t + Duration::seconds(30)),
+            Err(Refused::Limit(m)) if m.contains("minute")
+        ));
+        // Another bearer is counted on its own.
+        k.ask_over_listener("bearer-b", &two.public(), "b", t)
+            .unwrap();
+        k.deny(&two.id());
+        // Five a day for one bearer.
+        for _ in 1..ASKS_PER_DAY {
+            t += Duration::minutes(2);
+            let p = Phone::new();
+            k.ask_over_listener("bearer-a", &p.public(), "p", t)
+                .unwrap();
+            k.deny(&p.id());
+        }
+        t += Duration::minutes(2);
+        assert!(matches!(
+            k.ask_over_listener("bearer-a", &Phone::new().public(), "p", t),
+            Err(Refused::Limit(m)) if m.contains("today")
+        ));
+        // A day after the first, room again.
+        k.ask_over_listener(
+            "bearer-a",
+            &Phone::new().public(),
+            "p",
+            t0() + Duration::days(1) + Duration::seconds(1),
+        )
+        .unwrap();
+    }
+
+    /// Review 2026-11-27 finding 7: a store that refused is not read again
+    /// for a while, so a burst of requests reads a locked Keychain once.
+    #[test]
+    fn a_refusing_store_is_read_once_per_burst() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Counting(Arc<AtomicUsize>);
+        impl Store for Counting {
+            fn load(&self) -> Result<Vec<PhoneKey>, String> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err("locked".into())
+            }
+            fn save(&self, _: &[PhoneKey]) -> Result<(), String> {
+                Err("locked".into())
+            }
+        }
+        use std::sync::Arc;
+        let reads = Arc::new(AtomicUsize::new(0));
+        let mut k = Keys::new(Box::new(Counting(reads.clone())));
+        let p = Phone::new();
+        let msg = tap_message("t", "c");
+        for _ in 0..10 {
+            assert_eq!(k.allowed().unwrap_err(), "locked");
+            assert!(k.is_allowed(&p.id()).is_err());
+            assert!(k.verify(&p.id(), &msg, &p.sign(&msg)).is_err());
+            assert!(k.standing(&p.public(), t0()).is_err());
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        // Past the window it is read again (and refuses again).
+        k.refusal_for = std::time::Duration::ZERO;
+        assert!(k.allowed().is_err());
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
     }
 }
