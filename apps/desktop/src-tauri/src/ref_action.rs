@@ -2,14 +2,19 @@
 //! his click in an event's or an email's card runs one connector call in
 //! its own throwaway Haiku process (`nightloom_service::ref_action`).
 //!
-//! **This command is the only caller of `ref_action::mint`**, and the
-//! window calls it only from a card's confirm button (`refAct.ts`). No
-//! tool of Nightloom's server, no listener route and no message into a
-//! chat reaches it: a model cannot start an action (blocker 2304).
+//! **This file is the only caller of `ref_action::mint`**, from two
+//! places, each his own press: the window's card confirm button
+//! (`refAct.ts`, the `ref_act` command) and, since item 993f, the phone's
+//! sheet — through the listener's `/home/ref/act`, which runs only a call
+//! a tap of his on the phone was minted for (`nightloom_service::ref_gate`)
+//! and reaches [`run_act`] through the Mac's `Host::ref_act`. No tool of
+//! Nightloom's server and no message into a chat reaches either: a model
+//! cannot start an action (blocker 2304).
 
 use crate::power;
 use nightloom_service::home::reach::{self, Status};
 use nightloom_service::ref_action::{self, Act, Call, Heads, Item, Receipt, Seen, Unfinished};
+use nightloom_service::ref_gate;
 use nightloom_service::{ClaudeCodeAgent, PassSpec, TurnEvent, project};
 use tauri::State;
 use tokio_util::sync::CancellationToken;
@@ -107,11 +112,47 @@ async fn run_call(
     Ok((ran.map(|_| ()).map_err(|e| e.to_string()), seen, dir))
 }
 
-/// Run his click. `Err` is a click that could not start (nothing was
-/// sent); a call that started and failed is a [`Receipt`] saying how.
+/// Run his click in the window. `Err` is a click that could not start
+/// (nothing was sent); a call that started and failed is a [`Receipt`]
+/// saying how. The one gate shared with the phone (993f) goes first: no
+/// send while the phone holds a mail for this item or one is going, and
+/// none while the "may have gone" lock either screen set stands.
 #[tauri::command]
 pub(crate) async fn ref_act(
     power: State<'_, power::Holder>,
+    item: Item,
+    act: Act,
+    binary: Option<String>,
+    safe_mode: Option<bool>,
+) -> Result<Receipt, String> {
+    let call = ref_action::call_for(&item, &act)?;
+    let key = ref_action::item_key(&item);
+    let config = project::config_dir();
+    let mail = ref_gate::is_mail(&call);
+    if mail && let Some(why) = config.as_ref().and_then(|c| ref_gate::maybe_of(c, &key)) {
+        return Err(format!("it may have gone already: {why}"));
+    }
+    if call.sends {
+        ref_gate::with(|g| g.begin_here(&key, chrono::Utc::now()))?;
+    }
+    let out = run_act(&power, item, act, binary, safe_mode).await;
+    if call.sends {
+        let done = matches!(&out, Ok(r) if r.outcome == "done");
+        ref_gate::with(|g| g.end(&key, done, chrono::Utc::now()));
+        if let (Ok(r), Some(c)) = (&out, &config)
+            && r.outcome == "unknown"
+            && mail
+        {
+            ref_gate::maybe_mark(c, &key, &r.text);
+        }
+    }
+    out
+}
+
+/// One action, from either screen, once his press let it through: the
+/// journal, the pinned call in its own process, the receipt.
+pub(crate) async fn run_act(
+    power: &power::Holder,
     item: Item,
     act: Act,
     binary: Option<String>,
@@ -134,7 +175,7 @@ pub(crate) async fn ref_act(
     } else {
         None
     };
-    let out = run_call(&power, &item, &call, binary, safe_mode).await;
+    let out = run_call(power, &item, &call, binary, safe_mode).await;
     let done = match out {
         Err(e) => Err(e),
         Ok((ran, seen, dir)) => {
@@ -167,8 +208,18 @@ pub(crate) async fn ref_read(
     binary: Option<String>,
     safe_mode: Option<bool>,
 ) -> Result<Heads, String> {
+    read_heads(&power, item, binary, safe_mode).await
+}
+
+/// [`ref_read`]'s work, for the window and the phone's sheet (993f).
+pub(crate) async fn read_heads(
+    power: &power::Holder,
+    item: Item,
+    binary: Option<String>,
+    safe_mode: Option<bool>,
+) -> Result<Heads, String> {
     let call = ref_action::read_call(&item)?;
-    let (ran, seen, dir) = run_call(&power, &item, &call, binary, safe_mode).await?;
+    let (ran, seen, dir) = run_call(power, &item, &call, binary, safe_mode).await?;
     let _ = std::fs::remove_dir_all(&dir);
     let answer = seen.iter().rev().find_map(|s| match s {
         Seen::Result { content, is_error } => Some((content, *is_error)),
@@ -216,7 +267,41 @@ fn launch() -> &'static str {
 /// run's own entries stay: their sends are still going (re-review, N5).
 #[tauri::command]
 pub(crate) fn ref_unfinished() -> Vec<Unfinished> {
-    journal_dir()
+    let left: Vec<Unfinished> = journal_dir()
         .map(|d| ref_action::journal_take(&d, launch()))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // The phone's sheet shows the same lock (993f).
+    if let Some(c) = project::config_dir() {
+        for u in left.iter().filter(|u| u.mail && !u.key.is_empty()) {
+            ref_gate::maybe_mark(
+                &c,
+                &u.key,
+                &format!(
+                    "Nightloom quit while {} was going. It may have gone: check Sent in Gmail before sending again.",
+                    u.what
+                ),
+            );
+        }
+    }
+    left
+}
+
+/// The "may have gone" lock of an item as the Mac keeps it for both
+/// screens (993f): set by an unknown outcome on either, cleared by "I
+/// checked: not sent" on either.
+#[tauri::command]
+pub(crate) fn ref_lock(key: String, mark: Option<String>) -> Option<String> {
+    let config = project::config_dir()?;
+    if let Some(why) = mark.as_deref().filter(|w| !w.is_empty()) {
+        ref_gate::maybe_mark(&config, &key, why);
+    }
+    ref_gate::maybe_of(&config, &key)
+}
+
+/// He checked Gmail's Sent (on the Mac's card): the lock goes for both screens.
+#[tauri::command]
+pub(crate) fn ref_checked(key: String) {
+    if let Some(c) = project::config_dir() {
+        ref_gate::maybe_clear(&c, &key);
+    }
 }

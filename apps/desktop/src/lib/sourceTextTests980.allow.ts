@@ -210,4 +210,6 @@ export const MARKUP_TESTS: Readonly<Record<string, string>> = {
   "lib/svelteSpaces1008.test.ts": "a whitespace lint over every component's parsed markup (item 1008)",
   // Item 1010: happy-dom has no layout, so the footer's no-overlap guarantee can only be asserted on its CSS rules.
   "lib/replyFooter1010.test.ts": "the reply footer's flex-wrap / nowrap rules are the subject; no layout engine in happy-dom (item 1010)",
+  // Item 993g: a security call-site rule, not markup: which files may name the command that allows a phone to send.
+  "lib/phoneKeyAllowCallers993g.test.ts": "who names phone_key_allow is the subject: one binding, one caller (the Allow button), none in phone- or listener-driven code (item 993g)",
 };

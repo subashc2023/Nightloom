@@ -30,6 +30,10 @@
    * the confirm shows those people — never the reply's tag — and sends to exactly them (pinned in the pass).
    * Until the read is back, or if it fails, Send stays off with the reason. A mail whose fate is unknown (let
    * through, no success back) keeps Send off for the item until he says he checked Gmail's Sent.
+   *
+   * On the phone (993f, `sheet`) the same card is a bottom sheet: it rises 300 ms with bracket ticks at its top
+   * corners (Jarvis; Classic draws the plain sheet), and goes down in 200 ms; `offline` is why nothing can reach the
+   * Mac now, which turns the actions off as a signed-out account does (his words are kept all the same).
    */
   import { onMount, tick } from "svelte";
   import AskLock from "./AskLock.svelte";
@@ -37,6 +41,7 @@
   import { tip } from "./tip";
   import { floatMenu } from "./floatMenu";
   import { hudIn, hudOut } from "./hudMenu";
+  import { sheetIn, sheetOut } from "./refSheet";
   import { refKey, type Ref } from "./refTag";
   import { MAIL_WORD, KIND_WORD, RSVP_CHOICES, accountWarn, asOfWords, detailRows, mailTo, openElsewhere, rsvpConfirm, rsvpOf, rsvpPill, whenLine } from "./refCard";
   import type { AccountState, MailMode, RefAction, RefReceipt, Rsvp, RsvpAnswer } from "./refCard";
@@ -61,6 +66,9 @@
     onaccounts,
     ondone,
     now = () => new Date(),
+    sheet = false,
+    offline = null,
+    offlineAct = null,
   }: {
     ref: Ref;
     /** The link in the reply the card opens from (and folds back into). */
@@ -89,12 +97,18 @@
     /** Something was sent for this item (the link in the reply gets its ✓). */
     ondone?: () => void;
     now?: () => Date;
+    /** The phone's bottom sheet (993f) rather than the menu card by the link. */
+    sheet?: boolean;
+    /** Why nothing can reach the Mac from here now (the phone, 993f), else null. */
+    offline?: string | null;
+    /** A way out of `offline`, when there is one (993g: "Allow this phone to send"). */
+    offlineAct?: { label: string; run: () => void } | null;
   } = $props();
 
   const SOON = "Coming soon";
   const key = $derived(refKey(ref));
   const f = $derived(ref.fields);
-  const warn = $derived(accountWarn(accountState, account));
+  const warn = $derived(offline ?? accountWarn(accountState, account));
   // The connector said the item is not there any more: nothing more can be sent for it.
   let gone = $state(false);
   const ready = $derived(!!act && warn === null && !gone);
@@ -229,6 +243,16 @@
     }
   }
 
+  // The menu card by the link (the Mac), or the phone's sheet (993f): placed, and moving, each its own way.
+  type Place = { anchor: HTMLElement | null; sheet: boolean };
+  function place(node: HTMLElement, arg: Place) {
+    if (arg.sheet) return { update() {}, destroy() {} };
+    return floatMenu(node, { anchor: arg.anchor, align: "left", maxVh: 0.86 });
+  }
+  const cardIn = (node: HTMLElement, arg: Place) => (arg.sheet ? sheetIn(node) : hudIn(node, { anchor: arg.anchor }));
+  // Its params name no link: the host may have let go of it by the time the card leaves.
+  const cardOut = (node: HTMLElement, isSheet: boolean) => (isSheet ? sheetOut(node) : hudOut(node));
+
   const hold = () => (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 300);
 
   function send(): void {
@@ -288,7 +312,8 @@
 <svelte:window onkeydowncapture={onkey} />
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<div class="ref-card hud-m" role="dialog" aria-label="{KIND_WORD[ref.kind]}: {ref.name}" tabindex="-1" bind:this={card} data-ref-card={ref.kind} data-view={view} use:floatMenu={{ anchor, align: "left", maxVh: 0.86 }} in:hudIn|global={{ anchor }} out:hudOut|global>
+<div class="ref-card" class:hud-m={!sheet} class:sheet role="dialog" aria-label="{KIND_WORD[ref.kind]}: {ref.name}" tabindex="-1" bind:this={card} data-ref-card={ref.kind} data-view={view} use:place={{ anchor, sheet }} in:cardIn|global={{ anchor, sheet }} out:cardOut|global={sheet}>
+  {#if sheet}<i class="rc-tick l" aria-hidden="true"></i><i class="rc-tick r" aria-hidden="true"></i>{/if}
   <div class="rc-head hud-head">
     <span>{KIND_WORD[ref.kind]}</span>
     <span class="rc-acct" use:tip={accountState === "unknown" ? "The connector this was read through" : "The account this was read from"}>{account}</span>
@@ -309,6 +334,7 @@
     {#if warn}
       <div class="rc-warn" role="status">
         <span>{warn}</span>
+        {#if offline && offlineAct}<button type="button" class="ns-btn small rc-b rc-allow" onclick={offlineAct.run}>{offlineAct.label}</button>{/if}
         {#if accountState !== "failed" && onaccounts}<button type="button" class="ns-btn small rc-b" onclick={onaccounts}>{accountState === "signin" ? "Sign in again…" : "Open Sources…"}</button>{/if}
       </div>
     {/if}
@@ -446,6 +472,110 @@
   }
   .ref-card > :global(*) {
     flex: none;
+  }
+  /* The phone's bottom sheet (993f): the width of the screen, above the home bar; the phone's own palette. */
+  .ref-card.sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 80;
+    width: auto;
+    max-width: none;
+    max-height: 86vh;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    font-size: 15px;
+    border-width: 1px 0 0;
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.35);
+  }
+  /* Its bracket ticks at the top corners (Jarvis), springing out as it rises. */
+  .rc-tick {
+    position: absolute;
+    top: 6px;
+    width: 12px;
+    height: 12px;
+    border: 0 solid var(--accent);
+    border-top-width: 1.5px;
+    pointer-events: none;
+    animation: rc-tick 300ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+  .rc-tick.l {
+    left: 8px;
+    border-left-width: 1.5px;
+    border-top-left-radius: 3px;
+  }
+  .rc-tick.r {
+    right: 8px;
+    border-right-width: 1.5px;
+    border-top-right-radius: 3px;
+  }
+  @keyframes rc-tick {
+    from {
+      opacity: 0;
+      transform: scale(0.4);
+    }
+  }
+  :global([data-layout="classic"]) .rc-tick {
+    display: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rc-tick {
+      animation: none;
+    }
+  }
+  /* The phone does not load the Mac's app.css: its buttons, drawn here for the sheet only, with a press that gives. */
+  .ref-card.sheet :global(.ns-btn) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 38px;
+    padding: 6px 13px;
+    border-radius: 9px;
+    border: 1px solid var(--line2);
+    background: var(--well);
+    color: var(--ink);
+    font: 500 14px var(--sans);
+    cursor: pointer;
+    white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background-color 120ms,
+      border-color 120ms,
+      transform 80ms ease-out;
+  }
+  .ref-card.sheet :global(.ns-btn:active:not(:disabled)) {
+    transform: scale(0.97);
+    background: color-mix(in srgb, var(--well) 80%, var(--ink));
+  }
+  .ref-card.sheet :global(.ns-btn.accent) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent-ink, var(--ink));
+  }
+  .ref-card.sheet :global(.ns-btn.ghost) {
+    background: transparent;
+  }
+  .ref-card.sheet :global(.ns-btn.danger) {
+    border-color: var(--failed);
+    color: var(--failed);
+  }
+  .ref-card.sheet :global(.ns-btn:disabled) {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .ref-card.sheet :global(.ns-btn.small) {
+    min-height: 32px;
+    font-size: 13px;
+  }
+  .ref-card.sheet .rc-acts,
+  .ref-card.sheet .rc-row {
+    flex-wrap: wrap;
+  }
+  .ref-card.sheet :global(kbd),
+  .ref-card.sheet .rc-ret,
+  .ref-card.sheet .rc-esc {
+    display: none;
   }
   .rc-head {
     display: flex;

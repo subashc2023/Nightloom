@@ -6,6 +6,19 @@
  * is under `client.test.ts`; `Remote.svelte` is the screen over it.
  */
 import type { Source } from "../lib/listen";
+import type { RefActItem, RefActReceipt, RefHeads } from "../lib/api";
+import type { HomeReach } from "../lib/home";
+/** An action as the listener takes it (`ref_action::Act`). */
+/** Item 993g: where a phone's key stands on the Mac (`phone_keys.rs` `Standing`). */
+export interface PhoneStanding {
+  state: "allowed" | "waiting" | "none";
+  /** The key's id: what a tap names. */
+  id: string;
+  /** Waiting: the six digits the Mac shows beside its Allow. */
+  code?: string;
+}
+
+export type RefWireAct = { type: "rsvp" | "saveDraft" | "send"; [k: string]: unknown };
 import type { HomeRoute, RoutePick, RoutesReply } from "../lib/homeRoutes";
 import type { HomeSource, SourceId } from "../lib/homeSources";
 import type { HomeTask } from "../lib/homeStage/host";
@@ -1122,6 +1135,59 @@ export class Client {
    *  its row; the macOS dialog waits for his press on the Mac. */
   async homeSourceAsk(id: SourceId): Promise<{ said: string }> {
     return (await this.call(`/home/sources/${id}/ask`, { method: "POST" })).json();
+  }
+
+  /** Item 993f: the accounts Home reaches, as the Mac's last check left them (nothing is run). */
+  async refReach(): Promise<HomeReach> {
+    return (await this.call("/home/ref/reach")).json();
+  }
+
+  /** Item 993f: an email's own headers, read on the Mac (the read-only `get_message`): who a mail really goes to. */
+  async refRead(item: RefActItem): Promise<RefHeads> {
+    return (await this.call("/home/ref/read", { method: "POST", body: JSON.stringify({ item }) })).json();
+  }
+
+  /** Item 993f: his press on the sheet's confirm — the Mac's one-time tap for exactly this action (for a mail, the
+   *  start of its hold). Nothing is sent by this. */
+  async refTap(item: RefActItem, act: RefWireAct, key: string): Promise<{ tap: string; challenge: string; hold_ms: number }> {
+    return (await this.call("/home/ref/tap", { method: "POST", body: JSON.stringify({ item, act, key }) })).json();
+  }
+
+  /** Item 993g: where this phone's key stands on the Mac (allowed to send, waiting for his Allow there, or neither). */
+  async refKey(publicKey: string): Promise<PhoneStanding> {
+    return (await this.call("/home/ref/key", { method: "POST", body: JSON.stringify({ public: publicKey }) })).json();
+  }
+
+  /** Item 993g: this phone asks to be allowed to send. The Mac shows the ask; the code comes back here only, and he
+   *  types it on the Mac beside Allow. */
+  async refEnroll(publicKey: string, name: string): Promise<PhoneStanding> {
+    return (await this.call("/home/ref/enroll", { method: "POST", body: JSON.stringify({ public: publicKey, name }) })).json();
+  }
+
+  /** Item 993f: the tap let go — the Mac runs exactly the action it was minted for, once. Never retried. */
+  async refAct(tap: string, item: RefActItem, act: RefWireAct, sig: string): Promise<RefActReceipt> {
+    return (await this.call("/home/ref/act", { method: "POST", body: JSON.stringify({ tap, item, act, sig }) })).json();
+  }
+
+  /** Item 993f: his Undo — the tap goes (lost, it expires unspent on the Mac). */
+  async refUndo(tap: string): Promise<void> {
+    await this.call("/home/ref/undo", { method: "POST", body: JSON.stringify({ tap }) });
+  }
+
+  /** Item 993f: the "may have gone" lock the Mac keeps for both screens, and whether a send is on its way. */
+  async refLock(key: string, mark?: string | null): Promise<{ maybe: string | null; going: boolean; held: boolean }> {
+    return (await this.call("/home/ref/lock", { method: "POST", body: JSON.stringify({ key, mark: mark ?? null }) })).json();
+  }
+
+  /** Review 2026-11-27 (finding 3): a one-time challenge for this allowed phone's "I checked". */
+  async refChecking(key: string, phone: string): Promise<{ challenge: string }> {
+    return (await this.call("/home/ref/checking", { method: "POST", body: JSON.stringify({ key, phone }) })).json();
+  }
+
+  /** Item 993f: he checked Gmail's Sent; the lock goes on the Mac too — only with this allowed phone's signature over
+   *  the item and the Mac's challenge (the token alone clears nothing). */
+  async refChecked(key: string, phone: string, challenge: string, sig: string): Promise<void> {
+    await this.call("/home/ref/checked", { method: "POST", body: JSON.stringify({ key, phone, challenge, sig }) });
   }
 
   /** Item 741: the last note of every chat he has not opened since. */

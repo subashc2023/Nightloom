@@ -2630,6 +2630,37 @@ export function remoteToken(regenerate: boolean): Promise<RemoteStatus> {
   return invoke("remote_token", { regenerate });
 }
 
+/** Item 993g: a phone in Settings → Phone's lists. No code: only the phone shows an ask's code, and he types it here
+ *  (review 2026-11-27, finding 1). */
+export interface PhoneKeyRow {
+  id: string;
+  name: string;
+  at: string;
+}
+/** Item 993g: the phones asking to send from a card and the phones allowed; `error` when the Keychain could not be
+ *  read (then no phone can send). */
+export interface PhoneKeys {
+  asked: PhoneKeyRow[];
+  allowed: PhoneKeyRow[];
+  error: string | null;
+}
+export function phoneKeysList(): Promise<PhoneKeys> {
+  return invoke("phone_keys_list");
+}
+/** Item 993g: his Allow click (Settings → Phone), with the code he typed from his phone's screen. The only way a
+ *  phone becomes allowed to send; called from `PhoneKeys.svelte` and nowhere else. A wrong code is refused (three
+ *  drop the ask). */
+export function phoneKeyAllow(id: string, code: string): Promise<PhoneKeys> {
+  return invoke("phone_key_allow", { id, code });
+}
+export function phoneKeyDeny(id: string): Promise<PhoneKeys> {
+  return invoke("phone_key_deny", { id });
+}
+/** Item 993g: he removed an allowed phone; it sends nothing until allowed again. */
+export function phoneKeyRevoke(id: string): Promise<PhoneKeys> {
+  return invoke("phone_key_revoke", { id });
+}
+
 /** The window's answer to a phone's `remote-send` (backlog 132): the
  *  listener is waiting on it to answer the phone — sent, queued behind
  *  the chat's turn, or not taken and why. */
@@ -2713,6 +2744,16 @@ export interface RefActReceipt {
  */
 export function refAct(item: RefActItem, act: { type: "rsvp" | "saveDraft" | "send"; [k: string]: unknown }, binary?: string, safeMode?: boolean): Promise<RefActReceipt> {
   return invoke("ref_act", { item, act, binary, safeMode });
+}
+
+/** Item 993f: the "may have gone" lock the Mac keeps for both screens (set by an unknown outcome on the Mac or the
+ *  phone), or null. */
+export function refLock(key: string, mark?: string | null): Promise<string | null> {
+  return invoke("ref_lock", { key, mark: mark ?? null });
+}
+/** Item 993f: he checked Gmail's Sent on the Mac's card: the lock goes for both screens. */
+export function refChecked(key: string): Promise<void> {
+  return invoke("ref_checked", { key });
 }
 
 /** Item 993e (review finding 1): an email's own headers, read through the connector's read-only `get_message`. */

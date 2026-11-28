@@ -32,6 +32,7 @@
 pub mod api;
 mod feedback_routes;
 mod home_routes;
+mod ref_routes;
 // Item 763 H8: what the phone's Home reads (feed, scan, held blockers, Siri's needs).
 mod home_phone_routes;
 mod job_routes;
@@ -421,6 +422,46 @@ pub trait Host: Send + Sync + 'static {
             "Only the Nightloom app on your Mac can ask for {}.",
             source.name()
         ))
+    }
+
+    /// Item 993f: whether this host runs a card's actions (the Mac does;
+    /// the away server and the default do not, and every `/home/ref` route
+    /// that would reach a connector answers [`NOT_AVAILABLE`]).
+    fn ref_acts(&self) -> bool {
+        false
+    }
+    /// Item 993g: the phones he allowed to send from a card, and the asks
+    /// waiting for his Allow in the Mac's window ([`crate::phone_keys`]).
+    /// `None` (the default, the away server): no phone can tap, so no card
+    /// action runs from a phone here.
+    fn phone_keys(&self) -> Option<Arc<crate::phone_keys::Keys>> {
+        None
+    }
+    /// Item 993g: a phone asked to be allowed; the Mac shows the ask with
+    /// its code. **Showing is all this does**: allowing is his click in
+    /// the window, which calls [`crate::phone_keys::Keys::allow`] itself.
+    fn phone_key_asked(&self, ask: &crate::phone_keys::Asked) {
+        let _ = ask;
+    }
+    /// Item 993f: run one card action on the Mac, after
+    /// [`crate::ref_gate`] redeemed his tap for exactly it. The Mac runs
+    /// 993d/993e's own path (the window crate's one `mint` caller).
+    async fn ref_act(
+        &self,
+        item: crate::ref_action::Item,
+        act: crate::ref_action::Act,
+    ) -> Result<crate::ref_action::Receipt, String> {
+        let _ = (item, act);
+        Err(NOT_AVAILABLE.into())
+    }
+    /// Item 993f: an email's own headers (the read-only `get_message`), so
+    /// the phone's sheet shows who a mail really goes to.
+    async fn ref_read(
+        &self,
+        item: crate::ref_action::Item,
+    ) -> Result<crate::ref_action::Heads, String> {
+        let _ = item;
+        Err(NOT_AVAILABLE.into())
     }
 
     /// This host's recurring jobs (item 746, [`crate::jobs`]): the store
@@ -961,6 +1002,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .merge(feedback_routes::router())
         // Item 808: Home's sources on this Mac (status, and ask the Mac).
         .merge(home_routes::router())
+        .merge(ref_routes::router())
         .merge(push_routes::router())
         .merge(rules_routes::router())
         .merge(saved_prompt_routes::router())
@@ -2659,6 +2701,688 @@ mod tests {
         fn asset(&self, path: &str) -> Option<Asset> {
             self.0.asset(path)
         }
+    }
+
+    /// Item 993f: the Mac's card runner as a stub — never a connector. Each
+    /// call it was asked to run is counted; an item id starting `unknown`
+    /// answers as a mail let through with no success back.
+    struct RefHost {
+        inner: Arc<FakeHost>,
+        ran: Mutex<Vec<(String, String)>>,
+        /// Item 993g: the allowed phones, in memory (never the Keychain).
+        keys: Arc<crate::phone_keys::Keys>,
+        /// The asks the Mac was told to show.
+        asks: Mutex<Vec<String>>,
+    }
+
+    impl RefHost {
+        /// A phone he allowed: the ask, then what the Mac window's own
+        /// command does on his Allow click.
+        fn allowed_phone(&self) -> crate::phone_keys::test_phone::Phone {
+            let p = crate::phone_keys::test_phone::Phone::new();
+            let now = chrono::Utc::now();
+            let (_, ask) = self.keys.ask(&p.public(), "iPhone · Safari", now).unwrap();
+            self.keys.allow(&p.id(), &ask.unwrap().code, now).unwrap();
+            p
+        }
+    }
+
+    /// The phone's signature for the tap `/tap` answered with.
+    fn ref_sig(p: &crate::phone_keys::test_phone::Phone, t: &serde_json::Value) -> String {
+        p.sign(&crate::phone_keys::tap_message(
+            t["tap"].as_str().unwrap(),
+            t["challenge"].as_str().unwrap(),
+        ))
+    }
+
+    #[async_trait::async_trait]
+    impl Host for RefHost {
+        async fn state(&self) -> RemoteState {
+            self.inner.state().await
+        }
+        async fn chats(&self, project: Option<&str>) -> Result<Vec<ChatRow>, String> {
+            self.inner.chats(project).await
+        }
+        async fn projects(&self) -> Result<Vec<ProjectRow>, String> {
+            self.inner.projects().await
+        }
+        async fn transcript(
+            &self,
+            project: Option<&str>,
+            id: &str,
+        ) -> Result<Vec<SessionEvent>, String> {
+            self.inner.transcript(project, id).await
+        }
+        async fn send(&self, chat: Option<&str>, text: &str) -> Result<Handed, String> {
+            self.inner.send(chat, text).await
+        }
+        async fn new_chat(&self, project: Option<&str>, text: &str) -> Result<Handed, String> {
+            self.inner.new_chat(project, text).await
+        }
+        async fn rename(&self, chat: &str, title: &str) -> Result<(), String> {
+            self.inner.rename(chat, title).await
+        }
+        async fn open(&self, chat: &str) -> Result<(), String> {
+            self.inner.open(chat).await
+        }
+        async fn approve(&self, req: ApproveRequest) -> Result<(), String> {
+            self.inner.approve(req).await
+        }
+        async fn cancel(&self, chat: Option<&str>) -> Result<(), String> {
+            self.inner.cancel(chat).await
+        }
+        fn events(&self) -> broadcast::Receiver<Event> {
+            self.inner.events()
+        }
+        fn asset(&self, path: &str) -> Option<Asset> {
+            self.inner.asset(path)
+        }
+        fn home_config(&self) -> Option<std::path::PathBuf> {
+            self.inner.home_config()
+        }
+        fn ref_acts(&self) -> bool {
+            true
+        }
+        fn phone_keys(&self) -> Option<Arc<crate::phone_keys::Keys>> {
+            Some(self.keys.clone())
+        }
+        fn phone_key_asked(&self, ask: &crate::phone_keys::Asked) {
+            self.asks.lock().unwrap().push(ask.code.clone());
+        }
+        async fn ref_act(
+            &self,
+            item: crate::ref_action::Item,
+            act: crate::ref_action::Act,
+        ) -> Result<crate::ref_action::Receipt, String> {
+            let what = match &act {
+                crate::ref_action::Act::Send { body, .. } => format!("send:{body}"),
+                crate::ref_action::Act::Rsvp { answer, .. } => format!("rsvp:{answer}"),
+                crate::ref_action::Act::SaveDraft { .. } => "draft".into(),
+            };
+            self.ran.lock().unwrap().push((item.id.clone(), what));
+            Ok(crate::ref_action::Receipt {
+                outcome: if item.id.starts_with("unknown") {
+                    "unknown"
+                } else {
+                    "done"
+                },
+                text: "Sent to client@co.example".into(),
+            })
+        }
+    }
+
+    async fn ref_up() -> (Server, Arc<RefHost>, String) {
+        let (inner, _tx) = FakeHost::new();
+        let host = Arc::new(RefHost {
+            inner,
+            ran: Mutex::new(Vec::new()),
+            keys: Arc::new(crate::phone_keys::Keys::new(Box::<
+                crate::phone_keys::MemoryStore,
+            >::default())),
+            asks: Mutex::new(Vec::new()),
+        });
+        let token = token::generate();
+        let server =
+            Server::start_for_test("127.0.0.1:0".parse().unwrap(), token.clone(), host.clone())
+                .await
+                .unwrap();
+        (server, host, token)
+    }
+
+    fn ref_mail(id: &str) -> serde_json::Value {
+        serde_json::json!({ "kind": "email", "id": id, "src": "claude.ai Gmail 2117773e", "name": "Speaker confirmation" })
+    }
+    fn ref_reply(body: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "send", "mode": "reply", "to": "Client Co", "body": body,
+            "recipients": { "to": ["client@co.example"], "cc": [] } })
+    }
+
+    /// Item 993f (blocker 2304): the listener runs no card action without a
+    /// tap of his minted for exactly it — none, a made-up one, one for other
+    /// words, one let go before the hold ended, one he undid, one spent.
+    #[tokio::test]
+    async fn the_listener_refuses_a_send_without_a_pass_minted_from_his_tap() {
+        let (server, host, token) = ref_up().await;
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let id = format!("m-{}", uuid::Uuid::new_v4().simple());
+        let item = ref_mail(&id);
+        let reply = ref_reply("Yes, Thursday works.");
+        let phone = host.allowed_phone();
+        // No tap, and a made-up one.
+        for tap in [serde_json::Value::Null, serde_json::json!("made-up")] {
+            let (status, v) = post_json(
+                &c,
+                format!("{base}/act"),
+                &token,
+                serde_json::json!({ "tap": tap, "item": item, "act": reply }),
+            )
+            .await;
+            assert_eq!(status, 403, "{v}");
+        }
+        // His tap for these words; let go at once (the hold has not ended).
+        let (status, t) = post_json(
+            &c,
+            format!("{base}/tap"),
+            &token,
+            serde_json::json!({ "item": item, "act": reply, "key": phone.id() }),
+        )
+        .await;
+        assert_eq!(status, 200, "{t}");
+        assert_eq!(t["hold_ms"], 5000);
+        let tap = t["tap"].as_str().unwrap().to_string();
+        // Every let-go below carries his phone's signature, so each refusal
+        // is the tap rule's own (993g's are tested beside this).
+        let sig = ref_sig(&phone, &t);
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/act"),
+            &token,
+            serde_json::json!({ "tap": tap, "item": item, "act": reply, "sig": sig }),
+        )
+        .await;
+        assert_eq!(status, 403, "before the hold ended");
+        // Other words under his tap.
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/act"),
+            &token,
+            serde_json::json!({ "tap": tap, "item": item, "act": ref_reply("Yes, Friday works."), "sig": sig }),
+        )
+        .await;
+        assert_eq!(status, 403, "not what he tapped");
+        // A second tap for the item while his is held.
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/tap"),
+            &token,
+            serde_json::json!({ "item": item, "act": reply, "key": phone.id() }),
+        )
+        .await;
+        assert_eq!(status, 403, "one hold per item");
+        // His Undo: the tap goes, and nothing can use it afterwards.
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/undo"),
+            &token,
+            serde_json::json!({ "tap": tap }),
+        )
+        .await;
+        assert_eq!(status, 204);
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/act"),
+            &token,
+            serde_json::json!({ "tap": tap, "item": item, "act": reply, "sig": sig }),
+        )
+        .await;
+        assert_eq!(status, 403, "undone");
+        assert!(
+            host.ran.lock().unwrap().is_empty(),
+            "nothing ran: {:?}",
+            host.ran.lock().unwrap()
+        );
+        server.stop().await;
+    }
+
+    /// Item 993f: an answer to an invitation from the phone runs once on its
+    /// tap; the same tap again runs nothing.
+    #[tokio::test]
+    async fn a_phone_rsvp_runs_once_on_its_tap() {
+        let (server, host, token) = ref_up().await;
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let id = format!("e-{}", uuid::Uuid::new_v4().simple());
+        let item = serde_json::json!({ "kind": "event", "id": id, "src": "claude.ai Google Calendar", "name": "COAST Meeting" });
+        let act = serde_json::json!({ "type": "rsvp", "answer": "accepted", "note": "" });
+        let phone = host.allowed_phone();
+        let (status, t) = post_json(
+            &c,
+            format!("{base}/tap"),
+            &token,
+            serde_json::json!({ "item": item, "act": act, "key": phone.id() }),
+        )
+        .await;
+        assert_eq!(status, 200, "{t}");
+        assert_eq!(t["hold_ms"], 0);
+        let body = serde_json::json!({ "tap": t["tap"], "item": item, "act": act, "sig": ref_sig(&phone, &t) });
+        let (status, r) = post_json(&c, format!("{base}/act"), &token, body.clone()).await;
+        assert_eq!(status, 200, "{r}");
+        assert_eq!(r["outcome"], "done");
+        let (status, _) = post_json(&c, format!("{base}/act"), &token, body).await;
+        assert_eq!(status, 403, "a tap is one press");
+        assert_eq!(
+            *host.ran.lock().unwrap(),
+            vec![(id, "rsvp:accepted".to_string())]
+        );
+        server.stop().await;
+    }
+
+    /// Item 993f: a mail whose fate is unknown locks Send for the item on
+    /// both screens until he says he checked.
+    #[tokio::test]
+    async fn an_unknown_outcome_locks_the_item_until_he_checked() {
+        let (server, _host, token) = ref_up().await;
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let id = format!("unknown-{}", uuid::Uuid::new_v4().simple());
+        let key = format!("email:claude.ai Gmail 2117773e:{id}");
+        let config = _host.home_config().unwrap();
+        crate::ref_gate::maybe_mark(&config, &key, "It may have gone.");
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/lock"),
+            &token,
+            serde_json::json!({ "key": key }),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(v["maybe"], "It may have gone.");
+        // A new tap for a mail on a locked item is refused.
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/tap"),
+            &token,
+            serde_json::json!({ "item": ref_mail(&id), "act": ref_reply("again"), "key": _host.allowed_phone().id() }),
+        )
+        .await;
+        assert_eq!(status, 403);
+        // Review 2026-11-27 finding 3: the bearer alone clears nothing —
+        // not bare, not with a made-up challenge, not with a phone he never
+        // allowed, not with his phone's signature over another item.
+        let phone = _host.allowed_phone();
+        let stranger = crate::phone_keys::test_phone::Phone::new();
+        let challenge = |who: String| {
+            let (c, base, token) = (c.clone(), base.clone(), token.clone());
+            let key = key.clone();
+            async move {
+                let (status, v) = post_json(
+                    &c,
+                    format!("{base}/checking"),
+                    &token,
+                    serde_json::json!({ "key": key, "phone": who }),
+                )
+                .await;
+                (
+                    status,
+                    v["challenge"].as_str().unwrap_or_default().to_string(),
+                )
+            }
+        };
+        assert_eq!(
+            challenge(stranger.id()).await.0,
+            403,
+            "not an allowed phone"
+        );
+        let (_, ch) = challenge(phone.id()).await;
+        let other = crate::phone_keys::checked_message("email:other", &ch);
+        for body in [
+            serde_json::json!({ "key": key }),
+            serde_json::json!({ "key": key, "phone": phone.id(), "challenge": "made-up",
+                "sig": phone.sign(&crate::phone_keys::checked_message(&key, "made-up")) }),
+            serde_json::json!({ "key": key, "phone": phone.id(), "challenge": ch, "sig": phone.sign(&other) }),
+        ] {
+            let (status, v) = post_json(&c, format!("{base}/checked"), &token, body).await;
+            assert_eq!(status, 403, "{v}");
+        }
+        let (_, ch) = challenge(phone.id()).await;
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/checked"),
+            &token,
+            serde_json::json!({ "key": key, "phone": phone.id(), "challenge": ch,
+                "sig": stranger.sign(&crate::phone_keys::checked_message(&key, &ch)) }),
+        )
+        .await;
+        assert_eq!(status, 403, "another key's signature");
+        // A mark over the bearer only adds; the lock still stands.
+        let (_, v) = post_json(
+            &c,
+            format!("{base}/lock"),
+            &token,
+            serde_json::json!({ "key": key, "mark": "" }),
+        )
+        .await;
+        assert_eq!(v["maybe"], "It may have gone.", "{v}");
+        // His allowed phone's own signature over this item and a fresh challenge.
+        let (_, ch) = challenge(phone.id()).await;
+        let body = serde_json::json!({ "key": key, "phone": phone.id(), "challenge": ch,
+            "sig": phone.sign(&crate::phone_keys::checked_message(&key, &ch)) });
+        let (status, _) = post_json(&c, format!("{base}/checked"), &token, body.clone()).await;
+        assert_eq!(status, 204);
+        let (_, v) = post_json(
+            &c,
+            format!("{base}/lock"),
+            &token,
+            serde_json::json!({ "key": key }),
+        )
+        .await;
+        assert!(v["maybe"].is_null(), "{v}");
+        // The same signed check again is spent.
+        crate::ref_gate::maybe_mark(&config, &key, "It may have gone.");
+        let (status, _) = post_json(&c, format!("{base}/checked"), &token, body).await;
+        assert_eq!(status, 403, "a challenge is one check");
+        server.stop().await;
+    }
+
+    /// Review 2026-11-27 finding 1: over the listener a bearer gets one new
+    /// ask a minute (429 after), and the waiting ask is never pushed out.
+    #[tokio::test]
+    async fn asks_over_the_listener_are_rate_limited_and_never_push_one_out() {
+        let (server, host, token) = ref_up().await;
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let mine = crate::phone_keys::test_phone::Phone::new();
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/enroll"),
+            &token,
+            serde_json::json!({ "public": mine.public(), "name": "iPhone · Safari" }),
+        )
+        .await;
+        assert_eq!(status, 200, "{v}");
+        for _ in 0..5 {
+            let spam = crate::phone_keys::test_phone::Phone::new();
+            let (status, _) = post_json(
+                &c,
+                format!("{base}/enroll"),
+                &token,
+                serde_json::json!({ "public": spam.public(), "name": "iPhone · Home Screen app" }),
+            )
+            .await;
+            assert_eq!(status, 429);
+        }
+        let waiting = host.keys.asked(chrono::Utc::now());
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].id, mine.id());
+        assert_eq!(host.asks.lock().unwrap().len(), 1, "the Mac was told once");
+        server.stop().await;
+    }
+
+    fn ref_event(id: &str) -> serde_json::Value {
+        serde_json::json!({ "kind": "event", "id": id, "src": "claude.ai Google Calendar", "name": "COAST Meeting" })
+    }
+    fn ref_rsvp() -> serde_json::Value {
+        serde_json::json!({ "type": "rsvp", "answer": "accepted", "note": "" })
+    }
+
+    /// Item 993g (blocker 2359): the bearer is shared and kept on the Mac,
+    /// so a request carrying only it taps nothing and runs nothing. No key,
+    /// a made-up key, a phone that asked but was not allowed: no tap. A tap
+    /// let go with no signature, another key's, or one over other words:
+    /// nothing runs.
+    #[tokio::test]
+    async fn a_tap_or_act_with_only_the_bearer_is_refused() {
+        let (server, host, token) = ref_up().await;
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let id = format!("e-{}", uuid::Uuid::new_v4().simple());
+        let (item, act) = (ref_event(&id), ref_rsvp());
+        // A phone that asked and was never allowed on the Mac.
+        let asked = crate::phone_keys::test_phone::Phone::new();
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/enroll"),
+            &token,
+            serde_json::json!({ "public": asked.public(), "name": "a script" }),
+        )
+        .await;
+        assert_eq!(status, 200, "{v}");
+        for key in [
+            serde_json::Value::Null,
+            serde_json::json!(""),
+            serde_json::json!("made-up"),
+            serde_json::json!(asked.id()),
+        ] {
+            let (status, v) = post_json(
+                &c,
+                format!("{base}/tap"),
+                &token,
+                serde_json::json!({ "item": item, "act": act, "key": key }),
+            )
+            .await;
+            assert_eq!(status, 403, "{key}: {v}");
+        }
+        // The same for a mail.
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/tap"),
+            &token,
+            serde_json::json!({ "item": ref_mail("m-bearer"), "act": ref_reply("hi") }),
+        )
+        .await;
+        assert_eq!(status, 403);
+        // His allowed phone taps; whoever lets the tap go must be it.
+        let phone = host.allowed_phone();
+        let (status, t) = post_json(
+            &c,
+            format!("{base}/tap"),
+            &token,
+            serde_json::json!({ "item": item, "act": act, "key": phone.id() }),
+        )
+        .await;
+        assert_eq!(status, 200, "{t}");
+        let tap = t["tap"].as_str().unwrap();
+        let challenge = t["challenge"].as_str().unwrap();
+        let other = crate::phone_keys::test_phone::Phone::new();
+        for sig in [
+            serde_json::Value::Null,
+            serde_json::json!(""),
+            serde_json::json!("AAAA"),
+            // Another key's signature over the right words.
+            serde_json::json!(ref_sig(&other, &t)),
+            // The asked-but-not-allowed key's.
+            serde_json::json!(ref_sig(&asked, &t)),
+            // His phone's signature over other words.
+            serde_json::json!(phone.sign(&crate::phone_keys::tap_message(tap, "another"))),
+            serde_json::json!(phone.sign(&crate::phone_keys::tap_message("another", challenge))),
+            serde_json::json!(phone.sign(tap)),
+        ] {
+            let (status, v) = post_json(
+                &c,
+                format!("{base}/act"),
+                &token,
+                serde_json::json!({ "tap": tap, "item": item, "act": act, "sig": sig }),
+            )
+            .await;
+            assert_eq!(status, 403, "{sig}: {v}");
+        }
+        assert!(host.ran.lock().unwrap().is_empty(), "nothing ran");
+        // The refusals were the signature's: his phone's own lets it go.
+        let (status, r) = post_json(
+            &c,
+            format!("{base}/act"),
+            &token,
+            serde_json::json!({ "tap": tap, "item": item, "act": act, "sig": ref_sig(&phone, &t) }),
+        )
+        .await;
+        assert_eq!(status, 200, "{r}");
+        assert_eq!(host.ran.lock().unwrap().len(), 1);
+        server.stop().await;
+    }
+
+    /// Item 993g: a signature works once, for one tap. The same request
+    /// again runs nothing; a signature made for one tap, or over one tap's
+    /// challenge, does not let another tap go. (A tap past its life, and
+    /// its challenge with it: `ref_gate`'s own test, by the clock.)
+    #[tokio::test]
+    async fn a_replayed_signature_or_a_stale_challenge_is_refused() {
+        let (server, host, token) = ref_up().await;
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let id = format!("e-{}", uuid::Uuid::new_v4().simple());
+        let (item, act) = (ref_event(&id), ref_rsvp());
+        let phone = host.allowed_phone();
+        let tap_body = serde_json::json!({ "item": item, "act": act, "key": phone.id() });
+        let (status, t1) = post_json(&c, format!("{base}/tap"), &token, tap_body.clone()).await;
+        assert_eq!(status, 200, "{t1}");
+        let sig1 = ref_sig(&phone, &t1);
+        let body = serde_json::json!({ "tap": t1["tap"], "item": item, "act": act, "sig": sig1 });
+        let (status, _) = post_json(&c, format!("{base}/act"), &token, body.clone()).await;
+        assert_eq!(status, 200);
+        // Replayed whole.
+        let (status, _) = post_json(&c, format!("{base}/act"), &token, body).await;
+        assert_eq!(status, 403, "a spent tap");
+        // A new tap: a new challenge. The old signature, and a signature
+        // over the new tap with the old (stale) challenge, let nothing go.
+        let (status, t2) = post_json(&c, format!("{base}/tap"), &token, tap_body).await;
+        assert_eq!(status, 200, "{t2}");
+        assert_ne!(t1["challenge"], t2["challenge"]);
+        let stale = phone.sign(&crate::phone_keys::tap_message(
+            t2["tap"].as_str().unwrap(),
+            t1["challenge"].as_str().unwrap(),
+        ));
+        for sig in [sig1, stale] {
+            let (status, v) = post_json(
+                &c,
+                format!("{base}/act"),
+                &token,
+                serde_json::json!({ "tap": t2["tap"], "item": item, "act": act, "sig": sig }),
+            )
+            .await;
+            assert_eq!(status, 403, "{v}");
+        }
+        assert_eq!(host.ran.lock().unwrap().len(), 1, "one press, one run");
+        server.stop().await;
+    }
+
+    /// Item 993g: a phone becomes allowed only by the Mac window's own
+    /// command (`Keys::allow`, his Allow click). Over the listener, with the
+    /// bearer, a key can ask and be shown, and that is all: no route allows
+    /// it, and asking again or claiming to be allowed changes nothing.
+    #[tokio::test]
+    async fn a_phone_is_allowed_only_by_the_macs_own_command() {
+        let (server, host, token) = ref_up().await;
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let phone = crate::phone_keys::test_phone::Phone::new();
+        let me = serde_json::json!({ "public": phone.public(), "name": "iPhone · Safari" });
+        let (status, v) = post_json(&c, format!("{base}/key"), &token, me.clone()).await;
+        assert_eq!((status, v["state"].as_str()), (200, Some("none")), "{v}");
+        let (status, v) = post_json(&c, format!("{base}/enroll"), &token, me.clone()).await;
+        assert_eq!((status, v["state"].as_str()), (200, Some("waiting")), "{v}");
+        let code = v["code"].as_str().unwrap().to_string();
+        // The Mac was told to show the ask, with the code the phone shows.
+        assert_eq!(*host.asks.lock().unwrap(), vec![code.clone()]);
+        // Asking again, and asking while claiming the answer: still waiting.
+        for body in [
+            me.clone(),
+            serde_json::json!({ "public": phone.public(), "name": "x", "state": "allowed", "allow": true, "allowed": true, "code": code }),
+        ] {
+            let (_, v) = post_json(&c, format!("{base}/enroll"), &token, body).await;
+            assert_eq!(v["state"], "waiting", "{v}");
+            assert_eq!(v["code"], code.as_str());
+        }
+        assert_eq!(host.asks.lock().unwrap().len(), 1, "one ask shown");
+        // No road over the listener finishes it.
+        for path in [
+            "allow",
+            "key/allow",
+            "enroll/allow",
+            "enroll/confirm",
+            "approve",
+            "keys",
+        ] {
+            let body =
+                serde_json::json!({ "id": phone.id(), "public": phone.public(), "code": code });
+            let (status, v) = post_json(&c, format!("{base}/{path}"), &token, body).await;
+            assert_eq!(status, 404, "{path}: {v}");
+        }
+        let (_, v) = post_json(&c, format!("{base}/key"), &token, me.clone()).await;
+        assert_eq!(v["state"], "waiting");
+        let tap = serde_json::json!({ "item": ref_event("e-enroll"), "act": ref_rsvp(), "key": phone.id() });
+        let (status, _) = post_json(&c, format!("{base}/tap"), &token, tap.clone()).await;
+        assert_eq!(status, 403, "asked is not allowed");
+        // What the Mac window's command does on his click.
+        host.keys
+            .allow(&phone.id(), &code, chrono::Utc::now())
+            .unwrap();
+        let (_, v) = post_json(&c, format!("{base}/key"), &token, me).await;
+        assert_eq!(v["state"], "allowed");
+        let (status, _) = post_json(&c, format!("{base}/tap"), &token, tap).await;
+        assert_eq!(status, 200);
+        // Not a key at all.
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/enroll"),
+            &token,
+            serde_json::json!({ "public": "AAAA", "name": "x" }),
+        )
+        .await;
+        assert_eq!(status, 400);
+        server.stop().await;
+    }
+
+    /// Item 993g: a phone he removed on the Mac sends nothing, a mail
+    /// already in its hold included.
+    #[tokio::test]
+    async fn a_phone_removed_during_a_hold_sends_nothing() {
+        let (server, host, token) = ref_up().await;
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let id = format!("e-{}", uuid::Uuid::new_v4().simple());
+        let (item, act) = (ref_event(&id), ref_rsvp());
+        let phone = host.allowed_phone();
+        let (status, t) = post_json(
+            &c,
+            format!("{base}/tap"),
+            &token,
+            serde_json::json!({ "item": item, "act": act, "key": phone.id() }),
+        )
+        .await;
+        assert_eq!(status, 200, "{t}");
+        host.keys.revoke(&phone.id()).unwrap();
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/act"),
+            &token,
+            serde_json::json!({ "tap": t["tap"], "item": item, "act": act, "sig": ref_sig(&phone, &t) }),
+        )
+        .await;
+        assert_eq!(status, 403, "{v}");
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/tap"),
+            &token,
+            serde_json::json!({ "item": ref_event("e-after"), "act": act, "key": phone.id() }),
+        )
+        .await;
+        assert_eq!(status, 403);
+        assert!(host.ran.lock().unwrap().is_empty());
+        server.stop().await;
+    }
+
+    /// Item 993f: a host without the Mac's runner (the away server) taps,
+    /// reads and runs nothing.
+    #[tokio::test]
+    async fn the_away_server_runs_no_card_action() {
+        let (host, _) = FakeHost::new();
+        let token = token::generate();
+        let server = Server::start_for_test(
+            "127.0.0.1:0".parse().unwrap(),
+            token.clone(),
+            Arc::new(BareHost(host)),
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}/api/home/ref", server.addr());
+        let c = client();
+        let item = ref_mail("m-away");
+        for (path, body) in [
+            (
+                "tap",
+                serde_json::json!({ "item": item, "act": ref_reply("hi") }),
+            ),
+            (
+                "act",
+                serde_json::json!({ "tap": "t", "item": item, "act": ref_reply("hi") }),
+            ),
+            ("read", serde_json::json!({ "item": item })),
+        ] {
+            let (status, v) = post_json(&c, format!("{base}/{path}"), &token, body).await;
+            assert_eq!(status, 501, "{path}: {v}");
+        }
+        server.stop().await;
     }
 
     async fn up() -> (Server, Arc<FakeHost>, broadcast::Sender<Event>, String) {

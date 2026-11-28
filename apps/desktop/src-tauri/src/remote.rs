@@ -167,6 +167,8 @@ const VOICE_IDLE: Duration = Duration::from_secs(600);
 /// Item 801: a Brief is one short Haiku turn; give it a generous minute
 /// and a half.
 const BRIEF_WAIT: Duration = Duration::from_secs(90);
+/// How long the window has to name the rail's agent settings (993f).
+const REF_AGENT_WAIT: Duration = Duration::from_secs(10);
 
 impl DesktopHost {
     fn new(app: AppHandle) -> Arc<Self> {
@@ -803,6 +805,60 @@ impl Host for DesktopHost {
         }
     }
 
+    /// Item 993f: the Mac runs a card's actions for the phone's sheet.
+    fn ref_acts(&self) -> bool {
+        true
+    }
+
+    /// Item 993g: the phones he allowed to send, in the Keychain.
+    fn phone_keys(&self) -> Option<Arc<nightloom_service::phone_keys::Keys>> {
+        Some(phone_keys())
+    }
+
+    /// Item 993g: a phone asked to be allowed. The window is told to show
+    /// the ask (Settings → Phone) and a notification says so. **The code is
+    /// never shown on the Mac** (review 2026-11-27, finding 1): only the
+    /// phone shows it, and he types it beside Allow. Nothing is allowed
+    /// here: that is `phone_key_allow`, his typed code and click.
+    fn phone_key_asked(&self, ask: &nightloom_service::phone_keys::Asked) {
+        let _ = self.app.emit(PHONE_KEY_ASKED, &ask.id);
+        use tauri_plugin_notification::NotificationExt;
+        let _ = self
+            .app
+            .notification()
+            .builder()
+            .title("A phone asks to send from Nightloom")
+            .body(format!(
+                "{} asks. Settings → Phone is open at it: type the code your phone shows to allow it. If you did not just ask on your phone, press Don't allow.",
+                ask.name
+            ))
+            .show();
+    }
+
+    /// Item 993f: one action from the phone's sheet, after the listener
+    /// redeemed his tap for exactly it (`ref_gate`). The window is asked
+    /// only for the rail's agent binary and safe mode (`remote-ref-agent`);
+    /// nothing runs there. A window that does not answer: nothing runs.
+    async fn ref_act(
+        &self,
+        item: nightloom_service::ref_action::Item,
+        act: nightloom_service::ref_action::Act,
+    ) -> Result<nightloom_service::ref_action::Receipt, String> {
+        let (binary, safe_mode) = self.ref_agent().await?;
+        let power = self.app.state::<power::Holder>();
+        crate::ref_action::run_act(&power, item, act, binary, Some(safe_mode)).await
+    }
+
+    /// Item 993f: an email's own headers for the phone's sheet.
+    async fn ref_read(
+        &self,
+        item: nightloom_service::ref_action::Item,
+    ) -> Result<nightloom_service::ref_action::Heads, String> {
+        let (binary, safe_mode) = self.ref_agent().await?;
+        let power = self.app.state::<power::Holder>();
+        crate::ref_action::read_heads(&power, item, binary, Some(safe_mode)).await
+    }
+
     /// Item 801: the phone's Brief, run by the window (`remote-brief`), which
     /// knows the agent binary and safe mode it runs every turn with.
     async fn brief(&self, text: &str) -> Result<String, String> {
@@ -1198,6 +1254,24 @@ fn from_json<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> Result<T, 
 }
 
 impl DesktopHost {
+    /// The rail's agent binary and safe mode, as the window holds them
+    /// (item 993f): the only thing the window is asked for a phone's card
+    /// action. Safe mode unknown is no answer, so nothing runs.
+    async fn ref_agent(&self) -> Result<(Option<String>, bool), String> {
+        let v = self
+            .call("remote-ref-agent", serde_json::json!({}), REF_AGENT_WAIT)
+            .await?;
+        let safe = v
+            .get("safeMode")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or("the window did not say whether safe mode is on, so nothing was sent")?;
+        let binary = v
+            .get("binary")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        Ok((binary, safe))
+    }
+
     /// A project as the phone lists it, from the window's answer (the
     /// desktop's `ProjectInfo`: its `id`), with `active` read fresh.
     async fn row_of(&self, project: &serde_json::Value) -> Result<ProjectRow, String> {
@@ -2227,6 +2301,131 @@ fn done_outcome(ok: bool, json: Option<serde_json::Value>) -> Result<serde_json:
 /// The token the keychain holds, or a sentence when it could not say
 /// (review 2026-09-17 FA4): a locked or refusing keychain must not read
 /// as "no token" — that minted a new one and un-paired every phone.
+/// The window's event when a phone asks to be allowed (item 993g).
+const PHONE_KEY_ASKED: &str = "phone-key-asked";
+/// The window's event when the allowed phones or the asks changed.
+const PHONE_KEYS_CHANGED: &str = "phone-keys-changed";
+
+/// The phones allowed to send from a card (item 993g): one set for the
+/// listener's routes and the window's commands. The Keychain is read at
+/// first use, not here.
+pub(crate) fn phone_keys() -> Arc<nightloom_service::phone_keys::Keys> {
+    static KEYS: std::sync::OnceLock<Arc<nightloom_service::phone_keys::Keys>> =
+        std::sync::OnceLock::new();
+    KEYS.get_or_init(|| Arc::new(nightloom_service::phone_keys::Keys::for_this_mac()))
+        .clone()
+}
+
+/// A phone in Settings → Phone's list.
+#[derive(Serialize, Clone, Debug)]
+pub struct PhoneRow {
+    pub id: String,
+    pub name: String,
+    /// When it asked, or when he allowed it. (No code: the Mac never shows
+    /// an ask's code; he types the one his phone shows.)
+    pub at: String,
+}
+
+/// Settings → Phone's two lists (item 993g).
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct PhoneKeys {
+    pub asked: Vec<PhoneRow>,
+    pub allowed: Vec<PhoneRow>,
+    /// Why the allowed phones could not be read (a locked Keychain): no
+    /// phone can send until they can.
+    pub error: Option<String>,
+}
+
+fn phone_rows() -> PhoneKeys {
+    let keys = phone_keys();
+    let asked = keys
+        .asked(chrono::Utc::now())
+        .into_iter()
+        .map(|a| PhoneRow {
+            id: a.id,
+            name: a.name,
+            at: a.asked.to_rfc3339(),
+        })
+        .collect();
+    let (allowed, error) = match keys.allowed() {
+        Ok(list) => (
+            list.into_iter()
+                .map(|k| PhoneRow {
+                    id: k.id,
+                    name: k.name,
+                    at: k.added.to_rfc3339(),
+                })
+                .collect(),
+            None,
+        ),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    PhoneKeys {
+        asked,
+        allowed,
+        error,
+    }
+}
+
+/// The phones asking and the phones allowed, for Settings → Phone.
+#[tauri::command]
+pub async fn phone_keys_list() -> Result<PhoneKeys, String> {
+    crate::blocking(|| Ok::<_, String>(phone_rows())).await
+}
+
+/// **His Allow click in the Mac's window**, with the code he typed from
+/// his phone's screen (item 993g, blocker 2359; review 2026-11-27): the
+/// one caller of `Keys::allow`. A window command, so nothing outside the
+/// window (a model's shell, the listener's routes) can reach it. A wrong
+/// code is refused (three drop the ask).
+#[tauri::command]
+pub async fn phone_key_allow(
+    app: AppHandle,
+    id: String,
+    code: String,
+) -> Result<PhoneKeys, String> {
+    let out = crate::blocking(move || {
+        phone_keys().allow(&id, &code, chrono::Utc::now())?;
+        Ok::<_, String>(phone_rows())
+    })
+    .await;
+    let _ = app.emit(PHONE_KEYS_CHANGED, ());
+    out
+}
+
+/// His "Don't allow": the ask goes.
+#[tauri::command]
+pub async fn phone_key_deny(app: AppHandle, id: String) -> Result<PhoneKeys, String> {
+    let out = crate::blocking(move || {
+        phone_keys().deny(&id);
+        Ok::<_, String>(phone_rows())
+    })
+    .await;
+    let _ = app.emit(PHONE_KEYS_CHANGED, ());
+    out
+}
+
+/// He removed an allowed phone: it can read, and send nothing, until he
+/// allows it again.
+#[tauri::command]
+pub async fn phone_key_revoke(app: AppHandle, id: String) -> Result<PhoneKeys, String> {
+    let out = crate::blocking(move || {
+        phone_keys().revoke(&id)?;
+        Ok::<_, String>(phone_rows())
+    })
+    .await;
+    let _ = app.emit(PHONE_KEYS_CHANGED, ());
+    out
+}
+
+/// A regenerated token un-pairs every phone; the phones allowed to send go
+/// with it (each pairs, then asks, again). Best effort: a Keychain that
+/// refused the write leaves them, and they hold a dead token anyway.
+fn forget_phones(app: &AppHandle) {
+    let _ = phone_keys().clear();
+    let _ = app.emit(PHONE_KEYS_CHANGED, ());
+}
+
 fn stored_token() -> Result<Option<String>, String> {
     credentials::try_remote_token()
         .map_err(|e| format!("could not read the phone token from the keychain ({e}); the one you have is kept — try again"))
@@ -2420,10 +2619,16 @@ pub async fn remote_token(
     if let Some(addr) = bound {
         let bound = rebind(&remote, addr.ip(), addr.port(), new.clone()).await?;
         credentials::set_remote_token(&new).map_err(|e| e.to_string())?;
+        if regenerate {
+            forget_phones(&app);
+        }
         remote.apply_awake(&app, remote.keep_awake());
         return status(&remote, Some(bound)).await;
     }
     credentials::set_remote_token(&new).map_err(|e| e.to_string())?;
+    if regenerate {
+        forget_phones(&app);
+    }
     status(&remote, None).await
 }
 

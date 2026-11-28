@@ -18,8 +18,16 @@
    * the hold (the toast still offers Undo); quitting the app does — the command was never called, and his words
    * are still kept under the item (`refDrafts`), since only a mail that went drops them. One mail per item at a
    * time: a second click while one is held or going is refused.
+   *
+   * The phone (993f) mounts this same host with `sheet`: the card rises as a bottom sheet over a shade, and its
+   * actions run on the Mac through the listener. There a mail's Send first takes a tap from the Mac (`armSend`, the
+   * one-time tap for exactly that mail); the hold runs on the phone, and only its end sends the mail with that tap.
+   * Undo is the phone's own (the tap is dropped, `disarm`); the phone losing the Mac at any moment of the hold
+   * (`offline`) stops it, so nothing is sent. The "may have gone" lock the Mac keeps for both screens is read when a
+   * card opens (`lockOf`) and cleared on both by "I checked: not sent" (`checked`).
    */
   import { onMount } from "svelte";
+  import { shade } from "./refSheet";
   import RefCard from "./RefCard.svelte";
   import { refFromEl, refKey, type Ref } from "./refTag";
   import { accountOf, rsvpAnswerOf, rsvpOf } from "./refCard";
@@ -42,6 +50,13 @@
     readMail,
     unfinished,
     onaccounts,
+    sheet = false,
+    offline,
+    offlineAct,
+    armSend,
+    disarm,
+    lockOf,
+    checked,
   }: {
     /** What Home reaches, when the app already holds it. */
     reach?: () => HomeReach | null;
@@ -63,6 +78,20 @@
      *  item gets the same kept "may have gone" lock as a send with no answer: Send stays off until he checked. */
     unfinished?: () => Promise<RefUnfinished[]>;
     onaccounts?: () => void;
+    /** The phone (993f): the card is a bottom sheet over a shade. */
+    sheet?: boolean;
+    /** Why nothing can reach the Mac now (the phone offline, or reaching only the away server), else null. */
+    offline?: () => string | null;
+    /** A way out of `offline`, when there is one (993g: the phone asks to be allowed to send). */
+    offlineAct?: () => { label: string; run: () => void } | null;
+    /** The phone (993f): his Send's one-time tap from the Mac, for exactly this mail, at the start of its hold. */
+    armSend?: (ref: Ref, a: Extract<RefAction, { type: "send" }>) => Promise<{ tap: string }>;
+    /** The tap dropped (his Undo, or the hold stopped). */
+    disarm?: (tap: string) => void;
+    /** The "may have gone" lock the Mac keeps for both screens, read when a card opens. */
+    lockOf?: (ref: Ref, mark?: string | null) => Promise<string | null>;
+    /** He checked Gmail's Sent: the kept lock goes on the Mac too. */
+    checked?: (key: string) => void;
   } = $props();
 
   let open = $state<{ ref: Ref; anchor: HTMLElement; n: number } | null>(null);
@@ -81,6 +110,8 @@
   // A mail let through with no success back, by item: Send stays off until he says he checked (review, 4). Kept
   // beside the draft in storage, so a reload or restart keeps it (re-review, N2).
   const maybe = $derived(refMaybe.by);
+  // A "may have gone" set on this screen that the Mac has not been told of yet, by item (993f).
+  const untold = new Map<string, string>();
   // Each email's headers, read once a session (a failed read is tried again on the next open).
   const headsRead = new Map<string, Promise<MailHeads>>();
   function headsOf(ref: Ref): Promise<MailHeads> {
@@ -132,23 +163,50 @@
     if (holds[k] || going.has(k)) throw new Error("this mail is already on its way");
     if (maybe[k]) throw new Error("it may have gone already: check Sent in Gmail first");
     const who = a.to.trim() || "them";
+    // The phone (993f): the Mac's tap for exactly this mail first. No tap, no hold: the card says why.
+    let tap: string | undefined;
+    if (armSend) {
+      const why = offline?.();
+      if (why) throw new Error(why);
+      going.add(k);
+      try {
+        tap = (await armSend(ref, a)).tap;
+      } finally {
+        going.delete(k);
+      }
+    }
     const h = startHold(holdMs);
+    // The phone losing the Mac at any moment of the hold stops it: nothing is sent (Undo is the phone's own).
+    let lost: string | null = null;
+    const watch = offline
+      ? setInterval(() => {
+          const why = offline();
+          if (why && h.undo()) lost = why;
+        }, 250)
+      : undefined;
     const words = () => `Sending to ${who} in ${secondsLeft(h.until)} s`;
     const tid = holdToast?.start(words(), () => void h.undo());
     const ticker = setInterval(() => tid !== undefined && holdToast?.update(tid, words()), 1000);
     holds[k] = { until: h.until, to: who, undo: () => void h.undo() };
-    const go = await h.done;
+    let go = await h.done;
     clearInterval(ticker);
+    if (watch !== undefined) clearInterval(watch);
     delete holds[k];
+    if (go && offline) {
+      lost = offline();
+      if (lost) go = false;
+    }
     if (!go) {
-      if (tid !== undefined) holdToast?.settle(tid, `Not sent to ${who}: undone. Your words are kept in the card.`);
-      throw new MailUndone();
+      if (tap !== undefined) disarm?.(tap);
+      const lostWords = lost ? "Not sent: your phone lost your Mac during the hold. Your words are still here." : null;
+      if (tid !== undefined) holdToast?.settle(tid, lostWords ?? `Not sent to ${who}: undone. Your words are kept in the card.`);
+      throw new MailUndone(lostWords ?? undefined);
     }
     going.add(k);
     if (tid !== undefined) holdToast?.settle(tid, `Sending to ${who}…`);
     const end = refRunStart(`Sending mail to ${who}`);
     try {
-      const r = await act!(ref, a);
+      const r = await act!(ref, tap !== undefined ? { ...a, tap } : a);
       if (r.gone) {
         gone.add(k);
         for (const el of linksOf(k)) mark(el, "ref-gone", true);
@@ -162,6 +220,8 @@
       const why = String(e instanceof Error ? e.message : e);
       if (isMaybeSent(e)) {
         markMaybeSent(k, why);
+        // Told to the Mac when it next answers (the phone may have lost it as the mail went).
+        if (lockOf) untold.set(k, why);
         if (tid !== undefined) holdToast?.settle(tid, `To ${who}: ${why}`);
       } else if (tid !== undefined) holdToast?.settle(tid, `Not sent to ${who}: ${why}`);
       throw e;
@@ -200,6 +260,18 @@
     open = { ref, anchor: a, n: ++seq };
     mark(a, "ref-open", true);
     if (gone.has(refKey(ref))) mark(a, "ref-gone", true);
+    // The lock the Mac keeps for both screens (993f), synced both ways: a lock set here the Mac was not told of
+    // goes first, then this screen mirrors the Mac's — set on either, cleared by "I checked" on either. A Mac that
+    // cannot be asked leaves this screen's lock as it is.
+    const lk = refKey(ref);
+    const toTell = untold.get(lk) ?? null;
+    void lockOf?.(ref, toTell)
+      .then((why) => {
+        untold.delete(lk);
+        if (why) markMaybeSent(lk, why);
+        else clearMaybeSent(lk);
+      })
+      .catch(() => {});
     if (!reach?.() && !read && loadReach)
       void loadReach()
         .then((r) => (read = r))
@@ -253,7 +325,7 @@
     const onDown = (e: PointerEvent) => {
       if (!open) return;
       const t = e.target instanceof Element ? e.target : null;
-      if (t?.closest(".ref-card, .nl-tip")) return;
+      if (t?.closest(".ref-card, .nl-tip, .ref-hold-bar")) return;
       // A press on a link is the click's to handle (toggle, or move to another).
       if (linkOf(t)) return;
       close(false);
@@ -278,6 +350,10 @@
   }
 </script>
 
+{#if sheet && open && account}
+  <!-- The phone's sheet (993f): a shade behind it, 220 ms; a press on it closes the sheet (the host's pointerdown). -->
+  <div class="ref-shade" aria-hidden="true" transition:shade></div>
+{/if}
 {#if open && account}
   {#key open.n}
     <RefCard
@@ -295,7 +371,20 @@
       readHeads={readMail ? ((r) => () => headsOf(r))(open.ref) : undefined}
       me={known?.accounts.find((x) => x.connector === open?.ref.src)?.address ?? null}
       maybeSent={maybe[refKey(open.ref)] ?? null}
-      onchecked={((k) => () => clearMaybeSent(k))(refKey(open.ref))}
+      onchecked={((k) => () => (untold.delete(k), clearMaybeSent(k), checked?.(k)))(refKey(open.ref))}
+      {sheet}
+      offline={offline?.() ?? null}
+      offlineAct={offlineAct?.() ?? null}
     />
   {/key}
 {/if}
+
+<style>
+  /* The phone's shade behind the sheet (993f). */
+  .ref-shade {
+    position: fixed;
+    inset: 0;
+    z-index: 79;
+    background: var(--scrim, rgba(0, 0, 0, 0.5));
+  }
+</style>
